@@ -52,7 +52,7 @@ const SHIFT_TIMING = {
 
 const CATEGORIES = [
   { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-indigo-50',  badge: 'bg-indigo-600 text-white' },
-  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: true,  rowBg: 'bg-sky-50',     badge: 'bg-sky-600 text-white' },
+  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-sky-50',     badge: 'bg-sky-600 text-white' },
   { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [1,3],   persistent: false, rowBg: 'bg-emerald-50', badge: 'bg-emerald-600 text-white' },
   { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-white' },
   { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-white' },
@@ -1400,7 +1400,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
       {/* Header + per-PGY / BAMC add buttons */}
       <div>
         <div className="mb-3">
-          <h2 className="text-base font-semibold text-gray-800">EM Home &amp; BAMC Residents</h2>
+          <h2 className="text-base font-semibold text-gray-800">EM Home Residents</h2>
           <p className="text-xs text-gray-500 mt-0.5">Permanent roster — set each resident's rotation for this block</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -1411,10 +1411,6 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
               <Plus size={11}/> EM PGY-{pgy}
             </button>
           ))}
-          <button onClick={() => setShowAdd({ pgy: 1, category: 'EM_BAMC' })}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white rounded-lg transition-colors">
-            <Plus size={11}/> BAMC PGY-1
-          </button>
         </div>
       </div>
 
