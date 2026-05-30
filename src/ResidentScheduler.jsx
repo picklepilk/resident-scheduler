@@ -1754,7 +1754,7 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
 // ─── RULES TAB ────────────────────────────────────────────────────────────────
 
 function RulesTab({ allResidents, block, eligOverrides }) {
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useState(true);
   const [openKeys, setOpenKeys] = useState({});
 
   // Find which types are active this block
@@ -2255,7 +2255,7 @@ const TABS = [
   { id: 'offservice', label: 'Off-Service',   icon: Users },
   { id: 'matrix',     label: 'Shift Matrix',  icon: Table2 },
   { id: 'schedule',   label: 'Schedule',      icon: Calendar },
-  { id: 'rules',      label: 'Rules',         icon: BookOpen },
+  { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
 ];
