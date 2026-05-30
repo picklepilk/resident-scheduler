@@ -467,6 +467,8 @@ function makeDefaultBlock() {
 
 function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}) {
   if (!isSchedulable(resident)) return [];
+  // Approved days off — resident blocked entirely
+  if ((resident.approvedDatesOff || []).includes(dateStr)) return [];
   const date = parseDate(dateStr);
   const dow = date.getDay();
   const key = eligKey(resident);
@@ -590,6 +592,12 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}) {
     const key = eligKey(resident);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
+      // Approved day off — highest-priority violation
+      if ((resident.approvedDatesOff || []).includes(ds)) {
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
+          message: 'Shift scheduled on an approved day off', level: 'error' });
+        continue;
+      }
       const elig = getEligibleShifts(resident, ds, sd, eligOverrides);
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
@@ -1164,13 +1172,23 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     : CATEGORIES.filter(c => !c.persistent);
 
   const [form, setForm] = useState({
-    firstName:   initial?.firstName   ?? '',
-    lastName:    initial?.lastName    ?? '',
-    category:    initial?.category    ?? availCats[0]?.id ?? 'EM_HOME',
-    pgy:         initial?.pgy         ?? availCats[0]?.pgyOptions[0] ?? 1,
-    isCCUNights: initial?.isCCUNights ?? false,
-    notes:       initial?.notes       ?? '',
+    firstName:        initial?.firstName        ?? '',
+    lastName:         initial?.lastName         ?? '',
+    category:         initial?.category         ?? availCats[0]?.id ?? 'EM_HOME',
+    pgy:              initial?.pgy              ?? availCats[0]?.pgyOptions[0] ?? 1,
+    isCCUNights:      initial?.isCCUNights      ?? false,
+    approvedDatesOff: initial?.approvedDatesOff ?? [],
   });
+
+  const [newOffDate, setNewOffDate] = useState('');
+
+  function addOffDate() {
+    const d = newOffDate;
+    if (!d || form.approvedDatesOff.includes(d)) { setNewOffDate(''); return; }
+    set('approvedDatesOff', [...form.approvedDatesOff, d].sort());
+    setNewOffDate('');
+  }
+  function removeOffDate(d) { set('approvedDatesOff', form.approvedDatesOff.filter(x => x !== d)); }
 
   const catObj  = CAT_MAP[form.category];
   const pgyOpts = catObj?.pgyOptions || [1];
@@ -1191,12 +1209,12 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     e.preventDefault();
     if (!form.firstName.trim() || !form.lastName.trim()) return;
     onSubmit({
-      firstName:   form.firstName.trim(),
-      lastName:    form.lastName.trim(),
-      category:    form.category,
-      pgy:         Number(form.pgy),
-      isCCUNights: form.isCCUNights,
-      notes:       form.notes.trim(),
+      firstName:        form.firstName.trim(),
+      lastName:         form.lastName.trim(),
+      category:         form.category,
+      pgy:              Number(form.pgy),
+      isCCUNights:      form.isCCUNights,
+      approvedDatesOff: form.approvedDatesOff,
     });
   }
 
@@ -1264,10 +1282,30 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
           </label>
         )}
 
-        {/* Notes */}
+        {/* Approved Dates Off */}
         <div>
-          <label className="block text-xs font-medium text-gray-700 mb-1">Notes (optional)</label>
-          <input className="input-field" value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="e.g. Leave week of 7/4, contact Dr. Smith…" />
+          <label className="block text-xs font-medium text-gray-700 mb-1">Approved Dates Off</label>
+          <p className="text-xs text-gray-400 mb-2">Resident is unavailable these dates — blocked in the schedule grid</p>
+          <div className="flex flex-wrap gap-1.5 mb-2 min-h-[22px]">
+            {form.approvedDatesOff.length === 0
+              ? <span className="text-xs text-gray-300 italic">None set</span>
+              : form.approvedDatesOff.map(d => (
+                <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">
+                  {formatDisplayDate(d)}
+                  <button type="button" onClick={() => removeOffDate(d)} className="hover:opacity-60"><X size={10}/></button>
+                </span>
+              ))
+            }
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input type="date" value={newOffDate} onChange={e => setNewOffDate(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addOffDate())}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-orange-400 bg-white" />
+            <button type="button" onClick={addOffDate} disabled={!newOffDate}
+              className="text-xs px-2.5 py-1 bg-orange-500 hover:bg-orange-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+              Add
+            </button>
+          </div>
         </div>
 
         <div className="flex justify-end gap-2 pt-1">
@@ -1405,7 +1443,13 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
                         {ba.isChief && <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★</span>}
                         {!sched_ok && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{btObj?.atUH ? 'not chief-sched' : 'away'}</span>}
                       </div>
-                      {res.notes && <p className="text-xs text-gray-400 mt-0.5 italic">{res.notes}</p>}
+                      {res.approvedDatesOff?.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {res.approvedDatesOff.map(d => (
+                            <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {/* Edit + Remove */}
                     <div className="flex items-center gap-0.5 shrink-0">
@@ -1556,7 +1600,13 @@ function OffServiceTab({ block, updateBlock }) {
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat.badge}`}>{cat.shortLabel} PGY-{res.pgy}</span>
                           </div>
                           {res.isCCUNights && <p className="text-xs text-orange-600 mt-0.5 font-medium">CCU nights</p>}
-                          {res.notes && <p className="text-xs text-gray-400 mt-0.5 italic">{res.notes}</p>}
+                          {res.approvedDatesOff?.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {res.approvedDatesOff.map(d => (
+                                <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         {/* Edit + Remove */}
                         <div className="flex items-center gap-0.5 shrink-0">
@@ -2055,19 +2105,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
                       {dates.map(ds=>{
                         const sid=sched[res.id]?.[ds]||null;
                         const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
+                        const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
                         const elig=getEligibleShifts(res,ds,sd,eligOverrides);
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
                         const isGR=isWed&&res.category==='EM_HOME';
                         const shift=sid?SHIFT_MAP[sid]:null;
-                        let bg=isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
+                        let bg=isApprovedOff?'bg-orange-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
+                        const clickable=(elig.length>0||sid)&&!isApprovedOff;
                         return (
                           <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
-                            onClick={()=>(elig.length>0||sid)&&setPicker({resident:res,dateStr:ds})}
-                            title={isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
-                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${(elig.length>0||sid)?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
-                            {isGR&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
+                            onClick={()=>clickable&&setPicker({resident:res,dateStr:ds})}
+                            title={isApprovedOff?'Approved day off':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
+                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+                            {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
+                            {isGR&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
                             {shift && <div className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${shift.chip}`}>{sid}</div>}
                           </div>
                         );
