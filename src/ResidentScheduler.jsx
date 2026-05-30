@@ -1392,6 +1392,8 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
   function target(r) { const ba = assign[r.id] || {}; return ba.isChief ? 16 : (SHIFT_TARGETS[eligKey(r)] ?? null); }
 
   const byPGY = [1, 2, 3].map(pgy => ({ pgy, list: emRoster.filter(r => r.pgy === pgy) })).filter(g => g.list.length);
+  const [collapsed, setCollapsed] = useState({});
+  const toggle = key => setCollapsed(p => ({ ...p, [key]: !p[key] }));
 
   return (
     <div className="space-y-5">
@@ -1420,10 +1422,26 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
         <div className="text-center py-12 text-gray-400 text-sm bg-gray-50 rounded-xl border border-dashed border-gray-200">
           No EM residents yet — use the Add buttons above
         </div>
-      ) : byPGY.map(({ pgy, list }) => (
-        <div key={pgy}>
-          <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">PGY-{pgy}</div>
-          <div className="space-y-2">
+      ) : byPGY.map(({ pgy, list }) => {
+        const key = `pgy-${pgy}`;
+        const isCollapsed = !!collapsed[key];
+        const schedulableCount = list.filter(r => { const bt = BLOCK_TYPE_MAP[r.blockType || (assign[r.id]?.blockType) || 'EM']; return bt?.schedulable; }).length;
+        return (
+        <div key={pgy} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+          {/* Collapsible group header */}
+          <button onClick={() => toggle(key)}
+            className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs font-bold text-gray-600 uppercase tracking-widest">PGY-{pgy}</span>
+              <span className="text-xs text-gray-400">{list.length} resident{list.length !== 1 ? 's' : ''}</span>
+              {schedulableCount < list.length && (
+                <span className="text-xs text-gray-400">{schedulableCount} schedulable</span>
+              )}
+            </div>
+            <ChevronDown size={14} className={`text-gray-400 transition-transform ${isCollapsed ? '' : 'rotate-180'}`}/>
+          </button>
+          {!isCollapsed && (
+          <div className="p-3 space-y-2">
             {list.map(res => {
               const ba      = assign[res.id] || {};
               const bt      = ba.blockType || 'EM';
@@ -1494,8 +1512,10 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
               );
             })}
           </div>
+          )}
         </div>
-      ))}
+        );
+      })}
 
       {showAdd && (
         <AddResidentModal persistentOnly
@@ -1558,6 +1578,9 @@ function OffServiceTab({ block, updateBlock }) {
     .map(cat => ({ cat, members: residents.filter(r => r.category === cat.id) }))
     .filter(g => g.members.length);
 
+  const [collapsed, setCollapsed] = useState({});
+  const toggle = key => setCollapsed(p => ({ ...p, [key]: !p[key] }));
+
   return (
     <div className="space-y-5">
       {/* Header + per-specialty add buttons */}
@@ -1582,11 +1605,23 @@ function OffServiceTab({ block, updateBlock }) {
           No off-service residents this block — use the Add buttons above
         </div>
       ) : (
-        <div className="space-y-5">
-          {grouped.map(({ cat, members }) => (
-            <div key={cat.id}>
-              <div className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">{cat.label}</div>
-              <div className="space-y-2">
+        <div className="space-y-3">
+          {grouped.map(({ cat, members }) => {
+            const isCollapsed = !!collapsed[cat.id];
+            return (
+            <div key={cat.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+              {/* Collapsible category header */}
+              <button onClick={() => toggle(cat.id)}
+                className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left">
+                <div className="flex items-center gap-2.5">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${cat.badge}`}>{cat.shortLabel}</span>
+                  <span className="text-xs font-medium text-gray-700">{cat.label}</span>
+                  <span className="text-xs text-gray-400">{members.length} resident{members.length !== 1 ? 's' : ''}</span>
+                </div>
+                <ChevronDown size={14} className={`text-gray-400 transition-transform ${isCollapsed ? '' : 'rotate-180'}`}/>
+              </button>
+              {!isCollapsed && (
+              <div className="p-3 space-y-2">
                 {members.map(res => {
                   const cnt  = shiftCount(res.id);
                   const tgt  = SHIFT_TARGETS[eligKey(res)] ?? null;
@@ -1643,8 +1678,10 @@ function OffServiceTab({ block, updateBlock }) {
                   );
                 })}
               </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
