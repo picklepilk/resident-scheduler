@@ -952,22 +952,17 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-function HomeTab({ block, emRoster, blocksHistory, ayData, updateAyData, onContinue, onLoadBlock, onSaveBlock, onNewBlock }) {
+function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAyData, onContinue, onLoadBlock, onSaveBlock, onNewBlock }) {
   const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
   const resCount   = emRoster.length + (block.offServiceResidents || []).length;
-  const hasCurrent = block.startDate || resCount > 0 || shiftCount > 0;
+  const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
+  const sd = block.specialDays || {};
 
-  // Group history by AY; also collect all AYs from ayData that might not have blocks yet
+  // Group history by AY; also include AYs from ayData with no blocks yet
   const byYear = useMemo(() => {
     const m = {};
-    for (const b of blocksHistory) {
-      const ay = b.academicYear || 'Unknown';
-      (m[ay] = m[ay] || []).push(b);
-    }
-    // Also include AYs that have conference data but no saved blocks yet
-    for (const ay of Object.keys(ayData)) {
-      if (!m[ay]) m[ay] = [];
-    }
+    for (const b of blocksHistory) { const ay = b.academicYear || 'Unknown'; (m[ay] = m[ay] || []).push(b); }
+    for (const ay of Object.keys(ayData)) { if (!m[ay]) m[ay] = []; }
     return Object.entries(m).sort(([a],[b]) => b.localeCompare(a));
   }, [blocksHistory, ayData]);
 
@@ -975,25 +970,47 @@ function HomeTab({ block, emRoster, blocksHistory, ayData, updateAyData, onConti
     const i = {};
     for (const b of blocksHistory) i[b.academicYear || 'Unknown'] = true;
     for (const ay of Object.keys(ayData)) i[ay] = true;
-    // Also open the current block's AY
     return i;
   });
 
-  // Ensure current block's AY folder is open on mount
   useEffect(() => {
-    if (block.academicYear) {
-      setOpenYears(p => ({ ...p, [block.academicYear]: true }));
-    }
+    if (block.academicYear) setOpenYears(p => ({ ...p, [block.academicYear]: true }));
   }, [block.academicYear]);
 
   function toggleYear(y) { setOpenYears(p => ({ ...p, [y]: !p[y] })); }
 
+  function setField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
+
+  function onStartDateChange(s) {
+    updateBlock(b => ({
+      ...b,
+      startDate: s,
+      // Auto-set end to start+27 days (28-day block) if end is blank or was auto-set
+      endDate: s ? toDateStr(addDays(parseDate(s), 27)) : b.endDate,
+      // Auto-populate AY if not already set
+      academicYear: b.academicYear || getAcademicYear(),
+    }));
+  }
+
+  function updSD(field, dates) {
+    updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: dates } }));
+  }
+
   return (
     <div className="space-y-5 max-w-3xl">
 
-      {/* Current working block */}
-      <SectionCard title="Current Block" subtitle="Your active workspace."
-        action={
+      {/* Current Block — inline editable form */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {/* Card header */}
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-gray-800 text-sm">Current Block</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {resCount > 0 || shiftCount > 0
+                ? `${resCount} resident${resCount !== 1 ? 's' : ''} · ${shiftCount} shift${shiftCount !== 1 ? 's' : ''} assigned`
+                : 'Set dates below to start scheduling'}
+            </p>
+          </div>
           <div className="flex gap-2">
             <button onClick={onSaveBlock}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
@@ -1004,27 +1021,71 @@ function HomeTab({ block, emRoster, blocksHistory, ayData, updateAyData, onConti
               <Plus size={12}/> New Block
             </button>
           </div>
-        }>
-        {hasCurrent ? (
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <div className="font-semibold text-gray-900">{block.name || 'Unnamed Block'}</div>
-              {block.startDate && <div className="text-sm text-gray-500">{prettyDate(block.startDate)} → {prettyDate(block.endDate)}</div>}
-              <div className="text-xs text-gray-400 flex gap-3">
-                <span>{resCount} residents</span>
-                {shiftCount > 0 && <span>{shiftCount} shifts assigned</span>}
-                <span className="text-indigo-400">{block.academicYear}</span>
-              </div>
+        </div>
+
+        {/* Block identity + dates grid — always visible, always editable */}
+        <div className="px-5 pt-4 pb-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Block Name</label>
+              <input className="input-field" placeholder="e.g. Block 3 — Jun/Jul 2026"
+                value={block.name || ''} onChange={e => setField('name', e.target.value)}/>
             </div>
-            <button onClick={onContinue}
-              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors shrink-0">
-              Continue <ChevronRight size={14}/>
-            </button>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
+              <input className="input-field" placeholder={getAcademicYear()}
+                value={block.academicYear || ''} onChange={e => setField('academicYear', e.target.value)}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Start Date</label>
+              <input type="date" className="input-field"
+                value={block.startDate || ''} onChange={e => onStartDateChange(e.target.value)}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">End Date</label>
+              <input type="date" className="input-field"
+                value={block.endDate || ''} onChange={e => setField('endDate', e.target.value)}/>
+            </div>
           </div>
-        ) : (
-          <p className="text-sm text-gray-400 italic">No active block. Go to Settings to set dates, then add residents.</p>
-        )}
-      </SectionCard>
+
+          {/* Days-in-block indicator */}
+          {daysInBlock > 0 && (
+            <p className="text-xs text-gray-400 mt-2">
+              {daysInBlock} days · {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
+            </p>
+          )}
+        </div>
+
+        {/* Special Days — inline chip editors */}
+        <div className="px-5 pb-4 border-t border-gray-100 pt-4">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Special Days This Block</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <SpecialDaysList label="IM Code Blue Days" hint="IM off night before + day of"
+              dates={sd.codeBlueDays || []} onUpdate={d => updSD('codeBlueDays', d)}
+              chipClass="bg-red-100 text-red-700 border border-red-200"/>
+            <SpecialDaysList label="Peds Advocacy Days" hint="Peds off night before"
+              dates={sd.advocacyDays || []} onUpdate={d => updSD('advocacyDays', d)}
+              chipClass="bg-emerald-100 text-emerald-700 border border-emerald-200"/>
+            <SpecialDaysList label="BAMC Procedure Days" hint="BAMC off night before + day of"
+              dates={sd.procDays || []} onUpdate={d => updSD('procDays', d)}
+              chipClass="bg-sky-100 text-sky-700 border border-sky-200"/>
+            <SpecialDaysList label="Anesthesia US Days" hint="Anesthesia off these days"
+              dates={sd.anesDays || []} onUpdate={d => updSD('anesDays', d)}
+              chipClass="bg-violet-100 text-violet-700 border border-violet-200"/>
+          </div>
+        </div>
+
+        {/* Go to Schedule */}
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
+          <span className="text-xs text-gray-400">
+            {!block.startDate ? 'Set start date above to begin' : `Ready · ${daysInBlock} day block`}
+          </span>
+          <button onClick={onContinue} disabled={!block.startDate}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg transition-colors">
+            Go to Schedule <ChevronRight size={14}/>
+          </button>
+        </div>
+      </div>
 
       {/* Saved Blocks — grouped by AY */}
       <div className="space-y-2">
@@ -2088,11 +2149,6 @@ function ValidationTab({ allResidents, block, eligOverrides }) {
 function SettingsTab({ block, updateBlock, onBlockReset }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const upd = (f,v) => updateBlock(b=>({...b,[f]:v}));
-  const updSD = (f,raw) => {
-    const dates=raw.split('\n').map(s=>s.trim()).filter(s=>/^\d{4}-\d{2}-\d{2}$/.test(s));
-    updateBlock(b=>({...b,specialDays:{...b.specialDays,[f]:dates}}));
-  };
-  const sdTxt = f => (block.specialDays?.[f]||[]).join('\n');
 
   return (
     <div className="space-y-5 max-w-lg">
@@ -2115,21 +2171,10 @@ function SettingsTab({ block, updateBlock, onBlockReset }) {
         <span>Conference &amp; ITE dates are now set <strong>per Academic Year</strong> in the <strong>Home tab</strong> — expand the AY folder and click "Conference &amp; ITE Dates". Special days below are per-block and can also be managed from the <strong>Dashboard</strong> tab.</span>
       </div>
 
-      <SectionCard title="Special Days" subtitle="Enter dates as YYYY-MM-DD, one per line. Easier to manage from the Dashboard tab.">
-        <div className="space-y-4">
-          {[{f:'codeBlueDays',l:'IM Code Blue Days',h:'IM off night before + day of'},
-            {f:'advocacyDays',l:'Peds Advocacy Days',h:'Peds off night before'},
-            {f:'procDays',l:'BAMC Procedure Days',h:'BAMC off night before + day of'},
-            {f:'anesDays',l:'Anesthesia US Days',h:'Anesthesia off these days'},
-          ].map(({f,l,h})=>(
-            <div key={f}>
-              <label className="block text-xs font-medium text-gray-700 mb-0.5">{l}</label>
-              <p className="text-xs text-gray-400 mb-1">{h}</p>
-              <textarea className="input-field resize-none font-mono text-xs" rows={3} value={sdTxt(f)} onChange={e=>updSD(f,e.target.value)} placeholder={'2025-07-04\n2025-07-15'}/>
-            </div>
-          ))}
-        </div>
-      </SectionCard>
+      <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">
+        <Info size={13} className="mt-0.5 shrink-0"/>
+        <span>Special days (Code Blue, Peds advocacy, BAMC procedure, Anesthesia US) are managed on the <strong>Home</strong> tab (Current Block section) and the <strong>Dashboard</strong> tab.</span>
+      </div>
 
       <SectionCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home/BAMC roster is preserved.">
         {resetConfirm ? (
@@ -2230,8 +2275,8 @@ export default function ResidentScheduler() {
   }
 
   function doNewBlock() {
-    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('settings');
-    showToast('New block created — set dates in Settings','amber');
+    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('home');
+    showToast('New block ready — enter dates and special days below','amber');
   }
 
   function blockReset() {
@@ -2314,9 +2359,9 @@ export default function ResidentScheduler() {
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           {tab==='home' && (
-            <HomeTab block={block} emRoster={emRoster} blocksHistory={blocksHistory}
+            <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} blocksHistory={blocksHistory}
               ayData={ayData} updateAyData={updateAyData}
-              onContinue={()=>setTab('dashboard')} onLoadBlock={loadBlock}
+              onContinue={()=>setTab('schedule')} onLoadBlock={loadBlock}
               onSaveBlock={saveBlock} onNewBlock={newBlock}/>
           )}
           {tab==='dashboard' && (
