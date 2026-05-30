@@ -88,6 +88,16 @@ const BLOCK_TYPES_EM = [
 const BLOCK_TYPE_MAP = Object.fromEntries(BLOCK_TYPES_EM.map(b => [b.id, b]));
 const TRAUMA_BLOCKS = ['PEDS_TRAUMA', 'TRAUMA_PEDS'];
 
+// Block types shown in the rotation dropdown per PGY level (EM Home only)
+const EM_HOME_BLOCK_TYPES_BY_PGY = {
+  1: ['EM', 'EM_RES_VAC', 'PEDS_TRAUMA', 'TRAUMA_PEDS', 'US_EM',
+      'ANES_VAC', 'ORTHO_VAC', 'NICU', 'PICU', 'OB_VAC'],
+  2: ['EM', 'EM_VAC', 'EM_EMS', 'EM_TOX', 'PEDS_EM',
+      'OB_VAC', 'BAPTIST', 'MICU', 'NICU', 'PICU', '9ICU'],
+  3: ['EM', 'EM_VAC', 'METRO', 'ELECTIVE', 'ADMIN',
+      'MICU', '9ICU'],
+};
+
 // Base eligibility — most permissive per category+PGY.
 // Block-type & day-of-week restrictions are applied on top in getEligibleShifts.
 const BASE_ELIGIBILITY = {
@@ -1483,9 +1493,12 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
                       <label className="text-xs text-gray-500 shrink-0">Rotation:</label>
                       <select value={bt} onChange={e => setBA(res.id, 'blockType', e.target.value)}
                         className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400">
-                        {BLOCK_TYPES_EM.map(b => (
-                          <option key={b.id} value={b.id}>{b.label}{!b.atUH ? ' (away)' : !b.schedulable ? ' (not sched)' : ''}</option>
-                        ))}
+                        {BLOCK_TYPES_EM
+                          .filter(b => (EM_HOME_BLOCK_TYPES_BY_PGY[res.pgy] || []).includes(b.id))
+                          .map(b => (
+                            <option key={b.id} value={b.id}>{b.label}{!b.atUH ? ' (away)' : !b.schedulable ? ' (not sched)' : ''}</option>
+                          ))
+                        }
                       </select>
                     </div>
                     {res.pgy === 3 && (
