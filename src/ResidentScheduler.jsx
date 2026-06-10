@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, Stethoscope as Steth,
+  CalendarDays, AlertOctagon, HelpCircle, Upload,
 } from 'lucide-react';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -461,6 +461,42 @@ function getConferencesInBlock(startStr, endStr, ayConf = {}) {
 
 const DEFAULT_AY_CONF = { acepStart:'', acepEnd:'', iteDate:'', aaemStart:'', aaemEnd:'', saemStart:'', saemEnd:'' };
 
+// App-level settings (persisted in res_app_settings)
+const DEFAULT_APP_SETTINGS = {
+  jeopardyPolicy: 'warn',     // 'block' = unschedulable | 'warn' = allowed with warning | 'off' = ignore
+  enforceRest: true,          // rest-period rule (shift length = required hours off)
+  pgy2TraumaCap: 3,           // warn when an EM Home PGY-2 exceeds this many trauma shifts/block
+  defaultBlockLength: 28,     // days — auto-fills end date when start date is set
+  maxSavedBlocks: 24,         // history depth on the Home tab
+  targetOverrides: {},        // { [CATEGORY_PGY]: number, CHIEF: number } — overrides SHIFT_TARGETS
+};
+
+// Effective shift target for a resident, honoring Settings overrides
+function getShiftTarget(resident, appSettings = {}) {
+  const o = appSettings.targetOverrides || {};
+  if (resident.isChief) return o.CHIEF ?? 16;
+  const key = `${resident.category}_${resident.pgy}`;
+  return o[key] ?? SHIFT_TARGETS[key] ?? null;
+}
+
+// Resolve the eligibility list for a resident, most specific key first:
+//   1. CATEGORY_PGY__ROTATION  (rotation-specific override from the Shift Matrix)
+//   2. CATEGORY_PGY            (category-level override)
+//   3. BASE_ELIGIBILITY default
+// rotationSpecific=true means the chief explicitly configured this rotation,
+// so built-in rotation shift-type filters (e.g. PGY-1 no-trauma-off-trauma-blocks)
+// are skipped — the override IS the rule. Day-of-week rules always still apply.
+function getEffectiveEligibility(resident, eligOverrides = {}) {
+  const key = `${resident.category}_${resident.pgy}`;
+  const isEM = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
+  if (isEM && resident.blockType) {
+    const rotKey = `${key}__${resident.blockType}`;
+    if (eligOverrides[rotKey]) return { list: [...eligOverrides[rotKey]], rotationSpecific: true };
+  }
+  if (eligOverrides[key]) return { list: [...eligOverrides[key]], rotationSpecific: false };
+  return { list: [...(BASE_ELIGIBILITY[key] || [])], rotationSpecific: false };
+}
+
 function makeDefaultBlock() {
   return {
     id: `blk_${Date.now()}`, name: '', academicYear: getAcademicYear(),
@@ -475,43 +511,49 @@ function makeDefaultBlock() {
 
 // ─── ELIGIBILITY LOGIC ────────────────────────────────────────────────────────
 
-function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}) {
+function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}) {
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
   if ((resident.approvedDatesOff || []).includes(dateStr)) return [];
+  // Jeopardy call — blocks scheduling only when policy is 'block' (see Settings)
+  if ((appSettings.jeopardyPolicy ?? 'warn') === 'block' &&
+      (resident.jeopardyDates || []).includes(dateStr)) return [];
   const date = parseDate(dateStr);
   const dow = date.getDay();
-  const key = eligKey(resident);
   const { category, pgy } = resident;
   const bt = resident.blockType || 'EM';
 
-  let eligible = [...(eligOverrides[key] ?? BASE_ELIGIBILITY[key] ?? [])];
+  // Matrix resolution: rotation-specific override > category override > base default
+  const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides);
+  let eligible = list;
 
   // ── EM Home ──────────────────────────────────────────────────────────────
   if (category === 'EM_HOME') {
     // GR Wednesday: entire day blocked
     if (dow === 3) return [];
 
-    // PGY-1 Trauma rule: only on Peds/Trauma or Trauma/Peds blocks,
-    // and only on Tue(2)/Thu(4)/Sat(6)/Sun(0) on those blocks.
+    // PGY-1 Trauma rule: by default only on Peds/Trauma or Trauma/Peds blocks.
     // *** Peds shifts (PED-D/E/N) are NOT day-restricted — available every eligible day. ***
+    // A rotation-specific matrix override may deliberately re-enable trauma on another
+    // block type (the chief's explicit list wins), but the PGY-1 trauma day-of-week
+    // gate (Tue/Thu/Sat/Sun only) ALWAYS applies, on every block type, override or not.
     if (pgy === 1) {
-      if (!TRAUMA_BLOCKS.includes(bt)) {
-        // Not a trauma block — no trauma shifts at all
+      if (!TRAUMA_BLOCKS.includes(bt) && !rotationSpecific) {
+        // Not a trauma block and no explicit override — no trauma shifts at all
         eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
-      } else {
-        // Peds/Trauma block: remove trauma shifts on non-Tue/Thu/Sat/Sun days only.
-        // Peds shifts remain in the list regardless of day.
-        if (![2, 4, 6, 0].includes(dow)) {
-          eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
-        }
+      }
+      // Unconditional PGY-1 trauma day gate: trauma only Tue(2)/Thu(4)/Sat(6)/Sun(0)
+      if (![2, 4, 6, 0].includes(dow)) {
+        eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
       }
     }
 
     // PGY-2 block-type day restrictions
     if (pgy === 2) {
-      // Peds/EM: no Trauma on this block
-      if (bt === 'PEDS_EM') {
+      // Peds/EM: no Trauma on this block by default. A rotation-specific override
+      // in the Shift Matrix DELIBERATELY wins here — checking trauma on the
+      // EM_HOME_2 → Peds/EM sub-row is the chief explicitly allowing it.
+      if (bt === 'PEDS_EM' && !rotationSpecific) {
         eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
       }
       // EM/EMS: chief schedules Mon/Tue only — Thu/Fri are EMS call (service-arranged)
@@ -593,13 +635,13 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   return eligible;
 }
 
-function validateAll(allResidents, schedule, block, eligOverrides = {}) {
+function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}) {
   const issues = [];
   const sd = block.specialDays || {};
+  const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
-    const key = eligKey(resident);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
       // Approved day off — highest-priority violation
@@ -608,7 +650,16 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}) {
           message: 'Shift scheduled on an approved day off', level: 'error' });
         continue;
       }
-      const elig = getEligibleShifts(resident, ds, sd, eligOverrides);
+      // Jeopardy call date
+      if (jeopardyPolicy !== 'off' && (resident.jeopardyDates || []).includes(ds)) {
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
+          message: jeopardyPolicy === 'block'
+            ? 'Shift scheduled on a jeopardy call date (blocked by Settings)'
+            : 'Scheduled while on jeopardy call — confirm backup coverage is acceptable',
+          level: jeopardyPolicy === 'block' ? 'error' : 'warn' });
+        if (jeopardyPolicy === 'block') continue;
+      }
+      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings);
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
         let msg = 'Shift not eligible for this resident on this day';
@@ -617,7 +668,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}) {
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg, level: 'error' });
       }
     }
-    const target = resident.isChief ? 16 : (SHIFT_TARGETS[key] ?? null);
+    const target = getShiftTarget(resident, appSettings);
     if (target != null) {
       const count = Object.values(rs).filter(Boolean).length;
       if (count > target)
@@ -625,42 +676,45 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}) {
           message: `Over target: ${count}/${target} shifts`, level: 'warn' });
     }
 
-    // PGY-2 soft trauma cap: 2–3 per month
-    if (resident.category === 'EM_HOME' && resident.pgy === 2) {
+    // PGY-2 soft trauma cap (configurable in Settings; 0 disables)
+    const traumaCap = appSettings.pgy2TraumaCap ?? 3;
+    if (traumaCap > 0 && resident.category === 'EM_HOME' && resident.pgy === 2) {
       const traumaCount = Object.values(rs).filter(s => s === 'TRAUMA-D' || s === 'TRAUMA-N').length;
-      if (traumaCount > 3)
+      if (traumaCount > traumaCap)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Trauma shifts: ${traumaCount} — PGY-2 target is 2–3/month (max 3)`, level: 'warn' });
+          message: `Trauma shifts: ${traumaCount} — PGY-2 cap is ${traumaCap}/block (target 2–3)`, level: 'warn' });
     }
 
     // Rest-period check — sort all assignments by start time, then check each consecutive pair
-    const assignments = Object.entries(rs)
-      .filter(([, sid]) => sid && SHIFT_TIMING[sid])
-      .map(([ds, sid]) => ({
-        ds, sid,
-        startMs: shiftStartMs(sid, ds),
-        endMs:   shiftEndMs(sid, ds),
-        durationH: SHIFT_TIMING[sid].durationH,
-      }))
-      .sort((a, b) => a.startMs - b.startMs);
+    if (appSettings.enforceRest !== false) {
+      const assignments = Object.entries(rs)
+        .filter(([, sid]) => sid && SHIFT_TIMING[sid])
+        .map(([ds, sid]) => ({
+          ds, sid,
+          startMs: shiftStartMs(sid, ds),
+          endMs:   shiftEndMs(sid, ds),
+          durationH: SHIFT_TIMING[sid].durationH,
+        }))
+        .sort((a, b) => a.startMs - b.startMs);
 
-    for (let i = 0; i < assignments.length - 1; i++) {
-      const a = assignments[i];
-      const b = assignments[i + 1];
+      for (let i = 0; i < assignments.length - 1; i++) {
+        const a = assignments[i];
+        const b = assignments[i + 1];
 
-      if (a.endMs > b.startMs) {
-        // Shifts overlap
-        issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-          message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
-          level: 'error' });
-      } else {
-        const gapH = (b.startMs - a.endMs) / 3_600_000;
-        if (gapH < a.durationH) {
-          const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
+        if (a.endMs > b.startMs) {
+          // Shifts overlap
           issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-            message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
-                     `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
+            message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
             level: 'error' });
+        } else {
+          const gapH = (b.startMs - a.endMs) / 3_600_000;
+          if (gapH < a.durationH) {
+            const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
+            issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
+              message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
+                       `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
+              level: 'error' });
+          }
         }
       }
     }
@@ -970,7 +1024,7 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAyData, onContinue, onLoadBlock, onSaveBlock, onNewBlock }) {
+function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock }) {
   const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
   const resCount   = emRoster.length + (block.offServiceResidents || []).length;
   const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
@@ -1000,11 +1054,12 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
   function setField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
 
   function onStartDateChange(s) {
+    const len = (appSettings?.defaultBlockLength ?? 28) - 1;
     updateBlock(b => ({
       ...b,
       startDate: s,
-      // Auto-set end to start+27 days (28-day block) if end is blank or was auto-set
-      endDate: s ? toDateStr(addDays(parseDate(s), 27)) : b.endDate,
+      // Auto-set end date to the configured block length (Settings → Defaults)
+      endDate: s ? toDateStr(addDays(parseDate(s), len)) : b.endDate,
       // Auto-populate AY if not already set
       academicYear: b.academicYear || getAcademicYear(),
     }));
@@ -1188,9 +1243,11 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     pgy:              initial?.pgy              ?? availCats[0]?.pgyOptions[0] ?? 1,
     isCCUNights:      initial?.isCCUNights      ?? false,
     approvedDatesOff: initial?.approvedDatesOff ?? [],
+    jeopardyDates:    initial?.jeopardyDates    ?? [],
   });
 
   const [newOffDate, setNewOffDate] = useState('');
+  const [newJeoDate, setNewJeoDate] = useState('');
 
   function addOffDate() {
     const d = newOffDate;
@@ -1199,6 +1256,14 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     setNewOffDate('');
   }
   function removeOffDate(d) { set('approvedDatesOff', form.approvedDatesOff.filter(x => x !== d)); }
+
+  function addJeoDate() {
+    const d = newJeoDate;
+    if (!d || form.jeopardyDates.includes(d)) { setNewJeoDate(''); return; }
+    set('jeopardyDates', [...form.jeopardyDates, d].sort());
+    setNewJeoDate('');
+  }
+  function removeJeoDate(d) { set('jeopardyDates', form.jeopardyDates.filter(x => x !== d)); }
 
   const catObj  = CAT_MAP[form.category];
   const pgyOpts = catObj?.pgyOptions || [1];
@@ -1225,6 +1290,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
       pgy:              Number(form.pgy),
       isCCUNights:      form.isCCUNights,
       approvedDatesOff: form.approvedDatesOff,
+      jeopardyDates:    form.jeopardyDates,
     });
   }
 
@@ -1318,6 +1384,32 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
           </div>
         </div>
 
+        {/* Jeopardy Call Dates */}
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Jeopardy Call Dates</label>
+          <p className="text-xs text-gray-400 mb-2">Resident covers backup (jeopardy) call these dates — handling set in Settings</p>
+          <div className="flex flex-wrap gap-1.5 mb-2 min-h-[22px]">
+            {form.jeopardyDates.length === 0
+              ? <span className="text-xs text-gray-300 italic">None set</span>
+              : form.jeopardyDates.map(d => (
+                <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 border border-violet-200">
+                  {formatDisplayDate(d)}
+                  <button type="button" onClick={() => removeJeoDate(d)} className="hover:opacity-60"><X size={10}/></button>
+                </span>
+              ))
+            }
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input type="date" value={newJeoDate} onChange={e => setNewJeoDate(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addJeoDate())}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-violet-400 bg-white" />
+            <button type="button" onClick={addJeoDate} disabled={!newJeoDate}
+              className="text-xs px-2.5 py-1 bg-violet-500 hover:bg-violet-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+              Add
+            </button>
+          </div>
+        </div>
+
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
           <button type="submit" className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors">{submitLabel}</button>
@@ -1367,7 +1459,7 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave }
 
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
-function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
+function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
   const [editResident, setEditResident] = useState(null);
@@ -1399,7 +1491,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
   }
 
   function shiftCount(id) { return Object.values(sched[id] || {}).filter(Boolean).length; }
-  function target(r) { const ba = assign[r.id] || {}; return ba.isChief ? 16 : (SHIFT_TARGETS[eligKey(r)] ?? null); }
+  function target(r) { const ba = assign[r.id] || {}; return getShiftTarget({ ...r, isChief: !!ba.isChief }, appSettings); }
 
   const byPGY = [1, 2, 3].map(pgy => ({ pgy, list: emRoster.filter(r => r.pgy === pgy) })).filter(g => g.list.length);
   const [collapsed, setCollapsed] = useState({});
@@ -1467,10 +1559,13 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
                         {ba.isChief && <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★</span>}
                         {!sched_ok && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{btObj?.atUH ? 'not chief-sched' : 'away'}</span>}
                       </div>
-                      {res.approvedDatesOff?.length > 0 && (
+                      {(res.approvedDatesOff?.length > 0 || res.jeopardyDates?.length > 0) && (
                         <div className="flex flex-wrap gap-1 mt-1">
-                          {res.approvedDatesOff.map(d => (
+                          {(res.approvedDatesOff || []).map(d => (
                             <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
+                          ))}
+                          {(res.jeopardyDates || []).map(d => (
+                            <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 border border-violet-200 font-medium">J: {formatDisplayDate(d)}</span>
                           ))}
                         </div>
                       )}
@@ -1553,7 +1648,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock }) {
 
 // ─── OFF-SERVICE TAB ──────────────────────────────────────────────────────────
 
-function OffServiceTab({ block, updateBlock }) {
+function OffServiceTab({ block, updateBlock, appSettings }) {
   // showAdd: null | { category }
   const [showAdd, setShowAdd]           = useState(null);
   const [editResident, setEditResident] = useState(null);
@@ -1633,7 +1728,7 @@ function OffServiceTab({ block, updateBlock }) {
               <div className="p-3 space-y-2">
                 {members.map(res => {
                   const cnt  = shiftCount(res.id);
-                  const tgt  = SHIFT_TARGETS[eligKey(res)] ?? null;
+                  const tgt  = getShiftTarget(res, appSettings);
                   const over = tgt != null && cnt > tgt;
                   return (
                     <div key={res.id} className="bg-white border border-gray-200 rounded-xl p-4">
@@ -1644,10 +1739,13 @@ function OffServiceTab({ block, updateBlock }) {
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat.badge}`}>{cat.shortLabel} PGY-{res.pgy}</span>
                           </div>
                           {res.isCCUNights && <p className="text-xs text-orange-600 mt-0.5 font-medium">CCU nights</p>}
-                          {res.approvedDatesOff?.length > 0 && (
+                          {(res.approvedDatesOff?.length > 0 || res.jeopardyDates?.length > 0) && (
                             <div className="flex flex-wrap gap-1 mt-1">
-                              {res.approvedDatesOff.map(d => (
+                              {(res.approvedDatesOff || []).map(d => (
                                 <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
+                              ))}
+                              {(res.jeopardyDates || []).map(d => (
+                                <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 border border-violet-200 font-medium">J: {formatDisplayDate(d)}</span>
                               ))}
                             </div>
                           )}
@@ -1712,6 +1810,9 @@ function OffServiceTab({ block, updateBlock }) {
 // ─── SHIFT MATRIX TAB ─────────────────────────────────────────────────────────
 
 function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
+  // expanded: which EM Home rows show their per-rotation sub-rows
+  const [expanded, setExpanded] = useState({});
+
   function effective(k) { return eligOverrides[k] ?? BASE_ELIGIBILITY[k] ?? []; }
   function isElig(k,s) { return effective(k).includes(s); }
   function toggle(k,s) {
@@ -1720,16 +1821,57 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   function isModified(k) { return JSON.stringify([...(BASE_ELIGIBILITY[k]||[])].sort()) !== JSON.stringify([...effective(k)].sort()); }
   function resetRow(k) { setEligOverrides(p=>{ const n={...p}; delete n[k]; return n; }); }
 
+  // Rotation sub-row helpers — key format: CATEGORY_PGY__ROTATION
+  function subKey(parentKey, btId) { return `${parentKey}__${btId}`; }
+  function subEffective(parentKey, btId) {
+    return eligOverrides[subKey(parentKey, btId)] ?? effective(parentKey);
+  }
+  function subHasOverride(parentKey, btId) { return !!eligOverrides[subKey(parentKey, btId)]; }
+  function subToggle(parentKey, btId, s) {
+    const k = subKey(parentKey, btId);
+    setEligOverrides(p=>{
+      const cur = [...(p[k] ?? effective(parentKey))];
+      const next = cur.includes(s) ? cur.filter(x=>x!==s) : [...cur, s];
+      return { ...p, [k]: next };
+    });
+  }
+  function subReset(parentKey, btId) { resetRow(subKey(parentKey, btId)); }
+
+  // Schedulable rotations per EM Home PGY (sub-rows only make sense where the chief schedules)
+  function rotationsFor(rowKey) {
+    const m = rowKey.match(/^EM_HOME_(\d)$/);
+    if (!m) return [];
+    const ids = EM_HOME_BLOCK_TYPES_BY_PGY[Number(m[1])] || [];
+    return ids.map(id => BLOCK_TYPE_MAP[id]).filter(b => b && b.schedulable);
+  }
+
   const areaColor = { POD:'text-blue-700 bg-blue-50 border-blue-200', PED:'text-emerald-700 bg-emerald-50 border-emerald-200', FLEX:'text-purple-700 bg-purple-50 border-purple-200', MT:'text-amber-700 bg-amber-50 border-amber-200', TRAUMA:'text-red-700 bg-red-50 border-red-200' };
+
+  function CellButton({ k, s, checked, inherited = false, onToggle }) {
+    return (
+      <td className="border-r border-gray-100 p-0 text-center">
+        <button onClick={onToggle}
+          title={`${checked ? 'Remove' : 'Add'} ${s.label}${inherited ? ' (inherits from category default — clicking creates a rotation override)' : ''}`}
+          className={`w-full h-9 flex items-center justify-center transition-colors ${checked ? 'bg-indigo-50 hover:bg-indigo-100' : 'hover:bg-gray-100'}`}>
+          {checked
+            ? <div className={`w-4 h-4 rounded flex items-center justify-center ${s.chip} ${inherited ? 'opacity-40' : ''}`}><Check size={9}/></div>
+            : <div className={`w-4 h-4 rounded border-2 ${inherited ? 'border-gray-100' : 'border-gray-200'}`}/>}
+        </button>
+      </td>
+    );
+  }
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-base font-semibold text-gray-800">Shift Eligibility Matrix</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Toggle eligibility per resident type. Day-of-week and block-type restrictions are enforced on top of this matrix at scheduling time.</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Toggle eligibility per residency &amp; year. Expand an EM Home row (▸) to set per-rotation eligibility — e.g. different shifts on EMS vs Tox vs Peds/Trauma months.
+            Day-of-week rules (GR days, clinic days) are enforced on top of this matrix.
+          </p>
         </div>
-        <button onClick={()=>setEligOverrides({})} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors">
+        <button onClick={()=>setEligOverrides({})} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-300 hover:bg-gray-50 rounded-lg transition-colors shrink-0">
           <RefreshCw size={12}/> Reset All
         </button>
       </div>
@@ -1739,7 +1881,7 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
           <table className="text-xs border-collapse" style={{minWidth:900}}>
             <thead>
               <tr className="bg-gray-50">
-                <th className="sticky left-0 z-10 bg-gray-50 w-48 min-w-48 border-b border-r border-gray-200 px-3 py-2 text-left text-gray-500 font-semibold">Resident Type</th>
+                <th className="sticky left-0 z-10 bg-gray-50 w-56 min-w-56 border-b border-r border-gray-200 px-3 py-2 text-left text-gray-500 font-semibold">Residency / Year / Rotation</th>
                 {SHIFT_AREAS.map(area=>{
                   const cnt = SHIFTS.filter(s=>s.area===area).length;
                   return <th key={area} colSpan={cnt} className={`border-b border-r border-gray-200 px-2 py-2 text-center font-bold text-xs ${areaColor[area]}`}>{area}</th>;
@@ -1760,39 +1902,79 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
               {MATRIX_ROWS.map(row=>{
                 const cat=CAT_MAP[row.catId];
                 const mod=isModified(row.key);
+                const rotations = rotationsFor(row.key);
+                const isOpen = !!expanded[row.key];
+                const rotOverrideCount = rotations.filter(b => subHasOverride(row.key, b.id)).length;
                 return (
-                  <tr key={row.key} className="hover:bg-gray-50 transition-colors">
-                    <td className={`sticky left-0 z-10 border-r border-gray-200 px-3 py-2 ${cat?.rowBg||'bg-white'}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${cat?.badge}`}>{row.sub}</span>
-                        <span className="text-gray-700 font-medium">{row.label}</span>
-                        {mod && <span className="text-indigo-500 text-xs" title="Modified">✎</span>}
-                      </div>
-                    </td>
-                    {SHIFTS.map(s=>{
-                      const checked=isElig(row.key,s.id);
+                  <React.Fragment key={row.key}>
+                    <tr className="hover:bg-gray-50 transition-colors">
+                      <td className={`sticky left-0 z-10 border-r border-gray-200 px-3 py-2 ${cat?.rowBg||'bg-white'}`}>
+                        <div className="flex items-center gap-2">
+                          {rotations.length > 0 && (
+                            <button onClick={()=>setExpanded(p=>({...p,[row.key]:!p[row.key]}))}
+                              title={isOpen ? 'Hide rotations' : 'Show per-rotation eligibility'}
+                              className="text-gray-400 hover:text-indigo-600 transition-colors -ml-1">
+                              <ChevronDown size={12} className={`transition-transform ${isOpen ? '' : '-rotate-90'}`}/>
+                            </button>
+                          )}
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${cat?.badge}`}>{row.sub}</span>
+                          <span className="text-gray-700 font-medium">{row.label}</span>
+                          {mod && <span className="text-indigo-500 text-xs" title="Modified from default">✎</span>}
+                          {rotOverrideCount > 0 && (
+                            <span className="text-xs text-violet-500" title={`${rotOverrideCount} rotation override${rotOverrideCount!==1?'s':''}`}>
+                              {rotOverrideCount}⚙
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      {SHIFTS.map(s=>(
+                        <CellButton key={s.id} k={row.key} s={s}
+                          checked={isElig(row.key, s.id)}
+                          onToggle={()=>toggle(row.key, s.id)}/>
+                      ))}
+                      <td className="px-2">
+                        {mod && <button onClick={()=>resetRow(row.key)} title="Reset row"><RefreshCw size={11} className="text-gray-400 hover:text-indigo-600"/></button>}
+                      </td>
+                    </tr>
+
+                    {/* Per-rotation sub-rows */}
+                    {isOpen && rotations.map(bt=>{
+                      const hasOv = subHasOverride(row.key, bt.id);
+                      const eff = subEffective(row.key, bt.id);
                       return (
-                        <td key={s.id} className="border-r border-gray-100 p-0 text-center">
-                          <button onClick={()=>toggle(row.key,s.id)} title={`${checked?'Remove':'Add'} ${s.label} for ${row.label} ${row.sub}`}
-                            className={`w-full h-9 flex items-center justify-center transition-colors ${checked?'bg-indigo-50 hover:bg-indigo-100':'hover:bg-gray-100'}`}>
-                            {checked
-                              ? <div className={`w-4 h-4 rounded flex items-center justify-center ${s.chip}`}><Check size={9}/></div>
-                              : <div className="w-4 h-4 rounded border-2 border-gray-200"/>}
-                          </button>
-                        </td>
+                        <tr key={subKey(row.key, bt.id)} className="bg-slate-50/60 hover:bg-slate-100/60 transition-colors">
+                          <td className="sticky left-0 z-10 border-r border-gray-200 pl-9 pr-3 py-1.5 bg-slate-50">
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-500 font-medium">{bt.label}</span>
+                              {hasOv
+                                ? <span className="text-violet-500 text-xs font-medium" title="Rotation-specific override active">override ✎</span>
+                                : <span className="text-gray-300 text-xs italic">inherits</span>}
+                            </div>
+                          </td>
+                          {SHIFTS.map(s=>(
+                            <CellButton key={s.id} k={subKey(row.key, bt.id)} s={s}
+                              checked={eff.includes(s.id)}
+                              inherited={!hasOv}
+                              onToggle={()=>subToggle(row.key, bt.id, s.id)}/>
+                          ))}
+                          <td className="px-2">
+                            {hasOv && <button onClick={()=>subReset(row.key, bt.id)} title="Remove override (revert to inherited)"><RefreshCw size={11} className="text-gray-400 hover:text-violet-600"/></button>}
+                          </td>
+                        </tr>
                       );
                     })}
-                    <td className="px-2">
-                      {mod && <button onClick={()=>resetRow(row.key)} title="Reset row"><RefreshCw size={11} className="text-gray-400 hover:text-indigo-600"/></button>}
-                    </td>
-                  </tr>
+                  </React.Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       </div>
-      <p className="text-xs text-gray-400 mt-3 italic">Note: EM Home PGY-1 Trauma Day is in the base matrix but is additionally gated by block type (Peds/Trauma and Trauma/Peds only) and day of week (Tue/Thu/Sat/Sun). See Rules tab for full details.</p>
+
+      <div className="mt-3 space-y-1 text-xs text-gray-400">
+        <p><span className="font-medium text-gray-500">How rotation rows work:</span> a dimmed check = inherited from the category row above. Click any cell in a rotation row to create a rotation-specific override — that rotation then uses its own list (marked <span className="text-violet-500 font-medium">override ✎</span>) and ignores later changes to the parent row until you reset it.</p>
+        <p className="italic">A rotation override replaces built-in shift-type rules for that rotation (e.g. PGY-1 "no trauma outside trauma blocks"), but day-of-week rules (GR Wednesday, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) always still apply.</p>
+      </div>
     </div>
   );
 }
@@ -1969,12 +2151,13 @@ function RulesTab({ allResidents, block, eligOverrides }) {
 
 // ─── SHIFT PICKER MODAL ───────────────────────────────────────────────────────
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, onSelect, onClose, showToast }) {
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, onSelect, onClose, showToast }) {
   const [pending, setPending] = useState(null);
   const sd = block.specialDays || {};
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides);
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings);
   const display = formatDisplayDate(dateStr);
   const name = `${resident.firstName} ${resident.lastName}`;
+  const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
   function violations(sid) {
     if (!sid) return [];
@@ -1986,7 +2169,12 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         ? 'GR Wednesday — EM Home not schedulable in ED'
         : 'Shift not in eligibility matrix for this resident/day combination');
     }
-    // 2. Rest-period check against neighbouring shifts in the schedule
+    // 2. Jeopardy call warning (policy 'warn'; 'block' already empties the eligible list)
+    const policy = (appSettings || {}).jeopardyPolicy ?? 'warn';
+    if (policy === 'warn' && onJeopardy) {
+      vs.push('Resident is on jeopardy call this date — confirm backup coverage is acceptable');
+    }
+    // 3. Rest-period check against neighbouring shifts in the schedule
     vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}));
     return vs;
   }
@@ -2005,6 +2193,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         {CAT_MAP[resident.category]?.label} · PGY-{resident.pgy}
         {resident.blockType && resident.category !== 'PEDS' && <> · <span className="font-medium">{BLOCK_TYPE_MAP[resident.blockType]?.label || resident.blockType}</span></>}
         {currentShift && <> · Current: <span className="font-medium">{currentShift}</span></>}
+        {onJeopardy && <> · <span className="font-medium text-violet-600">Jeopardy call</span></>}
       </p>
 
       {eligible.length === 0 ? (
@@ -2053,20 +2242,21 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToast }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, showToast }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
+  const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
   const dates = useMemo(()=>getBlockDates(block.startDate,block.endDate),[block.startDate,block.endDate]);
 
   const violMap = useMemo(()=>{
     const m={};
-    for (const issue of validateAll(allResidents,sched,block,eligOverrides)) {
+    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings)) {
       if (issue.dateStr) { const k=`${issue.residentId}_${issue.dateStr}`; (m[k]=m[k]||[]).push(issue); }
     }
     return m;
-  },[allResidents,sched,block,eligOverrides]);
+  },[allResidents,sched,block,eligOverrides,appSettings]);
 
   const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
   const grouped = useMemo(()=>{
@@ -2102,6 +2292,16 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
         })}
       </div>
 
+      {/* Legend */}
+      <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
+        <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">J</span>
+        <span>= grand rounds · approved off · jeopardy call</span>
+        <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
+        <span>= rule violation</span>
+      </div>
+
       <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto schedule-scroll">
           <div style={{minWidth:NAME_W+CELL_W*dates.length}}>
@@ -2132,7 +2332,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
                 {members.map(res=>{
                   const sched_ok=isSchedulable(res);
                   const cnt=Object.values(sched[res.id]||{}).filter(Boolean).length;
-                  const tgt=res.isChief?16:(SHIFT_TARGETS[eligKey(res)]??null);
+                  const tgt=getShiftTarget(res, appSettings);
                   const over=tgt!=null&&cnt>tgt;
                   return (
                     <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
@@ -2152,22 +2352,26 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
                         const sid=sched[res.id]?.[ds]||null;
                         const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
                         const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
-                        const elig=getEligibleShifts(res,ds,sd,eligOverrides);
+                        const isJeopardy=(res.jeopardyDates||[]).includes(ds);
+                        const isJeoBlocked=isJeopardy&&jeoBlock;
+                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings);
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
                         const isGR=isWed&&res.category==='EM_HOME';
                         const shift=sid?SHIFT_MAP[sid]:null;
-                        let bg=isApprovedOff?'bg-orange-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
+                        let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
                         const clickable=(elig.length>0||sid)&&!isApprovedOff;
                         return (
                           <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
                             onClick={()=>clickable&&setPicker({resident:res,dateStr:ds})}
-                            title={isApprovedOff?'Approved day off':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
+                            title={isApprovedOff?'Approved day off':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
                             className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
                             {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
-                            {isGR&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
+                            {isJeoBlocked&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-500">J</span></div>}
+                            {isGR&&!sid&&!isApprovedOff&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
                             {shift && <div className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${shift.chip}`}>{sid}</div>}
+                            {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-violet-600 bg-violet-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
                           </div>
                         );
                       })}
@@ -2183,7 +2387,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
       {picker && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
-          block={block} eligOverrides={eligOverrides}
+          block={block} eligOverrides={eligOverrides} appSettings={appSettings}
           onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
           onClose={()=>setPicker(null)} showToast={showToast}/>
       )}
@@ -2193,8 +2397,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, showToa
 
 // ─── VALIDATION TAB ───────────────────────────────────────────────────────────
 
-function ValidationTab({ allResidents, block, eligOverrides }) {
-  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides),[allResidents,block,eligOverrides]);
+function ValidationTab({ allResidents, block, eligOverrides, appSettings }) {
+  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings),[allResidents,block,eligOverrides,appSettings]);
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
@@ -2245,16 +2449,77 @@ function ValidationTab({ allResidents, block, eligOverrides }) {
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
-function SettingsTab({ block, updateBlock, onBlockReset }) {
+const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings'];
+
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
   const [resetConfirm, setResetConfirm] = useState(false);
-  const upd = (f,v) => updateBlock(b=>({...b,[f]:v}));
+  const [clearConfirm, setClearConfirm] = useState(false);
+  const fileRef = useRef(null);
+  const upd  = (f,v) => updateBlock(b=>({...b,[f]:v}));
+  const updS = (f,v) => setAppSettings(p=>({...p,[f]:v}));
+
+  function updTarget(key, raw) {
+    setAppSettings(p => {
+      const o = { ...(p.targetOverrides || {}) };
+      const n = raw === '' ? null : Number(raw);
+      if (n === null || Number.isNaN(n) || n < 0) delete o[key]; else o[key] = n;
+      return { ...p, targetOverrides: o };
+    });
+  }
+
+  function exportData() {
+    const data = {};
+    for (const k of LS_BACKUP_KEYS) {
+      try { data[k] = JSON.parse(localStorage.getItem(k)); } catch { data[k] = null; }
+    }
+    const payload = { app: 'resident-scheduler', exportedAt: new Date().toISOString(), data };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `resident-scheduler-backup-${toDateStr(new Date())}.json`; a.click();
+    URL.revokeObjectURL(url);
+    showToast('Backup downloaded', 'green');
+  }
+
+  function importData(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        const d = parsed.data || parsed;
+        let n = 0;
+        for (const k of LS_BACKUP_KEYS) {
+          if (d[k] !== undefined && d[k] !== null) { localStorage.setItem(k, JSON.stringify(d[k])); n++; }
+        }
+        if (n === 0) { showToast('No recognizable data found in that file', 'red'); return; }
+        window.location.reload();
+      } catch {
+        showToast('Could not read backup file — is it a valid export?', 'red');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function clearAll() {
+    for (const k of LS_BACKUP_KEYS) localStorage.removeItem(k);
+    window.location.reload();
+  }
+
+  const jeoPolicy = appSettings.jeopardyPolicy ?? 'warn';
+  const targetRows = [...MATRIX_ROWS, { key: 'CHIEF', label: 'Chief Resident', sub: 'PGY-3', catId: 'EM_HOME' }];
+  const defaultTargetFor = k => k === 'CHIEF' ? 16 : (SHIFT_TARGETS[k] ?? null);
 
   return (
-    <div className="space-y-5 max-w-lg">
-      <SectionCard title="Block Name & Dates">
+    <div className="space-y-5 max-w-2xl">
+
+      {/* Block name & dates */}
+      <SectionCard title="Block Name & Dates" subtitle="Also editable on the Home tab.">
         <div className="space-y-3">
           <div><label className="block text-xs font-medium text-gray-700 mb-1">Block Name</label>
-            <input className="input-field" value={block.name||''} onChange={e=>upd('name',e.target.value)} placeholder="e.g. Block 3 — Jun/Jul 2025"/></div>
+            <input className="input-field" value={block.name||''} onChange={e=>upd('name',e.target.value)} placeholder="e.g. Block 3 — Jun/Jul 2026"/></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
               <input type="date" className="input-field" value={block.startDate||''} onChange={e=>upd('startDate',e.target.value)}/></div>
@@ -2265,17 +2530,128 @@ function SettingsTab({ block, updateBlock, onBlockReset }) {
         </div>
       </SectionCard>
 
+      {/* Rule enforcement */}
+      <SectionCard title="Rule Enforcement" subtitle="How strictly the app enforces scheduling rules.">
+        <div className="space-y-5">
+
+          {/* Jeopardy policy */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Jeopardy Call Handling</label>
+            <p className="text-xs text-gray-400 mb-2">What happens when a resident has a shift on a jeopardy call date</p>
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { v: 'block', l: 'Block',  d: 'Day is unschedulable (like a day off)' },
+                { v: 'warn',  l: 'Warn',   d: 'Allowed, but flagged as a warning' },
+                { v: 'off',   l: 'Ignore', d: 'No restriction or warning' },
+              ].map(({ v, l, d }) => (
+                <button key={v} onClick={()=>updS('jeopardyPolicy', v)}
+                  className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 text-left transition-all ${jeoPolicy===v?'border-violet-500 bg-violet-50':'border-gray-200 hover:border-violet-300 bg-white'}`}>
+                  <span className={`text-xs font-bold ${jeoPolicy===v?'text-violet-700':'text-gray-700'}`}>{l}</span>
+                  <span className="text-xs text-gray-400 mt-0.5">{d}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Rest rule */}
+          <label className="flex items-start gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" checked={appSettings.enforceRest !== false}
+              onChange={e=>updS('enforceRest', e.target.checked)} className="rounded mt-0.5"/>
+            <span>
+              <span className="block text-xs font-semibold text-gray-700">Enforce rest-period rule</span>
+              <span className="block text-xs text-gray-400">After a shift of H hours, the resident needs ≥ H hours off before the next shift (e.g. 12h Trauma → 12h rest)</span>
+            </span>
+          </label>
+
+          {/* Trauma cap */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-700">PGY-2 trauma cap per block</label>
+              <p className="text-xs text-gray-400">Warn when an EM Home PGY-2 exceeds this many trauma shifts (target 2–3). Set 0 to disable.</p>
+            </div>
+            <input type="number" min="0" max="31" value={appSettings.pgy2TraumaCap ?? 3}
+              onChange={e=>updS('pgy2TraumaCap', Math.max(0, Number(e.target.value) || 0))}
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Shift targets */}
+      <SectionCard title="Shift Targets" subtitle="Shifts per block by residency & year. Leave blank to use the default; used for progress bars and over-target warnings.">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+          {targetRows.map(row => {
+            const cat = CAT_MAP[row.catId];
+            const def = defaultTargetFor(row.key);
+            const ov  = (appSettings.targetOverrides || {})[row.key];
+            return (
+              <div key={row.key} className="flex items-center justify-between gap-2 py-0.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium shrink-0 ${cat?.badge}`}>{row.sub}</span>
+                  <span className="text-xs text-gray-600 truncate">{row.label}</span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <input type="number" min="0" max="31" value={ov ?? ''} placeholder={def ?? '—'}
+                    onChange={e=>updTarget(row.key, e.target.value)}
+                    className={`w-14 text-xs border rounded-lg px-1.5 py-1 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400 ${ov != null ? 'border-indigo-300 bg-indigo-50 font-semibold' : 'border-gray-200'}`}/>
+                  {ov != null && (
+                    <button onClick={()=>updTarget(row.key, '')} title="Reset to default" className="text-gray-300 hover:text-indigo-500"><RefreshCw size={10}/></button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-gray-300 mt-2 italic">Peds PGY-1/3 have no target — their schedule comes from Amion.</p>
+      </SectionCard>
+
+      {/* Defaults */}
+      <SectionCard title="Defaults">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-700">Default block length (days)</label>
+              <p className="text-xs text-gray-400">Auto-fills the end date when you set a start date</p>
+            </div>
+            <input type="number" min="7" max="60" value={appSettings.defaultBlockLength ?? 28}
+              onChange={e=>updS('defaultBlockLength', Math.max(7, Number(e.target.value) || 28))}
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-700">Saved blocks to keep</label>
+              <p className="text-xs text-gray-400">Older saved blocks are dropped past this limit</p>
+            </div>
+            <input type="number" min="1" max="100" value={appSettings.maxSavedBlocks ?? 24}
+              onChange={e=>updS('maxSavedBlocks', Math.max(1, Number(e.target.value) || 24))}
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Data management */}
+      <SectionCard title="Data Management" subtitle="All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly.">
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={exportData}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            <Download size={14}/> Export Backup
+          </button>
+          <button onClick={()=>fileRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+            <Upload size={14}/> Import Backup
+          </button>
+          <input ref={fileRef} type="file" accept=".json,application/json" onChange={importData} className="hidden"/>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">Importing replaces ALL current data (rosters, blocks, matrix, settings) with the backup's contents, then reloads the app.</p>
+      </SectionCard>
+
+      {/* Pointers */}
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0"/>
-        <span>Conference &amp; ITE dates are now set <strong>per Academic Year</strong> in the <strong>Home tab</strong> — expand the AY folder and click "Conference &amp; ITE Dates". Special days below are per-block and can also be managed from the <strong>Dashboard</strong> tab.</span>
+        <span>Conference &amp; ITE dates: <strong>Home tab</strong> → AY folder. Special days (Code Blue, advocacy, procedure, US days): <strong>Home</strong> or <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
       </div>
 
-      <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">
-        <Info size={13} className="mt-0.5 shrink-0"/>
-        <span>Special days (Code Blue, Peds advocacy, BAMC procedure, Anesthesia US) are managed on the <strong>Home</strong> tab (Current Block section) and the <strong>Dashboard</strong> tab.</span>
-      </div>
-
-      <SectionCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home/BAMC roster is preserved.">
+      {/* Block reset */}
+      <SectionCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home roster is preserved.">
         {resetConfirm ? (
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-red-600 font-medium">Cannot be undone.</span>
@@ -2288,6 +2664,115 @@ function SettingsTab({ block, updateBlock, onBlockReset }) {
           </button>
         )}
       </SectionCard>
+
+      {/* Danger zone */}
+      <SectionCard title="Clear All Data" subtitle="Deletes everything: rosters, all saved blocks, matrix overrides, AY data, and settings.">
+        {clearConfirm ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm text-red-600 font-medium">This erases ALL app data. Export a backup first!</span>
+            <button onClick={clearAll} className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">Erase Everything</button>
+            <button onClick={()=>setClearConfirm(false)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg">Cancel</button>
+          </div>
+        ) : (
+          <button onClick={()=>setClearConfirm(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded-lg font-medium">
+            <Trash2 size={14}/> Clear All Data
+          </button>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+// ─── USER GUIDE TAB ───────────────────────────────────────────────────────────
+
+function GuideSection({ title, children }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button onClick={()=>setOpen(p=>!p)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors text-left">
+        <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
+        <ChevronDown size={14} className={`text-gray-400 transition-transform ${open?'rotate-180':''}`}/>
+      </button>
+      {open && <div className="px-5 pb-4 text-sm text-gray-600 space-y-2 [&_li]:ml-4 [&_strong]:text-gray-800">{children}</div>}
+    </div>
+  );
+}
+
+function UserGuideTab() {
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-base font-semibold text-gray-800">User Guide</h2>
+        <p className="text-xs text-gray-500 mt-0.5">How to build a monthly resident schedule with this app</p>
+      </div>
+
+      <GuideSection title="Monthly Workflow — Quick Start">
+        <ol className="list-decimal space-y-1.5 text-sm">
+          <li><strong>Home tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date auto-fills to a 28-day block). Add any special days (Code Blue, advocacy, procedure, US days) for the month.</li>
+          <li><strong>EM Residents tab</strong> — set each EM Home resident's <strong>rotation</strong> for this block via the dropdown (EM, EM/VAC, EMS, Tox, Peds/Trauma, Metro, away rotations…). Residents on non-chief-scheduled rotations gray out automatically.</li>
+          <li><strong>Off-Service tab</strong> — add this month's visiting residents (BAMC, Peds, FM, IM, Neuro, Anesthesia, Psych, Podiatry) with the color-coded Add buttons. Enter their approved dates off and jeopardy call dates.</li>
+          <li><strong>Schedule tab</strong> — click any cell to assign a shift. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
+          <li><strong>Violations tab</strong> — review remaining errors/warnings before finalizing.</li>
+          <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then export CSV (header button) to transpose into Qgenda.</li>
+        </ol>
+      </GuideSection>
+
+      <GuideSection title="Home — Blocks & Academic Years">
+        <p>The <strong>Current Block</strong> card is your active workspace: name, dates, and per-block special days all editable inline.</p>
+        <ul className="list-disc space-y-1">
+          <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the AY folder below. Re-saving the same block updates its snapshot.</li>
+          <li><strong>Load</strong> restores a saved block — you'll be prompted to save current work first.</li>
+          <li>Each <strong>AY folder</strong> holds that year's conference &amp; ITE dates (click "Conference &amp; ITE Dates" inside the folder). These apply to every block in that year and surface on the Dashboard when they overlap the block.</li>
+        </ul>
+      </GuideSection>
+
+      <GuideSection title="Dashboard — Block at a Glance">
+        <p>Shows block progress, any conferences that fall inside the current block, first Fridays (Anesthesia social), and editable special-day lists. Use it as the pre-scheduling checklist: confirm conferences, Code Blue days, advocacy days, procedure days, and US days are all entered before assigning shifts.</p>
+      </GuideSection>
+
+      <GuideSection title="Residents — Profiles, Days Off & Jeopardy">
+        <ul className="list-disc space-y-1">
+          <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Their rotation is set per block.</li>
+          <li><strong>Off-service residents are per-block</strong> — cleared on Block Reset, re-entered each month.</li>
+          <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error.</li>
+          <li><strong>Jeopardy Call Dates</strong> (violet "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
+          <li>Edit any profile with the pencil icon; the IM "CCU nights" toggle blocks Tue/Wed automatically.</li>
+        </ul>
+      </GuideSection>
+
+      <GuideSection title="Shift Matrix — Who Can Work What">
+        <p>The matrix defines which shift types each <strong>residency + year</strong> can work. Checks are color-coded by area (POD, PED, FLEX, MT, Trauma).</p>
+        <ul className="list-disc space-y-1">
+          <li>Click any cell to toggle. Modified rows show <span className="text-indigo-500">✎</span> and a per-row reset.</li>
+          <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-violet-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
+          <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and can't be unchecked here — see the Scheduling Rules tab for those.</li>
+        </ul>
+      </GuideSection>
+
+      <GuideSection title="Schedule Grid — Reading the Cells">
+        <ul className="list-disc space-y-1">
+          <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents can't be in the ED.</li>
+          <li><strong className="text-orange-500">OFF</strong> (orange) — approved day off.</li>
+          <li><strong className="text-violet-600">J</strong> (violet) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
+          <li><strong className="text-red-500">Red ring</strong> — rule violation on that assignment.</li>
+          <li>Gray cells have no eligible shifts that day (clinic day, weekend call, etc.).</li>
+          <li>The shift picker validates <em>before</em> you commit: eligibility, jeopardy, and the rest-period rule (a shift's length = the hours off required after it; Trauma 12h → 12h rest).</li>
+          <li>Filter by residency with the chips above the grid. Shift counts vs target show next to each name.</li>
+        </ul>
+      </GuideSection>
+
+      <GuideSection title="Violations & Rules Reference">
+        <p>The <strong>Violations tab</strong> lists every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count.</p>
+        <p>The <strong>Scheduling Rules tab</strong> is the read-only reference for every residency type: shift targets, day restrictions, block-type rules, and ⚠ items still pending clarification with the chiefs.</p>
+      </GuideSection>
+
+      <GuideSection title="Settings & Data Safety">
+        <ul className="list-disc space-y-1">
+          <li><strong>Rule Enforcement</strong> — jeopardy policy, rest-period rule on/off, PGY-2 trauma cap.</li>
+          <li><strong>Shift Targets</strong> — override shifts-per-block for any residency/year (incl. Chief).</li>
+          <li><strong>Data Management</strong> — everything is stored in this browser only (localStorage). It does <em>not</em> sync between computers. <strong>Export a backup</strong> regularly; Import restores it on any machine.</li>
+        </ul>
+      </GuideSection>
     </div>
   );
 }
@@ -2304,6 +2789,7 @@ const TABS = [
   { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
+  { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
 
 export default function ResidentScheduler() {
@@ -2317,6 +2803,8 @@ export default function ResidentScheduler() {
   const [block, setBlock]                 = useLocalStorage('res_current_block', makeDefaultBlock());
   // AY-level data: conference & ITE dates keyed by academic year string
   const [ayData, setAyData]               = useLocalStorage('res_ay_data', {});
+  // App-level settings: rule enforcement, targets, defaults
+  const [appSettings, setAppSettings]     = useLocalStorage('res_app_settings', DEFAULT_APP_SETTINGS);
 
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
@@ -2336,7 +2824,7 @@ export default function ResidentScheduler() {
     return [...em,...(block.offServiceResidents||[])];
   },[emRoster,block.emBlockAssignments,block.offServiceResidents]);
 
-  const violCount = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides).length,[allResidents,block,eligOverrides]);
+  const violCount = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings).length,[allResidents,block,eligOverrides,appSettings]);
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
@@ -2348,7 +2836,7 @@ export default function ResidentScheduler() {
       data:{ emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
              schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
              startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear } };
-    setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0,24));
+    setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0, appSettings.maxSavedBlocks ?? 24));
     showToast(`"${snap.name}" saved`,'green');
   }
 
@@ -2459,7 +2947,7 @@ export default function ResidentScheduler() {
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           {tab==='home' && (
             <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} blocksHistory={blocksHistory}
-              ayData={ayData} updateAyData={updateAyData}
+              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
               onContinue={()=>setTab('schedule')} onLoadBlock={loadBlock}
               onSaveBlock={saveBlock} onNewBlock={newBlock}/>
           )}
@@ -2467,13 +2955,14 @@ export default function ResidentScheduler() {
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
               ayConf={currentAyConf} violationCount={violCount}/>
           )}
-          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock}/>}
-          {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock}/>}
+          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
+          {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} showToast={showToast}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} showToast={showToast}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides}/>}
-          {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset}/>}
+          {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
+          {tab==='guide' && <UserGuideTab/>}
         </main>
       </div>
 
@@ -2481,7 +2970,7 @@ export default function ResidentScheduler() {
       <div className="bg-amber-50 border-t border-amber-200 px-4 py-1.5 shrink-0">
         <div className="flex items-center gap-2 text-xs text-amber-700">
           <Info size={12} className="shrink-0"/>
-          <span><strong>Draft v0.3</strong> — Neuro/Anes/Psych/Pod matrix (4 shifts each) needs verification with chief. FM PGY-1 Peds eligibility TBD — add via Shift Matrix if confirmed. Several rules marked ⚠ in Rules tab.</span>
+          <span><strong>Draft v0.4</strong> — Neuro/Anes/Psych/Pod matrix needs verification with chief. FM PGY-1 Peds eligibility TBD. Several rules marked ⚠ in Scheduling Rules tab. See User Guide for help; export backups from Settings.</span>
         </div>
       </div>
 
