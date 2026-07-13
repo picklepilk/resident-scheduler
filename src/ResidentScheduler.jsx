@@ -124,6 +124,75 @@ const BASE_ELIGIBILITY = {
   POD_1:      ['POD-D','POD-E','POD-N','FLEX-D'],
 };
 
+// Chief-editable day-of-week / block-type scheduling rules — see the Scheduling Rules tab.
+// Per CATEGORY_PGY key. Chief edits are stored as overrides (state `dayRules`, same
+// override-precedence idiom as `eligOverrides`) and merged over these defaults in
+// getEffectiveDayRules(). A reserved 'TRAUMA_BLOCKS' key (string[] of block-type ids) may
+// also appear in the override object, replacing the static TRAUMA_BLOCKS constant above.
+//
+// Shapes:
+//   fullBlockDays: number[]                 — whole category+pgy unschedulable that weekday
+//   onlyDaysEnabled/onlyDays                — inverse: ONLY these weekdays are schedulable
+//   dayTypeRestrictions: [{days:number[], mode:'onlyDay'|'noNight'|'onlyNight'|'noDay'}]
+//   shiftGates: [{id, shiftIds:string[]|'ALL', blockTypeFilter:{mode:'only'|'except', ids?:string[], ref?:'TRAUMA_BLOCKS'}|null,
+//                 allowedDays?:number[], nightExcludedDays?:number[], outsideAction:'stripShiftIds'|'blockEntireDay', overrideImmune:boolean}]
+//   specialDayRules: [{listKey:'codeBlueDays'|'advocacyDays'|'procDays'|'anesDays', offset:'sameDay'|'dayBefore'|'sameDayAndDayBefore'}]
+//   residentFlagOverrides: [{flag:string, fullBlockDays:number[]}]  — replaces dayTypeRestrictions when resident[flag] is true
+const DEFAULT_DAY_RULES = {
+  EM_HOME_1: {
+    fullBlockDays: [3], // GR Wednesday
+    shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
+        blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null,
+        allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] },
+        allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+    ],
+  },
+  EM_HOME_2: {
+    fullBlockDays: [3],
+    shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'],
+        blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] },
+        allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] },
+        allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true },
+    ],
+  },
+  EM_HOME_3: { fullBlockDays: [3] },
+  EM_BAMC_1: {
+    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
+  },
+  PEDS_1: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
+  PEDS_3: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
+  FM_1: {
+    fullBlockDays: [3,4],
+    dayTypeRestrictions: [{ days: [2], mode: 'noNight' }],
+  },
+  FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3] },
+  IM_2: {
+    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    specialDayRules: [{ listKey: 'codeBlueDays', offset: 'sameDayAndDayBefore' }],
+    residentFlagOverrides: [{ flag: 'isCCUNights', fullBlockDays: [2,3] }],
+  },
+  NEURO_1: { fullBlockDays: [3,5] },
+  ANES_1: {
+    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    specialDayRules: [{ listKey: 'anesDays', offset: 'sameDay' }],
+  },
+  PSYCH_1: {
+    fullBlockDays: [2],
+    dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [3], mode: 'onlyDay' }],
+  },
+  POD_1: {
+    fullBlockDays: [6,0],
+    dayTypeRestrictions: [{ days: [5], mode: 'noNight' }, { days: [1], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }],
+  },
+};
+
 const SHIFT_TARGETS = {
   EM_HOME_1: 20, EM_HOME_2: 19, EM_HOME_3: 18,
   EM_BAMC_1: 19,
@@ -136,150 +205,107 @@ const SHIFT_TARGETS = {
 };
 
 // Static rules reference per category_pgy — used in Rules tab
-const RULES_DATA = {
+// Hand-maintained prose that doesn't fit the structured DEFAULT_DAY_RULES schema — supplementary
+// context only (shift-count math, workflow advice, unresolved TBDs). Day-of-week/block-type rules
+// themselves are enforced AND described entirely from DEFAULT_DAY_RULES/dayRules — see
+// describeDayRules()/describeShiftGates() in the Scheduling Rules tab, so they can't drift from
+// what's actually enforced the way static text could.
+const RULE_NOTES = {
   EM_HOME_1: {
-    targetNote: '20 shifts/block',
-    eligSummary: 'All ED areas. Trauma Day only — Trauma Night never eligible for PGY-1.',
-    traumaNote: 'Trauma Day is ONLY available on Peds/Trauma and Trauma/Peds blocks. On those blocks, Trauma Day is restricted to Tue/Thu/Sat/Sun. Peds shifts (PED-D/E/N) are NOT subject to this day restriction — they remain available any eligible day throughout the block.',
-    dayRules: [
-      { label: 'Wednesday', rule: 'BLOCKED — GR 08:00–12:00 (counts as work day)', type: 'block' },
-    ],
     blockTypeNotes: [
-      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: '8 Trauma Day shifts on Tue/Thu/Sat/Sun + 11 Peds shifts (any eligible day) = 19 total. Day restriction applies to Trauma only.' },
-      { ids: ['US_EM'],       note: 'Chief schedules Sat/Sun/Mon only; no Mon nights. 5 EM shifts total.' },
-      { ids: ['EM_RES_VAC'],  note: 'Chief schedules weeks 1–2 only ⚠ TBD count' },
+      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: '8 Trauma Day shifts (Tue/Thu/Sat/Sun) + 11 Peds shifts (any eligible day) = 19 total.' },
+      { ids: ['US_EM'], note: '5 EM shifts total.' },
+      { ids: ['EM_RES_VAC'], note: 'Chief schedules weeks 1–2 only ⚠ TBD count (not currently enforced by the rules editor).' },
     ],
     tbdItems: ['EM/Res/VAC week-1 & 2 shift count', 'Buy-down day split definition'],
   },
   EM_HOME_2: {
-    targetNote: '19 shifts/block',
-    eligSummary: 'All ED areas including Trauma Day and Trauma Night.',
-    traumaNote: '2–3 Trauma shifts per month (soft target; app warns if > 3). Mixed into EM schedule.',
-    dayRules: [
-      { label: 'Wednesday', rule: 'BLOCKED — GR 08:00–12:00 (counts as work day)', type: 'block' },
-    ],
     blockTypeNotes: [
-      { ids: ['PEDS_EM'],  note: 'No Trauma on this block. Prioritize Peds shifts; schedule LAST in workflow. ⚠ TBD total shift split.' },
-      { ids: ['EM_EMS'],   note: 'Chief schedules Mon/Tue only — Thu/Fri are EMS call (service-arranged, not chief-scheduled).' },
-      { ids: ['EM_TOX'],   note: 'Chief schedules Thu/Fri only — Mon/Tue are Tox call (service-arranged, not chief-scheduled).' },
-      { ids: ['OB_VAC'],   note: 'Not scheduled by chief. Resident self-arranges (schedulable = off).' },
+      { ids: ['PEDS_EM'], note: 'Prioritize Peds shifts; schedule LAST in workflow. ⚠ TBD total shift split.' },
+      { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
     ],
     tbdItems: ['Peds/EM total shift split confirmation'],
   },
   EM_HOME_3: {
-    targetNote: '18 shifts/block (Chief Resident: 16)',
-    eligSummary: 'All ED areas including Trauma Day and Trauma Night.',
-    dayRules: [
-      { label: 'Wednesday', rule: 'BLOCKED — GR 08:00–12:00 (counts as work day)', type: 'block' },
-    ],
     blockTypeNotes: [
-      { ids: ['METRO'],    note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule' },
-      { ids: ['ADMIN'],    note: 'On-call only (4 teaching + 4 other); no regular ED shifts' },
-      { ids: ['ELECTIVE'], note: '⚠ TBD: confirm whether chief schedules any UH ED shifts during elective' },
+      { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
+      { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
+      { ids: ['ELECTIVE'], note: '⚠ TBD: confirm whether chief schedules any UH ED shifts during elective.' },
     ],
     tbdItems: ['Elective block ED shift scheduling confirmation'],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
-    targetNote: '19 shifts/block',
-    eligSummary: 'All ED areas EXCEPT Trauma (no Trauma Day or Trauma Night).',
-    dayRules: [
-      { label: 'Wednesday', rule: 'Day shifts only (day worker)', type: 'restrict' },
-      { label: 'Thursday',  rule: '1×/month allowed — row of nights only ⚠ TBD definition (GR day)', type: 'restrict' },
-    ],
     specialNotes: [
-      'Procedure days: off night before + day of (can work night-of if critical) ⚠ TBD date list',
-      'Peds shifts 1–3/block ⚠ TBD exact count',
+      'Thursday: 1×/month allowed — row of nights only ⚠ TBD definition (not currently enforced by the app).',
+      'Procedure days: off night before + day of (can work night-of if critical) ⚠ TBD date list.',
+      'Peds shifts 1–3/block ⚠ TBD exact count.',
     ],
     tbdItems: ['Row-of-nights definition for GR Thursday', 'Procedure day source/list'],
   },
   PEDS_1: {
-    targetNote: 'Per Amion — not set by this app (self-cover)',
-    eligSummary: 'PED shifts only: Day, Eve, Night.',
-    dayRules: [
-      { label: 'Friday 1–4pm', rule: 'GR protected — should not be scheduled', type: 'restrict' },
-    ],
-    specialNotes: ['Night before advocacy days: off', 'Peds residents self-cover; app displays schedule only'],
+    specialNotes: ['Friday 1–4pm: GR protected — should not be scheduled (not currently enforced by the app).', 'Night before advocacy days: off.', 'Peds residents self-cover; app displays schedule only.'],
     tbdItems: ['Advocacy day list — chief provides each block'],
   },
   PEDS_3: {
-    targetNote: 'Per Amion — not set by this app (self-cover)',
-    eligSummary: 'PED shifts only: Day, Eve, Night.',
-    dayRules: [
-      { label: 'Friday 1–4pm', rule: 'GR protected — should not be scheduled', type: 'restrict' },
-    ],
-    specialNotes: ['Night before advocacy days: off', 'Self-cover arrangement'],
+    specialNotes: ['Friday 1–4pm: GR protected — should not be scheduled (not currently enforced by the app).', 'Night before advocacy days: off.', 'Self-cover arrangement.'],
     tbdItems: ['Advocacy day list — chief provides each block'],
   },
   FM_1: {
-    targetNote: '14 shifts/block',
-    eligSummary: 'POD shifts (Day/Eve/Night). ⚠ TBD: Peds eligibility unconfirmed — add via matrix if confirmed.',
-    dayRules: [
-      { label: 'Wednesday',  rule: 'No shifts (clinic day)', type: 'block' },
-      { label: 'Thursday',   rule: 'No shifts (clinic day)', type: 'block' },
-      { label: 'Tue nights', rule: 'No night shifts Tuesday', type: 'restrict' },
-    ],
     tbdItems: ['Peds shift eligibility confirmation', 'Peds target count if eligible'],
   },
   FM_3: {
-    targetNote: '12 shifts/block',
-    eligSummary: 'PED Night only (23:00–08:00). Monday/Tuesday/Wednesday nights only.',
-    dayRules: [
-      { label: 'Thu/Fri/Sat/Sun', rule: 'No shifts', type: 'block' },
-    ],
-    specialNotes: ['Interpretation A confirmed: FM-3 ONLY works Peds nights, Mon–Wed ⚠ verify'],
+    specialNotes: ['Interpretation A confirmed: FM-3 ONLY works Peds nights, Mon–Wed ⚠ verify.'],
   },
   IM_2: {
-    targetNote: '6 shifts/block (8 if 3-week block)',
-    eligSummary: 'POD and FLEX shifts. No Peds, no MT, no Trauma.',
-    dayRules: [
-      { label: 'Wednesday (standard)',    rule: 'Day shifts only (day worker)', type: 'restrict' },
-      { label: 'Tue + Wed (CCU nights)',  rule: 'Both days blocked entirely when covering CCU nights', type: 'block' },
-    ],
-    specialNotes: ['Code Blue days: off night before + day of ⚠ manual entry required'],
+    specialNotes: ['Code Blue days: off night before + day of ⚠ manual entry required.'],
     tbdItems: ['CCU nights detection (currently manual checkbox on resident)', 'Code Blue day list source'],
   },
   NEURO_1: {
-    targetNote: '14 shifts/block (7 if 2-week block)',
-    eligSummary: 'POD shifts (D/E/N) + FLEX Day. ⚠ Verify exact matrix with chief.',
-    dayRules: [
-      { label: 'Wednesday', rule: 'No shifts (GR Wed afternoon)', type: 'block' },
-      { label: 'Friday',    rule: 'No shifts (GR Fri morning); Fri night OK only if critically needed', type: 'block' },
-      { label: 'Tue/Thu nights', rule: 'Soft preference — avoid if possible', type: 'soft' },
-    ],
+    softPrefs: ['Avoid Tuesday/Thursday night shifts when possible.'],
     tbdItems: ['Confirm eligible shift list with rotation director'],
   },
   ANES_1: {
-    targetNote: '14 shifts/block',
-    eligSummary: 'POD shifts (D/E/N) + FLEX Day. ⚠ Verify exact matrix with chief.',
-    dayRules: [
-      { label: 'Wednesday', rule: 'Day shifts only (day worker)', type: 'restrict' },
-      { label: '1st Friday 2–4pm', rule: 'Off ⚠ TBD: full rule text cut off in source', type: 'restrict' },
-    ],
-    specialNotes: ['Ultrasound days: off (email Gardner annually for dates)'],
-    tbdItems: ['1st Friday social rule full text', 'US days for current academic year'],
+    specialNotes: ['Ultrasound days: off (email Gardner annually for dates).'],
+    tbdItems: ['1st Friday social hour (2–4pm) — not currently enforced by the app', 'US days for current academic year'],
   },
-  PSYCH_1: {
-    targetNote: '14 shifts/block (7 if half-month block)',
-    eligSummary: 'POD shifts (D/E/N) + FLEX Day. ⚠ Verify exact matrix with chief.',
-    dayRules: [
-      { label: 'Tuesday',  rule: 'No shifts (all day)', type: 'block' },
-      { label: 'Mon nights', rule: 'No Monday night shifts', type: 'restrict' },
-      { label: 'Wednesday', rule: 'Day shifts only (day worker)', type: 'restrict' },
-    ],
-  },
-  POD_1: {
-    targetNote: '14 shifts/block',
-    eligSummary: 'POD shifts (D/E/N) + FLEX Day. ⚠ Verify exact matrix with chief.',
-    dayRules: [
-      { label: 'Saturday',   rule: 'No shifts (weekend call)', type: 'block' },
-      { label: 'Sunday',     rule: 'No shifts (weekend call)', type: 'block' },
-      { label: 'Fri nights', rule: 'No Friday nights (weekend call)', type: 'block' },
-      { label: 'Mon mornings', rule: 'No Monday day shifts (call carryover)', type: 'restrict' },
-      { label: 'Wednesday',  rule: 'Day shifts only (day worker)', type: 'restrict' },
-    ],
-  },
+  PSYCH_1: {},
+  POD_1: {},
 };
+
+const DOW_MODE_LABEL = { onlyDay: 'day shifts only', noNight: 'no night shifts', onlyNight: 'night shifts only', noDay: 'no day shifts' };
+
+// Renders the current dayRules config for a row as the same {label, rule, type} shape the tab
+// used to get from static RULES_DATA.dayRules — generated live, so it can never drift.
+function describeDayRules(dr) {
+  const out = [];
+  if (dr.fullBlockDays?.length) out.push({ label: dr.fullBlockDays.map(d=>DOW[d]).join('/'), rule: 'No shifts', type: 'block' });
+  if (dr.onlyDaysEnabled) out.push({ label: 'All other days', rule: `No shifts — only schedulable ${(dr.onlyDays||[]).map(d=>DOW[d]).join('/')}`, type: 'block' });
+  for (const r of dr.dayTypeRestrictions || []) out.push({ label: r.days.map(d=>DOW[d]).join('/'), rule: DOW_MODE_LABEL[r.mode] || r.mode, type: 'restrict' });
+  for (const f of dr.residentFlagOverrides || []) out.push({ label: `${f.fullBlockDays.map(d=>DOW[d]).join('/')} (when ${f.flag})`, rule: 'No shifts', type: 'block' });
+  return out;
+}
+
+// Renders shiftGates as the same {ids, note} shape blockTypeNotes used — generated live.
+function describeShiftGates(dr) {
+  const out = [];
+  for (const g of dr.shiftGates || []) {
+    const shiftLabel = g.shiftIds === 'ALL' ? 'All shifts' : g.shiftIds.join('/');
+    const filter = g.blockTypeFilter;
+    const ids = filter?.ref === 'TRAUMA_BLOCKS' ? (dr.__traumaBlocks || TRAUMA_BLOCKS) : (filter?.ids || []);
+    let scope = filter ? (filter.mode === 'only' ? 'on this rotation' : 'except on this rotation') : '';
+    let dayText = '';
+    if (g.allowedDays) {
+      dayText = g.outsideAction === 'blockEntireDay'
+        ? ` — only schedulable ${g.allowedDays.map(d=>DOW[d]).join('/')}`
+        : ` — ${shiftLabel} only ${g.allowedDays.map(d=>DOW[d]).join('/')}`;
+    }
+    if (g.nightExcludedDays?.length) dayText += `, no night shifts ${g.nightExcludedDays.map(d=>DOW[d]).join('/')}`;
+    if (!filter && !g.allowedDays) dayText = ` — ${shiftLabel} always excluded`;
+    out.push({ ids: ids.length ? ids : ['ALL'], note: `${shiftLabel}${scope ? ' ' + scope : ''}${dayText}.${g.overrideImmune ? ' (applies even over a rotation-specific matrix override)' : ''}` });
+  }
+  return out;
+}
 
 const MATRIX_ROWS = [
   { key: 'EM_HOME_1', label: 'EM Home',        sub: 'PGY-1', catId: 'EM_HOME' },
@@ -511,7 +537,32 @@ function makeDefaultBlock() {
 
 // ─── ELIGIBILITY LOGIC ────────────────────────────────────────────────────────
 
-function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}) {
+// Resolve the chief-editable day/block rules for a CATEGORY_PGY key: chief override > default.
+function getEffectiveDayRules(key, dayRules = {}) {
+  return dayRules[key] ?? DEFAULT_DAY_RULES[key] ?? {};
+}
+
+function matchesMode(shiftType, mode) {
+  switch (mode) {
+    case 'onlyDay':   return shiftType === 'day';
+    case 'onlyNight': return shiftType === 'night';
+    case 'noNight':   return shiftType !== 'night';
+    case 'noDay':     return shiftType !== 'day';
+    default:          return true;
+  }
+}
+
+// A shiftGate's blockTypeFilter decides whether the gate applies to this resident's block type.
+// mode 'only' → applies when bt IS in the list; mode 'except' → applies when bt is NOT in the list.
+// No filter (null/undefined) → always applies.
+function blockTypeFilterPasses(filter, bt, traumaBlocks) {
+  if (!filter) return true;
+  const list = filter.ref === 'TRAUMA_BLOCKS' ? traumaBlocks : (filter.ids || []);
+  const inList = list.includes(bt);
+  return filter.mode === 'only' ? inList : !inList;
+}
+
+function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}) {
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
   if ((resident.approvedDatesOff || []).includes(dateStr)) return [];
@@ -522,120 +573,60 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   const dow = date.getDay();
   const { category, pgy } = resident;
   const bt = resident.blockType || 'EM';
+  const key = `${category}_${pgy}`;
 
   // Matrix resolution: rotation-specific override > category override > base default
   const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides);
   let eligible = list;
 
-  // ── EM Home ──────────────────────────────────────────────────────────────
-  if (category === 'EM_HOME') {
-    // GR Wednesday: entire day blocked
-    if (dow === 3) return [];
+  // Chief-editable day/block rules (Scheduling Rules tab) — see DEFAULT_DAY_RULES for shapes.
+  const dr = getEffectiveDayRules(key, dayRules);
+  const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
 
-    // PGY-1 Trauma rule: by default only on Peds/Trauma or Trauma/Peds blocks.
-    // *** Peds shifts (PED-D/E/N) are NOT day-restricted — available every eligible day. ***
-    // A rotation-specific matrix override may deliberately re-enable trauma on another
-    // block type (the chief's explicit list wins), but the PGY-1 trauma day-of-week
-    // gate (Tue/Thu/Sat/Sun only) ALWAYS applies, on every block type, override or not.
-    if (pgy === 1) {
-      if (!TRAUMA_BLOCKS.includes(bt) && !rotationSpecific) {
-        // Not a trauma block and no explicit override — no trauma shifts at all
-        eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
+  // 1. Full-day block / restrict-to-only-these-days
+  if (dr.fullBlockDays?.includes(dow)) return [];
+  if (dr.onlyDaysEnabled && !(dr.onlyDays || []).includes(dow)) return [];
+
+  // 2. Shift/rotation gates — subset-of-shifts or block-type day windows
+  for (const g of dr.shiftGates || []) {
+    if (!blockTypeFilterPasses(g.blockTypeFilter, bt, traumaBlocks)) continue;
+    if (!g.overrideImmune && rotationSpecific) continue; // chief's explicit matrix override wins
+    const gateShiftIds = g.shiftIds === 'ALL' ? null : g.shiftIds;
+    if (g.allowedDays) {
+      if (!g.allowedDays.includes(dow)) {
+        if (g.outsideAction === 'blockEntireDay') return [];
+        eligible = eligible.filter(s => !(gateShiftIds ? gateShiftIds.includes(s) : true));
+      } else if (g.nightExcludedDays?.includes(dow)) {
+        eligible = eligible.filter(s => !(gateShiftIds ? gateShiftIds.includes(s) : true) || SHIFT_MAP[s]?.type !== 'night');
       }
-      // Unconditional PGY-1 trauma day gate: trauma only Tue(2)/Thu(4)/Sat(6)/Sun(0)
-      if (![2, 4, 6, 0].includes(dow)) {
-        eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
-      }
-    }
-
-    // PGY-2 block-type day restrictions
-    if (pgy === 2) {
-      // Peds/EM: no Trauma on this block by default. A rotation-specific override
-      // in the Shift Matrix DELIBERATELY wins here — checking trauma on the
-      // EM_HOME_2 → Peds/EM sub-row is the chief explicitly allowing it.
-      if (bt === 'PEDS_EM' && !rotationSpecific) {
-        eligible = eligible.filter(s => s !== 'TRAUMA-D' && s !== 'TRAUMA-N');
-      }
-      // EM/EMS: chief schedules Mon/Tue only — Thu/Fri are EMS call (service-arranged)
-      if (bt === 'EM_EMS' && ![1, 2].includes(dow)) return [];
-      // EM/TOX: chief schedules Thu/Fri only — Mon/Tue are Tox call (service-arranged)
-      if (bt === 'EM_TOX' && ![4, 5].includes(dow)) return [];
-      // OB/VAC: not scheduled by chief (isSchedulable already handles this)
-      if (bt === 'OB_VAC') return [];
-    }
-
-    // US/EM block PGY-1: chief schedules Sat/Sun/Mon only, no Mon nights
-    if (pgy === 1 && bt === 'US_EM') {
-      if (![0, 1, 6].includes(dow)) return [];
-      if (dow === 1) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'night');
-    }
-  }
-
-  // ── EM BAMC ───────────────────────────────────────────────────────────────
-  if (category === 'EM_BAMC') {
-    if (dow === 3) eligible = eligible.filter(s => SHIFT_MAP[s]?.type === 'day');
-    const proc = specialDays.procDays || [];
-    if (proc.includes(dateStr)) return [];
-    if (proc.includes(toDateStr(addDays(date, 1)))) return [];
-  }
-
-  // ── FM PGY-1 ──────────────────────────────────────────────────────────────
-  if (category === 'FM' && pgy === 1) {
-    if (dow === 3 || dow === 4) return [];
-    if (dow === 2) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'night');
-  }
-
-  // ── FM PGY-3 ──────────────────────────────────────────────────────────────
-  if (category === 'FM' && pgy === 3) {
-    if (![1, 2, 3].includes(dow)) return [];
-    // base eligibility is PED-N only
-  }
-
-  // ── IM PGY-2 ──────────────────────────────────────────────────────────────
-  if (category === 'IM') {
-    if (resident.isCCUNights) {
-      if (dow === 2 || dow === 3) return [];
+    } else if (gateShiftIds) {
+      eligible = eligible.filter(s => !gateShiftIds.includes(s));
     } else {
-      if (dow === 3) eligible = eligible.filter(s => SHIFT_MAP[s]?.type === 'day');
+      return [];
     }
-    const cb = specialDays.codeBlueDays || [];
-    if (cb.includes(dateStr) || cb.includes(toDateStr(addDays(date, 1)))) return [];
   }
 
-  // ── Neurology PGY-1 ───────────────────────────────────────────────────────
-  if (category === 'NEURO' && (dow === 3 || dow === 5)) return [];
-
-  // ── Anesthesiology PGY-1 ─────────────────────────────────────────────────
-  if (category === 'ANES') {
-    if (dow === 3) eligible = eligible.filter(s => SHIFT_MAP[s]?.type === 'day');
-    if ((specialDays.anesDays || []).includes(dateStr)) return [];
+  // 3. Resident-flag override (e.g. IM CCU nights) replaces plain day-type restrictions when active
+  const activeFlag = (dr.residentFlagOverrides || []).find(f => resident[f.flag]);
+  if (activeFlag) {
+    if (activeFlag.fullBlockDays.includes(dow)) return [];
+  } else {
+    for (const r of dr.dayTypeRestrictions || []) {
+      if (r.days.includes(dow)) eligible = eligible.filter(s => matchesMode(SHIFT_MAP[s]?.type, r.mode));
+    }
   }
 
-  // ── Psychiatry PGY-1 ─────────────────────────────────────────────────────
-  if (category === 'PSYCH') {
-    if (dow === 2) return [];
-    if (dow === 1) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'night');
-    if (dow === 3) eligible = eligible.filter(s => SHIFT_MAP[s]?.type === 'day');
-  }
-
-  // ── Podiatry PGY-1 ───────────────────────────────────────────────────────
-  if (category === 'POD') {
-    if (dow === 6 || dow === 0) return [];
-    if (dow === 5) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'night');
-    if (dow === 1) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'day');
-    if (dow === 3) eligible = eligible.filter(s => SHIFT_MAP[s]?.type === 'day');
-  }
-
-  // ── Pediatrics ────────────────────────────────────────────────────────────
-  if (category === 'PEDS') {
-    const tmrw = toDateStr(addDays(date, 1));
-    if ((specialDays.advocacyDays || []).includes(tmrw)) return [];
+  // 4. Special-day-list rules (Code Blue / advocacy / procedure / anesthesia dates)
+  for (const s of dr.specialDayRules || []) {
+    const listArr = specialDays[s.listKey] || [];
+    if ((s.offset === 'sameDay' || s.offset === 'sameDayAndDayBefore') && listArr.includes(dateStr)) return [];
+    if ((s.offset === 'dayBefore' || s.offset === 'sameDayAndDayBefore') && listArr.includes(toDateStr(addDays(date, 1)))) return [];
   }
 
   return eligible;
 }
 
-function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}) {
+function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}) {
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
@@ -659,7 +650,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           level: jeopardyPolicy === 'block' ? 'error' : 'warn' });
         if (jeopardyPolicy === 'block') continue;
       }
-      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings);
+      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules);
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
         let msg = 'Shift not eligible for this resident on this day';
@@ -1981,7 +1972,258 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
 
 // ─── RULES TAB ────────────────────────────────────────────────────────────────
 
-function RulesTab({ allResidents, block, eligOverrides }) {
+// Collapsible sub-section within a Scheduling Rules row — independent of the row's own
+// expand/collapse, so long rows (many gates/notes) can be skimmed without full-row scrolling.
+function Collapsible({ title, badge, defaultOpen = true, titleClassName = 'text-gray-500 group-hover:text-gray-700', children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button type="button" onClick={()=>setOpen(p=>!p)} className="w-full flex items-center gap-2 text-left group mb-1">
+        <ChevronDown size={11} className={`text-gray-300 group-hover:text-gray-500 transition-transform shrink-0 ${open?'':'-rotate-90'}`}/>
+        <span className={`text-xs font-semibold uppercase tracking-wide ${titleClassName}`}>{title}</span>
+        {badge}
+      </button>
+      {open && <div className="pl-4">{children}</div>}
+    </div>
+  );
+}
+
+function DayPillRow({ days, onToggle, color = 'indigo' }) {
+  const on  = color === 'red' ? 'bg-red-600 text-white border-red-600' : 'bg-indigo-600 text-white border-indigo-600';
+  const off = color === 'red' ? 'bg-white text-gray-500 border-gray-200 hover:border-red-300' : 'bg-white text-gray-500 border-gray-200 hover:border-indigo-300';
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {DOW.map((d,i)=>(
+        <button key={i} type="button" onClick={()=>onToggle(i)}
+          className={`w-8 h-7 text-xs font-medium rounded border transition-colors ${days.includes(i) ? on : off}`}>
+          {d}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Editable controls for one CATEGORY_PGY's day/block rules (DEFAULT_DAY_RULES shape).
+// `update(fn)` applies fn(currentDr) => nextDr immutably via the parent's setDayRules.
+function DayRulesEditor({ rowKey, dr, update }) {
+  const pgyMatch = rowKey.match(/_(\d)$/);
+  const pgy = pgyMatch ? Number(pgyMatch[1]) : null;
+  const isEmHome = rowKey.startsWith('EM_HOME_');
+  const rotationOptions = isEmHome ? (EM_HOME_BLOCK_TYPES_BY_PGY[pgy] || []).map(id => BLOCK_TYPE_MAP[id]).filter(Boolean) : [];
+
+  const toggleIn = (arr, i) => (arr||[]).includes(i) ? arr.filter(x=>x!==i) : [...(arr||[]), i].sort((a,b)=>a-b);
+
+  function addRestriction() { update(d => ({ ...d, dayTypeRestrictions: [...(d.dayTypeRestrictions||[]), { days: [], mode: 'onlyDay' }] })); }
+  function updRestriction(i, patch) { update(d => ({ ...d, dayTypeRestrictions: d.dayTypeRestrictions.map((r,idx)=>idx===i?{...r,...patch}:r) })); }
+  function rmRestriction(i) { update(d => ({ ...d, dayTypeRestrictions: d.dayTypeRestrictions.filter((_,idx)=>idx!==i) })); }
+
+  function addGate() {
+    update(d => ({ ...d, shiftGates: [...(d.shiftGates||[]),
+      { id: `gate_${Date.now()}`, shiftIds: 'ALL', blockTypeFilter: null, allowedDays: undefined, nightExcludedDays: undefined, outsideAction: 'blockEntireDay', overrideImmune: false } ] }));
+  }
+  function updGate(i, patch) { update(d => ({ ...d, shiftGates: d.shiftGates.map((g,idx)=>idx===i?{...g,...patch}:g) })); }
+  function rmGate(i) { update(d => ({ ...d, shiftGates: d.shiftGates.filter((_,idx)=>idx!==i) })); }
+
+  function addSpecialRule(listKey) { update(d => ({ ...d, specialDayRules: [...(d.specialDayRules||[]), { listKey, offset: 'sameDay' }] })); }
+  function rmSpecialRule(listKey) { update(d => ({ ...d, specialDayRules: (d.specialDayRules||[]).filter(r=>r.listKey!==listKey) })); }
+  function updSpecialRule(listKey, offset) { update(d => ({ ...d, specialDayRules: (d.specialDayRules||[]).map(r=>r.listKey===listKey?{...r,offset}:r) })); }
+
+  const ccuOverride = (dr.residentFlagOverrides||[]).find(f => f.flag === 'isCCUNights');
+
+  return (
+    <div className="space-y-4">
+      {/* Full block / only days */}
+      <div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Full-Day Block</div>
+        <p className="text-xs text-gray-400 mb-1.5">Whole day unschedulable for this type.</p>
+        <DayPillRow color="red" days={dr.fullBlockDays||[]} onToggle={i=>update(d=>({...d, fullBlockDays: toggleIn(d.fullBlockDays, i)}))}/>
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 cursor-pointer select-none">
+          <input type="checkbox" checked={!!dr.onlyDaysEnabled} onChange={e=>update(d=>({...d, onlyDaysEnabled: e.target.checked}))} className="rounded"/>
+          Restrict to only these days
+        </label>
+        {dr.onlyDaysEnabled && (
+          <DayPillRow days={dr.onlyDays||[]} onToggle={i=>update(d=>({...d, onlyDays: toggleIn(d.onlyDays, i)}))}/>
+        )}
+      </div>
+
+      {/* Day-type restrictions */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift-Type Restrictions</div>
+          <button onClick={addRestriction} className="text-xs text-indigo-600 hover:underline">+ Add</button>
+        </div>
+        <div className="space-y-2">
+          {(dr.dayTypeRestrictions||[]).map((r,i)=>(
+            <div key={i} className="flex items-center gap-2 flex-wrap bg-gray-50 rounded-lg p-2">
+              <DayPillRow days={r.days||[]} onToggle={day=>updRestriction(i,{days: toggleIn(r.days, day)})}/>
+              <select value={r.mode} onChange={e=>updRestriction(i,{mode: e.target.value})} className="text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                {Object.entries(DOW_MODE_LABEL).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+              </select>
+              <button onClick={()=>rmRestriction(i)} className="text-gray-300 hover:text-red-500 ml-auto"><Trash2 size={13}/></button>
+            </div>
+          ))}
+          {(dr.dayTypeRestrictions||[]).length===0 && <p className="text-xs text-gray-300 italic">None</p>}
+        </div>
+      </div>
+
+      {/* Shift / rotation gates */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift &amp; Rotation Gates</div>
+          <button onClick={addGate} className="text-xs text-indigo-600 hover:underline">+ Add gate</button>
+        </div>
+        <div className="space-y-2">
+          {(dr.shiftGates||[]).map((g,i)=>{
+            const specific = g.shiftIds !== 'ALL';
+            const filterOn = !!g.blockTypeFilter;
+            const usingTrauma = g.blockTypeFilter?.ref === 'TRAUMA_BLOCKS';
+            return (
+              <div key={g.id||i} className="bg-gray-50 rounded-lg p-2.5 space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select value={specific ? 'specific' : 'all'}
+                    onChange={e=>updGate(i, e.target.value==='all' ? {shiftIds:'ALL', outsideAction:'blockEntireDay'} : {shiftIds:[]})}
+                    className="text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                    <option value="all">All shifts</option>
+                    <option value="specific">Specific shifts</option>
+                  </select>
+                  <button onClick={()=>rmGate(i)} className="text-gray-300 hover:text-red-500 ml-auto"><Trash2 size={13}/></button>
+                </div>
+                {specific && (
+                  <div className="flex flex-wrap gap-1">
+                    {SHIFTS.map(s=>{
+                      const checked = (Array.isArray(g.shiftIds)?g.shiftIds:[]).includes(s.id);
+                      return (
+                        <button key={s.id} type="button"
+                          onClick={()=>updGate(i, { shiftIds: checked ? g.shiftIds.filter(x=>x!==s.id) : [...(Array.isArray(g.shiftIds)?g.shiftIds:[]), s.id] })}
+                          className={`text-xs px-1.5 py-0.5 rounded font-bold border ${checked ? s.chip+' border-transparent' : 'bg-white text-gray-400 border-gray-200'}`}>
+                          {s.id}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                  <input type="checkbox" checked={filterOn} className="rounded"
+                    onChange={e=>updGate(i, { blockTypeFilter: e.target.checked ? { mode:'only', ids:[] } : null })}/>
+                  Limit to specific rotations
+                </label>
+                {filterOn && (
+                  <div className="pl-5 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <select value={g.blockTypeFilter.mode} onChange={e=>updGate(i,{blockTypeFilter:{...g.blockTypeFilter, mode:e.target.value}})}
+                        className="text-xs border border-gray-300 rounded-lg px-2 py-1">
+                        <option value="only">Only on</option>
+                        <option value="except">Except on</option>
+                      </select>
+                      <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+                        <input type="checkbox" checked={usingTrauma} className="rounded"
+                          onChange={e=>updGate(i,{blockTypeFilter:{mode:g.blockTypeFilter.mode, ...(e.target.checked ? {ref:'TRAUMA_BLOCKS'} : {ids:[]})}})}/>
+                        Use "Trauma Block Types" list
+                      </label>
+                    </div>
+                    {!usingTrauma && (
+                      <div className="flex flex-wrap gap-1">
+                        {(rotationOptions.length ? rotationOptions : BLOCK_TYPES_EM).map(bt=>{
+                          const checked = (g.blockTypeFilter.ids||[]).includes(bt.id);
+                          return (
+                            <button key={bt.id} type="button"
+                              onClick={()=>updGate(i, { blockTypeFilter: { ...g.blockTypeFilter, ids: checked ? g.blockTypeFilter.ids.filter(x=>x!==bt.id) : [...(g.blockTypeFilter.ids||[]), bt.id] } })}
+                              className={`text-xs px-1.5 py-0.5 rounded border font-medium ${checked ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-gray-500 border-gray-200'}`}>
+                              {bt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                  <input type="checkbox" checked={!!g.allowedDays} className="rounded"
+                    onChange={e=>updGate(i, { allowedDays: e.target.checked ? [] : undefined, nightExcludedDays: undefined })}/>
+                  Limit to specific days
+                </label>
+                {g.allowedDays && (
+                  <div className="pl-5 space-y-1.5">
+                    <DayPillRow days={g.allowedDays} onToggle={day=>updGate(i,{allowedDays: toggleIn(g.allowedDays, day)})}/>
+                    {specific ? null : (
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">No night shifts on:</p>
+                        <DayPillRow days={g.nightExcludedDays||[]} onToggle={day=>updGate(i,{nightExcludedDays: toggleIn(g.nightExcludedDays, day)})}/>
+                      </div>
+                    )}
+                    {specific && (
+                      <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                        <input type="checkbox" checked={g.outsideAction==='blockEntireDay'} className="rounded"
+                          onChange={e=>updGate(i,{outsideAction: e.target.checked ? 'blockEntireDay' : 'stripShiftIds'})}/>
+                        Block entire day outside allowed days (instead of just these shifts)
+                      </label>
+                    )}
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                  <input type="checkbox" checked={!!g.overrideImmune} className="rounded"
+                    onChange={e=>updGate(i,{overrideImmune: e.target.checked})}/>
+                  Always apply, even over a rotation-specific Shift Matrix override
+                </label>
+              </div>
+            );
+          })}
+          {(dr.shiftGates||[]).length===0 && <p className="text-xs text-gray-300 italic">None</p>}
+        </div>
+      </div>
+
+      {/* Special day rules */}
+      <div>
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Special-Day Rules</div>
+        <p className="text-xs text-gray-400 mb-1.5">Dates are edited on the Home/Dashboard tabs — this controls how each list affects eligibility.</p>
+        <div className="space-y-1.5">
+          {[
+            {key:'codeBlueDays', label:'Code Blue days'},
+            {key:'advocacyDays', label:'Advocacy days'},
+            {key:'procDays', label:'Procedure days'},
+            {key:'anesDays', label:'Anesthesia days'},
+          ].map(({key,label})=>{
+            const rule = (dr.specialDayRules||[]).find(r=>r.listKey===key);
+            return (
+              <div key={key} className="flex items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none w-40 shrink-0">
+                  <input type="checkbox" checked={!!rule} className="rounded"
+                    onChange={e=>e.target.checked ? addSpecialRule(key) : rmSpecialRule(key)}/>
+                  {label}
+                </label>
+                {rule && (
+                  <select value={rule.offset} onChange={e=>updSpecialRule(key, e.target.value)} className="text-xs border border-gray-300 rounded-lg px-2 py-1">
+                    <option value="sameDay">Block that day</option>
+                    <option value="dayBefore">Block the day before</option>
+                    <option value="sameDayAndDayBefore">Block that day &amp; the day before</option>
+                  </select>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* CCU-nights override (IM_2 only) */}
+      {rowKey === 'IM_2' && (
+        <div>
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">CCU Nights Override</div>
+          <p className="text-xs text-gray-400 mb-1.5">When a resident's "Covering CCU nights" flag is set, block these days instead of the Shift-Type Restrictions above.</p>
+          <DayPillRow color="red" days={ccuOverride?.fullBlockDays||[]}
+            onToggle={i=>update(d=>({...d, residentFlagOverrides: [{ flag:'isCCUNights', fullBlockDays: toggleIn(ccuOverride?.fullBlockDays, i) }] }))}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, setDayRules }) {
   const [showAll, setShowAll] = useState(true);
   const [openKeys, setOpenKeys] = useState({});
 
@@ -1999,6 +2241,33 @@ function RulesTab({ allResidents, block, eligOverrides }) {
   const ruleTypeColor = { block:'text-red-700 bg-red-50', restrict:'text-amber-700 bg-amber-50', soft:'text-blue-700 bg-blue-50' };
   const ruleTypeLabel = { block:'Blocked', restrict:'Restricted', soft:'Soft pref' };
 
+  const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+  const traumaBlocksModified = JSON.stringify([...traumaBlocks].sort()) !== JSON.stringify([...TRAUMA_BLOCKS].sort());
+  function toggleTraumaBlock(id) {
+    const next = traumaBlocks.includes(id) ? traumaBlocks.filter(x=>x!==id) : [...traumaBlocks, id];
+    setDayRules(p=>({...p, TRAUMA_BLOCKS: next}));
+  }
+  function resetTraumaBlocks() { setDayRules(p=>{ const n={...p}; delete n.TRAUMA_BLOCKS; return n; }); }
+
+  function effectiveDr(key) { return dayRules[key] ?? DEFAULT_DAY_RULES[key] ?? {}; }
+  function isRowModified(key) { return dayRules[key] !== undefined; }
+  function updateDr(key, updater) {
+    setDayRules(p => ({ ...p, [key]: updater(p[key] ?? DEFAULT_DAY_RULES[key] ?? {}) }));
+  }
+  function resetDr(key) { setDayRules(p => { const n = {...p}; delete n[key]; return n; }); }
+
+  function eligSummaryFor(shiftIds) {
+    if (shiftIds.length === 0) return 'No shifts configured.';
+    const parts = SHIFT_AREAS.map(area => {
+      const areaShifts = SHIFTS.filter(s=>s.area===area).map(s=>s.id);
+      const covered = areaShifts.filter(id=>shiftIds.includes(id));
+      if (covered.length === 0) return null;
+      if (covered.length === areaShifts.length) return area;
+      return `${area} (${covered.map(id=>SHIFT_MAP[id].type[0].toUpperCase()).join('')})`;
+    }).filter(Boolean);
+    return parts.length ? `Eligible: ${parts.join(', ')}.` : 'No shifts configured.';
+  }
+
   if (displayRows.length === 0 && !showAll) {
     return (
       <div className="text-center py-12 text-gray-400 space-y-3">
@@ -2013,19 +2282,42 @@ function RulesTab({ allResidents, block, eligOverrides }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold text-gray-800">Scheduling Rules Reference</h2>
-          <p className="text-xs text-gray-500 mt-0.5">{showAll ? 'All resident types' : `${displayRows.length} type${displayRows.length!==1?'s':''} active this block`}</p>
+          <h2 className="text-base font-semibold text-gray-800">Scheduling Rules</h2>
+          <p className="text-xs text-gray-500 mt-0.5">{showAll ? 'All resident types' : `${displayRows.length} type${displayRows.length!==1?'s':''} active this block`} — edited here, no code changes needed.</p>
         </div>
         <button onClick={()=>setShowAll(p=>!p)} className="text-xs text-indigo-600 hover:underline">
           {showAll ? 'Show active only' : 'Show all types'}
         </button>
       </div>
 
+      <SectionCard title="Trauma Block Types" subtitle='Rotations treated as "trauma blocks" for the EM Home PGY-1 trauma-eligibility gate.'>
+        <div className="flex items-center gap-2 flex-wrap">
+          {BLOCK_TYPES_EM.map(bt=>{
+            const checked = traumaBlocks.includes(bt.id);
+            return (
+              <button key={bt.id} type="button" onClick={()=>toggleTraumaBlock(bt.id)}
+                className={`text-xs px-2 py-1 rounded-lg border font-medium transition-colors ${checked ? 'bg-red-50 border-red-300 text-red-700' : 'bg-white border-gray-200 text-gray-500 hover:border-red-300'}`}>
+                {bt.label}
+              </button>
+            );
+          })}
+          {traumaBlocksModified && (
+            <button onClick={resetTraumaBlocks} className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1"><RefreshCw size={11}/> Reset</button>
+          )}
+        </div>
+      </SectionCard>
+
       {displayRows.map(row => {
         const cat = CAT_MAP[row.catId];
-        const rd = RULES_DATA[row.key] || {};
+        const rn = RULE_NOTES[row.key] || {};
+        const dr = effectiveDr(row.key);
+        const modified = isRowModified(row.key);
         const effectiveShifts = eligOverrides[row.key] ?? BASE_ELIGIBILITY[row.key] ?? [];
         const isOpen = openKeys[row.key] !== false; // default open
+        const targetOv = (appSettings?.targetOverrides||{})[row.key];
+        const target = targetOv ?? SHIFT_TARGETS[row.key] ?? null;
+        const generatedDayRules = [...describeDayRules(dr), ...describeShiftGates({...dr, __traumaBlocks: traumaBlocks})
+          .map(g=>({label: g.ids[0]==='ALL' ? 'All rotations' : g.ids.map(id=>BLOCK_TYPE_MAP[id]?.label||id).join('/'), rule: g.note, type: 'restrict'}))];
 
         // Find active residents of this type
         const active = allResidents.filter(r => eligKey(r) === row.key && isSchedulable(r));
@@ -2037,6 +2329,7 @@ function RulesTab({ allResidents, block, eligOverrides }) {
               <div className="flex items-center gap-3">
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat?.badge}`}>{row.sub}</span>
                 <span className="font-semibold text-gray-800 text-sm">{row.label}</span>
+                {modified && <span className="text-indigo-500 text-xs" title="Modified from default">✎</span>}
                 {active.length > 0 && (
                   <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">
                     {active.length} active: {active.map(r=>`${r.lastName}`).join(', ')}
@@ -2052,15 +2345,19 @@ function RulesTab({ allResidents, block, eligOverrides }) {
             {isOpen && (
               <div className="px-4 pb-4 space-y-4 border-t border-gray-100">
                 {/* Target */}
-                <div className="pt-3">
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Shift Target</div>
-                  <p className="text-sm text-gray-700">{rd.targetNote || '—'}</p>
+                <div className="pt-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Shift Target</div>
+                    <p className="text-sm text-gray-700">{target != null ? `${target} shifts/block` : 'Per Amion — not set by this app (self-cover)'}</p>
+                  </div>
+                  {modified && (
+                    <button onClick={()=>resetDr(row.key)} className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1 shrink-0"><RefreshCw size={11}/> Reset rules</button>
+                  )}
                 </div>
 
                 {/* Eligible shifts */}
-                <div>
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Eligible Shifts</div>
-                  <p className="text-xs text-gray-600 mb-2">{rd.eligSummary}</p>
+                <Collapsible title="Eligible Shifts">
+                  <p className="text-xs text-gray-600 mb-2">{eligSummaryFor(effectiveShifts)}</p>
                   <div className="flex flex-wrap gap-1.5">
                     {effectiveShifts.map(sid=>{
                       const s=SHIFT_MAP[sid];
@@ -2068,38 +2365,40 @@ function RulesTab({ allResidents, block, eligOverrides }) {
                     })}
                     {effectiveShifts.length===0 && <span className="text-xs text-gray-400 italic">None configured</span>}
                   </div>
-                  {rd.traumaNote && (
-                    <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 mt-2">⚠ {rd.traumaNote}</p>
-                  )}
                   {eligOverrides[row.key] && (
-                    <p className="text-xs text-indigo-600 mt-1">✎ Matrix overrides are active for this type</p>
+                    <p className="text-xs text-indigo-600 mt-1">✎ Matrix overrides are active for this type — edit on the Shift Matrix tab.</p>
                   )}
-                </div>
+                </Collapsible>
 
-                {/* Day restrictions */}
-                {rd.dayRules?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Day-of-Week Restrictions</div>
+                {/* Live-generated summary of the rules below, for quick scanning */}
+                {generatedDayRules.length > 0 && (
+                  <Collapsible title="Current Day / Rotation Rules">
                     <div className="space-y-1">
-                      {rd.dayRules.map((dr,i)=>(
+                      {generatedDayRules.map((r,i)=>(
                         <div key={i} className="flex items-start gap-2">
-                          <span className={`text-xs px-2 py-0.5 rounded font-medium shrink-0 ${ruleTypeColor[dr.type]||'bg-gray-100 text-gray-600'}`}>
-                            {ruleTypeLabel[dr.type]||dr.type}
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium shrink-0 ${ruleTypeColor[r.type]||'bg-gray-100 text-gray-600'}`}>
+                            {ruleTypeLabel[r.type]||r.type}
                           </span>
-                          <span className="text-xs text-gray-600 font-medium mr-1">{dr.label}:</span>
-                          <span className="text-xs text-gray-600">{dr.rule}</span>
+                          <span className="text-xs text-gray-600 font-medium mr-1">{r.label}:</span>
+                          <span className="text-xs text-gray-600">{r.rule}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </Collapsible>
                 )}
 
-                {/* Block-type notes */}
-                {rd.blockTypeNotes?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Block-Type Specific Rules</div>
+                {/* Editable rules */}
+                <div className="border-t border-gray-100 pt-3">
+                  <Collapsible title="Edit Day &amp; Block Rules">
+                    <DayRulesEditor rowKey={row.key} dr={dr} update={fn=>updateDr(row.key, fn)}/>
+                  </Collapsible>
+                </div>
+
+                {/* Supplementary block-type notes */}
+                {rn.blockTypeNotes?.length > 0 && (
+                  <Collapsible title="Additional Notes by Rotation">
                     <div className="space-y-1">
-                      {rd.blockTypeNotes.map((bn,i)=>(
+                      {rn.blockTypeNotes.map((bn,i)=>(
                         <div key={i} className="flex items-start gap-2 text-xs">
                           <div className="flex gap-1 shrink-0 flex-wrap">
                             {bn.ids.map(id=><span key={id} className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-medium">{BLOCK_TYPE_MAP[id]?.label||id}</span>)}
@@ -2108,37 +2407,34 @@ function RulesTab({ allResidents, block, eligOverrides }) {
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </Collapsible>
                 )}
 
                 {/* Soft prefs */}
-                {rd.softPrefs?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Soft Preferences</div>
+                {rn.softPrefs?.length > 0 && (
+                  <Collapsible title="Soft Preferences">
                     <ul className="space-y-0.5">
-                      {rd.softPrefs.map((p,i)=><li key={i} className="text-xs text-blue-700 flex items-start gap-1"><span>•</span>{p}</li>)}
+                      {rn.softPrefs.map((p,i)=><li key={i} className="text-xs text-blue-700 flex items-start gap-1"><span>•</span>{p}</li>)}
                     </ul>
-                  </div>
+                  </Collapsible>
                 )}
 
                 {/* Special notes */}
-                {rd.specialNotes?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Special Notes</div>
+                {rn.specialNotes?.length > 0 && (
+                  <Collapsible title="Special Notes">
                     <ul className="space-y-0.5">
-                      {rd.specialNotes.map((n,i)=><li key={i} className="text-xs text-gray-600 flex items-start gap-1"><span>•</span>{n}</li>)}
+                      {rn.specialNotes.map((n,i)=><li key={i} className="text-xs text-gray-600 flex items-start gap-1"><span>•</span>{n}</li>)}
                     </ul>
-                  </div>
+                  </Collapsible>
                 )}
 
                 {/* TBD items */}
-                {rd.tbdItems?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1">⚠ Pending Clarification</div>
+                {rn.tbdItems?.length > 0 && (
+                  <Collapsible title="⚠ Pending Clarification" titleClassName="text-amber-600">
                     <ul className="space-y-0.5">
-                      {rd.tbdItems.map((t,i)=><li key={i} className="text-xs text-amber-700 flex items-start gap-1"><span>•</span>{t}</li>)}
+                      {rn.tbdItems.map((t,i)=><li key={i} className="text-xs text-amber-700 flex items-start gap-1"><span>•</span>{t}</li>)}
                     </ul>
-                  </div>
+                  </Collapsible>
                 )}
               </div>
             )}
@@ -2151,10 +2447,10 @@ function RulesTab({ allResidents, block, eligOverrides }) {
 
 // ─── SHIFT PICKER MODAL ───────────────────────────────────────────────────────
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, onSelect, onClose, showToast }) {
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast }) {
   const [pending, setPending] = useState(null);
   const sd = block.specialDays || {};
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings);
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules);
   const display = formatDisplayDate(dateStr);
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
@@ -2242,7 +2538,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, showToast }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, showToast }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const sched = block.schedule || {};
@@ -2252,11 +2548,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
   const violMap = useMemo(()=>{
     const m={};
-    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings)) {
+    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules)) {
       if (issue.dateStr) { const k=`${issue.residentId}_${issue.dateStr}`; (m[k]=m[k]||[]).push(issue); }
     }
     return m;
-  },[allResidents,sched,block,eligOverrides,appSettings]);
+  },[allResidents,sched,block,eligOverrides,appSettings,dayRules]);
 
   const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
   const grouped = useMemo(()=>{
@@ -2354,10 +2650,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
                         const isJeopardy=(res.jeopardyDates||[]).includes(ds);
                         const isJeoBlocked=isJeopardy&&jeoBlock;
-                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings);
+                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules);
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
-                        const isGR=isWed&&res.category==='EM_HOME';
+                        const isGR=isWed&&res.category==='EM_HOME'&&elig.length===0;
                         const shift=sid?SHIFT_MAP[sid]:null;
                         let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
@@ -2387,7 +2683,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       {picker && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
-          block={block} eligOverrides={eligOverrides} appSettings={appSettings}
+          block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
           onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
           onClose={()=>setPicker(null)} showToast={showToast}/>
       )}
@@ -2397,8 +2693,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
 // ─── VALIDATION TAB ───────────────────────────────────────────────────────────
 
-function ValidationTab({ allResidents, block, eligOverrides, appSettings }) {
-  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings),[allResidents,block,eligOverrides,appSettings]);
+function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRules }) {
+  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules),[allResidents,block,eligOverrides,appSettings,dayRules]);
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
@@ -2449,7 +2745,7 @@ function ValidationTab({ allResidents, block, eligOverrides, appSettings }) {
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
-const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings'];
+const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules'];
 
 function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -2713,7 +3009,7 @@ function UserGuideTab() {
           <li><strong>Off-Service tab</strong> — add this month's visiting residents (BAMC, Peds, FM, IM, Neuro, Anesthesia, Psych, Podiatry) with the color-coded Add buttons. Enter their approved dates off and jeopardy call dates.</li>
           <li><strong>Schedule tab</strong> — click any cell to assign a shift. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
           <li><strong>Violations tab</strong> — review remaining errors/warnings before finalizing.</li>
-          <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then export CSV (header button) to transpose into Qgenda.</li>
+          <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
         </ol>
       </GuideSection>
 
@@ -2745,7 +3041,7 @@ function UserGuideTab() {
         <ul className="list-disc space-y-1">
           <li>Click any cell to toggle. Modified rows show <span className="text-indigo-500">✎</span> and a per-row reset.</li>
           <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-violet-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
-          <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and can't be unchecked here — see the Scheduling Rules tab for those.</li>
+          <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and aren't edited here — see the Scheduling Rules tab, which now controls those directly.</li>
         </ul>
       </GuideSection>
 
@@ -2761,9 +3057,18 @@ function UserGuideTab() {
         </ul>
       </GuideSection>
 
-      <GuideSection title="Violations & Rules Reference">
-        <p>The <strong>Violations tab</strong> lists every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count.</p>
-        <p>The <strong>Scheduling Rules tab</strong> is the read-only reference for every residency type: shift targets, day restrictions, block-type rules, and ⚠ items still pending clarification with the chiefs.</p>
+      <GuideSection title="Violations & Scheduling Rules">
+        <p>The <strong>Violations tab</strong> lists every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
+        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions, rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun…), and how Code Blue/advocacy/procedure/anesthesia dates affect eligibility. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live; the ⚠ notes below each type are outstanding clarifications, not enforced rules.</p>
+      </GuideSection>
+
+      <GuideSection title="Exporting to QGenda">
+        <p>Two CSV buttons live in the header once a block has a start date:</p>
+        <ul className="list-disc space-y-1">
+          <li><strong>Grid CSV</strong> — the same resident × date matrix shown on the Schedule tab, raw shift codes only. Best for your own visual cross-check, not for importing anywhere.</li>
+          <li><strong>QGenda CSV</strong> — one row per assignment (resident, date, shift, real start/end time, hours) instead of one column per date. This removes the manual date-column transposition step — check it against QGenda's import format before relying on it fully.</li>
+        </ul>
+        <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations), either export will ask you to confirm before downloading.</p>
       </GuideSection>
 
       <GuideSection title="Settings & Data Safety">
@@ -2796,6 +3101,7 @@ export default function ResidentScheduler() {
   const [tab, setTab] = useState('home');
   const [toast, setToast] = useState(null);
   const [switchPending, setSwitchPending] = useState(null);
+  const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | null — pending export awaiting error confirmation
 
   const [emRoster, setEmRoster]           = useLocalStorage('res_em_roster', []);
   const [eligOverrides, setEligOverrides] = useLocalStorage('res_eligibility_overrides', {});
@@ -2805,6 +3111,8 @@ export default function ResidentScheduler() {
   const [ayData, setAyData]               = useLocalStorage('res_ay_data', {});
   // App-level settings: rule enforcement, targets, defaults
   const [appSettings, setAppSettings]     = useLocalStorage('res_app_settings', DEFAULT_APP_SETTINGS);
+  // Chief-editable day-of-week / block-type scheduling rules (see DEFAULT_DAY_RULES)
+  const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
 
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
@@ -2824,7 +3132,7 @@ export default function ResidentScheduler() {
     return [...em,...(block.offServiceResidents||[])];
   },[emRoster,block.emBlockAssignments,block.offServiceResidents]);
 
-  const violCount = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings).length,[allResidents,block,eligOverrides,appSettings]);
+  const violCount = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules).length,[allResidents,block,eligOverrides,appSettings,dayRules]);
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
@@ -2871,18 +3179,61 @@ export default function ResidentScheduler() {
     showToast('Block reset','amber');
   }
 
-  function exportCSV() {
+  function downloadCSV(filename, rows) {
+    const csv=rows.map(row=>row.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob=new Blob([csv],{type:'text/csv'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=filename;a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Grid CSV: resident × date matrix — for the chief's own visual cross-check against the on-screen grid.
+  function buildGridCSVRows() {
     const dates=getBlockDates(block.startDate,block.endDate);
     const header=['Resident','Category','PGY','Rotation',...dates.map(d=>formatDisplayDate(d))];
     const rows=allResidents.map(r=>{
       const cells=dates.map(d=>block.schedule?.[r.id]?.[d]||'');
       return[`${r.lastName}, ${r.firstName}`,CAT_MAP[r.category]?.label||r.category,`PGY-${r.pgy}`,r.blockType||'—',...cells];
     });
-    const csv=[header,...rows].map(row=>row.map(c=>`"${c}"`).join(',')).join('\n');
-    const blob=new Blob([csv],{type:'text/csv'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');a.href=url;a.download=`schedule_${block.startDate||'block'}.csv`;a.click();
-    URL.revokeObjectURL(url);
+    return [header,...rows];
+  }
+
+  // QGenda CSV: tidy/long format — one row per assignment, with real shift times, for bulk import.
+  function buildQGendaCSVRows() {
+    const dates=getBlockDates(block.startDate,block.endDate);
+    const header=['Resident','Category','PGY','Rotation','Date','DayOfWeek','ShiftId','ShiftLabel','Area','Start','End','Hours'];
+    const rows=[];
+    for (const r of allResidents) {
+      for (const d of dates) {
+        const sid=block.schedule?.[r.id]?.[d];
+        if (!sid) continue;
+        const s=SHIFT_MAP[sid];
+        const t=SHIFT_TIMING[sid];
+        const [startStr,endStr]=(s?.hours||'—').split('–');
+        rows.push([
+          `${r.lastName}, ${r.firstName}`, CAT_MAP[r.category]?.label||r.category, `PGY-${r.pgy}`, r.blockType||'—',
+          prettyDate(d), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
+          startStr||'', endStr||'', t?.durationH ?? '',
+        ]);
+      }
+    }
+    return [header, ...rows];
+  }
+
+  function pendingErrorCount() {
+    return validateAll(allResidents, block.schedule||{}, block, eligOverrides, appSettings, dayRules)
+      .filter(i=>i.level==='error').length;
+  }
+
+  function runExport(kind) {
+    if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}.csv`, buildGridCSVRows());
+    else downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
+    setExportConfirm(null);
+  }
+
+  function requestExport(kind) {
+    if (pendingErrorCount() > 0) { setExportConfirm(kind); return; }
+    runExport(kind);
   }
 
   const isSwitchNew = switchPending==='__new__';
@@ -2902,9 +3253,16 @@ export default function ResidentScheduler() {
           <div className="flex items-center gap-2">
             <span className="text-xs text-indigo-300">{allResidents.length} residents</span>
             {block.startDate && (
-              <button onClick={exportCSV} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg transition-colors">
-                <Download size={12}/> CSV
-              </button>
+              <>
+                <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg transition-colors">
+                  <Download size={12}/> Grid CSV
+                </button>
+                <button onClick={()=>requestExport('qgenda')} title="One row per shift with real start/end times — for QGenda import"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg transition-colors">
+                  <Download size={12}/> QGenda CSV
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -2958,9 +3316,9 @@ export default function ResidentScheduler() {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} showToast={showToast}/>}
-          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides}/>}
-          {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} showToast={showToast}/>}
+          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} setDayRules={setDayRules}/>}
+          {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='guide' && <UserGuideTab/>}
         </main>
@@ -3001,6 +3359,27 @@ export default function ResidentScheduler() {
               <button onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium">
                 <Save size={13}/> Save &amp; {isSwitchNew?'New':'Switch'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-export validation gate */}
+      {exportConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center shrink-0"><AlertTriangle size={18} className="text-red-600"/></div>
+              <div>
+                <h2 className="font-semibold text-gray-900">Unresolved errors in this schedule</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  {pendingErrorCount()} error{pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations) — see the Violations tab. Exporting now will carry them into {exportConfirm==='qgenda'?'QGenda':'the CSV'}.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 flex-wrap justify-end">
+              <button onClick={()=>setExportConfirm(null)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
+              <button onClick={()=>runExport(exportConfirm)} className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">Export Anyway</button>
             </div>
           </div>
         </div>
