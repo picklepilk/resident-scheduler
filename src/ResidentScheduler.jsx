@@ -341,23 +341,35 @@ function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); retu
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function eligKey(r) { return `${r.category}_${r.pgy}`; }
 
+function formatAY(startYear) { return `AY${String(startYear).slice(2)}/${String(startYear+1).slice(2)}`; }
 function getAcademicYearFor(dateStr) {
-  const d = parseDate(dateStr); const m = d.getMonth(); const y = d.getFullYear();
-  const s = m >= 6 ? y : y - 1;
-  return `AY${String(s).slice(2)}/${String(s+1).slice(2)}`;
+  const d = parseDate(dateStr);
+  return formatAY(d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1);
 }
-function getAcademicYear() { return getAcademicYearFor(toDateStr(new Date())); }
+// NOT delegated to getAcademicYearFor(toDateStr(new Date())) — toDateStr uses toISOString (UTC),
+// which would round-trip "now" through the wrong calendar day for any timezone behind UTC
+// (e.g. US evenings) right around the July 1 AY boundary. Read local Y/M/D directly instead.
+function getAcademicYear() {
+  const now = new Date();
+  return formatAY(now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1);
+}
 
 // Shared start-date handler: auto-fills the end date to the configured block length and
 // (re)derives the academic year from the selected date — used by both Home and Settings.
 function applyStartDate(updateBlock, appSettings, s) {
   const len = (appSettings?.defaultBlockLength ?? 28) - 1;
-  updateBlock(b => ({
-    ...b,
-    startDate: s,
-    endDate: s ? toDateStr(addDays(parseDate(s), len)) : b.endDate,
-    academicYear: s ? getAcademicYearFor(s) : b.academicYear,
-  }));
+  updateBlock(b => {
+    // Auto-derive AY from the date, but only while it still matches what auto-derivation
+    // would have set for the block's previous start date (or is unset) — once a chief types
+    // a custom AY it no longer matches that, so it's left alone on later start-date edits.
+    const ayIsAutoDerived = !b.academicYear || (b.startDate && b.academicYear === getAcademicYearFor(b.startDate));
+    return {
+      ...b,
+      startDate: s,
+      endDate: s ? toDateStr(addDays(parseDate(s), len)) : b.endDate,
+      academicYear: s && ayIsAutoDerived ? getAcademicYearFor(s) : b.academicYear,
+    };
+  });
 }
 
 function getBlockDates(start, end) {
@@ -461,7 +473,7 @@ function parseRosterText(text, allowedCategoryIds) {
     let nI = nameIdx, cI = catIdx, pI = pgyIdx;
 
     // Unquoted comma-delimited "Last, First" splits the name's own comma into an extra
-    // column (e.g. "Chen, Liling,EM - Home,1" -> 4 cols instead of 3). If the category
+    // column (e.g. "Doe, Jane,EM - Home,1" -> 4 cols instead of 3). If the category
     // doesn't match where expected, retry once with the name and next column rejoined.
     if (delim === ',' && !matchCategory(cols[cI]) && cols.length > cI + 1 && matchCategory(cols[cI + 1])) {
       cols = [`${cols[nI]}, ${cols[nI + 1]}`, ...cols.slice(cI + 1)];
@@ -562,6 +574,9 @@ function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
   return violations;
 }
 
+// Shared by validateAll (post-hoc warning) and generateSchedule (forward-looking exclusion) so
+// the two never silently diverge on who the PGY-2 trauma cap applies to.
+function isTraumaCapSubject(resident) { return resident.category === 'EM_HOME' && resident.pgy === 2; }
 function isSchedulable(resident) {
   if (resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') {
     const bt = BLOCK_TYPE_MAP[resident.blockType];
@@ -802,7 +817,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 
     // PGY-2 soft trauma cap (configurable in Settings; 0 disables)
     const traumaCap = appSettings.pgy2TraumaCap ?? 3;
-    if (traumaCap > 0 && resident.category === 'EM_HOME' && resident.pgy === 2) {
+    if (traumaCap > 0 && isTraumaCapSubject(resident)) {
       const traumaCount = Object.values(rs).filter(s => s === 'TRAUMA-D' || s === 'TRAUMA-N').length;
       if (traumaCount > traumaCap)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
@@ -894,10 +909,15 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     unfilled: [], underTarget: [], jeopardyPlacements: [],
   };
 
+  // streakBefore only looks at days strictly before ds, so its result can't change no matter
+  // how many assignments happen ON ds — safe to compute once per (resident, day) and reuse
+  // across every slot/candidate that day instead of re-walking up to 14 days each time.
+  let streakCache = {};
   function streakBefore(rid, ds) {
+    if (streakCache[rid] !== undefined) return streakCache[rid];
     let n = 0, d = parseDate(ds);
     while (n < 14) { d = addDays(d, -1); if (schedule[rid][toDateStr(d)]) n++; else break; }
-    return n;
+    return streakCache[rid] = n;
   }
 
   // Candidate pool; the filter that empties it names the unfilled reason.
@@ -911,7 +931,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     pool = pool.filter(r => assigned[r.id] < target[r.id]);
     if (!pool.length) return { candidates: [], reason: 'allAtTarget' };
     if (shift.area === 'TRAUMA' && traumaCap > 0) {
-      pool = pool.filter(r => !(r.category === 'EM_HOME' && r.pgy === 2 && traumaCount[r.id] >= traumaCap));
+      pool = pool.filter(r => !(isTraumaCapSubject(r) && traumaCount[r.id] >= traumaCap));
       if (!pool.length) return { candidates: [], reason: 'traumaCapped' };
     }
     if (enforceRest) {
@@ -937,26 +957,32 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   }
 
   for (const ds of dates) {
+    streakCache = {};
     // Open slots for the day: coverage minus already-assigned (kept manual counts toward coverage)
     const slots = [];
     for (const shift of SHIFTS) {
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
       const need = getCoverageFor(shift.id, coverage);
-      report.totalSlots += need;
+      // Count manual assignments that exceed configured coverage too, or totalSlots can end up
+      // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
+      // exists for that shift) and the report reads as internally inconsistent.
+      report.totalSlots += Math.max(need, already);
       for (let k = already; k < need; k++) slots.push({ shift, slotIndex: k });
     }
     // MRV: fill the most-constrained shift first (fewest strict candidates as of the day start).
-    // Cache each shift's first-slot pool here and reuse it below — the fill loop only needs to
-    // recompute once a slot has actually been filled and state (assigned/typeCount) changed.
-    const poolCache = {};
+    // This pre-pass pool is ONLY a sort key — every shift's pool is computed against the same
+    // start-of-day state, so it's fine as a rough ordering estimate but must NOT be reused for
+    // the actual fill below: assigning shift A can remove a candidate from shift B's pool (e.g.
+    // "already working today"), so each slot's real fill decision needs a fresh candidatePool
+    // call against the current, mid-day state.
+    const sortPool = {};
     for (const { shift } of slots) {
-      if (poolCache[shift.id] == null) poolCache[shift.id] = candidatePool(shift, ds);
+      if (sortPool[shift.id] == null) sortPool[shift.id] = candidatePool(shift, ds).candidates.length;
     }
-    slots.sort((a, b) => poolCache[a.shift.id].candidates.length - poolCache[b.shift.id].candidates.length);
+    slots.sort((a, b) => sortPool[a.shift.id] - sortPool[b.shift.id]);
 
     for (const slot of slots) {
-      const { candidates, reason } = poolCache[slot.shift.id] ?? candidatePool(slot.shift, ds);
-      poolCache[slot.shift.id] = null;
+      const { candidates, reason } = candidatePool(slot.shift, ds);
       if (!candidates.length) {
         report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason });
         continue;
@@ -1077,21 +1103,30 @@ function SectionCard({ title, subtitle, children, action }) {
 
 // Collapsible variant of SectionCard — same styling, toggleable body, default open.
 // `action` (e.g. Save/New buttons) sits in the header and won't trigger the toggle.
+// Collapsible header button shared by CollapsibleCard and any custom multi-section card
+// (e.g. HomeTab's Current Block) that needs the same toggle but a body CollapsibleCard's
+// single padded div can't express.
+function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
+  return (
+    <button onClick={onToggle}
+      className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
+      <div>
+        <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
+        {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {action && <span onClick={e => e.stopPropagation()} className="flex items-center gap-2">{action}</span>}
+        <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </div>
+    </button>
+  );
+}
+
 function CollapsibleCard({ title, subtitle, children, action, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <button onClick={() => setOpen(p => !p)}
-        className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
-        <div>
-          <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
-          {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {action && <span onClick={e => e.stopPropagation()}>{action}</span>}
-          <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
-        </div>
-      </button>
+      <CollapsibleHeader title={title} subtitle={subtitle} action={action} open={open} onToggle={() => setOpen(p => !p)}/>
       {open && <div className="px-5 py-4">{children}</div>}
     </div>
   );
@@ -1384,31 +1419,23 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
 
       {/* Current Block — inline editable form */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        {/* Card header — collapsible; Save/New buttons don't trigger the toggle */}
-        <button onClick={() => setBlockOpen(p => !p)}
-          className="w-full px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
-          <div>
-            <h3 className="font-semibold text-gray-800 text-sm">Current Block</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {resCount > 0 || shiftCount > 0
-                ? `${resCount} resident${resCount !== 1 ? 's' : ''} · ${shiftCount} shift${shiftCount !== 1 ? 's' : ''} assigned`
-                : 'Set dates below to start scheduling'}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span onClick={e => e.stopPropagation()} className="flex gap-2">
-              <button onClick={onSaveBlock}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
-                <Save size={12}/> Save Block
-              </button>
-              <button onClick={onNewBlock}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-                <Plus size={12}/> New Block
-              </button>
-            </span>
-            <ChevronDown size={14} className={`text-gray-400 transition-transform ${blockOpen ? 'rotate-180' : ''}`}/>
-          </div>
-        </button>
+        <CollapsibleHeader
+          title="Current Block"
+          subtitle={resCount > 0 || shiftCount > 0
+            ? `${resCount} resident${resCount !== 1 ? 's' : ''} · ${shiftCount} shift${shiftCount !== 1 ? 's' : ''} assigned`
+            : 'Set dates below to start scheduling'}
+          open={blockOpen} onToggle={() => setBlockOpen(p => !p)}
+          action={<>
+            <button onClick={onSaveBlock}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+              <Save size={12}/> Save Block
+            </button>
+            <button onClick={onNewBlock}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+              <Plus size={12}/> New Block
+            </button>
+          </>}
+        />
 
         {blockOpen && <>
         {/* Block identity + dates grid — always visible, always editable */}
@@ -1764,13 +1791,13 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
   const [text, setText] = useState('');
   const [preview, setPreview] = useState(null);
   const fileRef = useRef(null);
-  const existingKeys = useMemo(() => new Set(existingNames.map(n => normalizeToken(n.firstName + n.lastName))), [existingNames]);
+  const existingKeys = useMemo(() => new Set(existingNames.map(n => normalizeToken(n.firstName) + '|' + normalizeToken(n.lastName))), [existingNames]);
 
   function parse() {
     const { ok, errors } = parseRosterText(text, allowedCategoryIds);
     const seen = new Set();
     const rows = ok.map(r => {
-      const key = normalizeToken(r.firstName + r.lastName);
+      const key = normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName);
       const status = existingKeys.has(key) || seen.has(key) ? 'duplicate' : 'new';
       seen.add(key);
       return { ...r, key, status };
@@ -1803,7 +1830,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
           any Rotation or date columns are ignored.
         </p>
         <textarea value={text} onChange={e => { setText(e.target.value); setPreview(null); }} rows={6}
-          placeholder={'Chen, Liling\tEM - Home\t1\nGallegos, Abel\tEM - Home\t1'}
+          placeholder={'Doe, Jane\tEM - Home\t1\nSmith, John\tEM - Home\t1'}
           className="w-full text-xs font-mono border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => fileRef.current?.click()}
@@ -3236,8 +3263,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
 function GenerationReportCard({ report, appSettings }) {
   const summary = useMemo(()=>summarizeGenerationReport(report, appSettings),[report,appSettings]);
-  const structuralCount = summary.filter(s=>s.structural).length;
   const realGapGroups = summary.filter(s=>!s.structural);
+  const structuralGroups = summary.filter(s=>s.structural);
+  const structuralCount = structuralGroups.length;
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
@@ -3271,7 +3299,7 @@ function GenerationReportCard({ report, appSettings }) {
           <div className="border border-gray-200 bg-gray-50 rounded-lg p-3">
             <span className="text-xs font-medium text-gray-500 px-1.5 py-0.5 rounded bg-gray-200 mr-1.5">Expected</span>
             <span className="text-xs text-gray-500">{structuralCount} shift{structuralCount!==1?'s have':' has'} gaps that match a day-of-week rule (e.g. Trauma window, GR Wednesday) — not a coverage problem.</span>
-            {summary.filter(s=>s.structural).map(g=>(
+            {structuralGroups.map(g=>(
               <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]}</p>
             ))}
           </div>
