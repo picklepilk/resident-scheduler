@@ -11,19 +11,21 @@ to CSV, with JSON backup/restore in the Settings tab.
   (public repo — never commit real resident names/PII; see "Data model & conventions" below).
 - React 19 + Vite 6 + Tailwind CSS · `lucide-react` icons. (`jspdf`/`jspdf-autotable` are declared
   in `package.json` but currently unused — no PDF export is implemented.)
-- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~4,100 lines).**
+- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~4,200 lines).**
   `src/` contains only that file plus `main.jsx` (10-line wrapper, no `App.jsx`) and `index.css` —
   expect to spend nearly all edits inside `ResidentScheduler.jsx`.
 - Shift catalog is defined as data at the top of `ResidentScheduler.jsx`: `SHIFTS` (id, label, area,
   hours, type: day/eve/night, chip color) and `SHIFT_TIMING` (exact start hour + duration per shift
   id, used for rest-period validation across midnight). `SHIFT_MAP`/`SHIFT_AREAS` are derived from
   `SHIFTS` — add new shift types there, not as ad-hoc strings elsewhere.
-- Persistence is local-only: a `useLocalStorage` hook (~line 1028) backs eight state slots under
-  `res_*` keys (`LS_BACKUP_KEYS`, ~line 3364): EM roster, current block, blocks history, eligibility
-  overrides, AY data, app settings, chief-editable day rules, and shift coverage. The Settings tab
-  exports/imports/resets all of them as one JSON backup. No backend, no fetch/Supabase anywhere —
-  **a new `res_*` key must be added to `LS_BACKUP_KEYS` or it silently won't round-trip** through
-  backup/restore.
+- Persistence is local-only: a `useLocalStorage` hook (~line 1052) backs nine state slots under
+  `res_*` keys (`LS_BACKUP_KEYS`, ~line 3392): EM roster, current block, blocks history, eligibility
+  overrides, AY data, app settings, chief-editable day rules, shift coverage, and sidebar tab order.
+  The Settings tab exports/imports/resets all of them as one JSON backup. No backend, no
+  fetch/Supabase anywhere — **a new `res_*` key must be added to `LS_BACKUP_KEYS` or it silently
+  won't round-trip** through backup/restore. Anything read back from a backup (or hand-edited
+  localStorage) should be treated as untrusted shape — e.g. `reconcileTabOrder` guards with
+  `Array.isArray` before trusting a persisted array.
 
 ## Running / building / deploying
 ```bash
@@ -42,35 +44,47 @@ names below rather than trusting offsets.
   types (`BLOCK_TYPES_EM`, `TRAUMA_BLOCKS`, `EM_HOME_BLOCK_TYPES_BY_PGY`), `BASE_ELIGIBILITY`,
   `DEFAULT_DAY_RULES`, `DEFAULT_COVERAGE`/`getCoverageFor` (per-shift daily staffing counts used by
   the generator).
-- ~336–380 `UTILITIES` — date helpers (`getBlockDates`, `parseDate`/`addDays`/`toDateStr`),
-  `getAcademicYearFor`/`getAcademicYear` (AY derived from a date, July cutoff), `applyStartDate`
-  (shared start-date handler: auto-fills end date to the configured block length and recomputes AY —
-  used by both Home and Settings tabs).
-- ~381–494 `ROSTER IMPORT` — `parseRosterText` (parses pasted/uploaded CSV or TSV roster rows into
-  `{firstName,lastName,category,pgy}`; tab-delimited or quote-aware CSV, optional header row,
-  category matched via `CATEGORY_SYNONYMS`, PGY validated against the category's `pgyOptions`;
-  Rotation/date columns are read but ignored) plus `splitCsvLine`/`splitName`/`matchCategory`.
-- ~495–670 `REST-PERIOD UTILITIES` / eligibility base — `checkRestViolations`, `isSchedulable`,
+- ~336–392 `UTILITIES` — date helpers (`getBlockDates`, `parseDate`/`addDays`/`toDateStr`),
+  `getAcademicYearFor`/`getAcademicYear`/`formatAY` (AY derived from a date, July cutoff —
+  `getAcademicYear()` reads `Date` fields directly rather than round-tripping through
+  `toISOString()`, to avoid an off-by-one-day near the July cutoff in timezones behind UTC),
+  `applyStartDate` (shared start-date handler: auto-fills end date to the configured block length,
+  recomputes AY only while it still matches auto-derivation so a manually-edited AY sticks — used by
+  both Home and Settings tabs).
+- ~393–506 `ROSTER IMPORT` — `parseRosterText` (parses pasted/uploaded CSV or TSV roster rows into
+  `{firstName,lastName,category,pgy}`; tab-delimited or quote-aware CSV — including a fallback for
+  unquoted "Last, First" names that would otherwise misalign columns — optional header row, category
+  matched via `CATEGORY_SYNONYMS`, PGY validated against the category's `pgyOptions`; Rotation/date
+  columns are read but ignored) plus `splitCsvLine`/`splitName`/`matchCategory`.
+- ~507–685 `REST-PERIOD UTILITIES` / eligibility base — `checkRestViolations`, `isSchedulable`,
   `getShiftTarget`, `getEffectiveEligibility`.
-- ~671–848 `ELIGIBILITY LOGIC` — `getEligibleShifts` (jeopardy-call logic lives here) and
-  `validateAll()`, the rules/validation engine (also handles jeopardy policy).
-- ~849–1025 `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot
+- ~686–863 `ELIGIBILITY LOGIC` — `getEligibleShifts` (jeopardy-call logic lives here) and
+  `validateAll()`, the rules/validation engine (also handles jeopardy policy); shares
+  `isTraumaCapSubject(resident)` with the generator below rather than re-testing
+  `category==='EM_HOME' && pgy===2` in both places.
+- ~864–1051 `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot
   ordering per day, candidate filtering with named unfilled-reasons, target/type-mix/streak/jeopardy
-  scoring; never overwrites a non-empty cell) and `summarizeGenerationReport()` (turns the generator's
-  report into grouped, human-readable recommendations for the Violations tab, including "expected
-  gap" detection for day-of-week rules like Trauma windows or GR Wednesday).
-- ~1026–1035 `HOOKS` — `useLocalStorage`.
-- ~1036–3822 tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`),
-  `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not Home), `HOME TAB`,
-  `RESIDENT FORM` (shared by Add/Edit modals, plus `ImportRosterModal` for bulk roster import),
-  `EM RESIDENTS TAB`, `OFF-SERVICE TAB` (inline per-tile date-off/jeopardy editors), `SHIFT MATRIX
-  TAB` (rotation-aware shift matrix), `RULES TAB` ("Scheduling Rules" in the UI — day/rotation rules
-  plus the Daily Shift Coverage editor consumed by the generator), `SHIFT PICKER MODAL` +
-  `SCHEDULE GRID` (main editing grid; Generate Schedule / Clear & Regenerate live here),
+  scoring; recomputes the candidate pool fresh for every slot — a cached pool went stale mid-day and
+  caused double-booking once, so don't reintroduce that; never overwrites a non-empty cell) and
+  `summarizeGenerationReport()` (turns the generator's report into grouped, human-readable
+  recommendations for the Violations tab, including "expected gap" detection for day-of-week rules
+  like Trauma windows or GR Wednesday).
+- ~1052–1061 `HOOKS` — `useLocalStorage`.
+- ~1062–3850 tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
+  `CollapsibleHeader`), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
+  Home), `HOME TAB`, `RESIDENT FORM` (shared by Add/Edit modals, plus `ImportRosterModal` for bulk
+  roster import), `EM RESIDENTS TAB`, `OFF-SERVICE TAB` (inline per-tile date-off/jeopardy editors),
+  `SHIFT MATRIX TAB` (rotation-aware shift matrix), `RULES TAB` ("Scheduling Rules" in the UI —
+  day/rotation rules plus the Daily Shift Coverage editor consumed by the generator), `SHIFT PICKER
+  MODAL` + `SCHEDULE GRID` (main editing grid; Generate Schedule / Clear & Regenerate live here),
   `VALIDATION TAB` (violations list plus the Generation Report), `SETTINGS TAB` (backup/restore,
   `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`.
-- ~3823–end `MAIN APP` — the `TABS` nav array and root `ResidentScheduler` component: all state via
-  `useLocalStorage`, `saveBlock`/`loadBlock`/`newBlock`, `exportCSV`, header/sidebar/tab-routing render.
+- ~3851–end `MAIN APP` — the `TABS` nav array; `reconcileTabOrder`/`reorderIds` (pure helpers behind
+  the sidebar's drag-to-reorder — reconcile guards against a non-array persisted order, reorder
+  always lands the dragged tab immediately before the drop target regardless of drag direction);
+  `SidebarNav` (own component, not inlined in the root — keeps drag-hover state from re-rendering
+  whatever tab content is currently mounted); the root `ResidentScheduler` component: all state via
+  `useLocalStorage`, `saveBlock`/`loadBlock`/`newBlock`, `exportCSV`, header/tab-routing render.
 
 ## Data model & conventions
 - Shift IDs follow `AREA-TYPE` (e.g. `POD-D`, `MT-N`, `TRAUMA-D` — note TRAUMA has no evening shift).
