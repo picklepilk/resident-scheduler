@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2,
 } from 'lucide-react';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -204,6 +204,12 @@ const SHIFT_TARGETS = {
   POD_1: 14,
 };
 
+// Residents needed per shift per day, used by Generate Schedule. Chief edits are stored as a
+// sparse override object in localStorage (res_coverage) and merged over these defaults — same
+// idiom as dayRules/eligOverrides. 0 = the generator does not staff that shift.
+const DEFAULT_COVERAGE = Object.fromEntries(SHIFTS.map(s => [s.id, 1]));
+function getCoverageFor(shiftId, coverage = {}) { return coverage[shiftId] ?? DEFAULT_COVERAGE[shiftId] ?? 0; }
+
 // Static rules reference per category_pgy — used in Rules tab
 // Hand-maintained prose that doesn't fit the structured DEFAULT_DAY_RULES schema — supplementary
 // context only (shift-count math, workflow advice, unresolved TBDs). Day-of-week/block-type rules
@@ -335,10 +341,23 @@ function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); retu
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function eligKey(r) { return `${r.category}_${r.pgy}`; }
 
-function getAcademicYear() {
-  const now = new Date(); const m = now.getMonth(); const y = now.getFullYear();
+function getAcademicYearFor(dateStr) {
+  const d = parseDate(dateStr); const m = d.getMonth(); const y = d.getFullYear();
   const s = m >= 6 ? y : y - 1;
   return `AY${String(s).slice(2)}/${String(s+1).slice(2)}`;
+}
+function getAcademicYear() { return getAcademicYearFor(toDateStr(new Date())); }
+
+// Shared start-date handler: auto-fills the end date to the configured block length and
+// (re)derives the academic year from the selected date — used by both Home and Settings.
+function applyStartDate(updateBlock, appSettings, s) {
+  const len = (appSettings?.defaultBlockLength ?? 28) - 1;
+  updateBlock(b => ({
+    ...b,
+    startDate: s,
+    endDate: s ? toDateStr(addDays(parseDate(s), len)) : b.endDate,
+    academicYear: s ? getAcademicYearFor(s) : b.academicYear,
+  }));
 }
 
 function getBlockDates(start, end) {
@@ -357,6 +376,120 @@ function prettyDate(s) {
 function formatDisplayDate(s) {
   const d = parseDate(s);
   return `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`;
+}
+
+// ─── ROSTER IMPORT ─────────────────────────────────────────────────────────────
+
+// Recognized free-text spellings for each category, beyond its own id/label/shortLabel.
+const CATEGORY_SYNONYMS = {
+  EM_HOME: ['em', 'emhome', 'emergencymedicine'],
+  EM_BAMC: ['bamc', 'embamc'],
+  PEDS:    ['peds', 'pediatrics'],
+  FM:      ['fm', 'familymedicine'],
+  IM:      ['im', 'internalmedicine'],
+  NEURO:   ['neuro', 'neurology'],
+  ANES:    ['anes', 'anesthesia', 'anesthesiology'],
+  PSYCH:   ['psych', 'psychiatry'],
+  POD:     ['pod', 'podiatry'],
+};
+function normalizeToken(s) { return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function matchCategory(raw) {
+  const n = normalizeToken(raw);
+  if (!n) return null;
+  for (const c of CATEGORIES) {
+    if (n === normalizeToken(c.id) || n === normalizeToken(c.label) || n === normalizeToken(c.shortLabel)) return c.id;
+  }
+  for (const [id, syns] of Object.entries(CATEGORY_SYNONYMS)) if (syns.includes(n)) return id;
+  return null;
+}
+
+// Splits one CSV line honoring double-quoted fields (so `"Last, First"` survives comma-splitting).
+function splitCsvLine(line) {
+  const out = []; let cur = '', inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else cur += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function splitName(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  if (s.includes(',')) {
+    const [last, first] = s.split(',').map(x => x.trim());
+    if (!last || !first) return null;
+    return { firstName: first, lastName: last };
+  }
+  const parts = s.split(/\s+/);
+  if (parts.length < 2) return null;
+  return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+}
+
+// Parses pasted or uploaded roster text into resident rows. Only Name/Category/PGY are read —
+// any Rotation/date columns present (as in the QGenda-style export this mirrors) are ignored.
+// allowedCategoryIds restricts which categories this import target (EM Home vs Off-Service) accepts.
+function parseRosterText(text, allowedCategoryIds) {
+  const lines = String(text ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const ok = [], errors = [];
+  if (!lines.length) return { ok, errors };
+
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const split = line => delim === '\t' ? line.split('\t').map(s => s.trim()) : splitCsvLine(line);
+
+  let startIdx = 0, nameIdx = 0, catIdx = 1, pgyIdx = 2;
+  const first = split(lines[0]);
+  if (/resident|name/i.test(first[0] || '') && first.some(c => /category|service/i.test(c))) {
+    startIdx = 1;
+    const li = first.map(c => c.toLowerCase());
+    nameIdx = li.findIndex(c => /resident|name/.test(c));
+    catIdx  = li.findIndex(c => /category|service/.test(c));
+    pgyIdx  = li.findIndex(c => /pgy/.test(c));
+    if (nameIdx < 0) nameIdx = 0; if (catIdx < 0) catIdx = 1; if (pgyIdx < 0) pgyIdx = 2;
+  }
+
+  for (let i = startIdx; i < lines.length; i++) {
+    const lineNo = i + 1;
+    let cols = split(lines[i]);
+    let nI = nameIdx, cI = catIdx, pI = pgyIdx;
+
+    // Unquoted comma-delimited "Last, First" splits the name's own comma into an extra
+    // column (e.g. "Chen, Liling,EM - Home,1" -> 4 cols instead of 3). If the category
+    // doesn't match where expected, retry once with the name and next column rejoined.
+    if (delim === ',' && !matchCategory(cols[cI]) && cols.length > cI + 1 && matchCategory(cols[cI + 1])) {
+      cols = [`${cols[nI]}, ${cols[nI + 1]}`, ...cols.slice(cI + 1)];
+      cI = 1; pI = 2;
+    }
+
+    const name = splitName(cols[nI]);
+    if (!name) { errors.push({ line: lineNo, raw: lines[i], reason: 'Expected a "Last, First" name' }); continue; }
+
+    const category = matchCategory(cols[cI]);
+    if (!category) { errors.push({ line: lineNo, raw: lines[i], reason: `Unrecognized category "${cols[cI] ?? ''}"` }); continue; }
+    if (!allowedCategoryIds.includes(category)) {
+      errors.push({ line: lineNo, raw: lines[i], reason: `"${CAT_MAP[category].label}" can't be imported here` });
+      continue;
+    }
+
+    const pgyMatch = String(cols[pI] ?? '').match(/[0-9]/);
+    const pgy = pgyMatch ? Number(pgyMatch[0]) : null;
+    const pgyOptions = CAT_MAP[category].pgyOptions;
+    if (!pgy || !pgyOptions.includes(pgy)) {
+      errors.push({ line: lineNo, raw: lines[i], reason: `PGY "${cols[pI] ?? ''}" isn't valid for ${CAT_MAP[category].label} (allowed: ${pgyOptions.join(', ')})` });
+      continue;
+    }
+
+    ok.push({ firstName: name.firstName, lastName: name.lastName, category, pgy });
+  }
+
+  return { ok, errors };
 }
 
 // ─── REST-PERIOD UTILITIES ────────────────────────────────────────────────────
@@ -713,6 +846,183 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   return issues;
 }
 
+// ─── SCHEDULE GENERATOR ───────────────────────────────────────────────────────
+// Greedy fill: per day, staff the most-constrained shift first (MRV); per slot, pick the
+// eligible resident furthest below target, preferring day/eve/night variety and short streaks.
+// Fill mode never overwrites a non-empty cell — that is the "keep manual assignments" contract.
+// Returns { schedule, report } or null when the block has no dates.
+function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false }) {
+  const dates = getBlockDates(block.startDate, block.endDate);
+  if (!dates.length) return null;
+
+  const sd          = block.specialDays || {};
+  const enforceRest = appSettings.enforceRest !== false;
+  const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
+  const traumaCap   = appSettings.pgy2TraumaCap ?? 3;
+
+  const schedule = {};
+  for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
+
+  // Per-resident running state, seeded from kept assignments
+  const target = {}, assigned = {}, typeCount = {}, traumaCount = {};
+  let keptManual = 0;
+  for (const r of allResidents) {
+    target[r.id] = getShiftTarget(r, appSettings);
+    assigned[r.id] = 0;
+    typeCount[r.id] = { day: 0, eve: 0, night: 0 };
+    traumaCount[r.id] = 0;
+    for (const sid of Object.values(schedule[r.id])) {
+      if (!sid) continue;
+      assigned[r.id]++; keptManual++;
+      const sh = SHIFT_MAP[sid];
+      if (sh) typeCount[r.id][sh.type]++;
+      if (sh?.area === 'TRAUMA') traumaCount[r.id]++;
+    }
+  }
+
+  // Eligibility cache: eligCache[rid][ds] = Set of eligible shift ids
+  const eligCache = {};
+  for (const r of allResidents) {
+    eligCache[r.id] = {};
+    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules));
+  }
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    mode: clearFirst ? 'regenerate' : 'fill',
+    totalSlots: 0, keptManual, filled: 0,
+    unfilled: [], underTarget: [], jeopardyPlacements: [],
+  };
+
+  function streakBefore(rid, ds) {
+    let n = 0, d = parseDate(ds);
+    while (n < 14) { d = addDays(d, -1); if (schedule[rid][toDateStr(d)]) n++; else break; }
+    return n;
+  }
+
+  // Candidate pool; the filter that empties it names the unfilled reason.
+  function candidatePool(shift, ds) {
+    let pool = allResidents.filter(r => eligCache[r.id][ds].has(shift.id));
+    if (!pool.length) return { candidates: [], reason: 'noEligible' };
+    pool = pool.filter(r => !schedule[r.id][ds]);
+    if (!pool.length) return { candidates: [], reason: 'allWorking' };
+    pool = pool.filter(r => target[r.id] != null);
+    if (!pool.length) return { candidates: [], reason: 'selfCoverOnly' };
+    pool = pool.filter(r => assigned[r.id] < target[r.id]);
+    if (!pool.length) return { candidates: [], reason: 'allAtTarget' };
+    if (shift.area === 'TRAUMA' && traumaCap > 0) {
+      pool = pool.filter(r => !(r.category === 'EM_HOME' && r.pgy === 2 && traumaCount[r.id] >= traumaCap));
+      if (!pool.length) return { candidates: [], reason: 'traumaCapped' };
+    }
+    if (enforceRest) {
+      pool = pool.filter(r => checkRestViolations(r.id, ds, shift.id, schedule).length === 0);
+      if (!pool.length) return { candidates: [], reason: 'allRestBlocked' };
+    }
+    return { candidates: pool, reason: null };
+  }
+
+  // Weights are ordered by priority, each comfortably larger than the sum below it so a
+  // higher-priority factor always wins: hitting shift target (100) outranks day/eve/night
+  // variety (20), which outranks trimming a long consecutive-workday streak (15); avoiding
+  // a jeopardy-call date under 'warn' policy (50) sits between them since it's a soft
+  // preference, not a hard rule (jeopardyPolicy 'block' already excludes the resident
+  // entirely upstream, in getEligibleShifts). Math.random() only breaks exact ties.
+  function score(r, shift, ds) {
+    const t = target[r.id];
+    const deficit = (t - assigned[r.id]) / t;
+    const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
+    const streak = streakBefore(r.id, ds);
+    const jeo = jeoPolicy === 'warn' && (r.jeopardyDates || []).includes(ds) ? 1 : 0;
+    return 100 * deficit - 20 * mixShare - 15 * Math.max(0, streak - 3) - 50 * jeo + Math.random();
+  }
+
+  for (const ds of dates) {
+    // Open slots for the day: coverage minus already-assigned (kept manual counts toward coverage)
+    const slots = [];
+    for (const shift of SHIFTS) {
+      const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
+      const need = getCoverageFor(shift.id, coverage);
+      report.totalSlots += need;
+      for (let k = already; k < need; k++) slots.push({ shift, slotIndex: k });
+    }
+    // MRV: fill the most-constrained shift first (fewest strict candidates as of the day start).
+    // Cache each shift's first-slot pool here and reuse it below — the fill loop only needs to
+    // recompute once a slot has actually been filled and state (assigned/typeCount) changed.
+    const poolCache = {};
+    for (const { shift } of slots) {
+      if (poolCache[shift.id] == null) poolCache[shift.id] = candidatePool(shift, ds);
+    }
+    slots.sort((a, b) => poolCache[a.shift.id].candidates.length - poolCache[b.shift.id].candidates.length);
+
+    for (const slot of slots) {
+      const { candidates, reason } = poolCache[slot.shift.id] ?? candidatePool(slot.shift, ds);
+      poolCache[slot.shift.id] = null;
+      if (!candidates.length) {
+        report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason });
+        continue;
+      }
+      let best = candidates[0], bestScore = -Infinity;
+      for (const r of candidates) {
+        const s = score(r, slot.shift, ds);
+        if (s > bestScore) { bestScore = s; best = r; }
+      }
+      schedule[best.id][ds] = slot.shift.id;
+      assigned[best.id]++;
+      typeCount[best.id][slot.shift.type]++;
+      if (slot.shift.area === 'TRAUMA') traumaCount[best.id]++;
+      if (jeoPolicy === 'warn' && (best.jeopardyDates || []).includes(ds)) {
+        report.jeopardyPlacements.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
+      }
+      report.filled++;
+    }
+  }
+
+  report.underTarget = allResidents
+    .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
+    .map(r => ({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, assigned: assigned[r.id], target: target[r.id] }));
+
+  return { schedule, report };
+}
+
+// Render-time summary of a generation report: group unfilled slots per shift, detect
+// structural weekday gaps (day-of-week rules that block everyone — Trauma days, GR Wed),
+// and derive plain-language recommendations. Not stored — wording can evolve freely.
+function summarizeGenerationReport(report, appSettings = {}) {
+  const byShift = {};
+  for (const u of report.unfilled) {
+    (byShift[u.shiftId] ??= []).push(u);
+  }
+  const dow = ds => parseDate(ds).getDay();
+  const DOW_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  return Object.entries(byShift).map(([shiftId, slots]) => {
+    const reasonCounts = {};
+    for (const s of slots) reasonCounts[s.reason] = (reasonCounts[s.reason] || 0) + 1;
+
+    // Structural test: every noEligible gap for this shift falls on a fixed weekday subset,
+    // and that subset is a strict subset of the block's weekdays — i.e. a day-of-week rule.
+    const noElig = slots.filter(s => s.reason === 'noEligible');
+    const gapDows = [...new Set(noElig.map(s => dow(s.dateStr)))].sort();
+    const structural = noElig.length > 0 && noElig.length === slots.length && gapDows.length < 7 &&
+      noElig.every(s => gapDows.includes(dow(s.dateStr)));
+
+    const recs = [];
+    const label = SHIFT_MAP[shiftId]?.label || shiftId;
+    if (reasonCounts.noEligible) {
+      recs.push(structural
+        ? `${label} had no eligible residents on ${gapDows.map(d=>DOW_NAMES[d]).join('/')} — a day-of-week rule blocks everyone (e.g. Trauma Tue/Thu/Sat/Sun window, GR Wednesday). If that's expected, no action needed; otherwise edit the rule on this tab.`
+        : `No resident in this block is eligible for ${label} on those days — check the Shift Matrix and each resident's rotation (EM Residents tab).`);
+    }
+    if (reasonCounts.allAtTarget) recs.push(`Everyone eligible for ${label} had already reached their shift target — raise targets in Settings → Shift Targets, or lower ${label} coverage above.`);
+    if (reasonCounts.allRestBlocked) recs.push(`All eligible residents were blocked by the rest-period rule — rearrange nearby night shifts manually, or Generate again (tie-breaking is randomized, a different arrangement may fit).`);
+    if (reasonCounts.allWorking) recs.push(`Everyone eligible for ${label} was already working that day — add residents to this block or reduce same-day coverage.`);
+    if (reasonCounts.selfCoverOnly) recs.push(`Only self-scheduling residents (no shift target, e.g. Peds) are eligible for ${label} — assign them manually in the grid, or set ${label} coverage to 0.`);
+    if (reasonCounts.traumaCapped) recs.push(`Eligible PGY-2s hit the trauma cap (${appSettings.pgy2TraumaCap ?? 3}/block) — raise the cap in Settings or cover with a PGY-1/PGY-3.`);
+
+    return { shiftId, slots, reasonCounts, structural, gapDows, recommendations: recs };
+  }).sort((a, b) => (a.structural ? 1 : 0) - (b.structural ? 1 : 0));
+}
+
 // ─── HOOKS ────────────────────────────────────────────────────────────────────
 
 function useLocalStorage(key, def) {
@@ -761,6 +1071,28 @@ function SectionCard({ title, subtitle, children, action }) {
         {action}
       </div>
       <div className="px-5 py-4">{children}</div>
+    </div>
+  );
+}
+
+// Collapsible variant of SectionCard — same styling, toggleable body, default open.
+// `action` (e.g. Save/New buttons) sits in the header and won't trigger the toggle.
+function CollapsibleCard({ title, subtitle, children, action, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button onClick={() => setOpen(p => !p)}
+        className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
+        <div>
+          <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
+          {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {action && <span onClick={e => e.stopPropagation()}>{action}</span>}
+          <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+        </div>
+      </button>
+      {open && <div className="px-5 py-4">{children}</div>}
     </div>
   );
 }
@@ -829,7 +1161,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
     <div className="space-y-5 max-w-3xl">
 
       {/* Block Overview */}
-      <SectionCard title="Block Overview">
+      <CollapsibleCard title="Block Overview">
         {!block.startDate ? (
           <p className="text-sm text-gray-400 italic">No block dates set — go to Settings to set start/end dates.</p>
         ) : (
@@ -873,10 +1205,10 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
             )}
           </div>
         )}
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Conferences in this block */}
-      <SectionCard title="Conferences This Block"
+      <CollapsibleCard title="Conferences This Block"
         subtitle={confsInBlock.length === 0 ? 'No conferences fall within this block period.' : `${confsInBlock.length} conference${confsInBlock.length !== 1 ? 's' : ''} overlap this block — modified shift schedule applies to non-attending EM Home residents.`}>
         {confsInBlock.length === 0 ? (
           <p className="text-xs text-gray-400 italic">
@@ -895,11 +1227,11 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
             ))}
           </div>
         )}
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* 1st Fridays */}
       {firstFridays.length > 0 && (
-        <SectionCard title="First Fridays This Block"
+        <CollapsibleCard title="First Fridays This Block"
           subtitle="Anesthesia: off 2–4pm social hour. ⚠ Full rule TBD.">
           <div className="flex flex-wrap gap-2">
             {firstFridays.map(d => (
@@ -909,11 +1241,11 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
               </span>
             ))}
           </div>
-        </SectionCard>
+        </CollapsibleCard>
       )}
 
       {/* Special days for this block — editable */}
-      <SectionCard title="Special Days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
+      <CollapsibleCard title="Special Days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
         <div className="space-y-5">
           <SpecialDaysList
             label="IM Code Blue Days"
@@ -944,7 +1276,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
             chipClass="bg-violet-100 text-violet-700 border border-violet-200"
           />
         </div>
-      </SectionCard>
+      </CollapsibleCard>
 
     </div>
   );
@@ -1019,7 +1351,8 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
   const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
   const resCount   = emRoster.length + (block.offServiceResidents || []).length;
   const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
-  const sd = block.specialDays || {};
+  const [blockOpen, setBlockOpen] = useState(true);
+  const [ayOpen, setAyOpen] = useState(true);
 
   // Group history by AY; also include AYs from ayData with no blocks yet
   const byYear = useMemo(() => {
@@ -1044,29 +1377,16 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
 
   function setField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
 
-  function onStartDateChange(s) {
-    const len = (appSettings?.defaultBlockLength ?? 28) - 1;
-    updateBlock(b => ({
-      ...b,
-      startDate: s,
-      // Auto-set end date to the configured block length (Settings → Defaults)
-      endDate: s ? toDateStr(addDays(parseDate(s), len)) : b.endDate,
-      // Auto-populate AY if not already set
-      academicYear: b.academicYear || getAcademicYear(),
-    }));
-  }
-
-  function updSD(field, dates) {
-    updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: dates } }));
-  }
+  function onStartDateChange(s) { applyStartDate(updateBlock, appSettings, s); }
 
   return (
     <div className="space-y-5 max-w-3xl">
 
       {/* Current Block — inline editable form */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        {/* Card header */}
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3">
+        {/* Card header — collapsible; Save/New buttons don't trigger the toggle */}
+        <button onClick={() => setBlockOpen(p => !p)}
+          className="w-full px-5 py-4 border-b border-gray-100 flex items-center justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
           <div>
             <h3 className="font-semibold text-gray-800 text-sm">Current Block</h3>
             <p className="text-xs text-gray-500 mt-0.5">
@@ -1075,18 +1395,22 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
                 : 'Set dates below to start scheduling'}
             </p>
           </div>
-          <div className="flex gap-2">
-            <button onClick={onSaveBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
-              <Save size={12}/> Save Block
-            </button>
-            <button onClick={onNewBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-              <Plus size={12}/> New Block
-            </button>
+          <div className="flex items-center gap-2">
+            <span onClick={e => e.stopPropagation()} className="flex gap-2">
+              <button onClick={onSaveBlock}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+                <Save size={12}/> Save Block
+              </button>
+              <button onClick={onNewBlock}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+                <Plus size={12}/> New Block
+              </button>
+            </span>
+            <ChevronDown size={14} className={`text-gray-400 transition-transform ${blockOpen ? 'rotate-180' : ''}`}/>
           </div>
-        </div>
+        </button>
 
+        {blockOpen && <>
         {/* Block identity + dates grid — always visible, always editable */}
         <div className="px-5 pt-4 pb-3">
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -1120,25 +1444,6 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
           )}
         </div>
 
-        {/* Special Days — inline chip editors */}
-        <div className="px-5 pb-4 border-t border-gray-100 pt-4">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Special Days This Block</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <SpecialDaysList label="IM Code Blue Days" hint="IM off night before + day of"
-              dates={sd.codeBlueDays || []} onUpdate={d => updSD('codeBlueDays', d)}
-              chipClass="bg-red-100 text-red-700 border border-red-200"/>
-            <SpecialDaysList label="Peds Advocacy Days" hint="Peds off night before"
-              dates={sd.advocacyDays || []} onUpdate={d => updSD('advocacyDays', d)}
-              chipClass="bg-emerald-100 text-emerald-700 border border-emerald-200"/>
-            <SpecialDaysList label="BAMC Procedure Days" hint="BAMC off night before + day of"
-              dates={sd.procDays || []} onUpdate={d => updSD('procDays', d)}
-              chipClass="bg-sky-100 text-sky-700 border border-sky-200"/>
-            <SpecialDaysList label="Anesthesia US Days" hint="Anesthesia off these days"
-              dates={sd.anesDays || []} onUpdate={d => updSD('anesDays', d)}
-              chipClass="bg-violet-100 text-violet-700 border border-violet-200"/>
-          </div>
-        </div>
-
         {/* Go to Schedule */}
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
           <span className="text-xs text-gray-400">
@@ -1149,16 +1454,20 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
             Go to Schedule <ChevronRight size={14}/>
           </button>
         </div>
+        </>}
       </div>
 
       {/* Saved Blocks — grouped by AY */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between mb-1">
+        <button onClick={() => setAyOpen(p => !p)} className="w-full flex items-center justify-between mb-1 text-left">
           <h3 className="text-sm font-semibold text-gray-700">Academic Years</h3>
-          <p className="text-xs text-gray-400">Conference & ITE dates are set per AY</p>
-        </div>
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-gray-400">Conference & ITE dates are set per AY</p>
+            <ChevronDown size={14} className={`text-gray-400 transition-transform ${ayOpen ? 'rotate-180' : ''}`}/>
+          </div>
+        </button>
 
-        {byYear.length === 0 ? (
+        {ayOpen && (byYear.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400 italic">
             No saved blocks yet. Click "Save Block" above to archive the current block.
           </div>
@@ -1214,7 +1523,7 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
               </div>
             )}
           </div>
-        ))}
+        )))}
       </div>
     </div>
   );
@@ -1448,11 +1757,108 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave }
   );
 }
 
+// Bulk-import wrapper — paste or upload roster text, preview, then commit new rows only.
+// Shared by the EM Residents and Off-Service tabs; `allowedCategoryIds` scopes which
+// categories are accepted (EM_HOME only, vs the 8 off-service specialties).
+function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport, onClose }) {
+  const [text, setText] = useState('');
+  const [preview, setPreview] = useState(null);
+  const fileRef = useRef(null);
+  const existingKeys = useMemo(() => new Set(existingNames.map(n => normalizeToken(n.firstName + n.lastName))), [existingNames]);
+
+  function parse() {
+    const { ok, errors } = parseRosterText(text, allowedCategoryIds);
+    const seen = new Set();
+    const rows = ok.map(r => {
+      const key = normalizeToken(r.firstName + r.lastName);
+      const status = existingKeys.has(key) || seen.has(key) ? 'duplicate' : 'new';
+      seen.add(key);
+      return { ...r, key, status };
+    });
+    setPreview({ rows, errors });
+  }
+
+  function pickFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function commit() {
+    const newRows = preview.rows.filter(r => r.status === 'new').map(({ key, status, ...r }) => r);
+    onImport(newRows);
+    onClose();
+  }
+
+  const newCount = preview?.rows.filter(r => r.status === 'new').length ?? 0;
+
+  return (
+    <Modal title={title} onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Paste rows copied from a spreadsheet, or upload a CSV/text file. Expected columns: Resident ("Last, First"), Category, PGY —
+          any Rotation or date columns are ignored.
+        </p>
+        <textarea value={text} onChange={e => { setText(e.target.value); setPreview(null); }} rows={6}
+          placeholder={'Chen, Liling\tEM - Home\t1\nGallegos, Abel\tEM - Home\t1'}
+          className="w-full text-xs font-mono border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
+            <Upload size={12}/> Choose file
+          </button>
+          <input ref={fileRef} type="file" accept=".csv,.tsv,.txt" onChange={pickFile} className="hidden"/>
+          <button type="button" onClick={parse} disabled={!text.trim()}
+            className="ml-auto px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg">
+            Parse
+          </button>
+        </div>
+
+        {preview && (
+          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
+            {preview.rows.map((r,i) => (
+              <div key={`ok-${i}`} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                {r.status === 'new'
+                  ? <Check size={12} className="text-emerald-500 shrink-0"/>
+                  : <span className="text-gray-300 shrink-0 text-[10px] font-semibold">—</span>}
+                <span className="text-gray-700">{r.firstName} {r.lastName}</span>
+                <span className="text-gray-400">PGY-{r.pgy} · {CAT_MAP[r.category].shortLabel}</span>
+                {r.status === 'duplicate' && <span className="ml-auto text-gray-400">already in roster, skipped</span>}
+              </div>
+            ))}
+            {preview.errors.map((e,i) => (
+              <div key={`err-${i}`} className="flex items-center gap-2 px-3 py-1.5 text-xs bg-red-50/50">
+                <X size={12} className="text-red-400 shrink-0"/>
+                <span className="text-red-700">Line {e.line}: {e.reason}</span>
+              </div>
+            ))}
+            {preview.rows.length === 0 && preview.errors.length === 0 && (
+              <p className="px-3 py-3 text-xs text-gray-400 text-center">Nothing recognizable in that text.</p>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
+          <button type="button" onClick={commit} disabled={!preview || newCount === 0}
+            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            Import {newCount > 0 ? newCount : ''} resident{newCount!==1?'s':''}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
 function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
+  const [showImport, setShowImport]   = useState(false);
   const [editResident, setEditResident] = useState(null);
   const [confirmRemove, setConfirmRemove] = useState(null);
   const assign = block.emBlockAssignments || {};
@@ -1504,6 +1910,10 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
               <Plus size={11}/> EM PGY-{pgy}
             </button>
           ))}
+          <button onClick={() => setShowImport(true)}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+            <Upload size={11}/> Import Roster
+          </button>
         </div>
       </div>
 
@@ -1633,6 +2043,14 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
           </div>
         </Modal>
       )}
+      {showImport && (
+        <ImportRosterModal title="Import EM Home Roster" allowedCategoryIds={['EM_HOME']}
+          existingNames={emRoster}
+          onImport={rows => setEmRoster(p => [...p, ...rows.map(r => ({
+            id: uuid(), ...r, blockType: 'EM', isCCUNights: false, approvedDatesOff: [], jeopardyDates: [],
+          }))])}
+          onClose={() => setShowImport(false)}/>
+      )}
     </div>
   );
 }
@@ -1642,6 +2060,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
 function OffServiceTab({ block, updateBlock, appSettings }) {
   // showAdd: null | { category }
   const [showAdd, setShowAdd]           = useState(null);
+  const [showImport, setShowImport]     = useState(false);
   const [editResident, setEditResident] = useState(null);
   const residents = block.offServiceResidents || [];
   const sched     = block.schedule || {};
@@ -1692,6 +2111,10 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
               <Plus size={11}/> {cat.shortLabel}
             </button>
           ))}
+          <button onClick={() => setShowImport(true)}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+            <Upload size={11}/> Import Roster
+          </button>
         </div>
       </div>
 
@@ -1730,16 +2153,14 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat.badge}`}>{cat.shortLabel} PGY-{res.pgy}</span>
                           </div>
                           {res.isCCUNights && <p className="text-xs text-orange-600 mt-0.5 font-medium">CCU nights</p>}
-                          {(res.approvedDatesOff?.length > 0 || res.jeopardyDates?.length > 0) && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {(res.approvedDatesOff || []).map(d => (
-                                <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
-                              ))}
-                              {(res.jeopardyDates || []).map(d => (
-                                <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 border border-violet-200 font-medium">J: {formatDisplayDate(d)}</span>
-                              ))}
-                            </div>
-                          )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
+                            <SpecialDaysList label="Approved Dates Off" dates={res.approvedDatesOff || []}
+                              onUpdate={d => setField(res.id, 'approvedDatesOff', d)}
+                              chipClass="bg-orange-100 text-orange-600 border border-orange-200"/>
+                            <SpecialDaysList label="Jeopardy Call Dates" dates={res.jeopardyDates || []}
+                              onUpdate={d => setField(res.id, 'jeopardyDates', d)}
+                              chipClass="bg-violet-100 text-violet-600 border border-violet-200"/>
+                          </div>
                         </div>
                         {/* Edit + Remove */}
                         <div className="flex items-center gap-0.5 shrink-0">
@@ -1793,6 +2214,14 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
         <EditResidentModal resident={editResident}
           onClose={() => setEditResident(null)}
           onSave={saveEdit}/>
+      )}
+      {showImport && (
+        <ImportRosterModal title="Import Off-Service Roster" allowedCategoryIds={offServiceCats.map(c => c.id)}
+          existingNames={residents}
+          onImport={rows => updateBlock(b => ({ ...b, offServiceResidents: [...(b.offServiceResidents || []), ...rows.map(r => ({
+            id: uuid(), ...r, isCCUNights: false, approvedDatesOff: [], jeopardyDates: [],
+          }))] }))}
+          onClose={() => setShowImport(false)}/>
       )}
     </div>
   );
@@ -2181,7 +2610,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
       {/* Special day rules */}
       <div>
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Special-Day Rules</div>
-        <p className="text-xs text-gray-400 mb-1.5">Dates are edited on the Home/Dashboard tabs — this controls how each list affects eligibility.</p>
+        <p className="text-xs text-gray-400 mb-1.5">Dates are edited on the Dashboard tab — this controls how each list affects eligibility.</p>
         <div className="space-y-1.5">
           {[
             {key:'codeBlueDays', label:'Code Blue days'},
@@ -2223,7 +2652,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
   );
 }
 
-function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, setDayRules }) {
+function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, setDayRules, coverage, setCoverage }) {
   const [showAll, setShowAll] = useState(true);
   const [openKeys, setOpenKeys] = useState({});
 
@@ -2289,6 +2718,54 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, s
           {showAll ? 'Show active only' : 'Show all types'}
         </button>
       </div>
+
+      <SectionCard title="Daily Shift Coverage" subtitle="How many residents each shift needs per day — used by Generate Schedule on the Schedule tab.">
+        <div className="overflow-x-auto">
+          <table className="text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500">
+                <th className="text-left font-medium pr-4 pb-2">Area</th>
+                {['day','eve','night'].map(t => <th key={t} className="text-center font-medium px-3 pb-2 capitalize">{t === 'eve' ? 'Evening' : t}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {SHIFT_AREAS.map(area => (
+                <tr key={area}>
+                  <td className="pr-4 py-1"><span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFTS.find(s=>s.area===area).chip}`}>{area}</span></td>
+                  {['day','eve','night'].map(t => {
+                    const shift = SHIFTS.find(s => s.area === area && s.type === t);
+                    if (!shift) return <td key={t} className="text-center text-gray-300 px-3">—</td>;
+                    const overridden = coverage[shift.id] != null;
+                    return (
+                      <td key={t} className="text-center px-3 py-1">
+                        <span className="inline-flex items-center gap-1">
+                          <input type="number" min={0} max={10}
+                            value={getCoverageFor(shift.id, coverage)}
+                            onChange={e => setCoverage(p => {
+                              const n = { ...p };
+                              const v = Math.max(0, Math.min(10, Number(e.target.value) || 0));
+                              if (v === DEFAULT_COVERAGE[shift.id]) delete n[shift.id]; else n[shift.id] = v;
+                              return n;
+                            })}
+                            className={`w-14 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-indigo-400 bg-indigo-50 text-indigo-800 font-semibold' : 'border-gray-200'}`}/>
+                          {overridden && (
+                            <button onClick={() => setCoverage(p => { const n = { ...p }; delete n[shift.id]; return n; })}
+                              title="Reset to default" className="text-gray-300 hover:text-indigo-600"><RefreshCw size={11}/></button>
+                          )}
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">
+          Total: <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage), 0)}</strong> resident-shifts needed per day.
+          Set a shift to 0 to leave it out of generation. Trauma day-of-week limits still apply on top.
+        </p>
+      </SectionCard>
 
       <SectionCard title="Trauma Block Types" subtitle='Rotations treated as "trauma blocks" for the EM Home PGY-1 trauma-eligibility gate.'>
         <div className="flex items-center gap-2 flex-wrap">
@@ -2538,9 +3015,10 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, showToast }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, showToast }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
+  const [confirmRegen, setConfirmRegen] = useState(false);
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
@@ -2565,6 +3043,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     updateBlock(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
   }
 
+  const totalAssigned = useMemo(()=>Object.values(sched).reduce((s,d)=>s+Object.values(d||{}).filter(Boolean).length,0),[sched]);
+
+  function runGenerate(clearFirst) {
+    setConfirmRegen(false);
+    const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst });
+    if (!res) { showToast('Set block dates first', 'red'); return; }
+    if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
+    updateBlock(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
+    const u = res.report.unfilled.length;
+    showToast(u === 0
+      ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
+      : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`,
+      u === 0 ? 'green' : 'amber');
+  }
+
   if (!dates.length) return (
     <div className="text-center py-16 text-gray-400">
       <Calendar size={40} className="mx-auto mb-3 opacity-40"/>
@@ -2574,6 +3067,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
   return (
     <div>
+      {/* Generate actions */}
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <span className="text-xs text-gray-500">
+          <strong className="text-gray-700">{totalAssigned}</strong> shifts assigned
+          {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
+        </span>
+        <span className="flex items-center gap-2">
+          <button onClick={()=>runGenerate(false)}
+            title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten."
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            <Wand2 size={13}/> Generate Schedule
+          </button>
+          <button onClick={()=>setConfirmRegen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
+            <RefreshCw size={12}/> Clear &amp; Regenerate
+          </button>
+        </span>
+      </div>
+
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         {['ALL',...CATEGORIES.map(c=>c.id)].map(cid=>{
           const cat=CAT_MAP[cid];
@@ -2597,6 +3109,35 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
       </div>
+
+      {/* Empty-schedule CTA */}
+      {totalAssigned === 0 && (
+        <div className="text-center py-8 mb-3 bg-indigo-50/50 rounded-xl border-2 border-dashed border-indigo-200">
+          <Wand2 size={28} className="mx-auto mb-2 text-indigo-400"/>
+          <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
+          <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
+          <button onClick={()=>runGenerate(false)}
+            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            <Wand2 size={14}/> Generate Schedule
+          </button>
+          <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
+        </div>
+      )}
+
+      {confirmRegen && (
+        <Modal title="Clear & Regenerate?" onClose={()=>setConfirmRegen(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              This clears <strong>all current assignments — including ones you entered manually</strong> — and
+              regenerates the whole schedule from scratch. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={()=>setConfirmRegen(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+              <button onClick={()=>runGenerate(true)} className="px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear &amp; Regenerate</button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto schedule-scroll">
@@ -2693,6 +3234,75 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
 // ─── VALIDATION TAB ───────────────────────────────────────────────────────────
 
+function GenerationReportCard({ report, appSettings }) {
+  const summary = useMemo(()=>summarizeGenerationReport(report, appSettings),[report,appSettings]);
+  const structuralCount = summary.filter(s=>s.structural).length;
+  const realGapGroups = summary.filter(s=>!s.structural);
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+      <div className="px-4 py-3 border-b border-gray-100 bg-indigo-50/60">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <span className="text-sm font-semibold text-indigo-900 flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
+          <span className="text-xs text-indigo-400">{new Date(report.generatedAt).toLocaleString()}</span>
+        </div>
+        <p className="text-xs text-indigo-700 mt-1">
+          Filled {report.filled} of {report.totalSlots} coverage slots ({report.keptManual} kept from manual entries).
+          Reflects the schedule at generation time — manual edits since aren't included.
+        </p>
+      </div>
+      <div className="p-4 space-y-3">
+        {report.unfilled.length === 0 && report.underTarget.length === 0 && (
+          <p className="text-sm text-emerald-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every coverage slot was filled.</p>
+        )}
+
+        {realGapGroups.map(g => (
+          <div key={g.shiftId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFT_MAP[g.shiftId]?.chip}`}>{g.shiftId}</span>
+              <span className="text-xs text-amber-700 font-medium">{g.slots.length} unfilled slot{g.slots.length!==1?'s':''}</span>
+            </div>
+            <p className="text-xs text-gray-500 mb-1.5">{g.slots.map(s=>formatDisplayDate(s.dateStr)).join(', ')}</p>
+            {g.recommendations.map((r,i)=><p key={i} className="text-xs text-gray-700">→ {r}</p>)}
+          </div>
+        ))}
+
+        {structuralCount > 0 && (
+          <div className="border border-gray-200 bg-gray-50 rounded-lg p-3">
+            <span className="text-xs font-medium text-gray-500 px-1.5 py-0.5 rounded bg-gray-200 mr-1.5">Expected</span>
+            <span className="text-xs text-gray-500">{structuralCount} shift{structuralCount!==1?'s have':' has'} gaps that match a day-of-week rule (e.g. Trauma window, GR Wednesday) — not a coverage problem.</span>
+            {summary.filter(s=>s.structural).map(g=>(
+              <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]}</p>
+            ))}
+          </div>
+        )}
+
+        {report.underTarget.length > 0 && (
+          <div className="border border-gray-200 rounded-lg p-3">
+            <span className="text-xs font-semibold text-gray-600">Residents left under target</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.underTarget.map(u=>(
+                <li key={u.residentId} className="text-xs text-gray-600">{u.name} — {u.assigned}/{u.target}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {report.jeopardyPlacements.length > 0 && (
+          <div className="border border-violet-200 bg-violet-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-violet-700">Placed on jeopardy call dates (warn policy)</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.jeopardyPlacements.map((j,i)=>(
+                <li key={i} className="text-xs text-violet-700">{j.name} — {formatDisplayDate(j.dateStr)} · {j.shiftId}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRules }) {
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules),[allResidents,block,eligOverrides,appSettings,dayRules]);
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
@@ -2702,16 +3312,22 @@ function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRul
     return m;
   },[issues]);
 
+  const report = block.generationReport;
+
   if(!issues.length) return (
-    <div className="text-center py-16">
-      <CheckCircle size={48} className="mx-auto mb-3 text-emerald-500"/>
-      <p className="text-gray-700 font-semibold">No rule violations</p>
-      <p className="text-sm text-gray-400 mt-1">All scheduled shifts comply with current rules.</p>
+    <div className="space-y-4">
+      {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
+      <div className="text-center py-16">
+        <CheckCircle size={48} className="mx-auto mb-3 text-emerald-500"/>
+        <p className="text-gray-700 font-semibold">No rule violations</p>
+        <p className="text-sm text-gray-400 mt-1">All scheduled shifts comply with current rules.</p>
+      </div>
     </div>
   );
 
   return (
     <div className="space-y-4">
+      {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
       <div className="flex gap-3 flex-wrap">
         {errors.length>0 && <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700 font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
         {warns.length>0 && <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-amber-700 font-medium"><AlertTriangle size={15}/>{warns.length} warning{warns.length!==1?'s':''}</div>}
@@ -2745,7 +3361,7 @@ function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRul
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
-const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules'];
+const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage'];
 
 function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -2812,22 +3428,22 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     <div className="space-y-5 max-w-2xl">
 
       {/* Block name & dates */}
-      <SectionCard title="Block Name & Dates" subtitle="Also editable on the Home tab.">
+      <CollapsibleCard title="Block Name & Dates" subtitle="Also editable on the Home tab.">
         <div className="space-y-3">
           <div><label className="block text-xs font-medium text-gray-700 mb-1">Block Name</label>
             <input className="input-field" value={block.name||''} onChange={e=>upd('name',e.target.value)} placeholder="e.g. Block 3 — Jun/Jul 2026"/></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="block text-xs font-medium text-gray-700 mb-1">Start Date</label>
-              <input type="date" className="input-field" value={block.startDate||''} onChange={e=>upd('startDate',e.target.value)}/></div>
+              <input type="date" className="input-field" value={block.startDate||''} onChange={e=>applyStartDate(updateBlock,appSettings,e.target.value)}/></div>
             <div><label className="block text-xs font-medium text-gray-700 mb-1">End Date</label>
               <input type="date" className="input-field" value={block.endDate||''} onChange={e=>upd('endDate',e.target.value)}/></div>
           </div>
           {block.startDate&&block.endDate && <p className="text-xs text-gray-400">{getBlockDates(block.startDate,block.endDate).length} days in block</p>}
         </div>
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Rule enforcement */}
-      <SectionCard title="Rule Enforcement" subtitle="How strictly the app enforces scheduling rules.">
+      <CollapsibleCard title="Rule Enforcement" subtitle="How strictly the app enforces scheduling rules.">
         <div className="space-y-5">
 
           {/* Jeopardy policy */}
@@ -2870,10 +3486,10 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
           </div>
         </div>
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Shift targets */}
-      <SectionCard title="Shift Targets" subtitle="Shifts per block by residency & year. Leave blank to use the default; used for progress bars and over-target warnings.">
+      <CollapsibleCard title="Shift Targets" subtitle="Shifts per block by residency & year. Leave blank to use the default; used for progress bars and over-target warnings.">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
           {targetRows.map(row => {
             const cat = CAT_MAP[row.catId];
@@ -2898,10 +3514,10 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           })}
         </div>
         <p className="text-xs text-gray-300 mt-2 italic">Peds PGY-1/3 have no target — their schedule comes from Amion.</p>
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Defaults */}
-      <SectionCard title="Defaults">
+      <CollapsibleCard title="Defaults">
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <div className="flex-1">
@@ -2922,10 +3538,10 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
           </div>
         </div>
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Data management */}
-      <SectionCard title="Data Management" subtitle="All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly.">
+      <CollapsibleCard title="Data Management" subtitle="All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly.">
         <div className="flex gap-2 flex-wrap">
           <button onClick={exportData}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
@@ -2938,16 +3554,16 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           <input ref={fileRef} type="file" accept=".json,application/json" onChange={importData} className="hidden"/>
         </div>
         <p className="text-xs text-gray-400 mt-2">Importing replaces ALL current data (rosters, blocks, matrix, settings) with the backup's contents, then reloads the app.</p>
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Pointers */}
       <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0"/>
-        <span>Conference &amp; ITE dates: <strong>Home tab</strong> → AY folder. Special days (Code Blue, advocacy, procedure, US days): <strong>Home</strong> or <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
+        <span>Conference &amp; ITE dates: <strong>Home tab</strong> → AY folder. Special days (Code Blue, advocacy, procedure, US days): <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
       </div>
 
       {/* Block reset */}
-      <SectionCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home roster is preserved.">
+      <CollapsibleCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home roster is preserved.">
         {resetConfirm ? (
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-red-600 font-medium">Cannot be undone.</span>
@@ -2959,10 +3575,10 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             <RefreshCw size={14}/> New Block
           </button>
         )}
-      </SectionCard>
+      </CollapsibleCard>
 
       {/* Danger zone */}
-      <SectionCard title="Clear All Data" subtitle="Deletes everything: rosters, all saved blocks, matrix overrides, AY data, and settings.">
+      <CollapsibleCard title="Clear All Data" subtitle="Deletes everything: rosters, all saved blocks, matrix overrides, AY data, and settings.">
         {clearConfirm ? (
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-red-600 font-medium">This erases ALL app data. Export a backup first!</span>
@@ -2974,7 +3590,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             <Trash2 size={14}/> Clear All Data
           </button>
         )}
-      </SectionCard>
+      </CollapsibleCard>
     </div>
   );
 }
@@ -3006,11 +3622,12 @@ const GUIDE_SECTIONS = [
   { id: 'quickstart', title: 'Monthly Workflow — Quick Start', keywords: 'workflow steps new block start month save export' },
   { id: 'home',       title: 'Home — Blocks & Academic Years', goTab: 'home', keywords: 'save load block academic year AY folder conference ITE dates' },
   { id: 'dashboard',  title: 'Dashboard — Block at a Glance', goTab: 'dashboard', keywords: 'progress conferences code blue advocacy procedure US days first friday anesthesia social checklist' },
-  { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit' },
+  { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit import upload csv paste bulk' },
   { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset' },
-  { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds off jeopardy red ring gray picker rest period filter chips targets' },
+  { id: 'generate',   title: 'Generate Schedule — Auto-Fill', goTab: 'rules', keywords: 'generate auto generate coverage fill regenerate clear wand button' },
+  { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds off jeopardy red ring gray picker rest period filter chips targets generate' },
   { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
-  { id: 'rules',      title: 'Violations & Scheduling Rules', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count' },
+  { id: 'rules',      title: 'Violations & Generation Report', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count generation report unfilled recommendations' },
   { id: 'export',     title: 'Exporting to QGenda', keywords: 'export CSV QGenda download grid import migrate' },
   { id: 'settings',   title: 'Settings & Data Safety', goTab: 'settings', keywords: 'backup restore import localStorage sync computers jeopardy policy rest rule trauma cap shift targets data' },
   { id: 'faq',        title: 'FAQ & Troubleshooting', keywords: 'faq help troubleshooting gray cell missing data disappeared export button assign anyway sync' },
@@ -3076,17 +3693,18 @@ function UserGuideTab({ onNavigate }) {
 
       {show('quickstart') && <GuideSection {...sec('quickstart')}>
         <ol className="list-decimal space-y-1.5 text-sm">
-          <li><strong>Home tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date auto-fills to a 28-day block). Add any special days (Code Blue, advocacy, procedure, US days) for the month.</li>
-          <li><strong>EM Residents tab</strong> — set each EM Home resident's <strong>rotation</strong> for this block via the dropdown (EM, EM/VAC, EMS, Tox, Peds/Trauma, Metro, away rotations…). Residents on non-chief-scheduled rotations gray out automatically.</li>
-          <li><strong>Off-Service tab</strong> — add this month's visiting residents (BAMC, Peds, FM, IM, Neuro, Anesthesia, Psych, Podiatry) with the color-coded Add buttons. Enter their approved dates off and jeopardy call dates.</li>
-          <li><strong>Schedule tab</strong> — click any cell to assign a shift. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
-          <li><strong>Violations tab</strong> — review remaining errors/warnings before finalizing.</li>
+          <li><strong>Home tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date and academic year auto-fill from it — both stay editable).</li>
+          <li><strong>EM Residents / Off-Service tabs</strong> — set each EM Home resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong> to paste/upload a roster instead of adding one at a time). Enter approved dates off and jeopardy call dates.</li>
+          <li><strong>Dashboard tab</strong> — enter this block's special days (Code Blue, advocacy, procedure, US days) before scheduling — they affect eligibility.</li>
+          <li><strong>Scheduling Rules tab</strong> — set daily shift coverage (how many residents each shift needs), then click <strong>Generate Schedule</strong> on the Schedule tab to auto-fill the whole block.</li>
+          <li><strong>Schedule tab</strong> — review the generated schedule, or click any cell to assign/adjust a shift manually. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
+          <li><strong>Violations tab</strong> — review the Generation Report and any remaining errors/warnings before finalizing.</li>
           <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
         </ol>
       </GuideSection>}
 
       {show('home') && <GuideSection {...sec('home')}>
-        <p>The <strong>Current Block</strong> card is your active workspace: name, dates, and per-block special days all editable inline.</p>
+        <p>The <strong>Current Block</strong> card is your active workspace: name and dates editable inline (collapse it with the header once set up). Special days live on the <strong>Dashboard</strong> tab.</p>
         <ul className="list-disc space-y-1">
           <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the AY folder below. Re-saving the same block updates its snapshot.</li>
           <li><strong>Load</strong> restores a saved block — you'll be prompted to save current work first.</li>
@@ -3101,8 +3719,9 @@ function UserGuideTab({ onNavigate }) {
       {show('residents') && <GuideSection {...sec('residents')}>
         <ul className="list-disc space-y-1">
           <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Their rotation is set per block.</li>
-          <li><strong>Off-service residents are per-block</strong> — cleared on Block Reset, re-entered each month.</li>
-          <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error.</li>
+          <li><strong>Off-service residents are per-block</strong> — cleared on New Block/Block Reset, re-entered each month.</li>
+          <li><strong>Import Roster</strong> — paste rows from a spreadsheet or upload a CSV (Name, Category, PGY — any Rotation/date columns are ignored) instead of adding residents one at a time. Shows a preview before committing; already-listed names are skipped automatically.</li>
+          <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error. Off-service residents can add/remove these directly on their tile, no need to open Edit.</li>
           <li><strong>Jeopardy Call Dates</strong> (violet "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
           <li>Edit any profile with the pencil icon; the IM "CCU nights" toggle blocks Tue/Wed automatically.</li>
         </ul>
@@ -3114,6 +3733,16 @@ function UserGuideTab({ onNavigate }) {
           <li>Click any cell to toggle. Modified rows show <span className="text-indigo-500">✎</span> and a per-row reset.</li>
           <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-violet-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
           <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and aren't edited here — see the Scheduling Rules tab, which now controls those directly.</li>
+        </ul>
+      </GuideSection>}
+
+      {show('generate') && <GuideSection {...sec('generate')}>
+        <p>Set <strong>Daily Shift Coverage</strong> on the Scheduling Rules tab first — how many residents each shift (POD Day, Trauma Night, etc.) needs per day. Then, on the Schedule tab, click <strong>Generate Schedule</strong> to auto-fill every open slot for the whole block.</p>
+        <ul className="list-disc space-y-1">
+          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, and the PGY-2 trauma cap — it never assigns a shift a resident couldn't legally work.</li>
+          <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
+          <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
+          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change.</li>
         </ul>
       </GuideSection>}
 
@@ -3155,8 +3784,9 @@ function UserGuideTab({ onNavigate }) {
       </GuideSection>}
 
       {show('rules') && <GuideSection {...sec('rules')}>
-        <p>The <strong>Violations tab</strong> lists every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
-        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions, rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun…), and how Code Blue/advocacy/procedure/anesthesia dates affect eligibility. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live; the ⚠ notes below each type are outstanding clarifications, not enforced rules.</p>
+        <p>If you ran <strong>Generate Schedule</strong>, a <strong>Generation Report</strong> appears at the top of the Violations tab: how many coverage slots were filled, which ones weren't and why (no eligible resident, everyone at target, rest-rule conflicts, trauma cap…), with a plain-language recommendation for each — raise a target, lower coverage, check the Shift Matrix, and so on. Gaps that just match a day-of-week rule (Trauma's Tue/Thu/Sat/Sun window, GR Wednesday) are marked "Expected" rather than flagged as problems.</p>
+        <p>Below that, the <strong>Violations list</strong> shows every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
+        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions, rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun…), how Code Blue/advocacy/procedure/anesthesia dates affect eligibility, and the <strong>Daily Shift Coverage</strong> grid used by Generate Schedule. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live; the ⚠ notes below each type are outstanding clarifications, not enforced rules.</p>
       </GuideSection>}
 
       {show('export') && <GuideSection {...sec('export')}>
@@ -3221,6 +3851,7 @@ export default function ResidentScheduler() {
   const [appSettings, setAppSettings]     = useLocalStorage('res_app_settings', DEFAULT_APP_SETTINGS);
   // Chief-editable day-of-week / block-type scheduling rules (see DEFAULT_DAY_RULES)
   const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
+  const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
 
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
@@ -3251,6 +3882,7 @@ export default function ResidentScheduler() {
       residentCount:emRoster.length+(block.offServiceResidents||[]).length, shiftCount,
       data:{ emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
              schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
+             generationReport:block.generationReport||null,
              startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear } };
     setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0, appSettings.maxSavedBlocks ?? 24));
     showToast(`"${snap.name}" saved`,'green');
@@ -3267,7 +3899,7 @@ export default function ResidentScheduler() {
       startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
-      conferences:d.conferences||{} });
+      conferences:d.conferences||{}, generationReport:d.generationReport||null });
     setSwitchPending(null); setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
@@ -3279,7 +3911,7 @@ export default function ResidentScheduler() {
 
   function doNewBlock() {
     setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('home');
-    showToast('New block ready — enter dates and special days below','amber');
+    showToast('New block ready — enter dates below','amber');
   }
 
   function blockReset() {
@@ -3424,8 +4056,8 @@ export default function ResidentScheduler() {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} showToast={showToast}/>}
-          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} setDayRules={setDayRules}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} showToast={showToast}/>}
+          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
