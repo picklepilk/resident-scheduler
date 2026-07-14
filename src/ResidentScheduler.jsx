@@ -3863,6 +3863,77 @@ const TABS = [
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
 
+// Saved order (validated — a corrupt/foreign backup import could hand this anything) plus any
+// tabs added since the order was saved (unknown ids), appended at the end.
+function reconcileTabOrder(order, tabs) {
+  const safeOrder = Array.isArray(order) ? order : [];
+  const byId = Object.fromEntries(tabs.map(t=>[t.id,t]));
+  const known = safeOrder.map(id=>byId[id]).filter(Boolean);
+  const missing = tabs.filter(t=>!safeOrder.includes(t.id));
+  return [...known, ...missing];
+}
+
+// Moves fromId to land immediately before toId's original slot, regardless of drag direction.
+function reorderIds(order, fromId, toId) {
+  if (!fromId || fromId===toId) return order;
+  const from = order.indexOf(fromId), to = order.indexOf(toId);
+  if (from===-1||to===-1) return order;
+  const next = [...order];
+  next.splice(from,1);
+  next.splice(from<to ? to-1 : to, 0, fromId);
+  return next;
+}
+
+// Sidebar nav — a separate component so drag-hover state doesn't re-render the active tab's content.
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, violCount, emResidentCount, offServiceCount }) {
+  const [dragTabId, setDragTabId] = useState(null);
+  const [dragOverTabId, setDragOverTabId] = useState(null);
+  const orderedTabs = useMemo(()=>reconcileTabOrder(tabOrder, TABS),[tabOrder]);
+
+  function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
+
+  return (
+    <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto">
+      <nav className="flex flex-col gap-0.5 px-2">
+        {orderedTabs.map(t=>{
+          const Icon=t.icon; const active=tab===t.id;
+          const badge=t.id==='validation'&&violCount>0?violCount:null;
+          const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
+          const iconColor = active?'text-white':'text-slate-400';
+          return (
+            <button key={t.id} onClick={()=>setTab(t.id)}
+              onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
+              onDragLeave={(e)=>{if(e.currentTarget.contains(e.relatedTarget))return; setDragOverTabId(p=>p===t.id?null:p);}}
+              onDrop={(e)=>{e.preventDefault(); setTabOrder(reorderIds(orderedTabs.map(x=>x.id), dragTabId, t.id)); resetDrag();}}
+              className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left ${active?'bg-slate-900 text-white':'text-slate-600 hover:bg-slate-100 hover:text-slate-800'} ${dragOver?'ring-2 ring-inset ring-indigo-400':''}`}>
+              <span draggable onDragStart={()=>setDragTabId(t.id)} onDragEnd={resetDrag} title="Drag to reorder"
+                className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40">
+                <GripVertical size={13} className={iconColor}/>
+              </span>
+              <Icon size={15} className={`shrink-0 ${iconColor}`}/>
+              <span className="flex-1">{t.label}</span>
+              {badge && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
+                  {badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Sidebar footer */}
+      <div className="mt-auto px-3 py-3 border-t border-gray-100">
+        <div className="text-xs text-gray-400 space-y-0.5">
+          <p className="font-medium text-gray-500">{emResidentCount} EM residents</p>
+          <p>{offServiceCount} off-service this block</p>
+          {violCount > 0 && <p className="text-red-500 font-medium">{violCount} violation{violCount!==1?'s':''}</p>}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 export default function ResidentScheduler() {
   const [tab, setTab] = useState('home');
   const [toast, setToast] = useState(null);
@@ -3881,27 +3952,6 @@ export default function ResidentScheduler() {
   const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
   const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
   const [tabOrder, setTabOrder]           = useLocalStorage('res_tab_order', TABS.map(t=>t.id));
-  const [dragTabId, setDragTabId]         = useState(null);
-  const [dragOverTabId, setDragOverTabId] = useState(null);
-
-  // Saved order plus any tabs added since (new ids not yet in a saved order) appended at the end.
-  const orderedTabs = useMemo(()=>{
-    const byId = Object.fromEntries(TABS.map(t=>[t.id,t]));
-    const known = tabOrder.map(id=>byId[id]).filter(Boolean);
-    const missing = TABS.filter(t=>!tabOrder.includes(t.id));
-    return [...known, ...missing];
-  },[tabOrder]);
-
-  function moveTab(fromId, toId) {
-    if (!fromId || fromId===toId) return;
-    const order = orderedTabs.map(t=>t.id);
-    const from = order.indexOf(fromId), to = order.indexOf(toId);
-    if (from===-1||to===-1) return;
-    const next = [...order];
-    next.splice(from,1);
-    next.splice(to,0,fromId);
-    setTabOrder(next);
-  }
 
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
@@ -4061,43 +4111,9 @@ export default function ResidentScheduler() {
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Vertical sidebar */}
-        <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto">
-          <nav className="flex flex-col gap-0.5 px-2">
-            {orderedTabs.map(t=>{
-              const Icon=t.icon; const active=tab===t.id;
-              const badge=t.id==='validation'&&violCount>0?violCount:null;
-              const dragOver = dragOverTabId===t.id && dragTabId && dragTabId!==t.id;
-              return (
-                <button key={t.id} onClick={()=>setTab(t.id)}
-                  draggable
-                  onDragStart={()=>setDragTabId(t.id)}
-                  onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
-                  onDragLeave={()=>setDragOverTabId(p=>p===t.id?null:p)}
-                  onDrop={(e)=>{e.preventDefault(); moveTab(dragTabId, t.id); setDragTabId(null); setDragOverTabId(null);}}
-                  onDragEnd={()=>{setDragTabId(null); setDragOverTabId(null);}}
-                  className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left cursor-grab active:cursor-grabbing ${active?'bg-slate-900 text-white':'text-slate-600 hover:bg-slate-100 hover:text-slate-800'} ${dragOver?'ring-2 ring-inset ring-indigo-400':''}`}>
-                  <GripVertical size={13} className={`shrink-0 opacity-0 group-hover:opacity-40 ${active?'text-white':'text-slate-400'}`}/>
-                  <Icon size={15} className={`shrink-0 ${active?'text-white':'text-slate-400'}`}/>
-                  <span className="flex-1">{t.label}</span>
-                  {badge && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
-                      {badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Sidebar footer */}
-          <div className="mt-auto px-3 py-3 border-t border-gray-100">
-            <div className="text-xs text-gray-400 space-y-0.5">
-              <p className="font-medium text-gray-500">{emRoster.length} EM residents</p>
-              <p>{(block.offServiceResidents||[]).length} off-service this block</p>
-              {violCount > 0 && <p className="text-red-500 font-medium">{violCount} violation{violCount!==1?'s':''}</p>}
-            </div>
-          </div>
-        </aside>
+        <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
+          violCount={violCount} emResidentCount={emRoster.length}
+          offServiceCount={(block.offServiceResidents||[]).length}/>
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
