@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical,
 } from 'lucide-react';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -3389,7 +3389,7 @@ function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRul
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
-const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage'];
+const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage','res_tab_order'];
 
 function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -3880,6 +3880,28 @@ export default function ResidentScheduler() {
   // Chief-editable day-of-week / block-type scheduling rules (see DEFAULT_DAY_RULES)
   const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
   const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
+  const [tabOrder, setTabOrder]           = useLocalStorage('res_tab_order', TABS.map(t=>t.id));
+  const [dragTabId, setDragTabId]         = useState(null);
+  const [dragOverTabId, setDragOverTabId] = useState(null);
+
+  // Saved order plus any tabs added since (new ids not yet in a saved order) appended at the end.
+  const orderedTabs = useMemo(()=>{
+    const byId = Object.fromEntries(TABS.map(t=>[t.id,t]));
+    const known = tabOrder.map(id=>byId[id]).filter(Boolean);
+    const missing = TABS.filter(t=>!tabOrder.includes(t.id));
+    return [...known, ...missing];
+  },[tabOrder]);
+
+  function moveTab(fromId, toId) {
+    if (!fromId || fromId===toId) return;
+    const order = orderedTabs.map(t=>t.id);
+    const from = order.indexOf(fromId), to = order.indexOf(toId);
+    if (from===-1||to===-1) return;
+    const next = [...order];
+    next.splice(from,1);
+    next.splice(to,0,fromId);
+    setTabOrder(next);
+  }
 
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
@@ -4041,13 +4063,21 @@ export default function ResidentScheduler() {
         {/* Vertical sidebar */}
         <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto">
           <nav className="flex flex-col gap-0.5 px-2">
-            {TABS.map(t=>{
+            {orderedTabs.map(t=>{
               const Icon=t.icon; const active=tab===t.id;
               const badge=t.id==='validation'&&violCount>0?violCount:null;
+              const dragOver = dragOverTabId===t.id && dragTabId && dragTabId!==t.id;
               return (
                 <button key={t.id} onClick={()=>setTab(t.id)}
-                  className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left ${active?'bg-slate-900 text-white':'text-slate-600 hover:bg-slate-100 hover:text-slate-800'}`}>
-                  <Icon size={15} className={active?'text-white':'text-slate-400'}/>
+                  draggable
+                  onDragStart={()=>setDragTabId(t.id)}
+                  onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
+                  onDragLeave={()=>setDragOverTabId(p=>p===t.id?null:p)}
+                  onDrop={(e)=>{e.preventDefault(); moveTab(dragTabId, t.id); setDragTabId(null); setDragOverTabId(null);}}
+                  onDragEnd={()=>{setDragTabId(null); setDragOverTabId(null);}}
+                  className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left cursor-grab active:cursor-grabbing ${active?'bg-slate-900 text-white':'text-slate-600 hover:bg-slate-100 hover:text-slate-800'} ${dragOver?'ring-2 ring-inset ring-indigo-400':''}`}>
+                  <GripVertical size={13} className={`shrink-0 opacity-0 group-hover:opacity-40 ${active?'text-white':'text-slate-400'}`}/>
+                  <Icon size={15} className={`shrink-0 ${active?'text-white':'text-slate-400'}`}/>
                   <span className="flex-1">{t.label}</span>
                   {badge && (
                     <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
