@@ -2981,20 +2981,66 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
 
 // ─── USER GUIDE TAB ───────────────────────────────────────────────────────────
 
-function GuideSection({ title, children }) {
-  const [open, setOpen] = useState(true);
+function GuideSection({ id, title, open, onToggle, goTab, onNavigate, children }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <button onClick={()=>setOpen(p=>!p)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors text-left">
+    <div id={`guide-${id}`} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden scroll-mt-4">
+      <button onClick={onToggle} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors text-left">
         <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
-        <ChevronDown size={14} className={`text-gray-400 transition-transform ${open?'rotate-180':''}`}/>
+        <div className="flex items-center gap-3">
+          {goTab && open && (
+            <span onClick={e=>{e.stopPropagation(); onNavigate?.(goTab.id);}}
+              className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer whitespace-nowrap">
+              Open {goTab.label} →
+            </span>
+          )}
+          <ChevronDown size={14} className={`text-gray-400 transition-transform ${open?'rotate-180':''}`}/>
+        </div>
       </button>
       {open && <div className="px-5 pb-4 text-sm text-gray-600 space-y-2 [&_li]:ml-4 [&_strong]:text-gray-800">{children}</div>}
     </div>
   );
 }
 
-function UserGuideTab() {
+// Section registry: id, title, optional tab link, keywords for search.
+const GUIDE_SECTIONS = [
+  { id: 'quickstart', title: 'Monthly Workflow — Quick Start', keywords: 'workflow steps new block start month save export' },
+  { id: 'home',       title: 'Home — Blocks & Academic Years', goTab: 'home', keywords: 'save load block academic year AY folder conference ITE dates' },
+  { id: 'dashboard',  title: 'Dashboard — Block at a Glance', goTab: 'dashboard', keywords: 'progress conferences code blue advocacy procedure US days first friday anesthesia social checklist' },
+  { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit' },
+  { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset' },
+  { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds off jeopardy red ring gray picker rest period filter chips targets' },
+  { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
+  { id: 'rules',      title: 'Violations & Scheduling Rules', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count' },
+  { id: 'export',     title: 'Exporting to QGenda', keywords: 'export CSV QGenda download grid import migrate' },
+  { id: 'settings',   title: 'Settings & Data Safety', goTab: 'settings', keywords: 'backup restore import localStorage sync computers jeopardy policy rest rule trauma cap shift targets data' },
+  { id: 'faq',        title: 'FAQ & Troubleshooting', keywords: 'faq help troubleshooting gray cell missing data disappeared export button assign anyway sync' },
+];
+
+function UserGuideTab({ onNavigate }) {
+  const [query, setQuery] = useState('');
+  const [openMap, setOpenMap] = useState(() => Object.fromEntries(GUIDE_SECTIONS.map(s => [s.id, true])));
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(() => {
+    if (!q) return new Set(GUIDE_SECTIONS.map(s => s.id));
+    return new Set(GUIDE_SECTIONS.filter(s => (s.title + ' ' + s.keywords).toLowerCase().includes(q)).map(s => s.id));
+  }, [q]);
+  const setAll = v => setOpenMap(Object.fromEntries(GUIDE_SECTIONS.map(s => [s.id, v])));
+  const jumpTo = id => {
+    setOpenMap(m => ({ ...m, [id]: true }));
+    setTimeout(() => document.getElementById(`guide-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
+  const sec = id => {
+    const s = GUIDE_SECTIONS.find(x => x.id === id);
+    return {
+      id, title: s.title,
+      goTab: s.goTab ? TABS.find(t => t.id === s.goTab) : null,
+      onNavigate,
+      open: q ? visible.has(id) : openMap[id],
+      onToggle: () => setOpenMap(m => ({ ...m, [id]: !m[id] })),
+    };
+  };
+  const show = id => visible.has(id);
+
   return (
     <div className="space-y-4 max-w-3xl">
       <div>
@@ -3002,7 +3048,33 @@ function UserGuideTab() {
         <p className="text-xs text-gray-500 mt-0.5">How to build a monthly resident schedule with this app</p>
       </div>
 
-      <GuideSection title="Monthly Workflow — Quick Start">
+      {/* Search + expand/collapse */}
+      <div className="flex items-center gap-2">
+        <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search the guide… (e.g. jeopardy, export, gray cell)"
+          className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"/>
+        {query && <button onClick={()=>setQuery('')} className="text-xs text-gray-500 hover:text-gray-700">Clear</button>}
+        <button onClick={()=>setAll(true)} className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap">Expand all</button>
+        <button onClick={()=>setAll(false)} className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap">Collapse all</button>
+      </div>
+
+      {/* Table of contents */}
+      {!q && (
+        <div className="flex flex-wrap gap-1.5">
+          {GUIDE_SECTIONS.map(s => (
+            <button key={s.id} onClick={()=>jumpTo(s.id)}
+              className="text-[11px] px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50 transition-colors">
+              {s.title.split(' — ')[0]}
+            </button>
+          ))}
+        </div>
+      )}
+      {q && visible.size === 0 && (
+        <div className="text-sm text-gray-500 bg-white rounded-xl border border-gray-200 px-5 py-6 text-center">
+          No sections match "{query}". Try a different term, e.g. "jeopardy", "export", or "backup".
+        </div>
+      )}
+
+      {show('quickstart') && <GuideSection {...sec('quickstart')}>
         <ol className="list-decimal space-y-1.5 text-sm">
           <li><strong>Home tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date auto-fills to a 28-day block). Add any special days (Code Blue, advocacy, procedure, US days) for the month.</li>
           <li><strong>EM Residents tab</strong> — set each EM Home resident's <strong>rotation</strong> for this block via the dropdown (EM, EM/VAC, EMS, Tox, Peds/Trauma, Metro, away rotations…). Residents on non-chief-scheduled rotations gray out automatically.</li>
@@ -3011,22 +3083,22 @@ function UserGuideTab() {
           <li><strong>Violations tab</strong> — review remaining errors/warnings before finalizing.</li>
           <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
         </ol>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Home — Blocks & Academic Years">
+      {show('home') && <GuideSection {...sec('home')}>
         <p>The <strong>Current Block</strong> card is your active workspace: name, dates, and per-block special days all editable inline.</p>
         <ul className="list-disc space-y-1">
           <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the AY folder below. Re-saving the same block updates its snapshot.</li>
           <li><strong>Load</strong> restores a saved block — you'll be prompted to save current work first.</li>
           <li>Each <strong>AY folder</strong> holds that year's conference &amp; ITE dates (click "Conference &amp; ITE Dates" inside the folder). These apply to every block in that year and surface on the Dashboard when they overlap the block.</li>
         </ul>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Dashboard — Block at a Glance">
+      {show('dashboard') && <GuideSection {...sec('dashboard')}>
         <p>Shows block progress, any conferences that fall inside the current block, first Fridays (Anesthesia social), and editable special-day lists. Use it as the pre-scheduling checklist: confirm conferences, Code Blue days, advocacy days, procedure days, and US days are all entered before assigning shifts.</p>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Residents — Profiles, Days Off & Jeopardy">
+      {show('residents') && <GuideSection {...sec('residents')}>
         <ul className="list-disc space-y-1">
           <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Their rotation is set per block.</li>
           <li><strong>Off-service residents are per-block</strong> — cleared on Block Reset, re-entered each month.</li>
@@ -3034,18 +3106,18 @@ function UserGuideTab() {
           <li><strong>Jeopardy Call Dates</strong> (violet "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
           <li>Edit any profile with the pencil icon; the IM "CCU nights" toggle blocks Tue/Wed automatically.</li>
         </ul>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Shift Matrix — Who Can Work What">
+      {show('matrix') && <GuideSection {...sec('matrix')}>
         <p>The matrix defines which shift types each <strong>residency + year</strong> can work. Checks are color-coded by area (POD, PED, FLEX, MT, Trauma).</p>
         <ul className="list-disc space-y-1">
           <li>Click any cell to toggle. Modified rows show <span className="text-indigo-500">✎</span> and a per-row reset.</li>
           <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-violet-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
           <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and aren't edited here — see the Scheduling Rules tab, which now controls those directly.</li>
         </ul>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Schedule Grid — Reading the Cells">
+      {show('grid') && <GuideSection {...sec('grid')}>
         <ul className="list-disc space-y-1">
           <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents can't be in the ED.</li>
           <li><strong className="text-orange-500">OFF</strong> (orange) — approved day off.</li>
@@ -3055,29 +3127,65 @@ function UserGuideTab() {
           <li>The shift picker validates <em>before</em> you commit: eligibility, jeopardy, and the rest-period rule (a shift's length = the hours off required after it; Trauma 12h → 12h rest).</li>
           <li>Filter by residency with the chips above the grid. Shift counts vs target show next to each name.</li>
         </ul>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Violations & Scheduling Rules">
+      {show('legend') && <GuideSection {...sec('legend')}>
+        <p className="text-xs text-gray-500">Shift chips as they appear in the Schedule grid, grouped by area:</p>
+        <div className="space-y-2">
+          {SHIFT_AREAS.map(area => (
+            <div key={area} className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-gray-500 w-16">{area}</span>
+              {SHIFTS.filter(s=>s.area===area).map(s => (
+                <span key={s.id} className="flex items-center gap-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded font-bold ${s.chip}`}>{s.id}</span>
+                  <span className="text-[11px] text-gray-500">{s.hours}</span>
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 pt-1">Special cell markers:</p>
+        <div className="flex items-center gap-3 flex-wrap text-[11px] text-gray-600">
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span> Grand Rounds Wed</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-orange-100 text-orange-600">OFF</span> approved day off</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-violet-100 text-violet-700">J</span> jeopardy call</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
+        </div>
+      </GuideSection>}
+
+      {show('rules') && <GuideSection {...sec('rules')}>
         <p>The <strong>Violations tab</strong> lists every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps) and warning (review: over target, trauma cap, jeopardy) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
         <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions, rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun…), and how Code Blue/advocacy/procedure/anesthesia dates affect eligibility. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live; the ⚠ notes below each type are outstanding clarifications, not enforced rules.</p>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Exporting to QGenda">
+      {show('export') && <GuideSection {...sec('export')}>
         <p>Two CSV buttons live in the header once a block has a start date:</p>
         <ul className="list-disc space-y-1">
           <li><strong>Grid CSV</strong> — the same resident × date matrix shown on the Schedule tab, raw shift codes only. Best for your own visual cross-check, not for importing anywhere.</li>
           <li><strong>QGenda CSV</strong> — one row per assignment (resident, date, shift, real start/end time, hours) instead of one column per date. This removes the manual date-column transposition step — check it against QGenda's import format before relying on it fully.</li>
         </ul>
         <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations), either export will ask you to confirm before downloading.</p>
-      </GuideSection>
+      </GuideSection>}
 
-      <GuideSection title="Settings & Data Safety">
+      {show('settings') && <GuideSection {...sec('settings')}>
         <ul className="list-disc space-y-1">
           <li><strong>Rule Enforcement</strong> — jeopardy policy, rest-period rule on/off, PGY-2 trauma cap.</li>
           <li><strong>Shift Targets</strong> — override shifts-per-block for any residency/year (incl. Chief).</li>
           <li><strong>Data Management</strong> — everything is stored in this browser only (localStorage). It does <em>not</em> sync between computers. <strong>Export a backup</strong> regularly; Import restores it on any machine.</li>
         </ul>
-      </GuideSection>
+      </GuideSection>}
+
+      {show('faq') && <GuideSection {...sec('faq')}>
+        <ul className="list-disc space-y-2">
+          <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day — a clinic day, day-of-week restriction (e.g. EMS Mon/Tue), GR Wednesday, or a non-schedulable rotation. Check the Shift Matrix and Scheduling Rules tabs to see why.</li>
+          <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> in the picker to override — it will be flagged in Violations so you can track it.</li>
+          <li><strong>My schedule disappeared on another computer.</strong> Data lives in the browser's localStorage and does <em>not</em> sync between machines. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
+          <li><strong>The CSV export buttons are missing.</strong> They appear in the header only once the current block has a start date set (Home tab).</li>
+          <li><strong>A resident shows the wrong shifts in the picker.</strong> Check their rotation for this block (EM Residents tab) and any rotation override in the Shift Matrix — dimmed checks inherit, solid checks are overrides.</li>
+          <li><strong>I saved a block by mistake.</strong> Re-saving the same block just updates its snapshot; you can also Load any earlier saved block from its AY folder on the Home tab.</li>
+        </ul>
+      </GuideSection>}
     </div>
   );
 }
@@ -3320,7 +3428,7 @@ export default function ResidentScheduler() {
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} setDayRules={setDayRules}/>}
           {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
-          {tab==='guide' && <UserGuideTab/>}
+          {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
       </div>
 
