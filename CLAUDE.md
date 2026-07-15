@@ -42,8 +42,14 @@ Line numbers drift as the file grows — grep for the `// ─── SECTION ─�
 names below rather than trusting offsets.
 - ~13–335 `CONSTANTS` — `SHIFTS`, `SHIFT_TIMING`, `SHIFT_MAP`/`SHIFT_AREAS`, `CATEGORIES`, block
   types (`BLOCK_TYPES_EM`, `TRAUMA_BLOCKS`, `EM_HOME_BLOCK_TYPES_BY_PGY`), `BASE_ELIGIBILITY`,
-  `DEFAULT_DAY_RULES`, `DEFAULT_COVERAGE`/`getCoverageFor` (per-shift daily staffing counts used by
-  the generator).
+  `DEFAULT_DAY_RULES`, `SHIFT_TARGETS`/`BLOCK_TARGETS` (rotation-specific target overrides, e.g.
+  US/EM = 5 shifts, EM/Res/VAC = 13 — see `getShiftTarget`), `DEFAULT_COVERAGE`/`getCoverageFor`
+  (per-shift daily staffing counts used by the generator), `LEGACY_DAY_RULE_DEFAULTS`/
+  `LEGACY_ELIGIBILITY_DEFAULTS`/`DAY_RULE_DEFAULTS_CHANGED` (see "Rule-default migration" below).
+  `DEFAULT_DAY_RULES` shapes now include `dayTypeRestrictions[].scope: 'generator'` (the shift stays
+  manually assignable via the picker; only auto-fill skips it — see `getEligibleShifts`'s `ctx`
+  param) and `computedDayRules: [{type:'firstFridayOfMonth'}]` (date-computed rules needing no
+  manual list, evaluated the same way as `fullBlockDays`).
 - ~336–392 `UTILITIES` — date helpers (`getBlockDates`, `parseDate`/`addDays`/`toDateStr`),
   `getAcademicYearFor`/`getAcademicYear`/`formatAY` (AY derived from a date, July cutoff —
   `getAcademicYear()` reads `Date` fields directly rather than round-tripping through
@@ -58,17 +64,25 @@ names below rather than trusting offsets.
   columns are read but ignored) plus `splitCsvLine`/`splitName`/`matchCategory`.
 - ~507–685 `REST-PERIOD UTILITIES` / eligibility base — `checkRestViolations`, `isSchedulable`,
   `getShiftTarget`, `getEffectiveEligibility`.
-- ~686–863 `ELIGIBILITY LOGIC` — `getEligibleShifts` (jeopardy-call logic lives here) and
-  `validateAll()`, the rules/validation engine (also handles jeopardy policy); shares
-  `isTraumaCapSubject(resident)` with the generator below rather than re-testing
-  `category==='EM_HOME' && pgy===2` in both places.
+- ~686–863 `ELIGIBILITY LOGIC` — `getEligibleShifts(resident, dateStr, ..., ctx)` (jeopardy-call
+  logic lives here, plus the Peds/Trauma half-block split via `traumaPedsHalf` and off-service
+  availability via `isAvailableOnDate`; `ctx = {blockStart, forGenerator}` — `blockStart` is needed
+  for the half-block split, `forGenerator` gates `scope:'generator'` restrictions) and
+  `validateAll()`, the rules/validation engine (also handles jeopardy policy, the 7-consecutive-
+  work-day rule, and trauma double-booking); shares `isTraumaCapSubject(resident)` (EM_HOME PGY-2
+  **and** PGY-3) and `getTraumaCap(appSettings)` with the generator below rather than re-testing in
+  both places. `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked` implement the ≤7-consecutive-
+  work-day rule (Grand Rounds counts as a work day even with no assigned shift) shared by both.
 - ~864–1051 `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot
-  ordering per day, candidate filtering with named unfilled-reasons, target/type-mix/streak/jeopardy
-  scoring; recomputes the candidate pool fresh for every slot — a cached pool went stale mid-day and
-  caused double-booking once, so don't reintroduce that; never overwrites a non-empty cell) and
-  `summarizeGenerationReport()` (turns the generator's report into grouped, human-readable
-  recommendations for the Violations tab, including "expected gap" detection for day-of-week rules
-  like Trauma windows or GR Wednesday).
+  ordering per day, candidate filtering with named unfilled-reasons, target/type-mix/streak/jeopardy/
+  trauma-nights-preferred/peds-mix scoring; recomputes the candidate pool fresh for every slot — a
+  cached pool went stale mid-day and caused double-booking once, so don't reintroduce that; never
+  overwrites a non-empty cell). Fill happens in **two passes** via `fillDayPass(ds, includeShift)` —
+  everything except TRAUMA-D across the whole block, then TRAUMA-D alone — because PGY-1 trauma-day
+  shifts are meant to be the final fill step; don't collapse this back into one pass without
+  re-deriving why. `summarizeGenerationReport()` turns the generator's report into grouped,
+  human-readable recommendations for the Violations tab, including "expected gap" detection for
+  day-of-week rules (Trauma windows, GR Wednesday) and for PED-N (FM-3-exclusive — see below).
 - ~1052–1061 `HOOKS` — `useLocalStorage`.
 - ~1062–3850 tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
   `CollapsibleHeader`), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
@@ -93,12 +107,33 @@ names below rather than trusting offsets.
   a shift, add its timing entry too, or rest-period validation will silently skip it. (`DEFAULT_COVERAGE`
   needs no manual update — it's derived from `SHIFTS` with a default of 1 per shift; 0 only applies to
   a shift id that isn't in `SHIFTS` at all, which can't happen for one you just added there.)
+- **PED-N (Peds Night) is FM-3-exclusive program-wide** — no other category/PGY may ever be
+  eligible for it, including via a Shift Matrix rotation override. If you add a new eligibility
+  entry, don't add PED-N to it.
+- Off-service residents (`block.offServiceResidents[]`) carry `availabilityMode: 'full'|'ranges'|
+  'days'` plus `availableRanges: [{start,end}]` / `canWorkDates: []`, checked by
+  `isAvailableOnDate()` in `getEligibleShifts`. These fields live inside the block object, so they
+  ride along with existing persistence/backup — no new `LS_BACKUP_KEYS` entry needed for
+  resident-level fields like this.
 - This repo is **public** — never hardcode real resident names/rosters into source (this happened
   once; use the Import Roster feature on the EM Residents / Off-Service tabs instead, which reads
   pasted/uploaded data into `localStorage` only, never into committed code).
 - This is a sibling project to `em-scheduler` (same author, same domain — EM scheduling). If a bug
   or pattern here looks familiar, check `../em-scheduler/CLAUDE.md` for prior hard-won fixes
   (scheduling rules, export patterns, attending-matching) before re-deriving them.
+
+## Rule-default migration
+`getEffectiveDayRules`/`getEffectiveEligibility` replace a `CATEGORY_PGY` key's default *wholesale*
+with any chief-saved override — so when a `DEFAULT_DAY_RULES`/`BASE_ELIGIBILITY` entry is corrected,
+an old saved override that happens to equal the *previous* default would silently keep masking the
+fix forever. `LEGACY_DAY_RULE_DEFAULTS`/`LEGACY_ELIGIBILITY_DEFAULTS` snapshot the pre-correction
+defaults for affected keys; a one-time mount effect in the root component prunes any saved override
+that still deep-equals its legacy snapshot (`deepEqualNormalized`), so the corrected default takes
+over. Overrides that don't match (genuinely customized) are left alone but flagged with an amber
+badge on the Rules tab (`DAY_RULE_DEFAULTS_CHANGED`) so the chief knows to review them. **Whenever
+you correct a `DEFAULT_DAY_RULES`/`BASE_ELIGIBILITY` entry, add its old shape to the matching
+`LEGACY_*_DEFAULTS` map and its key to `DAY_RULE_DEFAULTS_CHANGED`** (the latter is derived
+automatically from the two maps' keys) or existing chief customizations will silently mask the fix.
 
 ## When editing
 - Since nearly everything is in `ResidentScheduler.jsx`, grep before assuming a helper is unused —
