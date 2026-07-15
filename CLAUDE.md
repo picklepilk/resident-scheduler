@@ -11,6 +11,11 @@ to CSV, with JSON backup/restore in the Settings tab.
   (public repo — never commit real resident names/PII; see "Data model & conventions" below).
 - React 19 + Vite 6 + Tailwind CSS · `lucide-react` icons. (`jspdf`/`jspdf-autotable` are declared
   in `package.json` but currently unused — no PDF export is implemented.)
+- `xlsx` (SheetJS) parses the Master Matrix import (below). Installed from SheetJS's own CDN tarball
+  (`"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"` in `package.json`), **not** the npm
+  registry package — the registry build is frozen at 0.18.5 with unpatched prototype-pollution/ReDoS
+  CVEs that SheetJS only fixes in CDN-published builds. Keep installing/upgrading this dependency via
+  a pinned CDN tarball URL, never `npm install xlsx`.
 - **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~4,200 lines).**
   `src/` contains only that file plus `main.jsx` (10-line wrapper, no `App.jsx`) and `index.css` —
   expect to spend nearly all edits inside `ResidentScheduler.jsx`.
@@ -62,6 +67,23 @@ names below rather than trusting offsets.
   unquoted "Last, First" names that would otherwise misalign columns — optional header row, category
   matched via `CATEGORY_SYNONYMS`, PGY validated against the category's `pgyOptions`; Rotation/date
   columns are read but ignored) plus `splitCsvLine`/`splitName`/`matchCategory`.
+- `MATRIX IMPORT` (same section, after `parseRosterText`) — parses the chief's yearly two-sheet
+  Master Matrix workbook (`ImportMatrixModal`, Home tab): `parseHomeResidentMatrix` reads the "Home EM
+  Residents" sheet's 3 PGY sections into per-block EM rotation assignments (via `matchBlockType`,
+  matching rotation labels against `BLOCK_TYPES_EM` the same way `matchCategory` matches categories);
+  `parseOffServiceSheet` reads the "Off-Service Residents" sheet's Name/Dept/Dates triples (found by
+  scanning for the date-range cell and reading its left neighbors, since the sheet's column offsets
+  drift per month-group — don't switch this to fixed column indices). Two separate date-range parsers
+  handle each sheet's own year-inference quirk: `parseSequentialDateRange` (sheet 1) walks columns in
+  row order bumping a year cursor on backward month jumps, because the sheet has a pre-orientation
+  stub column that sits before the AY's first July block; `parseDateRangeInAY` (sheet 2) dates each
+  range independently off a July cutoff, except a same-year range straddling Jun→Jul (right at the
+  AY's start) uses the *later* month's half so it doesn't get misread as the AY's May/Jun tail. Do not
+  merge these two into one function — they solve different problems for structurally different sheets.
+  `ImportMatrixModal` only ever writes `emRoster` (merging in new residents, matched by normalized
+  name) and `blocksHistory` (one snapshot per parsed block, id `blk_import_${startDate}` so a
+  re-upload updates in place instead of duplicating) — it never touches the live/current block and
+  never generates a schedule.
 - ~507–685 `REST-PERIOD UTILITIES` / eligibility base — `checkRestViolations`, `isSchedulable`,
   `getShiftTarget`, `getEffectiveEligibility`.
 - ~686–863 `ELIGIBILITY LOGIC` — `getEligibleShifts(resident, dateStr, ..., ctx)` (jeopardy-call
@@ -86,8 +108,9 @@ names below rather than trusting offsets.
 - ~1052–1061 `HOOKS` — `useLocalStorage`.
 - ~1062–3850 tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
   `CollapsibleHeader`), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
-  Home), `HOME TAB`, `RESIDENT FORM` (shared by Add/Edit modals, plus `ImportRosterModal` for bulk
-  roster import), `EM RESIDENTS TAB`, `OFF-SERVICE TAB` (inline per-tile date-off/jeopardy editors),
+  Home), `HOME TAB` (`ImportMatrixModal` lives just above it — see "Matrix Import" above), `RESIDENT
+  FORM` (shared by Add/Edit modals, plus `ImportRosterModal` for bulk roster import), `EM RESIDENTS
+  TAB`, `OFF-SERVICE TAB` (inline per-tile date-off/jeopardy editors),
   `SHIFT MATRIX TAB` (rotation-aware shift matrix), `RULES TAB` ("Scheduling Rules" in the UI —
   day/rotation rules plus the Daily Shift Coverage editor consumed by the generator), `SHIFT PICKER
   MODAL` + `SCHEDULE GRID` (main editing grid; Generate Schedule / Clear & Regenerate live here),
@@ -116,8 +139,9 @@ names below rather than trusting offsets.
   ride along with existing persistence/backup — no new `LS_BACKUP_KEYS` entry needed for
   resident-level fields like this.
 - This repo is **public** — never hardcode real resident names/rosters into source (this happened
-  once; use the Import Roster feature on the EM Residents / Off-Service tabs instead, which reads
-  pasted/uploaded data into `localStorage` only, never into committed code).
+  once; use the Import Roster feature on the EM Residents / Off-Service tabs, or Import Master Matrix
+  on the Home tab, instead — both read pasted/uploaded data into `localStorage` only, never into
+  committed code).
 - This is a sibling project to `em-scheduler` (same author, same domain — EM scheduling). If a bug
   or pattern here looks familiar, check `../em-scheduler/CLAUDE.md` for prior hard-won fixes
   (scheduling rules, export patterns, attending-matching) before re-deriving them.

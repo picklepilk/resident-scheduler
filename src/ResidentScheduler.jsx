@@ -9,6 +9,7 @@ import {
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical,
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -481,12 +482,12 @@ function formatDisplayDate(s) {
 const CATEGORY_SYNONYMS = {
   EM_HOME: ['em', 'emhome', 'emergencymedicine'],
   EM_BAMC: ['bamc', 'embamc'],
-  PEDS:    ['peds', 'pediatrics'],
+  PEDS:    ['peds', 'pediatrics', 'ped'],
   FM:      ['fm', 'familymedicine'],
-  IM:      ['im', 'internalmedicine'],
+  IM:      ['im', 'internalmedicine', 'intmed'],
   NEURO:   ['neuro', 'neurology'],
   ANES:    ['anes', 'anesthesia', 'anesthesiology'],
-  PSYCH:   ['psych', 'psychiatry'],
+  PSYCH:   ['psych', 'psychiatry', 'psyc'],
   POD:     ['pod', 'podiatry'],
 };
 function normalizeToken(s) { return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
@@ -587,6 +588,203 @@ function parseRosterText(text, allowedCategoryIds) {
   }
 
   return { ok, errors };
+}
+
+// ─── MATRIX IMPORT (yearly Master Matrix Excel workbook) ──────────────────────
+// Parses the chief's two-sheet workbook: "Home EM Residents" (a per-PGY grid of every
+// EM-Home resident's rotation across the year's ~13 blocks) and "Off-Service Residents"
+// (incoming rotators grouped by month, Name/Dept/Dates columns). Both sheets omit the
+// year in date ranges (e.g. "7/27-8/23") — the two date parsers below use different
+// strategies to infer it, because the two sheets have different structural quirks (see
+// each function's comment).
+
+const DATE_RANGE_RE = /(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})/;
+
+// Sheet 1's PGY sections read left-to-right as one continuous sequence of block windows,
+// including a leading pre-orientation stub (e.g. "6/22-6/30") that sits chronologically
+// BEFORE the AY's first July block — a plain month-cutoff rule would misdate that stub
+// into the following June. Walking the row in order and only bumping the year when the
+// start month actually goes backward avoids that trap entirely.
+function parseSequentialDateRange(raw, cursor) {
+  const m = DATE_RANGE_RE.exec(String(raw ?? ''));
+  if (!m) return null;
+  const sm = Number(m[1]), sd = Number(m[2]), em = Number(m[3]), ed = Number(m[4]);
+  if (cursor.lastStartMonth != null && sm < cursor.lastStartMonth) cursor.year++;
+  const startYear = cursor.year;
+  const endYear = em < sm ? startYear + 1 : startYear; // range itself crosses the year turn
+  cursor.lastStartMonth = sm;
+  const pad = n => String(n).padStart(2, '0');
+  return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
+}
+
+// Sheet 2's rows aren't sequential (three independent month-grouped column tracks), so each
+// range is dated independently via a Jul-cutoff — except the one case that cutoff gets
+// backward: a range that itself straddles Jun->Jul (e.g. "6/29-7/26", right at the AY's
+// start). Same-year ranges use the LATER month's half so that straddle lands on the
+// earlier (AY-start) year instead of being misread as the AY's May/Jun tail.
+function parseDateRangeInAY(raw, ayStartYear) {
+  const m = DATE_RANGE_RE.exec(String(raw ?? ''));
+  if (!m) return null;
+  const sm = Number(m[1]), sd = Number(m[2]), em = Number(m[3]), ed = Number(m[4]);
+  const pad = n => String(n).padStart(2, '0');
+  let startYear, endYear;
+  if (em < sm) { // genuine wrap across the turn of the year (e.g. Dec 18 -> Jan 14)
+    startYear = sm >= 7 ? ayStartYear : ayStartYear + 1;
+    endYear = startYear + 1;
+  } else {
+    const year = em >= 7 ? ayStartYear : ayStartYear + 1;
+    startYear = year; endYear = year;
+  }
+  return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
+}
+
+// Reads the AY start year off the workbook's own title (e.g. "MASTER MATRIX 2026-2027");
+// falls back to the app's current-AY calculation if the title doesn't match.
+function parseAYStartYear(sheetRows) {
+  const title = (sheetRows && sheetRows[0] && sheetRows[0][0]) || '';
+  const m = /(\d{4})\s*-\s*\d{4}/.exec(title);
+  if (m) return Number(m[1]);
+  const now = new Date();
+  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+// Same normalize-and-match approach as matchCategory, against BLOCK_TYPES_EM labels.
+function matchBlockType(raw) {
+  const n = normalizeToken(raw);
+  if (!n) return null;
+  for (const bt of BLOCK_TYPES_EM) if (normalizeToken(bt.label) === n) return bt.id;
+  return null;
+}
+
+const PGY_SECTION_RE = /Resident\s*\(EM-?Home\s*PGY-?\s*(\d)\)/i;
+
+// The date-range header row isn't always the section-header row itself (PGY-3's section in
+// the real workbook has a stray "Block N" label row in between) — scan a few rows ahead for
+// the first one with ≥2 recognizable date-range cells.
+function findDateHeaderRow(sheetRows, fromIdx, maxLookahead = 5) {
+  for (let i = fromIdx; i < Math.min(sheetRows.length, fromIdx + maxLookahead); i++) {
+    const row = sheetRows[i] || [];
+    let hits = 0;
+    for (let c = 1; c < row.length; c++) if (DATE_RANGE_RE.test(row[c])) hits++;
+    if (hits >= 2) return i;
+  }
+  return -1;
+}
+
+// Parses the "Home EM Residents" sheet into per-block EM-Home rotation assignments.
+// Returns { residents: [{firstName,lastName,category:'EM_HOME',pgy}],
+//           blocks: [{start,end, assignments:[{firstName,lastName,pgy,blockTypeId}]}],
+//           warnings: string[] }.
+function parseHomeResidentMatrix(sheetRows, ayStartYear) {
+  const warnings = [];
+  const residents = [];
+  const sections = [];
+
+  for (let i = 0; i < sheetRows.length; i++) {
+    const cell0 = String((sheetRows[i] || [])[0] || '');
+    const m = PGY_SECTION_RE.exec(cell0);
+    if (!m) continue;
+    const pgy = Number(m[1]);
+    const headerRowIdx = findDateHeaderRow(sheetRows, i);
+    if (headerRowIdx < 0) { warnings.push(`Couldn't find a date-range header row for PGY-${pgy} section (row ${i + 1})`); continue; }
+    const headerRow = sheetRows[headerRowIdx];
+    const cursor = { year: ayStartYear, lastStartMonth: null };
+    const cols = [];
+    for (let c = 1; c < headerRow.length; c++) {
+      const range = parseSequentialDateRange(headerRow[c], cursor);
+      if (range) cols.push({ colIdx: c, ...range });
+    }
+    const rows = [];
+    // Resident rows are "Last, First" — stop at the first row that isn't (blank row,
+    // stray artifact row, or the next section) rather than assuming a fixed row count.
+    for (let r = headerRowIdx + 1; r < sheetRows.length; r++) {
+      const row = sheetRows[r] || [];
+      const nameCell = String(row[0] || '');
+      if (!nameCell.includes(',')) break;
+      const name = splitName(nameCell);
+      if (!name) { warnings.push(`Couldn't parse resident name "${nameCell}" (PGY-${pgy} section, row ${r + 1})`); continue; }
+      rows.push({ ...name, raw: row });
+    }
+    sections.push({ pgy, cols, rows });
+    residents.push(...rows.map(r => ({ firstName: r.firstName, lastName: r.lastName, category: 'EM_HOME', pgy })));
+  }
+
+  if (!sections.length) {
+    warnings.push('No "Resident (EM-Home PGY-N)" sections found — is this the right sheet?');
+    return { residents: [], blocks: [], warnings };
+  }
+
+  // Sections are expected to share the same date-range grid; a mismatch is warned about
+  // (not fatal) and the first section's columns win as canonical.
+  const canonical = sections[0].cols;
+  for (const sec of sections.slice(1)) {
+    const same = sec.cols.length === canonical.length &&
+      sec.cols.every((c, idx) => c.start === canonical[idx].start && c.end === canonical[idx].end);
+    if (!same) warnings.push(`PGY-${sec.pgy} section's date columns don't match the PGY-${sections[0].pgy} section's — using PGY-${sections[0].pgy}'s as canonical`);
+  }
+
+  const blocks = [];
+  for (const col of canonical) {
+    const assignments = [];
+    let anyRealAssignment = false;
+    for (const sec of sections) {
+      const secCol = sec.cols.find(c => c.start === col.start && c.end === col.end);
+      if (!secCol) continue;
+      for (const row of sec.rows) {
+        const raw = row.raw[secCol.colIdx];
+        if (!raw || !String(raw).trim()) continue;
+        const blockTypeId = matchBlockType(raw);
+        if (blockTypeId) {
+          assignments.push({ firstName: row.firstName, lastName: row.lastName, pgy: sec.pgy, blockTypeId });
+          anyRealAssignment = true;
+        } else if (!/orientation|transition/i.test(raw)) {
+          warnings.push(`Unrecognized rotation "${raw}" for ${row.firstName} ${row.lastName} (${col.start}–${col.end}) — left unassigned`);
+        }
+      }
+    }
+    // A column with no real (non-Orientation/Transition) assignment anywhere is a stub
+    // buffer period, not an actual scheduling block — excluded from the result entirely.
+    if (anyRealAssignment) blocks.push({ start: col.start, end: col.end, assignments });
+  }
+
+  return { residents, blocks, warnings };
+}
+
+// Parses the "Off-Service Residents" sheet — Name/Dept/Dates triples repeated across three
+// month-grouped column tracks whose exact column offsets drift a bit (merged-cell export
+// artifacts). Rather than hardcode track positions, this scans for the one unambiguous
+// anchor (a date-range-shaped cell) and reads Dept/Name from its immediate left neighbors,
+// which stay adjacent regardless of which track or absolute column they land in.
+// Returns { rows: [{firstName,lastName,category,pgy,start,end}], warnings: string[] }.
+function parseOffServiceSheet(sheetRows, ayStartYear) {
+  const warnings = [];
+  const rows = [];
+  let skippedNoName = 0;
+  for (let r = 0; r < sheetRows.length; r++) {
+    const row = sheetRows[r] || [];
+    for (let c = 2; c < row.length; c++) {
+      if (!DATE_RANGE_RE.test(row[c])) continue;
+      const deptRaw = row[c - 1];
+      const nameRaw = String(row[c - 2] || '').replace(/\*+\s*$/, '').trim(); // trailing "*" footnote marker
+      if (!nameRaw) { skippedNoName++; continue; } // placeholder slot, no resident assigned yet
+      const category = matchCategory(deptRaw);
+      if (!category) { warnings.push(`Row ${r + 1}: unrecognized department "${deptRaw}" for "${nameRaw}" — skipped`); continue; }
+      const name = splitName(nameRaw);
+      if (!name) { warnings.push(`Row ${r + 1}: couldn't parse name "${nameRaw}" — skipped`); continue; }
+      const range = parseDateRangeInAY(row[c], ayStartYear);
+      const pgyOptions = CAT_MAP[category].pgyOptions;
+      let pgy = pgyOptions[0];
+      // FM_1/FM_3 eligibility is completely different (PED-N-only vs POD-default) — the sheet
+      // gives no PGY, so this is a genuine guess that must be flagged, not silently assumed.
+      if (category === 'FM' && pgyOptions.length > 1) {
+        pgy = 1;
+        warnings.push(`PGY assumed 1 for ${name.firstName} ${name.lastName} (FM) — verify on the Off-Service tab if actually PGY-3`);
+      }
+      rows.push({ firstName: name.firstName, lastName: name.lastName, category, pgy, start: range.start, end: range.end });
+    }
+  }
+  if (skippedNoName > 0) warnings.push(`${skippedNoName} placeholder row(s) with no resident name skipped`);
+  return { rows, warnings };
 }
 
 // ─── REST-PERIOD UTILITIES ────────────────────────────────────────────────────
@@ -1627,6 +1825,209 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
 
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
 
+// Uploads the chief's yearly Master Matrix workbook (.xlsx) and turns it into ready-to-load
+// Saved Blocks — EM Home rotation assignments (parseHomeResidentMatrix) plus off-service
+// rotators bucketed by date overlap (parseOffServiceSheet). Never touches the live/current
+// block, and never generates a schedule — roster only.
+function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast }) {
+  const [fileName, setFileName] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  const existingKeys = useMemo(() =>
+    new Set(emRoster.map(r => normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName))),
+    [emRoster]);
+
+  function pickFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError('');
+    setPreview(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: 'array' });
+        const homeSheetName = wb.SheetNames.find(n => /home/i.test(n)) || wb.SheetNames[0];
+        const offSheetName  = wb.SheetNames.find(n => /off.?service/i.test(n)) || wb.SheetNames[1] || wb.SheetNames[0];
+        const homeRows = XLSX.utils.sheet_to_json(wb.Sheets[homeSheetName], { header: 1, raw: false, defval: '' });
+        const offRows  = XLSX.utils.sheet_to_json(wb.Sheets[offSheetName],  { header: 1, raw: false, defval: '' });
+
+        const ayStartYear = parseAYStartYear(homeRows);
+        const home = parseHomeResidentMatrix(homeRows, ayStartYear);
+        const off  = parseOffServiceSheet(offRows, ayStartYear);
+
+        if (!home.blocks.length) {
+          setError('No rotation blocks recognized — check that the "Home EM Residents" sheet matches the expected layout (a "Resident (EM-Home PGY-N)" section per PGY level).');
+          return;
+        }
+
+        const newResidents = home.residents.filter(r => !existingKeys.has(normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName)));
+        const existingCount = home.residents.length - newResidents.length;
+
+        const blocks = home.blocks.map((b, i) => ({
+          start: b.start, end: b.end,
+          name: `Block ${i + 1} (${prettyDate(b.start)}–${prettyDate(b.end)})`,
+          assignCount: b.assignments.length,
+          offCount: off.rows.filter(o => o.start <= b.end && o.end >= b.start).length,
+        }));
+
+        const cap = appSettings?.maxSavedBlocks ?? 24;
+        const newIds = new Set(blocks.map(b => `blk_import_${b.start}`));
+        const projectedTotal = blocksHistory.filter(b => !newIds.has(b.id)).length + blocks.length;
+        const capOverflow = Math.max(0, projectedTotal - cap);
+
+        setPreview({ ayStartYear, home, off, newResidents, existingCount, blocks, capOverflow, warnings: [...home.warnings, ...off.warnings] });
+      } catch (err) {
+        setError(`Couldn't read this file — ${err?.message || 'is it a valid .xlsx workbook?'}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  }
+
+  function commit() {
+    if (!preview) return;
+    const { home, off, newResidents, ayStartYear } = preview;
+
+    const mergedRoster = [...emRoster, ...newResidents.map(r => ({
+      id: uuid(), ...r, blockType: 'EM', isCCUNights: false,
+      approvedDatesOff: [], jeopardyDates: [],
+      availabilityMode: 'full', availableRanges: [], canWorkDates: [],
+    }))];
+    setEmRoster(mergedRoster);
+
+    const findResidentId = (firstName, lastName) => {
+      const key = normalizeToken(firstName) + '|' + normalizeToken(lastName);
+      return mergedRoster.find(r => normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName) === key)?.id ?? null;
+    };
+
+    const academicYear = formatAY(ayStartYear);
+    const newSnaps = home.blocks.map((b, i) => {
+      const name = `Block ${i + 1} (${prettyDate(b.start)}–${prettyDate(b.end)})`;
+      const emBlockAssignments = {};
+      for (const a of b.assignments) {
+        const rid = findResidentId(a.firstName, a.lastName);
+        if (rid) emBlockAssignments[rid] = { blockType: a.blockTypeId };
+      }
+      const offServiceResidents = off.rows
+        .filter(o => o.start <= b.end && o.end >= b.start)
+        .map(o => ({
+          id: uuid(), firstName: o.firstName, lastName: o.lastName, category: o.category, pgy: o.pgy,
+          isCCUNights: false, approvedDatesOff: [], jeopardyDates: [],
+          availabilityMode: 'ranges',
+          availableRanges: [{ start: o.start > b.start ? o.start : b.start, end: o.end < b.end ? o.end : b.end }],
+          canWorkDates: [],
+        }));
+      return {
+        id: `blk_import_${b.start}`, name, academicYear,
+        startDate: b.start, endDate: b.end, savedAt: new Date().toISOString(),
+        residentCount: Object.keys(emBlockAssignments).length + offServiceResidents.length, shiftCount: 0,
+        data: {
+          emBlockAssignments, offServiceResidents, schedule: {},
+          specialDays: { codeBlueDays: [], advocacyDays: [], procDays: [], anesDays: [] },
+          conferences: { acepStart:'', acepEnd:'', iteDate:'', aaemStart:'', aaemEnd:'', saemStart:'', saemEnd:'' },
+          generationReport: null, startDate: b.start, endDate: b.end, name, academicYear,
+        },
+      };
+    });
+
+    setBlocksHistory(prev => {
+      const newIds = new Set(newSnaps.map(s => s.id));
+      return [...newSnaps, ...prev.filter(b => !newIds.has(b.id))].slice(0, appSettings?.maxSavedBlocks ?? 24);
+    });
+
+    showToast(`Imported ${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} from "${fileName}"`, 'green');
+    onClose();
+  }
+
+  return (
+    <Modal title="Import Master Matrix" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Upload the chief's yearly Master Matrix workbook (.xlsx) — a "Home EM Residents" sheet with
+          each resident's rotation per block, and an "Off-Service Residents" sheet listing incoming
+          rotators. This populates each block's <strong>roster only</strong> (EM rotation assignments +
+          off-service availability) as ready-to-load Saved Blocks — it never generates a schedule, and
+          your current in-progress block is left untouched.
+        </p>
+
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
+            <Upload size={12}/> Choose .xlsx file
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx" onChange={pickFile} className="hidden"/>
+          {fileName && <span className="text-xs text-gray-500">{fileName}</span>}
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-2 px-3 py-2 text-xs bg-red-50 border border-red-200 rounded-lg text-red-700">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5"/> {error}
+          </div>
+        )}
+
+        {preview && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">EM Home residents</p>
+                <p className="text-gray-500 mt-1">{preview.newResidents.length} new · {preview.existingCount} already matched</p>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">Blocks to create/update</p>
+                <p className="text-gray-500 mt-1">{preview.blocks.length} blocks · AY{String(preview.ayStartYear).slice(2)}/{String(preview.ayStartYear + 1).slice(2)}</p>
+              </div>
+            </div>
+
+            {preview.capOverflow > 0 && (
+              <div className="flex items-start gap-2 px-3 py-2 text-xs bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5"/>
+                This will exceed your Saved Blocks cap ({appSettings?.maxSavedBlocks ?? 24}) — the {preview.capOverflow} oldest existing snapshot{preview.capOverflow !== 1 ? 's' : ''} will be dropped.
+              </div>
+            )}
+
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-40 overflow-y-auto">
+              {preview.blocks.map(b => (
+                <div key={b.start} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                  <Check size={12} className="text-emerald-500 shrink-0"/>
+                  <span className="text-gray-700">{b.name}</span>
+                  <span className="ml-auto text-gray-400">{b.assignCount} EM · {b.offCount} off-service</span>
+                </div>
+              ))}
+            </div>
+
+            {preview.warnings.length > 0 && (
+              <div className="border border-amber-200 rounded-lg divide-y divide-amber-100 max-h-40 overflow-y-auto">
+                {preview.warnings.map((w, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-xs bg-amber-50/50">
+                    <AlertTriangle size={12} className="text-amber-500 shrink-0 mt-0.5"/>
+                    <span className="text-amber-800">{w}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400">
+              Re-uploading updates the same blocks in place (matched by start date) rather than duplicating them —
+              including any block you've since loaded, edited, and re-saved under that date.
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
+          <button type="button" onClick={commit} disabled={!preview}
+            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            Import {preview ? preview.blocks.length : ''} block{preview?.blocks.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // Inline conference-date editor inside the AY folder
 function AYConferenceEditor({ ay, conf, onUpdate }) {
   const [open, setOpen] = useState(false);
@@ -1690,12 +2091,13 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock }) {
+function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, setBlocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock, showToast }) {
   const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
   const resCount   = emRoster.length + (block.offServiceResidents || []).length;
   const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
   const [blockOpen, setBlockOpen] = useState(true);
   const [ayOpen, setAyOpen] = useState(true);
+  const [showImportMatrix, setShowImportMatrix] = useState(false);
 
   // Group history by AY; also include AYs from ayData with no blocks yet
   const byYear = useMemo(() => {
@@ -1794,13 +2196,19 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
 
       {/* Saved Blocks — grouped by AY */}
       <div className="space-y-2">
-        <button onClick={() => setAyOpen(p => !p)} className="w-full flex items-center justify-between mb-1 text-left">
-          <h3 className="text-sm font-semibold text-gray-700">Academic Years</h3>
-          <div className="flex items-center gap-2">
-            <p className="text-xs text-gray-400">Conference & ITE dates are set per AY</p>
-            <ChevronDown size={14} className={`text-gray-400 transition-transform ${ayOpen ? 'rotate-180' : ''}`}/>
-          </div>
-        </button>
+        <div className="w-full flex items-center justify-between mb-1 gap-2">
+          <button onClick={() => setAyOpen(p => !p)} className="flex-1 flex items-center justify-between text-left">
+            <h3 className="text-sm font-semibold text-gray-700">Academic Years</h3>
+            <div className="flex items-center gap-2">
+              <p className="text-xs text-gray-400">Conference & ITE dates are set per AY</p>
+              <ChevronDown size={14} className={`text-gray-400 transition-transform ${ayOpen ? 'rotate-180' : ''}`}/>
+            </div>
+          </button>
+          <button onClick={() => setShowImportMatrix(true)}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-600 rounded-lg transition-colors">
+            <Upload size={12}/> Import Master Matrix
+          </button>
+        </div>
 
         {ayOpen && (byYear.length === 0 ? (
           <div className="bg-white rounded-xl border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400 italic">
@@ -1860,6 +2268,15 @@ function HomeTab({ block, updateBlock, emRoster, blocksHistory, ayData, updateAy
           </div>
         )))}
       </div>
+
+      {showImportMatrix && (
+        <ImportMatrixModal
+          emRoster={emRoster} setEmRoster={setEmRoster}
+          blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
+          appSettings={appSettings} showToast={showToast}
+          onClose={() => setShowImportMatrix(false)}
+        />
+      )}
     </div>
   );
 }
@@ -4529,10 +4946,11 @@ export default function ResidentScheduler() {
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
           {tab==='home' && (
-            <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} blocksHistory={blocksHistory}
+            <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} setEmRoster={setEmRoster}
+              blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
               onContinue={()=>setTab('schedule')} onLoadBlock={loadBlock}
-              onSaveBlock={saveBlock} onNewBlock={newBlock}/>
+              onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast}/>
           )}
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
