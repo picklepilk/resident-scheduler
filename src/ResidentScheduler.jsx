@@ -998,6 +998,19 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
       if (totalNights > NIGHT_RULES.maxPerBlock)
         violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
     }
+    // Mirror of the 'day' branch below, but looking forward — a fill pass can place this night
+    // shift AFTER a day shift already sits on dateStr+1/+2 (e.g. the generator's optional pass
+    // runs after TRAUMA-D is already filled), so the 24h rest rule must be checked in both
+    // directions, not just backward from an incoming day shift.
+    for (let offset = 1; offset <= 2; offset++) {
+      const checkDs = toDateStr(addDays(parseDate(dateStr), offset));
+      const laterSid = rs[checkDs];
+      if (!laterSid || SHIFT_MAP[laterSid]?.type !== 'day') continue;
+      const gapH = (shiftStartMs(laterSid, checkDs) - shiftEndMs(newShiftId, dateStr)) / 3_600_000;
+      if (gapH < NIGHT_RULES.postNightDayRestH)
+        violations.push({ message: `Only ${gapH}h off before the day shift already scheduled after this night shift — need ${NIGHT_RULES.postNightDayRestH}h`, level: 'error' });
+      break; // only the soonest day shift after matters for this check
+    }
   }
 
   if (newType === 'day') {
