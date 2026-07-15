@@ -964,20 +964,18 @@ function isNightOnlyResident(resident, eligOverrides = {}) {
   const { list } = getEffectiveEligibility(resident, eligOverrides);
   return list.length > 0 && list.every(isNightShiftId);
 }
-// Length of the consecutive-night run ending the day before dateStr (0 if the prior day wasn't a
-// night shift). Capped at 14 as a sanity bound — a real run should never approach that.
-function nightRunBefore(rs, dateStr) {
-  let n = 0, d = addDays(parseDate(dateStr), -1);
-  for (let i = 0; i < 14 && isNightShiftId(rs[toDateStr(d)]); i++) { n++; d = addDays(d, -1); }
+// Length of the consecutive-night run adjacent to dateStr in the given direction (-1 = ending the
+// day before dateStr, +1 = starting the day after) — 0 if that adjacent day wasn't a night shift.
+// Capped at 14 as a sanity bound — a real run should never approach that.
+function nightRun(rs, dateStr, dir) {
+  let n = 0, d = addDays(parseDate(dateStr), dir);
+  for (let i = 0; i < 14 && isNightShiftId(rs[toDateStr(d)]); i++) { n++; d = addDays(d, dir); }
   return n;
 }
+function nightRunBefore(rs, dateStr) { return nightRun(rs, dateStr, -1); }
 // Mirror of nightRunBefore, looking forward from the day after dateStr — used so the generator
 // can avoid stranding a short run when deciding what to place on an adjacent day.
-function nightRunAfter(rs, dateStr) {
-  let n = 0, d = addDays(parseDate(dateStr), 1);
-  for (let i = 0; i < 14 && isNightShiftId(rs[toDateStr(d)]); i++) { n++; d = addDays(d, 1); }
-  return n;
-}
+function nightRunAfter(rs, dateStr) { return nightRun(rs, dateStr, 1); }
 function countNightsInSchedule(rs) { return Object.values(rs).filter(isNightShiftId).length; }
 // Evaluates placing newShiftId on dateStr against a resident's existing schedule rs (schedule
 // shape: {dateStr: shiftId}). Returns [{message, level}] — used by both the generator (hard
@@ -1439,6 +1437,9 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
+  // Depends only on the block's own date range, not the resident — computed once and reused by
+  // both the streak-run walk and the circadian night-run walk below (each per-resident).
+  const blockDates = getBlockDates(block.startDate, block.endDate);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
@@ -1562,7 +1563,6 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 
     // 7-consecutive-work-day rule — GR days count as work days (see isStreakWorkDay)
     if (isSchedulable(resident)) {
-      const blockDates = getBlockDates(block.startDate, block.endDate);
       let runStart = null, runHasShift = false;
       const flushRun = (runEnd) => {
         if (runStart == null) return;
@@ -1619,21 +1619,15 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
         }
       }
 
-      // Post-night-day and eve→day-next-day turnarounds — same sorted-by-date-adjacency pairs,
-      // but keyed on calendar adjacency (day-after) rather than the timing-based rest gap above.
-      for (let i = 0; i < assignments.length - 1; i++) {
-        const a = assignments[i], b = assignments[i + 1];
-        if (toDateStr(addDays(parseDate(a.ds), 1)) !== b.ds) continue; // not calendar-adjacent
-        const aType = SHIFT_MAP[a.sid]?.type, bType = SHIFT_MAP[b.sid]?.type;
-        if (aType === 'night' && bType === 'day') {
-          const gapH = (b.startMs - a.endMs) / 3_600_000;
-          if (gapH < NIGHT_RULES.postNightDayRestH)
-            issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-              message: `Only ${gapH}h off after night shifts before this day shift — need ${NIGHT_RULES.postNightDayRestH}h`, level: 'error' });
+      // Post-night-day and eve→day-next-day turnarounds — delegate to checkCircadianViolations's
+      // 'day' branch (it looks backward from dateStr through the already-complete schedule) so this
+      // retrospective check can't drift from the generator/picker's real-time version of the same rule.
+      for (const a of assignments) {
+        if (SHIFT_MAP[a.sid]?.type !== 'day') continue;
+        for (const v of checkCircadianViolations(resident, a.ds, a.sid, rs)) {
+          if (v.level === 'error')
+            issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: 'error' });
         }
-        if (aType === 'eve' && bType === 'day')
-          issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-            message: `Day shift immediately follows an evening shift the day before (${a.sid} → ${b.sid})`, level: 'error' });
       }
     }
 
@@ -1643,7 +1637,6 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     // block's first/last date are not flagged as "short" since they may continue in an adjacent
     // block this validator can't see.
     {
-      const blockDates = getBlockDates(block.startDate, block.endDate);
       const nOnly = isNightOnlyResident(resident, eligOverrides);
       let runStart = null, runLen = 0;
       const flushNightRun = (runEndIdx) => {
@@ -1677,7 +1670,6 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   }
 
   // Block-level minimum/maximum coverage check — one issue per date+shift, not per resident.
-  const blockDatesForCoverage = getBlockDates(block.startDate, block.endDate);
   const countsByDateShift = {};
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
@@ -1687,7 +1679,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       countsByDateShift[k] = (countsByDateShift[k] || 0) + 1;
     }
   }
-  for (const ds of blockDatesForCoverage) {
+  for (const ds of blockDates) {
     for (const shift of SHIFTS) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(parseDate(ds).getDay())) continue;
       const cov = getCoverageFor(shift.id, coverage);
@@ -1703,9 +1695,11 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 
   // FLEX/POD seniority composition: a staffed group missing its required senior (PGY-2 for
   // FLEX, PGY-3 for POD, either falling back to the other) is flagged for manual review.
-  for (const ds of blockDatesForCoverage) {
+  const seniorShiftsByArea = Object.fromEntries(
+    Object.keys(SENIOR_COMPOSITION).map(area => [area, SHIFTS.filter(s => s.area === area)]));
+  for (const ds of blockDates) {
     for (const [area, comp] of Object.entries(SENIOR_COMPOSITION)) {
-      for (const shift of SHIFTS.filter(s => s.area === area)) {
+      for (const shift of seniorShiftsByArea[area]) {
         const assignedHere = allResidents.filter(r => (schedule[r.id] || {})[ds] === shift.id);
         if (!assignedHere.length) continue;
         if (!assignedHere.some(r => isSeniorFor(area, r)))
@@ -1885,7 +1879,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // Peds/EM mix nudge (25) sit just below jeopardy avoidance; the "don't strand a short night
   // run" penalty (25) and FM-1 peds-fill-in discount (15) are minor tie-breaking preferences.
   // Math.random() only breaks exact ties.
-  function score(r, shift, ds) {
+  function score(r, shift, ds, seniorFilled) {
     const t = target[r.id];
     const deficit = (t - assigned[r.id]) / t;
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
@@ -1915,9 +1909,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const comp = SENIOR_COMPOSITION[shift.area];
     let seniorAdj = 0;
     if (comp) {
-      const filled = hasSenior(shift.id, ds);
-      if (!filled && r.category === 'EM_HOME' && r.pgy === comp.primary) seniorAdj = 1;
-      else if (filled && isSeniorFor(shift.area, r)) seniorAdj = -0.6; // -12 at the 20-point scale below
+      if (!seniorFilled && r.category === 'EM_HOME' && r.pgy === comp.primary) seniorAdj = 1;
+      else if (seniorFilled && isSeniorFor(shift.area, r)) seniorAdj = -0.6; // -12 at the 20-point scale below
     }
     // Mildly steer away from a resident's 3rd (final allowed) journal club this AY, once they're
     // already at 2 — candidatePool already hard-blocks a 4th.
@@ -1971,7 +1964,9 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       // FLEX/POD seniority composition: while this shift/day has no senior yet, restrict to the
       // senior sub-pool if one exists; otherwise fall back to the full pool and record the gap
       // (staffing junior beats leaving a min-coverage slot empty).
-      if (SENIOR_COMPOSITION[slot.shift.area] && !hasSenior(slot.shift.id, ds)) {
+      // Computed once per slot (not per candidate below — it doesn't depend on the candidate).
+      const seniorFilled = SENIOR_COMPOSITION[slot.shift.area] ? hasSenior(slot.shift.id, ds) : null;
+      if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled) {
         const seniorPool = candidates.filter(r => isSeniorFor(slot.shift.area, r));
         if (seniorPool.length) candidates = seniorPool;
         else {
@@ -1981,7 +1976,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       }
       let best = candidates[0], bestScore = -Infinity;
       for (const r of candidates) {
-        const s = score(r, slot.shift, ds);
+        const s = score(r, slot.shift, ds, seniorFilled);
         if (s > bestScore) { bestScore = s; best = r; }
       }
       schedule[best.id][ds] = slot.shift.id;
@@ -2647,7 +2642,7 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, setBlocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock, showToast }) {
+function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, setBlocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock, onTogglePublished, showToast }) {
   const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
   const resCount   = emRoster.length + (block.offServiceResidents || []).length;
   const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
@@ -2817,7 +2812,7 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
                           </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          <button onClick={() => setBlocksHistory(p => p.map(x => x.id === b.id ? { ...x, published: !x.published } : x))}
+                          <button onClick={() => onTogglePublished(b.id)}
                             title="Published blocks count toward each resident's 3-journal-club-per-year cap"
                             className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${b.published ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-500 hover:border-emerald-300'}`}>
                             {b.published ? 'Published' : 'Publish'}
@@ -5644,6 +5639,7 @@ export default function ResidentScheduler() {
             <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} setEmRoster={setEmRoster}
               blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
+              onTogglePublished={toggleBlockPublished}
               onContinue={()=>setTab('schedule')} onLoadBlock={loadBlock}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast}/>
           )}

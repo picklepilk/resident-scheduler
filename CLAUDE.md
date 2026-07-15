@@ -16,7 +16,7 @@ to CSV, with JSON backup/restore in the Settings tab.
   registry package — the registry build is frozen at 0.18.5 with unpatched prototype-pollution/ReDoS
   CVEs that SheetJS only fixes in CDN-published builds. Keep installing/upgrading this dependency via
   a pinned CDN tarball URL, never `npm install xlsx`.
-- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~5,300 lines).**
+- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~5,700 lines).**
   `src/` contains only that file plus `main.jsx` (10-line wrapper, no `App.jsx`) and `index.css` —
   expect to spend nearly all edits inside `ResidentScheduler.jsx`.
 - Shift catalog is defined as data at the top of `ResidentScheduler.jsx`: `SHIFTS` (id, label, area,
@@ -101,7 +101,11 @@ names below rather than trusting offsets.
   exempt from the block-wide night cap and the short-run warning), `nightRunBefore`/`nightRunAfter`,
   `checkCircadianViolations(resident, dateStr, newShiftId, rs, {nightOnly})` → `[{message,level}]`
   (max-run, <24h post-nights-before-a-day-shift, and eve→day-next-day/reverse are all `'error'`;
-  see "Circadian rules" below), then `isTraumaCapSubject`/`getTraumaCap`, `isSchedulable` (EM_HOME/
+  the <24h rest check runs in **both directions** — backward from an incoming day shift AND forward
+  from an incoming night shift to a day shift already sitting 1-2 days later, since the generator's
+  optional fill pass can place a night shift after a day shift is already scheduled; a one-directional
+  version of this check let bad night→day sequences through generation — see "Circadian rules"
+  below), then `isTraumaCapSubject`/`getTraumaCap`, `isSchedulable` (EM_HOME/
   EM_BAMC default to the `'EM'` rotation when `blockType` is missing — this is also what fixes
   BAMC residents added via the Off-Service tab, which never assigns one), `isNightOnlyResident`.
 - `traumaPedsHalf`/`isTraumaPedsSplitResident`/`TRAUMA_PEDS_SPLIT` ({trauma:8, peds:11}) — the
@@ -200,8 +204,11 @@ names below rather than trusting offsets.
   distinguished by `activeWhen`, so a saved block's own `startDate` always resolves to the correct
   rule — don't try to "clean up" this into a single gate.
 - **Circadian rules** (see `NIGHT_RULES`): nights should cluster into one run of 4-6 (max 6, hard);
-  ≥24h off is required before resuming a day shift after a night run (Grand Rounds the next morning
-  is fine — GR isn't a shift, so it never appears in the schedule map and never trips this check);
+  ≥24h off is required before resuming a day shift after a night run, checked in both directions
+  (backward when placing a day shift, forward when placing a night shift ahead of an already-placed
+  day shift — the generator's optional fill pass runs after TRAUMA-D is filled, so a one-directional
+  check let violations slip through generation) — Grand Rounds the next morning is fine (GR isn't a
+  shift, so it never appears in the schedule map and never trips this check);
   an evening shift can never be immediately followed by a day shift the next day, or vice versa
   (hard, even when the plain rest-hour math would otherwise clear it); max 6 total night shifts per
   block, except residents whose entire eligibility is night-only (today: FM-3) — `isNightOnlyResident`
