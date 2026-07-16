@@ -151,18 +151,35 @@ names below rather than trusting offsets.
   day-of-week rules (Trauma windows, GR Wednesday) and for PED-N (FM-3-exclusive — see below).
 - `HOOKS` — `useLocalStorage`.
 - tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
-  `CollapsibleHeader`), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
-  Home), `HOME TAB` (`ImportMatrixModal` lives just above it — see "Matrix Import" above; the Saved
-  Blocks list also has a **Publish/Published** toggle per snapshot — see "Published blocks" below),
-  `RESIDENT FORM` (shared by Add/Edit modals, plus `ImportRosterModal` for bulk roster import —
-  `jcPresentDates`/`grLectureDates` date-chip editors live here alongside `approvedDatesOff`/
-  `jeopardyDates`), `EM RESIDENTS TAB`, `OFF-SERVICE TAB` (inline per-tile date-off/jeopardy
-  editors), `SHIFT MATRIX TAB` (rotation-aware shift matrix), `RULES TAB` ("Scheduling Rules" in
-  the UI — day/rotation rules plus the Daily Shift Coverage editor, now paired min/max inputs per
-  shift, consumed by the generator), `SHIFT PICKER MODAL` + `SCHEDULE GRID` (main editing grid;
-  Generate Schedule / Clear & Regenerate live here), `VALIDATION TAB` (violations list plus the
-  Generation Report — now also shows `report.seniorGaps`), `SETTINGS TAB` (backup/restore,
-  `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`.
+  `CollapsibleHeader`, `SubTabs` — segmented-control sub-view switcher, ported from the sibling
+  `em-scheduler` app), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
+  Home; also hosts `JournalClubPlanner` — read-only card listing every first Tuesday of the AY with
+  each PGY-1/2/3 presenter slot from `jcPresentDates`, plus per-resident worked-JC counts vs
+  `JC_MAX_PER_AY`; presenter editing itself stays on the resident profile), `HOME TAB`
+  (`ImportMatrixModal` lives just above it — see "Matrix Import" above; the Saved Blocks list also
+  has a **Publish/Published** toggle per snapshot, wired through the root's `toggleBlockPublished`
+  — see "Published blocks" below), `RESIDENT FORM` (shared by Add/Edit modals, plus
+  `ImportRosterModal` for bulk roster import — `jcPresentDates`/`grLectureDates` date-chip editors
+  live here alongside `approvedDatesOff`/`jeopardyDates`), `EM RESIDENTS TAB`, `OFF-SERVICE TAB`
+  (inline per-tile date-off/jeopardy editors), `SHIFT MATRIX TAB` (rotation-aware shift matrix),
+  `RULES TAB` ("Scheduling Rules" in the UI — day/rotation rules plus the Daily Shift Coverage
+  editor, now paired min/max inputs per shift, consumed by the generator), `SHIFT PICKER MODAL`
+  (its violation aggregator is the module-level `cellViolations(resident, dateStr, sid, block,
+  eligOverrides, appSettings, dayRules)`, shared with the grid's drag-and-drop below so both
+  surfaces can't drift apart on what counts as a violation) + `SCHEDULE GRID` (main editing grid;
+  Generate Schedule / Clear & Regenerate live here; a Grid/By Resident `SubTabs` toggle switches to
+  `ResidentCardsView` — one card per resident, shifts grouped by week, reusing the grid's own
+  `violMap` memo rather than a second `validateAll` run; the grid also renders a **daily coverage
+  footer** — one summary row of `filled/minTotal` per date computed directly from the full
+  schedule, never the category-filtered rows, plus click-to-expand per-shift rows — and supports
+  **drag-and-drop**: dragging a shift chip onto an empty cell moves it, onto an occupied cell swaps
+  the two, via `handleDrop`/`commitDrop`; both sides are validated with `cellViolations` against a
+  schedule with the *other* side's stale date cleared first (`scheduleClearing`) so a same-resident
+  move can't false-positive against its own old cell; violations open `DragConfirmModal` for an
+  explicit override, matching the picker's "Assign Anyway" philosophy), `VALIDATION TAB` (violations
+  list plus the Generation Report — now also shows `report.seniorGaps`; its post-night-day/eve-day
+  pairwise check also delegates to `checkCircadianViolations` rather than re-deriving the same rule),
+  `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`.
 - `MAIN APP` — the `TABS` nav array; `reconcileTabOrder`/`reorderIds` (pure helpers behind
   the sidebar's drag-to-reorder — reconcile guards against a non-array persisted order, reorder
   always lands the dragged tab immediately before the drop target regardless of drag direction);
