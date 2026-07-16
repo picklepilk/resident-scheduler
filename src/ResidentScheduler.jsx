@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, FlaskConical,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -4635,185 +4635,6 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   );
 }
 
-// ─── CP-SAT DEMO (EXPERIMENTAL) ────────────────────────────────────────────────
-// Calls a standalone prototype backend (github.com/picklepilk/resident-scheduler-cpsat-demo,
-// deployed separately on Render) that solves a *subset* of the real rules with Google OR-Tools
-// CP-SAT: one shift/resident/day, per-shift min/max coverage, soft shift-count targets. It does
-// NOT implement circadian rest, seniority composition, JC caps, GR stripping, or the trauma/peds
-// split — so its output is for side-by-side comparison only, never a drop-in replacement for
-// generateSchedule(). Kept fully separate from the real Generate Schedule button/logic above and
-// gated behind an explicit opt-in click so it can never run as part of normal scheduling.
-const CPSAT_DEMO_URL = 'https://resident-scheduler-cpsat-demo.onrender.com/solve';
-
-function CpSatDemoModal({ allResidents, block, eligOverrides, appSettings, dayRules, coverage, onClose, onApply }) {
-  const [state, setState] = useState('idle'); // idle | loading | error | done
-  const [error, setError] = useState('');
-  const [result, setResult] = useState(null);
-  const [confirmApply, setConfirmApply] = useState(false);
-
-  async function runSolve() {
-    setState('loading'); setError('');
-    try {
-      const dates = getBlockDates(block.startDate, block.endDate);
-      const shiftIds = SHIFTS.map(s => s.id);
-      const eligibility = {};
-      for (const r of allResidents) {
-        const perDay = new Set();
-        for (const ds of dates) {
-          for (const sid of getEligibleShifts(r, ds, block.specialDays || {}, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true })) {
-            perDay.add(sid);
-          }
-        }
-        eligibility[r.id] = [...perDay];
-      }
-      const coverageBody = {};
-      for (const sid of shiftIds) coverageBody[sid] = getCoverageFor(sid, coverage);
-      const targets = {};
-      for (const r of allResidents) targets[r.id] = getShiftTarget(r, appSettings);
-      const shiftMeta = {};
-      for (const s of SHIFTS) shiftMeta[s.id] = { type: s.type, area: s.area };
-      const seniorFor = {};
-      for (const r of allResidents) {
-        const areas = Object.keys(SENIOR_COMPOSITION).filter(area => isSeniorFor(area, r));
-        if (areas.length) seniorFor[r.id] = areas;
-      }
-      const nightOnly = allResidents.filter(r => isNightOnlyResident(r, eligOverrides)).map(r => r.id);
-
-      const res = await fetch(CPSAT_DEMO_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          residents: allResidents.map(r => r.id),
-          days: dates,
-          shifts: shiftIds,
-          coverage: coverageBody,
-          eligibility,
-          targets,
-          shiftMeta,
-          seniorFor,
-          nightOnly,
-          maxNightsPerBlock: NIGHT_RULES.maxPerBlock,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.status === 'ERROR') throw new Error(data.message || `HTTP ${res.status}`);
-      setResult(data);
-      setState('done');
-    } catch (e) {
-      setError(e.message === 'Failed to fetch'
-        ? 'Could not reach the demo backend — it may be cold-starting (free tier sleeps after ~15min idle), try again in a moment.'
-        : e.message);
-      setState('error');
-    }
-  }
-
-  const filledCount = result ? Object.values(result.assignments || {}).reduce((s, d) => s + Object.values(d).reduce((s2, arr) => s2 + arr.length, 0), 0) : 0;
-  const dates = useMemo(() => getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
-  const shiftByResidentDay = useMemo(() => {
-    if (!result) return {};
-    const m = {};
-    for (const [ds, byShift] of Object.entries(result.assignments || {})) {
-      for (const [sid, resIds] of Object.entries(byShift)) {
-        for (const rid of resIds) m[`${rid}_${ds}`] = sid;
-      }
-    }
-    return m;
-  }, [result]);
-
-  return (
-    <Modal title="CP-SAT Schedule Solver (Demo)" onClose={onClose} wide>
-      <div className="space-y-4">
-        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
-          <AlertTriangle size={14} className="mt-0.5 shrink-0"/>
-          <p>Experimental, separate backend — enforces shift-per-day, coverage min/max, shift-count targets,
-          eve/night→day-next-day rest, per-block night cap, and FLEX/POD seniority.
-          It still does <strong>not</strong> know about night-run clustering, Journal Club caps, Grand Rounds, or the trauma/peds split.
-          Treat results as a comparison, not a real schedule.</p>
-        </div>
-
-        {state === 'idle' && (
-          <button onClick={runSolve} className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors">
-            <FlaskConical size={14}/> Run CP-SAT Solve
-          </button>
-        )}
-        {state === 'loading' && (
-          <div className="text-center py-6 text-sm text-gray-500">Solving… (may take up to ~60s on a cold start)</div>
-        )}
-        {state === 'error' && (
-          <div className="space-y-3">
-            <p className="text-sm text-red-600">{error}</p>
-            <button onClick={runSolve} className="px-4 py-2 text-sm font-medium bg-gray-100 hover:bg-gray-200 rounded-lg">Retry</button>
-          </div>
-        )}
-        {state === 'done' && result && (
-          <div className="space-y-3">
-            <div className="text-sm">
-              Status: <strong className={result.status === 'OPTIMAL' || result.status === 'FEASIBLE' ? 'text-emerald-600' : 'text-red-600'}>{result.status}</strong>
-              {' · '}{filledCount} shifts assigned across {Object.keys(result.assignments || {}).length} days
-            </div>
-            <div className="max-h-[50vh] overflow-auto border border-gray-200 rounded-lg">
-              <table className="text-xs border-collapse w-full">
-                <thead className="sticky top-0 bg-gray-50 z-10">
-                  <tr>
-                    <th className="text-left px-2 py-1.5 font-medium text-gray-500 border-b border-gray-200 sticky left-0 bg-gray-50">Resident</th>
-                    {dates.map(ds => (
-                      <th key={ds} className="px-2 py-1.5 font-medium text-gray-500 border-b border-l border-gray-100 whitespace-nowrap">
-                        {ds.slice(5)}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {allResidents.map(r => (
-                    <tr key={r.id} className="odd:bg-white even:bg-gray-50/50">
-                      <td className="px-2 py-1 font-medium text-gray-700 whitespace-nowrap sticky left-0 bg-inherit border-b border-gray-100">
-                        {r.firstName} {r.lastName?.[0]}.
-                      </td>
-                      {dates.map(ds => {
-                        const sid = shiftByResidentDay[`${r.id}_${ds}`];
-                        return (
-                          <td key={ds} className="px-2 py-1 border-b border-l border-gray-100 text-center text-gray-600 whitespace-nowrap">
-                            {sid || ''}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-xs text-gray-400">Local-build only — "Apply to Schedule" overwrites the real grid for every resident/day this result covers.</p>
-
-            {confirmApply && (
-              <div className="p-3 border border-red-200 bg-red-50 rounded-lg text-xs text-red-700 space-y-2">
-                <p>This overwrites existing assignments (manual or generated) in the Schedule tab for every resident/day
-                covered by this result. Only do this on a local test build — never against real production data. Continue?</p>
-                <div className="flex justify-end gap-2">
-                  <button onClick={()=>setConfirmApply(false)} className="px-3 py-1.5 text-xs text-gray-600 hover:bg-white rounded-lg">Cancel</button>
-                  <button onClick={()=>{ onApply(result.assignments); setConfirmApply(false); }}
-                    className="px-3 py-1.5 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">
-                    Apply Anyway
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2">
-              <button onClick={runSolve} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Re-run</button>
-              {filledCount > 0 && (
-                <button onClick={()=>setConfirmApply(true)}
-                  className="px-3 py-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg">
-                  Apply to Schedule
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
 function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast }) {
@@ -4821,7 +4642,6 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [showCpSatDemo, setShowCpSatDemo] = useState(false);
   const [view, setView] = useState('grid'); // 'grid' | 'resident' — ephemeral, not persisted
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
@@ -4993,36 +4813,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
             <Trash2 size={12}/> Clear
           </button>
-          <button onClick={()=>setShowCpSatDemo(true)}
-            title="Experimental — runs a separate CP-SAT solver on a comparison-only subset of the rules. Local-build-only apply available."
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-violet-300 text-violet-600 hover:bg-violet-50 rounded-lg transition-colors">
-            <FlaskConical size={12}/> CP-SAT (Demo)
-          </button>
         </span>
       </div>
-
-      {showCpSatDemo && (
-        <CpSatDemoModal
-          allResidents={allResidents} block={block} eligOverrides={eligOverrides}
-          appSettings={appSettings} dayRules={dayRules} coverage={coverage}
-          onClose={()=>setShowCpSatDemo(false)}
-          onApply={(assignments) => {
-            updateBlock(b => {
-              const newSchedule = { ...(b.schedule || {}) };
-              for (const [ds, byShift] of Object.entries(assignments)) {
-                for (const [sid, resIds] of Object.entries(byShift)) {
-                  for (const rid of resIds) {
-                    newSchedule[rid] = { ...(newSchedule[rid] || {}), [ds]: sid };
-                  }
-                }
-              }
-              return { ...b, schedule: newSchedule };
-            });
-            setShowCpSatDemo(false);
-            showToast('CP-SAT (demo) result applied to the schedule — review before finalizing', 'amber');
-          }}
-        />
-      )}
 
       <SubTabs value={view} onChange={setView} options={[
         {id:'grid', label:'Grid', icon:Table2},

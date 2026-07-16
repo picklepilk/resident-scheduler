@@ -2,12 +2,6 @@
   command   = "npm run build"
   publish   = "dist"
 
-[functions]
-  directory = "netlify/functions"
-
-[functions."solve-schedule"]
-  runtime = "python3.11"
-
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
