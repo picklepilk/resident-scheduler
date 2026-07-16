@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, FlaskConical,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -2101,6 +2101,28 @@ function Toast({ toast, onClose }) {
   );
 }
 
+// Segmented-control tab switcher for sub-views within a tab (e.g. Schedule's Grid/By Resident).
+function SubTabs({ value, onChange, options }) {
+  return (
+    <div className="inline-flex flex-wrap max-w-full items-center gap-1 p-1 bg-gray-200/70 rounded-lg mb-4">
+      {options.map(o => {
+        const Ic = o.icon;
+        const active = value === o.id;
+        return (
+          <button key={o.id} onClick={() => onChange(o.id)}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${active ? 'bg-white shadow-sm text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}>
+            {Ic && <Ic size={14}/>}
+            {o.label}
+            {typeof o.badge !== 'undefined' && o.badge > 0 && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded tabular-nums ${active ? 'bg-gray-200 text-gray-600' : 'bg-gray-300/70 text-gray-600'}`}>{o.badge}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function SectionCard({ title, subtitle, children, action }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -2232,7 +2254,97 @@ function AvailabilityRangesEditor({ ranges = [], onUpdate }) {
 
 // ─── DASHBOARD TAB ────────────────────────────────────────────────────────────
 
-function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount }) {
+// Read-only planning card: every first Tuesday of the academic year with its PGY-1/2/3 presenter
+// (set on each resident's profile — this view doesn't edit jcPresentDates), plus each EM Home
+// resident's worked-JC count against the 3/AY cap. Self-contained so promoting it to its own tab
+// later is just a TABS entry + routing line.
+function JournalClubPlanner({ allResidents, block, blocksHistory }) {
+  const win = ayWindowFor(block.academicYear);
+  const emHome = allResidents.filter(r => r.category === 'EM_HOME');
+
+  if (!win) {
+    return (
+      <CollapsibleCard title="Journal Club">
+        <p className="text-xs text-gray-400 italic">Set this block's academic year (Settings) to plan Journal Club.</p>
+      </CollapsibleCard>
+    );
+  }
+
+  // win.end is the AY's EXCLUSIVE next-July-1 cutoff — getFirstTuesdaysInRange is inclusive, so
+  // pass the day before to stay within this AY.
+  const winEndInclusive = toDateStr(addDays(parseDate(win.end), -1));
+  const tuesdays = getFirstTuesdaysInRange(win.start, winEndInclusive);
+  const today = toDateStr(new Date());
+
+  return (
+    <CollapsibleCard title="Journal Club" subtitle={`${block.academicYear} · first Tuesday, 18:00–21:00 · presenter dates are set on each resident's profile`}>
+      <div className="space-y-4">
+        <div className="overflow-x-auto">
+          <table className="text-xs w-full">
+            <thead>
+              <tr className="text-gray-400 text-left border-b border-gray-100">
+                <th className="py-1 pr-3 font-medium">Date</th>
+                <th className="py-1 pr-3 font-medium">PGY-1</th>
+                <th className="py-1 pr-3 font-medium">PGY-2</th>
+                <th className="py-1 pr-3 font-medium">PGY-3</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tuesdays.map(ds => {
+                const inBlock = block.startDate && block.endDate && ds >= block.startDate && ds <= block.endDate;
+                const isPast = ds < today;
+                return (
+                  <tr key={ds} className="border-b border-gray-50">
+                    <td className="py-1 pr-3 whitespace-nowrap">
+                      {formatDisplayDate(ds)}
+                      {inBlock && <span className="ml-1.5 text-[9px] font-semibold px-1 py-0.5 rounded bg-indigo-100 text-indigo-600">this block</span>}
+                    </td>
+                    {[1,2,3].map(pgy => {
+                      const presenters = emHome.filter(r => r.pgy === pgy && (r.jcPresentDates||[]).includes(ds));
+                      return (
+                        <td key={pgy} className="py-1 pr-3">
+                          {presenters.length === 0 ? (
+                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isPast ? 'bg-gray-100 text-gray-400' : 'bg-amber-50 text-amber-600'}`}>unassigned</span>
+                          ) : (
+                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${presenters.length > 1 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                              {presenters.map(p => `${p.lastName}, ${p.firstName}`).join(' + ')}
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+              {tuesdays.length === 0 && (
+                <tr><td colSpan={4} className="py-2 text-gray-400 italic">No first Tuesdays fall within this academic year window.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-gray-500 mb-1.5">Worked Journal Clubs this AY (cap {JC_MAX_PER_AY})</div>
+          <div className="flex flex-wrap gap-1.5">
+            {emHome.map(r => {
+              const count = countPublishedJC(r.id, block.academicYear, blocksHistory, block.id) + countCurrentBlockJC(r.id, block, block.schedule || {});
+              const cls = count > JC_MAX_PER_AY ? 'bg-rose-50 text-rose-600' : count === JC_MAX_PER_AY ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600';
+              return (
+                <span key={r.id} className={`text-[10px] font-medium px-2 py-1 rounded-full ${cls}`}>
+                  {r.lastName}, {r.firstName} · {count}/{JC_MAX_PER_AY}
+                </span>
+              );
+            })}
+            {emHome.length === 0 && <span className="text-xs text-gray-400 italic">No EM Home residents on this roster.</span>}
+          </div>
+          <p className="text-[10px] text-gray-400 mt-1.5">Only Published saved blocks (Home tab) plus the current block count toward this cap.</p>
+        </div>
+      </div>
+    </CollapsibleCard>
+  );
+}
+
+function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount, blocksHistory }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
@@ -2320,6 +2432,9 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
           </div>
         )}
       </CollapsibleCard>
+
+      {/* Journal Club presenter planning + worked-JC caps */}
+      <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}/>
 
       {/* 1st Fridays */}
       {firstFridays.length > 0 && (
@@ -4423,6 +4538,34 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, s
 
 // ─── SHIFT PICKER MODAL ───────────────────────────────────────────────────────
 
+// Shared violation aggregator for assigning `sid` to `resident` on `dateStr` against `block`'s
+// current schedule — used by both ShiftPickerModal and the schedule grid's drag-and-drop so the
+// two surfaces can never drift apart on what counts as a violation.
+function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules) {
+  if (!sid) return [];
+  const sd = block.specialDays || {};
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate });
+  const vs = [];
+  // 1. Eligibility check
+  if (!eligible.includes(sid)) {
+    const dow = parseDate(dateStr).getDay();
+    vs.push(resident.category === 'EM_HOME' && dow === 3
+      ? 'GR Wednesday — EM Home not schedulable in ED'
+      : 'Shift not in eligibility matrix for this resident/day combination');
+  }
+  // 2. Jeopardy call warning (policy 'warn'; 'block' already empties the eligible list)
+  const policy = (appSettings || {}).jeopardyPolicy ?? 'warn';
+  if (policy === 'warn' && (resident.jeopardyDates || []).includes(dateStr)) {
+    vs.push('Resident is on jeopardy call this date — confirm backup coverage is acceptable');
+  }
+  // 3. Rest-period check against neighbouring shifts in the schedule
+  vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}));
+  // 4. Circadian rules (night-run length, post-night rest before days, eve→day turnaround)
+  const nightOnly = isNightOnlyResident(resident, eligOverrides);
+  vs.push(...checkCircadianViolations(resident, dateStr, sid, (block.schedule || {})[resident.id] || {}, { nightOnly }).map(v => v.message));
+  return vs;
+}
+
 function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast }) {
   const [pending, setPending] = useState(null);
   const sd = block.specialDays || {};
@@ -4431,30 +4574,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
-  function violations(sid) {
-    if (!sid) return [];
-    const vs = [];
-    // 1. Eligibility check
-    if (!eligible.includes(sid)) {
-      const dow = parseDate(dateStr).getDay();
-      vs.push(resident.category === 'EM_HOME' && dow === 3
-        ? 'GR Wednesday — EM Home not schedulable in ED'
-        : 'Shift not in eligibility matrix for this resident/day combination');
-    }
-    // 2. Jeopardy call warning (policy 'warn'; 'block' already empties the eligible list)
-    const policy = (appSettings || {}).jeopardyPolicy ?? 'warn';
-    if (policy === 'warn' && onJeopardy) {
-      vs.push('Resident is on jeopardy call this date — confirm backup coverage is acceptable');
-    }
-    // 3. Rest-period check against neighbouring shifts in the schedule
-    vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}));
-    // 4. Circadian rules (night-run length, post-night rest before days, eve→day turnaround)
-    const nightOnly = isNightOnlyResident(resident, eligOverrides);
-    vs.push(...checkCircadianViolations(resident, dateStr, sid, (block.schedule || {})[resident.id] || {}, { nightOnly }).map(v => v.message));
-    return vs;
-  }
-
-  const v = violations(pending);
+  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules);
 
   function confirm() {
     onSelect(pending);
@@ -4515,12 +4635,194 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   );
 }
 
+// ─── CP-SAT DEMO (EXPERIMENTAL) ────────────────────────────────────────────────
+// Calls a standalone prototype backend (github.com/picklepilk/resident-scheduler-cpsat-demo,
+// deployed separately on Render) that solves a *subset* of the real rules with Google OR-Tools
+// CP-SAT: one shift/resident/day, per-shift min/max coverage, soft shift-count targets. It does
+// NOT implement circadian rest, seniority composition, JC caps, GR stripping, or the trauma/peds
+// split — so its output is for side-by-side comparison only, never a drop-in replacement for
+// generateSchedule(). Kept fully separate from the real Generate Schedule button/logic above and
+// gated behind an explicit opt-in click so it can never run as part of normal scheduling.
+const CPSAT_DEMO_URL = 'https://resident-scheduler-cpsat-demo.onrender.com/solve';
+
+function CpSatDemoModal({ allResidents, block, eligOverrides, appSettings, dayRules, coverage, onClose, onApply }) {
+  const [state, setState] = useState('idle'); // idle | loading | error | done
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+  const [confirmApply, setConfirmApply] = useState(false);
+
+  async function runSolve() {
+    setState('loading'); setError('');
+    try {
+      const dates = getBlockDates(block.startDate, block.endDate);
+      const shiftIds = SHIFTS.map(s => s.id);
+      const eligibility = {};
+      for (const r of allResidents) {
+        const perDay = new Set();
+        for (const ds of dates) {
+          for (const sid of getEligibleShifts(r, ds, block.specialDays || {}, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true })) {
+            perDay.add(sid);
+          }
+        }
+        eligibility[r.id] = [...perDay];
+      }
+      const coverageBody = {};
+      for (const sid of shiftIds) coverageBody[sid] = getCoverageFor(sid, coverage);
+      const targets = {};
+      for (const r of allResidents) targets[r.id] = getShiftTarget(r, appSettings);
+      const shiftMeta = {};
+      for (const s of SHIFTS) shiftMeta[s.id] = { type: s.type, area: s.area };
+      const seniorFor = {};
+      for (const r of allResidents) {
+        const areas = Object.keys(SENIOR_COMPOSITION).filter(area => isSeniorFor(area, r));
+        if (areas.length) seniorFor[r.id] = areas;
+      }
+      const nightOnly = allResidents.filter(r => isNightOnlyResident(r, eligOverrides)).map(r => r.id);
+
+      const res = await fetch(CPSAT_DEMO_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          residents: allResidents.map(r => r.id),
+          days: dates,
+          shifts: shiftIds,
+          coverage: coverageBody,
+          eligibility,
+          targets,
+          shiftMeta,
+          seniorFor,
+          nightOnly,
+          maxNightsPerBlock: NIGHT_RULES.maxPerBlock,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === 'ERROR') throw new Error(data.message || `HTTP ${res.status}`);
+      setResult(data);
+      setState('done');
+    } catch (e) {
+      setError(e.message === 'Failed to fetch'
+        ? 'Could not reach the demo backend — it may be cold-starting (free tier sleeps after ~15min idle), try again in a moment.'
+        : e.message);
+      setState('error');
+    }
+  }
+
+  const filledCount = result ? Object.values(result.assignments || {}).reduce((s, d) => s + Object.values(d).reduce((s2, arr) => s2 + arr.length, 0), 0) : 0;
+  const dates = useMemo(() => getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
+  const shiftByResidentDay = useMemo(() => {
+    if (!result) return {};
+    const m = {};
+    for (const [ds, byShift] of Object.entries(result.assignments || {})) {
+      for (const [sid, resIds] of Object.entries(byShift)) {
+        for (const rid of resIds) m[`${rid}_${ds}`] = sid;
+      }
+    }
+    return m;
+  }, [result]);
+
+  return (
+    <Modal title="CP-SAT Schedule Solver (Demo)" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0"/>
+          <p>Experimental, separate backend — enforces shift-per-day, coverage min/max, shift-count targets,
+          eve/night→day-next-day rest, per-block night cap, and FLEX/POD seniority.
+          It still does <strong>not</strong> know about night-run clustering, Journal Club caps, Grand Rounds, or the trauma/peds split.
+          Treat results as a comparison, not a real schedule.</p>
+        </div>
+
+        {state === 'idle' && (
+          <button onClick={runSolve} className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors">
+            <FlaskConical size={14}/> Run CP-SAT Solve
+          </button>
+        )}
+        {state === 'loading' && (
+          <div className="text-center py-6 text-sm text-gray-500">Solving… (may take up to ~60s on a cold start)</div>
+        )}
+        {state === 'error' && (
+          <div className="space-y-3">
+            <p className="text-sm text-red-600">{error}</p>
+            <button onClick={runSolve} className="px-4 py-2 text-sm font-medium bg-gray-100 hover:bg-gray-200 rounded-lg">Retry</button>
+          </div>
+        )}
+        {state === 'done' && result && (
+          <div className="space-y-3">
+            <div className="text-sm">
+              Status: <strong className={result.status === 'OPTIMAL' || result.status === 'FEASIBLE' ? 'text-emerald-600' : 'text-red-600'}>{result.status}</strong>
+              {' · '}{filledCount} shifts assigned across {Object.keys(result.assignments || {}).length} days
+            </div>
+            <div className="max-h-[50vh] overflow-auto border border-gray-200 rounded-lg">
+              <table className="text-xs border-collapse w-full">
+                <thead className="sticky top-0 bg-gray-50 z-10">
+                  <tr>
+                    <th className="text-left px-2 py-1.5 font-medium text-gray-500 border-b border-gray-200 sticky left-0 bg-gray-50">Resident</th>
+                    {dates.map(ds => (
+                      <th key={ds} className="px-2 py-1.5 font-medium text-gray-500 border-b border-l border-gray-100 whitespace-nowrap">
+                        {ds.slice(5)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allResidents.map(r => (
+                    <tr key={r.id} className="odd:bg-white even:bg-gray-50/50">
+                      <td className="px-2 py-1 font-medium text-gray-700 whitespace-nowrap sticky left-0 bg-inherit border-b border-gray-100">
+                        {r.firstName} {r.lastName?.[0]}.
+                      </td>
+                      {dates.map(ds => {
+                        const sid = shiftByResidentDay[`${r.id}_${ds}`];
+                        return (
+                          <td key={ds} className="px-2 py-1 border-b border-l border-gray-100 text-center text-gray-600 whitespace-nowrap">
+                            {sid || ''}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-gray-400">Local-build only — "Apply to Schedule" overwrites the real grid for every resident/day this result covers.</p>
+
+            {confirmApply && (
+              <div className="p-3 border border-red-200 bg-red-50 rounded-lg text-xs text-red-700 space-y-2">
+                <p>This overwrites existing assignments (manual or generated) in the Schedule tab for every resident/day
+                covered by this result. Only do this on a local test build — never against real production data. Continue?</p>
+                <div className="flex justify-end gap-2">
+                  <button onClick={()=>setConfirmApply(false)} className="px-3 py-1.5 text-xs text-gray-600 hover:bg-white rounded-lg">Cancel</button>
+                  <button onClick={()=>{ onApply(result.assignments); setConfirmApply(false); }}
+                    className="px-3 py-1.5 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">
+                    Apply Anyway
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button onClick={runSolve} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Re-run</button>
+              {filledCount > 0 && (
+                <button onClick={()=>setConfirmApply(true)}
+                  className="px-3 py-1.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg">
+                  Apply to Schedule
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
 function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [showCpSatDemo, setShowCpSatDemo] = useState(false);
+  const [view, setView] = useState('grid'); // 'grid' | 'resident' — ephemeral, not persisted
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
@@ -4534,6 +4836,37 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     return m;
   },[allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
 
+  const [covExpanded, setCovExpanded] = useState(false);
+  // Per-date coverage counts vs configured min/max — always computed from the FULL schedule
+  // (never catFilter-ed rows), or filtering to one category would show phantom understaffing.
+  const coverageByDate = useMemo(()=>{
+    const m = {};
+    for (const ds of dates) {
+      const dow = parseDate(ds).getDay();
+      let filled = 0, minTotal = 0;
+      const perShift = {};
+      const belowMin = [], aboveMax = [];
+      for (const s of SHIFTS) {
+        if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
+        const cov = getCoverageFor(s.id, coverage);
+        const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
+        perShift[s.id] = { count, min: cov.min, max: cov.max };
+        minTotal += cov.min;
+        filled += count;
+        if (cov.min > 0 && count < cov.min) belowMin.push(`${s.id} ${count}/${cov.min}`);
+        if (count > cov.max) aboveMax.push(`${s.id} ${count}/${cov.max}`);
+      }
+      m[ds] = { perShift, filled, minTotal, belowMin, aboveMax };
+    }
+    return m;
+  },[dates, sched, coverage, allResidents]);
+  const activeCoverageShifts = useMemo(()=>
+    SHIFTS.filter(s => dates.some(ds => {
+      const info = coverageByDate[ds]?.perShift[s.id];
+      return info && (info.min > 0 || info.count > 0);
+    })),
+  [dates, coverageByDate]);
+
   const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
   const grouped = useMemo(()=>{
     const g=[];
@@ -4546,6 +4879,76 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   }
 
   const totalAssigned = useMemo(()=>Object.values(sched).reduce((s,d)=>s+Object.values(d||{}).filter(Boolean).length,0),[sched]);
+
+  // ── Drag-and-drop: drag payload lives in React state (not dataTransfer), mirroring
+  // em-scheduler's handleSchedDrop pattern. Dropping on an empty cell moves; dropping on an
+  // occupied cell swaps (validating both sides before commit).
+  const [drag, setDrag] = useState(null);           // { resId, ds, sid } — source chip
+  const [dragOver, setDragOver] = useState(null);   // { resId, ds } — hovered target cell
+  const [dropConfirm, setDropConfirm] = useState(null); // { src, tgt, kind, violations }
+
+  // Clears `ds` from `residentId`'s row in a copy of the full schedule map — used so validating a
+  // fresh placement doesn't false-positive against the very cell being moved away from/replaced.
+  function scheduleClearing(residentId, ds) {
+    const row = { ...(sched[residentId] || {}) };
+    delete row[ds];
+    return { ...sched, [residentId]: row };
+  }
+
+  function handleDrop(tgtRes, tgtDs) {
+    const src = drag;
+    setDrag(null); setDragOver(null);
+    if (!src) return;
+    if (src.resId === tgtRes.id && src.ds === tgtDs) return; // no-op
+
+    const srcRes = allResidents.find(r=>r.id===src.resId);
+    if (!srcRes) return;
+
+    const tgtOff = (tgtRes.approvedDatesOff||[]).includes(tgtDs);
+    const tgtJeoBlocked = jeoBlock && (tgtRes.jeopardyDates||[]).includes(tgtDs);
+    if (tgtOff || tgtJeoBlocked) { showToast('Cannot drop onto an approved day off or a blocked jeopardy date', 'red'); return; }
+    const srcOff = (srcRes.approvedDatesOff||[]).includes(src.ds);
+    const srcJeoBlocked = jeoBlock && (srcRes.jeopardyDates||[]).includes(src.ds);
+    if (srcOff || srcJeoBlocked) { showToast('Cannot move a shift off an approved day off or a blocked jeopardy date', 'red'); return; }
+
+    const tgtSid = sched[tgtRes.id]?.[tgtDs] || null;
+    const kind = tgtSid ? 'swap' : 'move';
+
+    const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
+      { ...block, schedule: scheduleClearing(src.resId, src.ds) },
+      eligOverrides, appSettings, dayRules
+    ).map(m => `${tgtRes.lastName}, ${tgtRes.firstName}: ${m}`);
+
+    const violSrc = kind === 'swap'
+      ? cellViolations(srcRes, src.ds, tgtSid,
+          { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
+          eligOverrides, appSettings, dayRules
+        ).map(m => `${srcRes.lastName}, ${srcRes.firstName}: ${m}`)
+      : [];
+
+    const violations = [...violTgt, ...violSrc];
+    const srcInfo = { resId: src.resId, ds: src.ds, sid: src.sid, res: srcRes };
+    const tgtInfo = { resId: tgtRes.id, ds: tgtDs, sid: tgtSid, res: tgtRes };
+    if (!violations.length) commitDrop(srcInfo, tgtInfo, kind, false);
+    else setDropConfirm({ src: srcInfo, tgt: tgtInfo, kind, violations });
+  }
+
+  function commitDrop(src, tgt, kind, wasOverridden) {
+    updateBlock(b => {
+      const s = { ...b.schedule };
+      if (src.resId === tgt.resId) {
+        s[src.resId] = { ...(s[src.resId]||{}), [src.ds]: kind==='swap'?tgt.sid:null, [tgt.ds]: src.sid };
+      } else {
+        s[src.resId] = { ...(s[src.resId]||{}), [src.ds]: kind==='swap'?tgt.sid:null };
+        s[tgt.resId] = { ...(s[tgt.resId]||{}), [tgt.ds]: src.sid };
+      }
+      return { ...b, schedule: s };
+    });
+    const verb = kind === 'swap' ? 'Swapped' : 'Moved';
+    showToast(`${verb} ${src.sid} (${formatDisplayDate(src.ds)}) for ${tgt.res.lastName}${kind==='swap'?` ↔ ${tgt.sid} for ${src.res.lastName}`:''}`,
+      wasOverridden ? 'amber' : 'green');
+    setDropConfirm(null);
+  }
 
   function runGenerate(clearFirst) {
     setConfirmRegen(false);
@@ -4585,8 +4988,46 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
             <RefreshCw size={12}/> Clear &amp; Regenerate
           </button>
+          <button onClick={()=>setConfirmClear(true)}
+            title="Empties every assignment without regenerating."
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
+            <Trash2 size={12}/> Clear
+          </button>
+          <button onClick={()=>setShowCpSatDemo(true)}
+            title="Experimental — runs a separate CP-SAT solver on a comparison-only subset of the rules. Local-build-only apply available."
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-violet-300 text-violet-600 hover:bg-violet-50 rounded-lg transition-colors">
+            <FlaskConical size={12}/> CP-SAT (Demo)
+          </button>
         </span>
       </div>
+
+      {showCpSatDemo && (
+        <CpSatDemoModal
+          allResidents={allResidents} block={block} eligOverrides={eligOverrides}
+          appSettings={appSettings} dayRules={dayRules} coverage={coverage}
+          onClose={()=>setShowCpSatDemo(false)}
+          onApply={(assignments) => {
+            updateBlock(b => {
+              const newSchedule = { ...(b.schedule || {}) };
+              for (const [ds, byShift] of Object.entries(assignments)) {
+                for (const [sid, resIds] of Object.entries(byShift)) {
+                  for (const rid of resIds) {
+                    newSchedule[rid] = { ...(newSchedule[rid] || {}), [ds]: sid };
+                  }
+                }
+              }
+              return { ...b, schedule: newSchedule };
+            });
+            setShowCpSatDemo(false);
+            showToast('CP-SAT (demo) result applied to the schedule — review before finalizing', 'amber');
+          }}
+        />
+      )}
+
+      <SubTabs value={view} onChange={setView} options={[
+        {id:'grid', label:'Grid', icon:Table2},
+        {id:'resident', label:'By Resident', icon:Users},
+      ]}/>
 
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         {['ALL',...CATEGORIES.map(c=>c.id)].map(cid=>{
@@ -4603,6 +5044,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       </div>
 
       {/* Legend */}
+      {view==='grid' && (
       <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
         <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
@@ -4611,6 +5053,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
       </div>
+      )}
 
       {/* Empty-schedule CTA */}
       {totalAssigned === 0 && (
@@ -4624,6 +5067,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           </button>
           <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
         </div>
+      )}
+
+      {confirmClear && (
+        <Modal title="Clear Schedule?" onClose={()=>setConfirmClear(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              This clears <strong>all current assignments — including ones you entered manually</strong> — without
+              regenerating. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={()=>setConfirmClear(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+              <button onClick={()=>{
+                updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
+                setConfirmClear(false);
+                showToast('Schedule cleared', 'amber');
+              }} className="px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear</button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {confirmRegen && (
@@ -4641,6 +5103,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         </Modal>
       )}
 
+      {view==='grid' && (
       <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto schedule-scroll">
           <div style={{minWidth:NAME_W+CELL_W*dates.length}}>
@@ -4701,15 +5164,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
                         const clickable=(elig.length>0||sid)&&!isApprovedOff;
+                        const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
+                        const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
                         return (
                           <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
-                            onClick={()=>clickable&&setPicker({resident:res,dateStr:ds})}
+                            onClick={()=>{ if(drag) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
+                            onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
+                            onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
+                            onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
                             title={isApprovedOff?'Approved day off':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
-                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-indigo-400':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
                             {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
                             {isJeoBlocked&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-500">J</span></div>}
                             {isGR&&!sid&&!isApprovedOff&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
-                            {shift && <div className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${shift.chip}`}>{sid}</div>}
+                            {shift && (
+                              <div draggable
+                                onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
+                                onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
+                                className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold cursor-grab active:cursor-grabbing ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                                {sid}
+                              </div>
+                            )}
                             {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-violet-600 bg-violet-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
                           </div>
                         );
@@ -4719,9 +5194,59 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                 })}
               </div>
             ))}
+
+            {/* Daily coverage footer — always the whole-schedule count, never catFilter-ed */}
+            <div className="flex bg-gray-50 border-t-2 border-gray-200">
+              <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center gap-1 px-3 cursor-pointer hover:bg-gray-100"
+                style={{width:NAME_W,minWidth:NAME_W}} onClick={()=>setCovExpanded(p=>!p)}>
+                <ChevronDown size={12} className={`text-gray-400 transition-transform ${covExpanded?'':'-rotate-90'}`}/>
+                <span className="text-xs font-semibold text-gray-500">Coverage</span>
+              </div>
+              {dates.map(ds=>{
+                const cov = coverageByDate[ds];
+                const cls = cov.belowMin.length ? 'bg-rose-50 text-rose-600' : cov.aboveMax.length ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50/60 text-emerald-600';
+                return (
+                  <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:28}}
+                    title={[...cov.belowMin,...cov.aboveMax].join('; ') || 'Coverage OK'}
+                    className={`flex items-center justify-center border-r border-gray-100 text-[10px] tabular-nums font-medium ${cls}`}>
+                    {cov.filled}/{cov.minTotal}
+                  </div>
+                );
+              })}
+            </div>
+            {covExpanded && activeCoverageShifts.map(s=>(
+              <div key={s.id} className="flex border-t border-gray-100">
+                <div className="grid-sticky border-r border-gray-200 flex items-center px-3" style={{width:NAME_W,minWidth:NAME_W}}>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                </div>
+                {dates.map(ds=>{
+                  const info = coverageByDate[ds].perShift[s.id];
+                  if (!info) return <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:22}} className="border-r border-gray-50"/>;
+                  const cls = info.count<info.min ? 'text-rose-500 font-semibold' : info.count>info.max ? 'text-amber-500 font-semibold' : 'text-gray-400';
+                  return (
+                    <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:22}}
+                      className={`flex items-center justify-center border-r border-gray-50 text-[9px] tabular-nums ${cls}`}>
+                      {info.count}/{info.min}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </div>
       </div>
+      )}
+
+      {view==='resident' && (
+        <ResidentCardsView grouped={grouped} sched={sched} dates={dates} appSettings={appSettings} violMap={violMap}
+          onRowClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+      )}
+
+      {dropConfirm && (
+        <DragConfirmModal dropConfirm={dropConfirm}
+          onCancel={()=>setDropConfirm(null)}
+          onConfirm={()=>commitDrop(dropConfirm.src, dropConfirm.tgt, dropConfirm.kind, true)}/>
+      )}
 
       {picker && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
@@ -4730,6 +5255,154 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
           onClose={()=>setPicker(null)} showToast={showToast}/>
       )}
+    </div>
+  );
+}
+
+// Confirmation modal shown when a drag-drop swap/move has one or more violations — lists them and
+// offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
+function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
+  const { src, tgt, kind, violations } = dropConfirm;
+  const srcShift = SHIFT_MAP[src.sid];
+  const tgtShift = tgt.sid ? SHIFT_MAP[tgt.sid] : null;
+  return (
+    <Modal title={kind === 'swap' ? 'Confirm Swap' : 'Confirm Move'} onClose={onCancel}>
+      <div className="flex items-center gap-3 mb-3 text-sm">
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-gray-400">{tgt.res.lastName}, {tgt.res.firstName} — {formatDisplayDate(tgt.ds)}</div>
+          <span className={`inline-block mt-1 text-xs px-1.5 py-0.5 rounded font-bold ${srcShift?.chip}`}>{src.sid}</span>
+        </div>
+        {kind === 'swap' && (
+          <>
+            <span className="text-gray-300">↔</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-gray-400">{src.res.lastName}, {src.res.firstName} — {formatDisplayDate(src.ds)}</div>
+              <span className={`inline-block mt-1 text-xs px-1.5 py-0.5 rounded font-bold ${tgtShift?.chip}`}>{tgt.sid}</span>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 mb-3">
+        <div className="flex items-center gap-1.5 text-rose-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Violation detected</div>
+        {violations.map((w,i)=><p key={i} className="text-xs text-rose-600 ml-4">{w}</p>)}
+      </div>
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
+        <button onClick={onConfirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+          {kind === 'swap' ? 'Swap Anyway' : 'Move Anyway'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// By-resident sub-view of the schedule grid: one card per resident, grouped the same as the grid
+// rows, with shifts (and non-shift markers: OFF/jeopardy/JC-presenting/GR-lecture) grouped by
+// calendar week. Reuses ScheduleGrid's own violMap memo — never runs a second validateAll pass.
+function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, onRowClick }) {
+  return (
+    <div className="space-y-5">
+      {grouped.map(({cat,members})=>(
+        <div key={cat.id}>
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded ${cat.badge}`}>{cat.label}</span>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3 mt-2">
+            {members.map(res=>(
+              <ResidentCard key={res.id} res={res} rs={sched[res.id]||{}} dates={dates}
+                appSettings={appSettings} violMap={violMap} onRowClick={onRowClick}/>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const MIX_TYPE_ORDER = ['day','eve','night','swing'];
+const MIX_TYPE_LABEL = { day:'D', eve:'E', night:'N', swing:'S' };
+
+function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
+  const sched_ok = isSchedulable(res);
+  const cnt = Object.values(rs).filter(Boolean).length;
+  const tgt = getShiftTarget(res, appSettings);
+  const over = tgt != null && cnt > tgt;
+  const violCount = Object.entries(violMap)
+    .filter(([k]) => k.startsWith(`${res.id}_`))
+    .reduce((s,[,v]) => s + v.length, 0);
+
+  const mixCount = {};
+  for (const sid of Object.values(rs)) { const t = SHIFT_MAP[sid]?.type; if (t) mixCount[t] = (mixCount[t]||0) + 1; }
+
+  // One row per date that has a shift or a non-shift marker worth showing; fully blank dates are
+  // skipped so cards stay compact. Grouped by calendar week (Sunday start).
+  const weeks = {};
+  for (const ds of dates) {
+    const sid = rs[ds] || null;
+    const isOff = (res.approvedDatesOff||[]).includes(ds);
+    const isJeo = (res.jeopardyDates||[]).includes(ds);
+    const isJC = (res.jcPresentDates||[]).includes(ds);
+    const isGR = (res.grLectureDates||[]).includes(ds);
+    if (!sid && !isOff && !isJeo && !isJC && !isGR) continue;
+    const d = parseDate(ds);
+    const ws = toDateStr(addDays(d, -d.getDay()));
+    (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isJeo, isJC, isGR });
+  }
+  const weekKeys = Object.keys(weeks).sort();
+
+  return (
+    <div className={`bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm ${!sched_ok?'opacity-50':''}`}>
+      <div className="px-3 py-2 border-b border-gray-100 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-gray-800 truncate">{res.lastName}, {res.firstName}{res.isChief?' ★':''}</div>
+          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+            <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
+            {res.blockType && res.category!=='PEDS' && (
+              <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
+            )}
+          </div>
+          {cnt > 0 && (
+            <div className="text-[10px] text-gray-400 mt-1">
+              {MIX_TYPE_ORDER.filter(t=>mixCount[t]).map(t=>`${MIX_TYPE_LABEL[t]} ${mixCount[t]}`).join(' · ')}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          {tgt != null && <span className={`text-xs font-semibold ${over?'text-red-500':'text-gray-500'}`}>{cnt}/{tgt}</span>}
+          {violCount > 0 && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-red-100 text-red-600">{violCount} issue{violCount!==1?'s':''}</span>}
+        </div>
+      </div>
+      <div className="max-h-72 overflow-y-auto divide-y divide-gray-50">
+        {weekKeys.length === 0 && <div className="px-3 py-4 text-xs text-gray-400 text-center">No shifts.</div>}
+        {weekKeys.map(ws=>{
+          const rows = weeks[ws];
+          return (
+            <div key={ws}>
+              <div className="px-3 py-1 bg-gray-50 flex items-center justify-between text-[10px] text-gray-400">
+                <span>{formatDisplayDate(ws)} – {formatDisplayDate(toDateStr(addDays(parseDate(ws),6)))}</span>
+                <span className="tabular-nums">{rows.filter(r=>r.sid).length} shift{rows.filter(r=>r.sid).length!==1?'s':''}</span>
+              </div>
+              {rows.map(({ds,sid,isOff,isJeo,isJC,isGR})=>{
+                const shift = sid ? SHIFT_MAP[sid] : null;
+                const vKey = `${res.id}_${ds}`;
+                const hasV = !!(violMap[vKey]?.length);
+                const d = parseDate(ds);
+                return (
+                  <div key={ds} onClick={()=>onRowClick(res,ds)}
+                    title={hasV ? violMap[vKey].map(v=>v.message).join('; ') : ''}
+                    className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${hasV?'ring-1 ring-inset ring-red-400 bg-red-50':''}`}>
+                    <span className="text-[10px] text-gray-400 tabular-nums w-10 shrink-0">{DOW[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</span>
+                    {shift && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${shift.chip}`}>{sid}</span>}
+                    {shift && <span className="text-[10px] text-gray-400">{shift.hours}</span>}
+                    {!shift && isOff && <span className="text-[10px] font-bold text-orange-500">OFF</span>}
+                    {!shift && isJeo && <span className="text-[10px] font-bold text-violet-500">J</span>}
+                    {isJC && <span className="text-[10px] font-bold px-1 rounded bg-indigo-100 text-indigo-600">JC</span>}
+                    {isGR && <span className="text-[10px] font-bold px-1 rounded bg-yellow-100 text-yellow-700">GR</span>}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5645,7 +6318,7 @@ export default function ResidentScheduler() {
           )}
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
-              ayConf={currentAyConf} violationCount={violCount}/>
+              ayConf={currentAyConf} violationCount={violCount} blocksHistory={blocksHistory}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
