@@ -26,3 +26,14 @@ body {
 .schedule-scroll::-webkit-scrollbar { height: 6px; }
 .schedule-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
 .schedule-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
+
+/* Print: hide app chrome (header, sidebar, action bars, toasts) and keep content on white.
+   Best print/PDF surfaces are the Calendar and By Resident views — the wide residents×dates
+   matrix does not paginate horizontally. */
+@media print {
+  .no-print { display: none !important; }
+  body { background: white !important; }
+  @page { margin: 0.5in; size: landscape; }
+  table { page-break-inside: auto; }
+  tr { page-break-inside: avoid; page-break-after: auto; }
+}

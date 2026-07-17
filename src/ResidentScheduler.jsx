@@ -10,6 +10,14 @@ import {
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+// jspdf-autotable@3.x's default-export interop is broken under esbuild/Rollup bundling (import
+// autoTable from 'jspdf-autotable' resolves to the CJS namespace object, not the function, and
+// throws "is not a function" at call time — verified against the installed 3.8.4 via an esbuild
+// bundle, matching how Vite pre-bundles deps). A side-effect import instead runs the package's
+// own applyPlugin(jsPDF) call, which patches doc.autoTable(...) on as an instance method — use
+// that method form everywhere below, never the bare `autoTable(doc, opts)` function form.
+import 'jspdf-autotable';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -2254,6 +2262,166 @@ function summarizeGenerationReport(report, appSettings = {}) {
   }).sort((a, b) => (a.structural ? 1 : 0) - (b.structural ? 1 : 0));
 }
 
+// ─── PDF EXPORT ─────────────────────────────────────────────────────────────
+// jsPDF's built-in fonts are WinAnsi-encoded — never put "★" or other non-cp1252 glyphs into
+// doc.text()/autoTable cells, or it corrupts the line's letter spacing. Plain ASCII only.
+
+function pdfSave(doc, filename) {
+  try {
+    const inIframe = window.self !== window.top;
+    if (inIframe) {
+      // iframe embeds (e.g. Teams): blob URL opened in a new tab, since doc.save() is blocked
+      const blob = doc.output('blob');
+      const url  = URL.createObjectURL(blob);
+      const a    = window.open(url, '_blank');
+      if (!a) {
+        const link = document.createElement('a');
+        link.href = url; link.target = '_blank'; link.download = filename;
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } else {
+      doc.save(filename);
+    }
+  } catch {
+    doc.save(filename);
+  }
+}
+
+function pdfPageHeader(doc, title, subtitle) {
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFillColor(49, 46, 129); doc.rect(0, 0, W, 22, 'F');
+  doc.setFillColor(99, 102, 241); doc.rect(0, 22, W, 1.5, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(255, 255, 255);
+  doc.text(title, 12, 14);
+  if (subtitle) { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(200, 200, 245); doc.text(subtitle, 12, 20); }
+  doc.setTextColor(25, 35, 55);
+}
+function pdfPageFooter(doc, left) {
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  doc.setFontSize(7); doc.setTextColor(150, 160, 175);
+  if (left) doc.text(left, 12, H - 6);
+  doc.text('Page ' + doc.internal.getCurrentPageInfo().pageNumber, W - 12, H - 6, { align: 'right' });
+}
+
+const PDF_AREA_LIGHT = {
+  POD: [219, 234, 254], PED: [209, 250, 229], FLEX: [237, 233, 254],
+  MT: [254, 243, 199], TRAUMA: [254, 226, 226],
+};
+
+// Residents × dates matrix — the primary PDF deliverable. Landscape A3 since a ~28-day block's
+// date columns don't fit legibly on letter/A4.
+function exportMatrixPDF({ block, allResidents, schedule }) {
+  const dates = getBlockDates(block.startDate, block.endDate);
+  if (!dates.length) return;
+  const sched = schedule || {};
+
+  const head = ['Resident', ...dates.map(ds => {
+    const d = parseDate(ds);
+    return `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`;
+  })];
+
+  const body = [];
+  const rowMeta = []; // parallel to body rows: {isDivider:true} or {isDivider:false, cells:[sid|null,...]}
+  for (const cat of CATEGORIES) {
+    const members = allResidents.filter(r => r.category === cat.id);
+    if (!members.length) continue;
+    body.push([cat.label, ...dates.map(()=>'')]);
+    rowMeta.push({ isDivider: true });
+    for (const r of members) {
+      const rs = sched[r.id] || {};
+      body.push([`${r.lastName}, ${r.firstName}`, ...dates.map(ds => rs[ds] || '')]);
+      rowMeta.push({ isDivider: false, cells: dates.map(ds => rs[ds] || null) });
+    }
+  }
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  const dateRange = block.startDate && block.endDate ? `${prettyDate(block.startDate)} to ${prettyDate(block.endDate)}` : '';
+  pdfPageHeader(doc, `EM Residency Schedule — ${block.name || 'Block'}`, dateRange);
+
+  doc.autoTable({
+    head: [head],
+    body,
+    startY: 28,
+    theme: 'grid',
+    margin: { left: 8, right: 8 },
+    styles: { fontSize: 6, cellPadding: 1, overflow: 'ellipsize', lineColor: [203,213,225], lineWidth: 0.1 },
+    headStyles: { fillColor: [51,65,85], textColor: 255, fontSize: 6 },
+    columnStyles: { 0: { cellWidth: 32, fontStyle: 'bold' } },
+    didParseCell: (data) => {
+      if (data.section !== 'body') return;
+      const meta = rowMeta[data.row.index];
+      if (!meta) return;
+      if (meta.isDivider) {
+        data.cell.styles.fillColor = [71, 85, 105];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = 'bold';
+        return;
+      }
+      if (data.column.index > 0) {
+        const sid = meta.cells[data.column.index - 1];
+        const area = sid ? SHIFT_MAP[sid]?.area : null;
+        if (area && PDF_AREA_LIGHT[area]) data.cell.styles.fillColor = PDF_AREA_LIGHT[area];
+        else {
+          const dow = parseDate(dates[data.column.index - 1]).getDay();
+          if (dow === 0 || dow === 6) data.cell.styles.fillColor = [241, 245, 249];
+        }
+      }
+    },
+    didDrawPage: () => pdfPageFooter(doc, `${allResidents.length} residents · Generated ${new Date().toLocaleString()}`),
+  });
+
+  pdfSave(doc, `schedule_matrix_${block.startDate || 'block'}.pdf`);
+}
+
+// One page per schedulable resident: Date/Shift/Time/Notes rows for the whole block. Notes
+// carries the same OFF/jeopardy/JC-presenting/GR-lecture markers ResidentCardsView shows on
+// screen. Portrait letter — simpler than a week-quadrant calendar layout, and sufficient for a
+// take-home schedule printout.
+function exportResidentCalendarPDF({ block, allResidents, schedule }) {
+  const dates = getBlockDates(block.startDate, block.endDate);
+  if (!dates.length) return;
+  const sched = schedule || {};
+  const schedulable = allResidents.filter(isSchedulable);
+  if (!schedulable.length) return;
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
+
+  schedulable.forEach((r, i) => {
+    if (i > 0) doc.addPage();
+    const rs = sched[r.id] || {};
+    pdfPageHeader(doc, `${r.lastName}, ${r.firstName} — PGY-${r.pgy}`, block.name || '');
+
+    const rows = dates.map(ds => {
+      const d = parseDate(ds);
+      const sid = rs[ds] || null;
+      const notes = [];
+      if ((r.approvedDatesOff||[]).includes(ds)) notes.push('OFF');
+      if ((r.jeopardyDates||[]).includes(ds)) notes.push('Jeopardy');
+      if ((r.jcPresentDates||[]).includes(ds)) notes.push('JC presenting');
+      if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
+      return [
+        `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`,
+        sid ? (SHIFT_MAP[sid]?.label || sid) : '—',
+        sid ? (SHIFT_MAP[sid]?.hours || '') : '',
+        notes.join(', '),
+      ];
+    });
+
+    doc.autoTable({
+      head: [['Date', 'Shift', 'Time', 'Notes']],
+      body: rows,
+      startY: 28,
+      theme: 'striped',
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: [51,65,85] },
+      didDrawPage: () => pdfPageFooter(doc, `${r.lastName}, ${r.firstName}`),
+    });
+  });
+
+  pdfSave(doc, `schedule_by_resident_${block.startDate || 'block'}.pdf`);
+}
+
 // ─── HOOKS ────────────────────────────────────────────────────────────────────
 
 function useLocalStorage(key, def) {
@@ -2332,7 +2500,7 @@ function Toast({ toast, onClose }) {
   if (!toast) return null;
   const s = { amber:'bg-amber-50 border-amber-300 text-amber-800', red:'bg-rose-50 border-rose-300 text-rose-800', green:'bg-emerald-50 border-emerald-300 text-emerald-800' };
   return (
-    <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border ${s[toast.tone] || s.amber}`}>
+    <div className={`no-print fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border ${s[toast.tone] || s.amber}`}>
       <span>{toast.msg}</span>
       <button onClick={onClose} className="ml-1 opacity-50 hover:opacity-100"><X size={14}/></button>
     </div>
@@ -5073,7 +5241,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   return (
     <div>
       {/* Generate actions */}
-      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+      <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="text-xs text-gray-500">
           <strong className="text-gray-700">{totalAssigned}</strong> shifts assigned
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
@@ -5096,13 +5264,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         </span>
       </div>
 
+      <div className="no-print">
       <SubTabs value={view} onChange={setView} options={[
         {id:'grid', label:'Grid', icon:Table2},
         {id:'resident', label:'By Resident', icon:Users},
         {id:'calendar', label:'Calendar', icon:CalendarDays},
       ]}/>
+      </div>
 
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
+      <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
         {['ALL',...CATEGORIES.map(c=>c.id)].map(cid=>{
           const cat=CAT_MAP[cid];
           const cnt=cid==='ALL'?allResidents.length:allResidents.filter(r=>r.category===cid).length;
@@ -5118,7 +5288,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
       {/* Calendar-view-only shift-area filter */}
       {view==='calendar' && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
           {['ALL',...SHIFT_AREAS].map(area=>(
             <button key={area} onClick={()=>setAreaFilter(area)}
               className={`text-xs px-2.5 py-1 rounded-full border font-medium transition-colors ${areaFilter===area?'bg-gray-700 text-white border-gray-700':'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}>
@@ -6241,7 +6411,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
 
   return (
-    <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto">
+    <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto no-print">
       <nav className="flex flex-col gap-0.5 px-2">
         {orderedTabs.map(t=>{
           const Icon=t.icon; const active=tab===t.id;
@@ -6314,7 +6484,8 @@ export default function ResidentScheduler() {
   const [tab, setTab] = useState('home');
   const [toast, setToast] = useState(null);
   const [switchPending, setSwitchPending] = useState(null);
-  const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | null — pending export awaiting error confirmation
+  const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
+  const [pdfPicker, setPdfPicker] = useState(false);
 
   const [emRoster, setEmRoster]           = useLocalStorage('res_em_roster', []);
   const [eligOverrides, setEligOverrides] = useLocalStorage('res_eligibility_overrides', {});
@@ -6490,7 +6661,9 @@ export default function ResidentScheduler() {
 
   function runExport(kind) {
     if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}.csv`, buildGridCSVRows());
-    else downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
+    else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
+    else if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
+    else if (kind==='pdf-resident') exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule });
     setExportConfirm(null);
   }
 
@@ -6499,13 +6672,15 @@ export default function ResidentScheduler() {
     runExport(kind);
   }
 
+  const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
+
   const isSwitchNew = switchPending==='__new__';
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
   return (
     <div className="h-screen flex flex-col bg-slate-100 overflow-hidden">
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 shrink-0">
+      <header className="bg-white border-b border-slate-200 shrink-0 no-print">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-md bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center text-white flex-none">
@@ -6530,6 +6705,10 @@ export default function ResidentScheduler() {
                 <button onClick={()=>requestExport('qgenda')} title="One row per shift with real start/end times — for QGenda import"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
                   <Download size={12}/> QGenda CSV
+                </button>
+                <button onClick={()=>setPdfPicker(true)} title="Printable PDF — matrix or per-resident pages"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
+                  <Download size={12}/> PDF
                 </button>
               </>
             )}
@@ -6618,7 +6797,7 @@ export default function ResidentScheduler() {
               <div>
                 <h2 className="font-semibold text-gray-900">Unresolved errors in this schedule</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                  {pendingErrorCount()} error{pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations) — see the Violations tab. Exporting now will carry them into {exportConfirm==='qgenda'?'QGenda':'the CSV'}.
+                  {pendingErrorCount()} error{pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations) — see the Violations tab. Exporting now will carry them into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
                 </p>
               </div>
             </div>
@@ -6628,6 +6807,23 @@ export default function ResidentScheduler() {
             </div>
           </div>
         </div>
+      )}
+
+      {pdfPicker && (
+        <Modal title="Export PDF" onClose={()=>setPdfPicker(false)}>
+          <div className="space-y-3">
+            <button onClick={()=>{setPdfPicker(false); requestExport('pdf-matrix');}}
+              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors">
+              <div className="text-sm font-semibold text-gray-800">Matrix (all residents)</div>
+              <div className="text-xs text-gray-500 mt-0.5">One page, residents × dates — matches the Schedule tab grid. Landscape A3.</div>
+            </button>
+            <button onClick={()=>{setPdfPicker(false); requestExport('pdf-resident');}}
+              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors">
+              <div className="text-sm font-semibold text-gray-800">Per-resident pages</div>
+              <div className="text-xs text-gray-500 mt-0.5">One page per schedulable resident, with date/shift/notes rows — good for a take-home printout.</div>
+            </button>
+          </div>
+        </Modal>
       )}
 
       <Toast toast={toast} onClose={()=>setToast(null)}/>
