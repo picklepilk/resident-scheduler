@@ -1012,9 +1012,13 @@ const GR_START_HOUR = 8;
 const SOFT_RULES = [
   { id: 'coverageMin', label: 'Minimum shift coverage', description: 'Fill every shift to its configured minimum staffing.' },
   { id: 'seniorComposition', label: 'FLEX/POD senior composition', description: 'Staff the senior PGY (primary, fallback the other) on every FLEX/POD shift.' },
-  { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day shift or Grand Rounds following a night shift.' },
+  // blocksExport: this rule's warnings are safety-relevant enough to gate CSV/QGenda/PDF export
+  // (see issueCounts.restWarns/requestExport) even though it's only 'warn' level — a property of
+  // the rule itself, not a fact re-derived at each export-gate call site.
+  { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day shift or Grand Rounds following a night shift.', blocksExport: true },
 ];
 const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
+const EXPORT_BLOCKING_RULE_IDS = new Set(SOFT_RULES.filter(r => r.blocksExport).map(r => r.id));
 // Accepts an untrusted persisted value (old backup, hand-edited storage) and returns a valid,
 // complete ordering: unknown ids dropped, missing ids appended in default order.
 function normalizeRulePriority(arr) {
@@ -1067,6 +1071,14 @@ function grRestGapH(resident, dateStr, nightShiftId) {
   }
   return null;
 }
+// Shared by checkCircadianViolations (real-time, placing nightShiftId) and validateAll
+// (retrospective, over an already-complete schedule) so the GR-gap message/threshold can't
+// drift between the two call sites the way two independently-maintained copies would.
+function grRestViolation(resident, dateStr, nightShiftId) {
+  const grGapH = grRestGapH(resident, dateStr, nightShiftId);
+  if (grGapH == null || grGapH >= NIGHT_RULES.postNightDayRestH) return null;
+  return { message: `Only ${grGapH}h off before Grand Rounds after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest', gapH: grGapH };
+}
 
 // Evaluates placing newShiftId on dateStr against a resident's existing schedule rs (schedule
 // shape: {dateStr: shiftId}). Returns [{message, level, rule?}] — used by both the generator
@@ -1103,10 +1115,9 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
       break; // only the soonest day shift after matters for this check
     }
     // Grand Rounds the following morning counts against the same soft rule — GR isn't a schedule
-    // entry, so it's checked separately via grRestGapH rather than scanning rs.
-    const grGapH = grRestGapH(resident, dateStr, newShiftId);
-    if (grGapH != null && grGapH < NIGHT_RULES.postNightDayRestH)
-      violations.push({ message: `Only ${grGapH}h off before Grand Rounds after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest', gapH: grGapH });
+    // entry, so it's checked separately via grRestViolation rather than scanning rs.
+    const grViolation = grRestViolation(resident, dateStr, newShiftId);
+    if (grViolation) violations.push(grViolation);
   }
 
   if (newType === 'day') {
@@ -1787,13 +1798,11 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       }
 
       // Grand Rounds the morning after a night shift counts against the same postNightRest soft
-      // rule — GR isn't a schedule entry, so it's checked separately via grRestGapH.
+      // rule — GR isn't a schedule entry, so it's checked separately via grRestViolation.
       for (const a of assignments) {
         if (SHIFT_MAP[a.sid]?.type !== 'night') continue;
-        const grGapH = grRestGapH(resident, a.ds, a.sid);
-        if (grGapH != null && grGapH < NIGHT_RULES.postNightDayRestH)
-          issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid,
-            message: `Only ${grGapH}h off before Grand Rounds after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest', gapH: grGapH });
+        const grViolation = grRestViolation(resident, a.ds, a.sid);
+        if (grViolation) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, ...grViolation });
       }
     }
 
@@ -2020,9 +2029,12 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
     // 24h post-night rest preference (rule: 'postNightRest') is a ranked soft rule — violators
     // stay in the pool as `restFallback` rather than being excluded; fillDayPass decides whether
-    // to use them, based on the chief's Soft Rule Priority order.
-    const circadianResults = pool.map(r => ({ r, v: checkCircadianViolations(r, ds, shift.id, schedule[r.id], { nightOnly: nightOnly[r.id] }) }));
-    pool = circadianResults.filter(c => c.v.every(v => v.level !== 'error')).map(c => c.r);
+    // to use them, based on the chief's Soft Rule Priority order. Kept as a resident→violations
+    // Map (not just an array) so both the O(n) re-lookup below and fillDayPass's restGapH tie-
+    // break can reuse this one checkCircadianViolations pass per candidate instead of each
+    // re-deriving it themselves.
+    const circadianByResident = new Map(pool.map(r => [r, checkCircadianViolations(r, ds, shift.id, schedule[r.id], { nightOnly: nightOnly[r.id] })]));
+    pool = pool.filter(r => circadianByResident.get(r).every(v => v.level !== 'error'));
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'circadianBlocked' };
     // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest).
     if (SHIFT_MAP[shift.id]?.type === 'night') {
@@ -2039,11 +2051,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
     // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
     const restFallback = pool;
-    const candidates = pool.filter(r => {
-      const v = circadianResults.find(c => c.r === r)?.v || [];
-      return v.every(x => x.rule !== 'postNightRest');
-    });
-    return { candidates, restFallback, reason: null };
+    const candidates = pool.filter(r => circadianByResident.get(r).every(x => x.rule !== 'postNightRest'));
+    return { candidates, restFallback, reason: null, circadianByResident };
   }
 
   // Weights are ordered by priority, each comfortably larger than the sum below it so a
@@ -2138,21 +2147,23 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const seniorRank = ruleRank(appSettings, 'seniorComposition');
     const restRank = ruleRank(appSettings, 'postNightRest');
 
-    // Actual hours short of the 24h postNightRest target for candidate r on shiftId, or null if
-    // r has no such violation — used to break ties among restCompromise candidates by severity
-    // instead of score() alone (see the selection loop below). A 'night' placement can carry TWO
-    // independent postNightRest entries (an already-scheduled day shift 1-2 days later, AND Grand
-    // Rounds the next morning — see checkCircadianViolations) — take the smallest gapH (the
-    // worse of the two) so a candidate's severity reflects their worst violation, not whichever
-    // entry happened to be pushed first.
-    function restGapH(r, shiftId) {
-      const v = checkCircadianViolations(r, ds, shiftId, schedule[r.id], { nightOnly: nightOnly[r.id] });
+    // Actual hours short of the 24h postNightRest target for candidate r, or null if r has no
+    // such violation — used to break ties among restCompromise candidates by severity instead of
+    // score() alone (see the selection loop below). Reads from candidatePool's own
+    // circadianByResident Map rather than re-deriving checkCircadianViolations — that pool was
+    // just computed fresh for this exact slot, so every candidate is already in it. A 'night'
+    // placement can carry TWO independent postNightRest entries (an already-scheduled day shift
+    // 1-2 days later, AND Grand Rounds the next morning — see checkCircadianViolations) — take
+    // the smallest gapH (the worse of the two) so a candidate's severity reflects their worst
+    // violation, not whichever entry happened to be pushed first.
+    function restGapH(r, circadianByResident) {
+      const v = circadianByResident.get(r) || [];
       const gaps = v.filter(x => x.rule === 'postNightRest' && typeof x.gapH === 'number').map(x => x.gapH);
       return gaps.length ? Math.min(...gaps) : null;
     }
 
     for (const slot of slots) {
-      let { candidates, restFallback, reason } = candidatePool(slot.shift, ds);
+      let { candidates, restFallback, reason, circadianByResident } = candidatePool(slot.shift, ds);
       let restCompromise = false;
 
       // If the clean pool is empty but a rest-violating pool exists, use it only when the chief
@@ -2184,7 +2195,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
         if (seniorPool.length) {
           candidates = seniorPool;
         } else if (phase === 'min') {
-          const seniorRestOnly = restCompromise ? [] : (restFallback || []).filter(r => isSeniorFor(slot.shift.area, r) && !candidates.includes(r));
+          const candidateSet = new Set(candidates);
+          const seniorRestOnly = restCompromise ? [] : (restFallback || []).filter(r => isSeniorFor(slot.shift.area, r) && !candidateSet.has(r));
           if (seniorRestOnly.length && restRank > seniorRank && restRank > covRank) {
             // Breaking postNightRest is the least-important option available among the three —
             // prefer a rest-violating senior over a rest-clean junior or leaving the slot empty.
@@ -2211,11 +2223,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       // scoring factors (shift-count deficit, night clustering, etc.). Clean-pool picks are
       // unaffected by this branch entirely (restCompromise stays false, so score() alone decides
       // exactly as before this fix).
-      let best = candidates[0], bestScore = -Infinity, bestGapH = restCompromise ? restGapH(best, slot.shift.id) : null;
+      let best = candidates[0], bestScore = -Infinity, bestGapH = restCompromise ? restGapH(best, circadianByResident) : null;
       for (const r of candidates) {
         const s = score(r, slot.shift, ds, seniorFilled);
         if (restCompromise) {
-          const g = restGapH(r, slot.shift.id);
+          const g = restGapH(r, circadianByResident);
           // Larger gapH (closer to the 24h target, less severe shortfall) wins first; score()
           // only breaks ties between candidates with an equally severe shortfall.
           if (bestGapH == null || (g != null && (g > bestGapH || (g === bestGapH && s > bestScore)))) {
@@ -2393,10 +2405,7 @@ function exportMatrixPDF({ block, allResidents, schedule }) {
   if (!dates.length) return;
   const sched = schedule || {};
 
-  const head = ['Resident', ...dates.map(ds => {
-    const d = parseDate(ds);
-    return `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`;
-  })];
+  const head = ['Resident', ...dates.map(formatDisplayDate)];
 
   const body = [];
   const rowMeta = []; // parallel to body rows: {isDivider:true} or {isDivider:false, cells:[sid|null,...]}
@@ -2470,7 +2479,6 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
     pdfPageHeader(doc, `${r.lastName}, ${r.firstName} — PGY-${r.pgy}`, block.name || '');
 
     const rows = dates.map(ds => {
-      const d = parseDate(ds);
       const sid = rs[ds] || null;
       const notes = [];
       if ((r.approvedDatesOff||[]).includes(ds)) notes.push('OFF');
@@ -2478,7 +2486,7 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
       if ((r.jcPresentDates||[]).includes(ds)) notes.push('JC presenting');
       if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
       return [
-        `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`,
+        formatDisplayDate(ds),
         sid ? (SHIFT_MAP[sid]?.label || sid) : '-',
         sid ? (SHIFT_MAP[sid]?.hours || '') : '',
         notes.join(', '),
@@ -5123,7 +5131,6 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
   const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules);
-  const allSoft = v.length > 0 && v.every(w => w.level === 'warn');
 
   function confirm() {
     onSelect(pending);
@@ -5162,18 +5169,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         </div>
       )}
 
-      {pending && v.length > 0 && (
-        <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
-          <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
-            <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
-          </div>
-          {v.map((w,i)=>(
-            <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
-              {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
-            </p>
-          ))}
-        </div>
-      )}
+      {pending && <ViolationPanel violations={v}/>}
       {pending && v.length === 0 && (
         <div className="flex items-center gap-1.5 text-emerald-600 text-xs mb-3"><CheckCircle size={13}/> No violations</div>
       )}
@@ -5661,11 +5657,31 @@ function ReadinessWarningPanel({ issues }) {
   );
 }
 
+// Shared by ShiftPickerModal and DragConfirmModal — switches to amber "Soft rule flagged"
+// styling when every violation is a soft, chief-reorderable postNightRest warning, rose
+// "Violation detected" otherwise. Not reused by ReadinessWarningPanel above, which lists
+// missing-data gaps (plain strings, no severity level) rather than {message, level} objects.
+function ViolationPanel({ violations }) {
+  if (!violations.length) return null;
+  const allSoft = violations.every(w => w.level === 'warn');
+  return (
+    <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+      <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
+        <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
+      </div>
+      {violations.map((w,i)=>(
+        <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
+          {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const { src, tgt, kind, violations } = dropConfirm;
   const srcShift = SHIFT_MAP[src.sid];
   const tgtShift = tgt.sid ? SHIFT_MAP[tgt.sid] : null;
-  const allSoft = violations.length > 0 && violations.every(w => w.level === 'warn');
   return (
     <Modal title={kind === 'swap' ? 'Confirm Swap' : 'Confirm Move'} onClose={onCancel}>
       <div className="flex items-center gap-3 mb-3 text-sm">
@@ -5683,16 +5699,7 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
           </>
         )}
       </div>
-      <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
-        <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
-          <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
-        </div>
-        {violations.map((w,i)=>(
-          <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
-            {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
-          </p>
-        ))}
-      </div>
+      <ViolationPanel violations={violations}/>
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
         <button onClick={onConfirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
@@ -6698,11 +6705,10 @@ export default function ResidentScheduler() {
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
     warns: issues.filter(i=>i.level!=='error').length,
-    // postNightRest violations are warn-level (a ranked soft rule the generator may choose to
-    // break), but a resident actually working on <24h rest is still safety-relevant enough that
-    // exporting the schedule (CSV/QGenda/PDF) should gate on it same as a hard error — see
-    // requestExport below.
-    restWarns: issues.filter(i=>i.rule==='postNightRest').length,
+    // Soft-rule warnings flagged blocksExport in SOFT_RULES (currently just postNightRest) are
+    // still safety-relevant enough that exporting the schedule (CSV/QGenda/PDF) should gate on
+    // them same as a hard error — see requestExport below.
+    restWarns: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
   }),[issues]);
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
 
