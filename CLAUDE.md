@@ -9,14 +9,15 @@ to CSV, with JSON backup/restore in the Settings tab.
 ## Layout & stack
 - Repo root: `C:\Users\amade\projects\resident-scheduler` → GitHub `picklepilk/resident-scheduler`
   (public repo — never commit real resident names/PII; see "Data model & conventions" below).
-- React 19 + Vite 6 + Tailwind CSS · `lucide-react` icons. (`jspdf`/`jspdf-autotable` are declared
-  in `package.json` but currently unused — no PDF export is implemented.)
+- React 19 + Vite 6 + Tailwind CSS · `lucide-react` icons. `jspdf`/`jspdf-autotable` power the PDF
+  export (matrix + per-resident pages) — see "PDF export" below for a version-specific import
+  gotcha with the installed `jspdf-autotable@3.8.4`.
 - `xlsx` (SheetJS) parses the Master Matrix import (below). Installed from SheetJS's own CDN tarball
   (`"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"` in `package.json`), **not** the npm
   registry package — the registry build is frozen at 0.18.5 with unpatched prototype-pollution/ReDoS
   CVEs that SheetJS only fixes in CDN-published builds. Keep installing/upgrading this dependency via
   a pinned CDN tarball URL, never `npm install xlsx`.
-- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~5,700 lines).**
+- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~6,840 lines).**
   `src/` contains only that file plus `main.jsx` (10-line wrapper, no `App.jsx`) and `index.css` —
   expect to spend nearly all edits inside `ResidentScheduler.jsx`.
 - Shift catalog is defined as data at the top of `ResidentScheduler.jsx`: `SHIFTS` (id, label, area,
@@ -26,16 +27,18 @@ to CSV, with JSON backup/restore in the Settings tab.
   strings elsewhere. `PED-S` (Peds Swing, 11:00–20:00, type `'swing'`) is EM-Home-PGY-2-only and
   only exists Mon/Tue/Thu/Fri (`SHIFT_DOW`) — see "Journal Club / Grand Rounds / circadian rules"
   below for why `'swing'` is its own type rather than reusing `'eve'`.
-- Persistence is local-only: a `useLocalStorage` hook (~line 2047) backs nine state slots under
-  `res_*` keys (`LS_BACKUP_KEYS`, ~line 4420): EM roster, current block, blocks history, eligibility
+- Persistence is local-only: a `useLocalStorage` hook backs ten state slots under `res_*` keys.
+  Nine round-trip through `LS_BACKUP_KEYS`: EM roster, current block, blocks history, eligibility
   overrides, AY data, app settings, chief-editable day rules, shift coverage, and sidebar tab order.
-  The Settings tab exports/imports/resets all of them as one JSON backup. No backend, no
+  The Settings tab exports/imports/resets all nine as one JSON backup. No backend, no
   fetch/Supabase anywhere — **a new `res_*` key must be added to `LS_BACKUP_KEYS` or it silently
-  won't round-trip** through backup/restore. Anything read back from a backup (or hand-edited
-  localStorage) should be treated as untrusted shape — e.g. `reconcileTabOrder` guards with
-  `Array.isArray` before trusting a persisted array, and `getCoverageFor`/`normalizeCoverageEntry`
-  accepts either the old single-number coverage shape or the current `{min,max}` shape so an old
-  backup restores without a migration step.
+  won't round-trip** through backup/restore. The tenth slot, `res_dark_mode`, is **deliberately
+  excluded** from `LS_BACKUP_KEYS` — it's a device/viewer display preference, not chief scheduling
+  data, so restoring a colleague's backup shouldn't flip your own theme (see "Dark mode" below).
+  Anything read back from a backup (or hand-edited localStorage) should be treated as untrusted
+  shape — e.g. `reconcileTabOrder` guards with `Array.isArray` before trusting a persisted array,
+  and `getCoverageFor`/`normalizeCoverageEntry` accepts either the old single-number coverage shape
+  or the current `{min,max}` shape so an old backup restores without a migration step.
 
 ## Running / building / deploying
 ```bash
@@ -156,10 +159,15 @@ names below rather than trusting offsets.
 - `HOOKS` — `useLocalStorage`.
 - tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
   `CollapsibleHeader`, `SubTabs` — segmented-control sub-view switcher, ported from the sibling
-  `em-scheduler` app), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
-  Home; also hosts `JournalClubPlanner` — read-only card listing every first Tuesday of the AY with
-  each PGY-1/2/3 presenter slot from `jcPresentDates`, plus per-resident worked-JC counts vs
-  `JC_MAX_PER_AY`; presenter editing itself stays on the resident profile), `HOME TAB`
+  `em-scheduler` app; `StatCard` — Dashboard summary tile, also ported from em-scheduler;
+  `AutosaveIndicator` — honest local-only "Saving…"/"Saved locally" pill, since this app has no
+  remote sync), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
+  Home; opens with a `StatCard` row — schedulable residents, shifts filled vs minimum coverage,
+  error/warning counts, days remaining — computed via `computeCoverageByDate` (shared with the
+  Schedule tab, see below) and the root's consolidated `issues`/`issueCounts` memo, never a second
+  `validateAll` pass; also hosts `JournalClubPlanner` — read-only card listing every first Tuesday
+  of the AY with each PGY-1/2/3 presenter slot from `jcPresentDates`, plus per-resident worked-JC
+  counts vs `JC_MAX_PER_AY`; presenter editing itself stays on the resident profile), `HOME TAB`
   (`ImportMatrixModal` lives just above it — see "Matrix Import" above; the Saved Blocks list also
   has a **Publish/Published** toggle per snapshot, wired through the root's `toggleBlockPublished`
   — see "Published blocks" below), `RESIDENT FORM` (shared by Add/Edit modals, plus
@@ -171,27 +179,76 @@ names below rather than trusting offsets.
   (its violation aggregator is the module-level `cellViolations(resident, dateStr, sid, block,
   eligOverrides, appSettings, dayRules)`, shared with the grid's drag-and-drop below so both
   surfaces can't drift apart on what counts as a violation) + `SCHEDULE GRID` (main editing grid;
-  Generate Schedule / Clear & Regenerate live here; a Grid/By Resident `SubTabs` toggle switches to
+  Generate Schedule / Clear & Regenerate live here, gated by `checkGenerateReadiness` — see
+  "Pre-generation readiness gate" below; a Grid/By Resident/Calendar `SubTabs` toggle switches to
   `ResidentCardsView` — one card per resident, shifts grouped by week, reusing the grid's own
-  `violMap` memo rather than a second `validateAll` run; the grid also renders a **daily coverage
-  footer** — one summary row of `filled/minTotal` per date computed directly from the full
-  schedule, never the category-filtered rows, plus click-to-expand per-shift rows — and supports
-  **drag-and-drop**: dragging a shift chip onto an empty cell moves it, onto an occupied cell swaps
-  the two, via `handleDrop`/`commitDrop`; both sides are validated with `cellViolations` against a
-  schedule with the *other* side's stale date cleared first (`scheduleClearing`) so a same-resident
-  move can't false-positive against its own old cell; violations open `DragConfirmModal` for an
-  explicit override, matching the picker's "Assign Anyway" philosophy), `VALIDATION TAB` (violations
-  list plus the Generation Report — now also shows `report.seniorGaps`; its post-night-day/eve-day
-  pairwise check also delegates to `checkCircadianViolations` rather than re-deriving the same rule),
+  `violMap` memo rather than a second `validateAll` run — or `ScheduleCalendarView` — continuous
+  Sunday-start week rows for the whole block via `buildWeekRows` (no month-pagination; a block
+  routinely spans two calendar months), with a per-shift-area filter and chip clicks opening the
+  same `ShiftPickerModal` the grid uses; the grid also renders a **daily coverage footer** — one
+  summary row of `filled/minTotal` per date via the module-level `computeCoverageByDate` (shared
+  with the Dashboard stat tiles and the Calendar view so none of the three can drift), computed
+  directly from the full schedule, never the category-filtered rows, plus click-to-expand
+  per-shift rows — and supports **drag-and-drop**: dragging a shift chip onto an empty cell moves
+  it, onto an occupied cell swaps the two, via `handleDrop`/`commitDrop`; both sides are validated
+  with `cellViolations` against a schedule with the *other* side's stale date cleared first
+  (`scheduleClearing`) so a same-resident move can't false-positive against its own old cell;
+  violations open `DragConfirmModal` for an explicit override, matching the picker's "Assign
+  Anyway" philosophy), `VALIDATION TAB` (violations list plus the Generation Report — now also
+  shows `report.seniorGaps`/`report.restCompromises`; its post-night-day/eve-day pairwise check
+  also delegates to `checkCircadianViolations` rather than re-deriving the same rule),
   `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`.
+- **Pre-generation readiness gate** (`checkGenerateReadiness`, near the Journal Club helpers):
+  before Generate Schedule runs, warns — with a "Generate Anyway" override — if the block's manual
+  dates look incomplete: `getMissingSpecialDayLists` flags any special-day list
+  (`SPECIAL_DAY_META`: Code Blue/Advocacy/Procedure/Anesthesia) that's *relevant* to a schedulable
+  resident on this block (derived from each resident's effective `specialDayRules`, not
+  hardcoded) and still empty, and `getJCPresenterGaps` flags any first Tuesday inside the block's
+  own date range with no PGY-1/2/3 Journal Club presenter (`jcPresentersFor` — extracted from
+  `JournalClubPlanner`'s inline filter so the gate and the planner card can't drift). Clear &
+  Regenerate surfaces the same `ReadinessWarningPanel` inside its own confirm modal rather than
+  stacking a second one.
+- **PDF export** (`// ─── PDF EXPORT ───` section, before `HOOKS`): `exportMatrixPDF` (residents ×
+  dates on landscape A3 — a ~28-day block's date columns don't fit legibly on letter/A4) and
+  `exportResidentCalendarPDF` (one page per schedulable resident, Date/Shift/Time/Notes rows,
+  Notes carrying the same OFF/jeopardy/JC-presenting/GR-lecture markers `ResidentCardsView` shows
+  on screen), both via a header "PDF" button → format-picker `Modal` → the existing
+  `requestExport`/`exportConfirm` error gate. **`jspdf-autotable@3.8.4`'s default-export interop
+  is broken under esbuild/Rollup bundling** — `import autoTable from 'jspdf-autotable'` resolves
+  to the CJS namespace object, not the callable function, and throws `"...is not a function"` at
+  call time (verified against the actual installed version via a standalone esbuild bundle, the
+  same engine Vite uses for dep pre-bundling — a `npm run build` success alone does NOT catch this,
+  since bundling only resolves imports statically without executing them). The fix in this file:
+  `import 'jspdf-autotable'` for its side effect only (it internally calls its own
+  `applyPlugin(jsPDF)`, patching `doc.autoTable(...)` on as an instance method), then always call
+  `doc.autoTable({...})` — never the bare `autoTable(doc, {...})` function form. If `jspdf-autotable`
+  is ever upgraded to a v4/v5 release with a proper ESM build (like the sibling `em-scheduler` app,
+  which pins `^5.0.7` and uses the plain `import autoTable from 'jspdf-autotable'` + `autoTable(doc,
+  opts)` form successfully), re-verify with the same esbuild-bundle technique before switching the
+  call sites back.
+- **Dark mode** (`darkMode` state → `res_dark_mode`, Sun/Moon header toggle, `.res-dark` class on
+  the root div): an override stylesheet in `index.css`, not Tailwind `dark:` variants — this file
+  has thousands of class strings, so a variant-based approach would mean touching all of them.
+  Ported from the sibling `em-scheduler` app's `.em-dark` sheet and extended, since this app uses
+  BOTH `gray-*` and `slate-*` neutrals (em uses only `slate-*`) plus a wider set of category-tint
+  hues (`indigo`/`sky`/`emerald`/`yellow`/`orange`/`pink`/`violet`/`teal`/`stone` — see
+  `CATEGORIES`). Wrapped in `@media screen` so print/PDF output always stays light regardless of
+  the viewer's theme. `res_dark_mode` is excluded from `LS_BACKUP_KEYS` — see "Persistence" above.
 - `MAIN APP` — the `TABS` nav array; `reconcileTabOrder`/`reorderIds` (pure helpers behind
   the sidebar's drag-to-reorder — reconcile guards against a non-array persisted order, reorder
   always lands the dragged tab immediately before the drop target regardless of drag direction);
   `SidebarNav` (own component, not inlined in the root — keeps drag-hover state from re-rendering
-  whatever tab content is currently mounted); the root `ResidentScheduler` component: all state via
-  `useLocalStorage`, `saveBlock`/`loadBlock`/`newBlock`/`toggleBlockPublished`, `exportCSV`,
-  header/tab-routing render. `saveBlock` explicitly preserves an existing snapshot's `published`
-  flag when re-saving the same block id (a snapshot is replaced wholesale, so this is easy to lose).
+  whatever tab content is currently mounted; now also renders a shift-area/GR/OFF/J **legend**
+  panel below the nav, and splits the Validation tab's badge into separate rose-error/amber-warn
+  counts plus a green check when a non-empty schedule has neither); the root `ResidentScheduler`
+  component: all state via `useLocalStorage`, `saveBlock`/`loadBlock`/`newBlock`/
+  `toggleBlockPublished`, `exportCSV`, header/tab-routing render, a single `issues`/`issueCounts`
+  memo (one `validateAll` pass shared by the sidebar badges, `pendingErrorCount`, and the
+  Dashboard stat tiles, instead of one pass per consumer). `saveBlock` explicitly preserves an
+  existing snapshot's `published` flag when re-saving the same block id (a snapshot is replaced
+  wholesale, so this is easy to lose). The header is a light shell (white bar, gradient indigo
+  logo tile) mirroring `em-scheduler`'s layout language with this app's own indigo accent (em uses
+  rose), plus an `AutosaveIndicator` pill next to the CSV/PDF export buttons.
 
 ## Data model & conventions
 - Shift IDs follow `AREA-TYPE` (e.g. `POD-D`, `MT-N`, `TRAUMA-D` — note TRAUMA has no evening shift;
