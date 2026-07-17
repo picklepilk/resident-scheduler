@@ -37,3 +37,148 @@ body {
   table { page-break-inside: auto; }
   tr { page-break-inside: avoid; page-break-after: auto; }
 }
+
+/* ── Dark mode ──────────────────────────────────────────────────────────────
+   Override stylesheet scoped under .res-dark (toggled on the root div), not Tailwind `dark:`
+   variants — this file has thousands of class strings across every tab, so a variant-based
+   approach would mean touching all of them. Ported from the sibling em-scheduler app's .em-dark
+   sheet and extended: this app uses BOTH gray-* and slate-* neutrals (em uses only slate-*), and
+   a wider set of category-tint hues (indigo/sky/emerald/yellow/orange/pink/violet/teal/stone) for
+   CATEGORIES rowBg/badge plus rose/amber/red for warnings and chips.
+   Wrapped in @media screen so print/PDF output (above) always stays light regardless of the
+   viewer's theme toggle. */
+@media screen {
+  .res-dark { color-scheme: dark; }
+  .res-dark { background-color: #0f172a !important; color: #f1f5f9 !important; }
+
+  /* Base surfaces */
+  .res-dark .bg-white     { background-color: #1e293b !important; }
+  .res-dark .bg-gray-50   { background-color: #0f172a !important; }
+  .res-dark .bg-gray-100  { background-color: #1e293b !important; }
+  .res-dark .bg-gray-200  { background-color: #334155 !important; }
+  .res-dark .bg-slate-50  { background-color: #0f172a !important; }
+  .res-dark .bg-slate-100 { background-color: #1e293b !important; }
+  .res-dark .bg-slate-200 { background-color: #334155 !important; }
+  .res-dark header  { background-color: #1e293b !important; border-color: #334155 !important; }
+  .res-dark aside   { background-color: #0f172a !important; }
+
+  /* Tinted -50 category/status backgrounds — darken so text stays readable */
+  .res-dark .bg-indigo-50  { background-color: #161c3d !important; }
+  .res-dark .bg-sky-50     { background-color: #0c1a2e !important; }
+  .res-dark .bg-emerald-50 { background-color: #071a10 !important; }
+  .res-dark .bg-yellow-50  { background-color: #1f1800 !important; }
+  .res-dark .bg-orange-50  { background-color: #1f1206 !important; }
+  .res-dark .bg-pink-50    { background-color: #1f0f1a !important; }
+  .res-dark .bg-violet-50  { background-color: #160f2e !important; }
+  .res-dark .bg-teal-50    { background-color: #071a1a !important; }
+  .res-dark .bg-stone-50   { background-color: #1c1917 !important; }
+  .res-dark .bg-amber-50   { background-color: #1f1800 !important; }
+  .res-dark .bg-rose-50    { background-color: #1f0f0f !important; }
+  .res-dark .bg-red-50     { background-color: #1f0f0f !important; }
+  .res-dark .bg-blue-50    { background-color: #0c1a2e !important; }
+  .res-dark .bg-purple-50  { background-color: #1a0f2e !important; }
+
+  /* Colored -100 chips (legend, badges, coverage counts) — keep vivid, not washed out */
+  .res-dark .bg-indigo-100  { background-color: #3730a3 !important; }
+  .res-dark .bg-sky-100     { background-color: #0c4a6e !important; }
+  .res-dark .bg-emerald-100 { background-color: #064e3b !important; }
+  .res-dark .bg-yellow-100  { background-color: #78350f !important; }
+  .res-dark .bg-orange-100  { background-color: #7c2d12 !important; }
+  .res-dark .bg-pink-100    { background-color: #831843 !important; }
+  .res-dark .bg-violet-100  { background-color: #4c1d95 !important; }
+  .res-dark .bg-teal-100    { background-color: #134e4a !important; }
+  .res-dark .bg-amber-100   { background-color: #78350f !important; }
+  .res-dark .bg-rose-100    { background-color: #881337 !important; }
+  .res-dark .bg-red-100     { background-color: #7f1d1d !important; }
+
+  /* Text — neutrals */
+  .res-dark .text-gray-900  { color: #f1f5f9 !important; }
+  .res-dark .text-gray-800  { color: #e2e8f0 !important; }
+  .res-dark .text-gray-700  { color: #cbd5e1 !important; }
+  .res-dark .text-gray-600  { color: #94a3b8 !important; }
+  .res-dark .text-gray-500  { color: #64748b !important; }
+  .res-dark .text-gray-400  { color: #475569 !important; }
+  .res-dark .text-gray-300  { color: #334155 !important; }
+  .res-dark .text-slate-900 { color: #f1f5f9 !important; }
+  .res-dark .text-slate-800 { color: #e2e8f0 !important; }
+  .res-dark .text-slate-700 { color: #cbd5e1 !important; }
+  .res-dark .text-slate-600 { color: #94a3b8 !important; }
+  .res-dark .text-slate-500 { color: #64748b !important; }
+  .res-dark .text-slate-400 { color: #475569 !important; }
+
+  /* Text — colored, on tinted -50 backgrounds (lighten for contrast) */
+  .res-dark .text-indigo-600  { color: #a5b4fc !important; }
+  .res-dark .text-indigo-700  { color: #a5b4fc !important; }
+  .res-dark .text-indigo-800  { color: #c7d2fe !important; }
+  .res-dark .text-indigo-900  { color: #e0e7ff !important; }
+  .res-dark .text-sky-600     { color: #7dd3fc !important; }
+  .res-dark .text-sky-700     { color: #7dd3fc !important; }
+  .res-dark .text-emerald-600 { color: #6ee7b7 !important; }
+  .res-dark .text-emerald-700 { color: #6ee7b7 !important; }
+  .res-dark .text-yellow-600  { color: #fde047 !important; }
+  .res-dark .text-yellow-700  { color: #fde047 !important; }
+  .res-dark .text-orange-500  { color: #fb923c !important; }
+  .res-dark .text-orange-700  { color: #fdba74 !important; }
+  .res-dark .text-pink-600    { color: #f9a8d4 !important; }
+  .res-dark .text-pink-700    { color: #f9a8d4 !important; }
+  .res-dark .text-violet-600  { color: #c4b5fd !important; }
+  .res-dark .text-violet-700  { color: #c4b5fd !important; }
+  .res-dark .text-teal-600    { color: #5eead4 !important; }
+  .res-dark .text-teal-700    { color: #5eead4 !important; }
+  .res-dark .text-amber-600   { color: #fcd34d !important; }
+  .res-dark .text-amber-700   { color: #fcd34d !important; }
+  .res-dark .text-rose-500    { color: #fda4af !important; }
+  .res-dark .text-rose-600    { color: #fda4af !important; }
+  .res-dark .text-rose-700    { color: #fda4af !important; }
+  .res-dark .text-red-500     { color: #fca5a5 !important; }
+  .res-dark .text-red-600     { color: #fca5a5 !important; }
+
+  /* Borders */
+  .res-dark .border-gray-100   { border-color: #1e293b !important; }
+  .res-dark .border-gray-200   { border-color: #334155 !important; }
+  .res-dark .border-gray-300   { border-color: #475569 !important; }
+  .res-dark .border-slate-200  { border-color: #334155 !important; }
+  .res-dark .border-indigo-200 { border-color: #4338ca !important; }
+  .res-dark .border-amber-200  { border-color: #92400e !important; }
+  .res-dark .border-rose-200   { border-color: #9f1239 !important; }
+  .res-dark .border-red-300    { border-color: #7f1d1d !important; }
+  .res-dark .border-emerald-200{ border-color: #065f46 !important; }
+  .res-dark .border-violet-200 { border-color: #4c1d95 !important; }
+
+  /* Dividers */
+  .res-dark .divide-gray-50  > * { border-color: #1e293b !important; }
+  .res-dark .divide-gray-100 > * { border-color: #1e293b !important; }
+  .res-dark .divide-gray-200 > * { border-color: #334155 !important; }
+
+  /* Form inputs */
+  .res-dark input:not([type="checkbox"]):not([type="radio"]) {
+    background-color: #334155 !important; color: #f1f5f9 !important; border-color: #475569 !important;
+  }
+  .res-dark select   { background-color: #334155 !important; color: #f1f5f9 !important; border-color: #475569 !important; }
+  .res-dark textarea { background-color: #334155 !important; color: #f1f5f9 !important; border-color: #475569 !important; }
+
+  /* Hover states */
+  .res-dark .hover\:bg-gray-50:hover    { background-color: #1e293b !important; }
+  .res-dark .hover\:bg-gray-100:hover   { background-color: #334155 !important; }
+  .res-dark .hover\:bg-slate-50:hover   { background-color: #1e293b !important; }
+  .res-dark .hover\:bg-slate-100:hover  { background-color: #334155 !important; }
+  .res-dark .hover\:bg-indigo-50\/50:hover { background-color: #161c3d !important; }
+
+  /* Shadows */
+  .res-dark .shadow-sm { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.5) !important; }
+  .res-dark .shadow-md { box-shadow: 0 4px 6px -1px rgba(0,0,0,0.5) !important; }
+  .res-dark .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.6) !important; }
+  .res-dark .shadow-2xl{ box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7) !important; }
+
+  /* Modal / overlay backdrops */
+  .res-dark .bg-black\/40 { background-color: rgba(0,0,0,0.75) !important; }
+  .res-dark .bg-black\/50 { background-color: rgba(0,0,0,0.8) !important; }
+
+  /* Sticky grid column — background:'inherit' already follows the row's own bg override above */
+
+  /* Scrollbar */
+  .res-dark ::-webkit-scrollbar-track { background: #1e293b; }
+  .res-dark ::-webkit-scrollbar-thumb { background: #475569; }
+  .res-dark .schedule-scroll::-webkit-scrollbar-track { background: #1e293b !important; }
+  .res-dark .schedule-scroll::-webkit-scrollbar-thumb  { background: #475569 !important; }
+}

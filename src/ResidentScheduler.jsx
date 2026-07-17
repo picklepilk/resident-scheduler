@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -5904,6 +5904,9 @@ function ValidationTab({ allResidents, block, eligOverrides, appSettings, dayRul
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
+// `res_dark_mode` is deliberately NOT in this list — it's a device/viewer display preference,
+// not chief scheduling data, and restoring a colleague's backup shouldn't flip your own theme
+// (matches the sibling em-scheduler app, which excludes its own em_dark_mode the same way).
 const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage','res_tab_order'];
 
 function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
@@ -6499,6 +6502,8 @@ export default function ResidentScheduler() {
   const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
   const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
   const [tabOrder, setTabOrder]           = useLocalStorage('res_tab_order', TABS.map(t=>t.id));
+  // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
+  const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
 
   // Honest local-only autosave indicator: useLocalStorage already persists synchronously on
   // every state change, this just gives the chief a brief visual confirmation it happened.
@@ -6678,7 +6683,7 @@ export default function ResidentScheduler() {
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
   return (
-    <div className="h-screen flex flex-col bg-slate-100 overflow-hidden">
+    <div className={`h-screen flex flex-col bg-slate-100 overflow-hidden ${darkMode ? 'res-dark' : ''}`}>
       {/* Header */}
       <header className="bg-white border-b border-slate-200 shrink-0 no-print">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
@@ -6696,6 +6701,10 @@ export default function ResidentScheduler() {
           <div className="flex items-center gap-2 flex-none">
             <span className="text-xs text-slate-400">{allResidents.length} residents</span>
             <AutosaveIndicator state={saveState}/>
+            <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="p-2 rounded-md text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+              {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
+            </button>
             {block.startDate && (
               <>
                 <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
