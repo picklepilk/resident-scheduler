@@ -2338,12 +2338,15 @@ function pdfSave(doc, filename) {
 }
 
 // jsPDF's built-in fonts only render Windows-1252 (WinAnsi) glyphs correctly -- anything outside
-// that range (CJK, uncommon accented Latin, emoji, the star glyph U+2605) corrupts the WHOLE
-// LINE's letter spacing, not just the one offending character (see the file-header comment
-// above). Resident/block names are free-text and chief-entered, with no charset restriction, so
-// always sanitize before handing them to doc.text()/autoTable: NFKD-normalize to strip combining
-// diacritics (e.g. U+00E9 -> "e") and fall back to '?' for anything still outside printable ASCII,
-// rather than risk corrupting the page for one out-of-range name.
+// that range (CJK, Cyrillic, emoji, the star glyph U+2605) corrupts the WHOLE LINE's letter
+// spacing, not just the one offending character (see the file-header comment above). Resident/
+// block/category names are free-text and chief-entered, with no charset restriction, so always
+// sanitize before handing them to doc.text()/autoTable. The final catch-all allows \xA0-\xFF
+// through (Latin-1 Supplement, which maps identically onto cp1252's own \xA0-\xFF and is
+// genuinely WinAnsi-safe \u2014 e.g. the "\u00b7" middle dot at U+00B7) rather than restricting to bare
+// ASCII, or already-safe pre-existing punctuation in this file would get needlessly mangled to
+// "?". NFKD-normalize + strip combining diacritics still runs first as a readable fallback for
+// scripts outside Latin-1 entirely (e.g. Vietnamese/Central European diacritics).
 function pdfSafeText(str) {
   if (str == null) return str;
   return String(str)
@@ -2352,7 +2355,7 @@ function pdfSafeText(str) {
     .replace(/[\u201c\u201d]/g, '"')                   // smart double quotes
     .replace(/[\u2013\u2014]/g, '-')                   // en/em dash
     .replace(/\u2026/g, '...')                         // ellipsis
-    .replace(/[^\x20-\x7E]/g, '?');                    // anything still outside printable ASCII
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');           // anything still outside WinAnsi-safe range
 }
 
 function pdfPageHeader(doc, title, subtitle) {
@@ -2393,7 +2396,7 @@ function exportMatrixPDF({ block, allResidents, schedule }) {
   for (const cat of CATEGORIES) {
     const members = allResidents.filter(r => r.category === cat.id);
     if (!members.length) continue;
-    body.push([cat.label, ...dates.map(()=>'')]);
+    body.push([pdfSafeText(cat.label), ...dates.map(()=>'')]);
     rowMeta.push({ isDivider: true });
     for (const r of members) {
       const rs = sched[r.id] || {};
@@ -2469,7 +2472,7 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
       if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
       return [
         `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`,
-        sid ? (SHIFT_MAP[sid]?.label || sid) : '—',
+        sid ? (SHIFT_MAP[sid]?.label || sid) : '-',
         sid ? (SHIFT_MAP[sid]?.hours || '') : '',
         notes.join(', '),
       ];
@@ -6609,17 +6612,22 @@ export default function ResidentScheduler() {
   // Honest local-only autosave indicator: useLocalStorage already persists synchronously on
   // every state change, this just gives the chief a brief visual confirmation it happened.
   const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving'
-  const mountedRef = useRef(false);
+  // Compares actual dependency VALUES against what was last recorded, rather than a simple
+  // "have I mounted yet" boolean — a boolean guard whose cleanup resets it looks StrictMode-safe
+  // but isn't: React runs that same cleanup before every later re-invocation too (not just
+  // StrictMode's synthetic remount), so it would silently disable "Saving…" for every real edit
+  // after the first. React's own dependency-change detection already works by reference
+  // inequality (Object.is per dependency), and every setter in this file replaces state with a
+  // new object/array reference on a genuine change — so comparing recorded-vs-current references
+  // distinguishes "StrictMode replaying the identical render" (nothing changed, deps arrive
+  // byte-for-byte the same as what was just recorded) from a real subsequent edit, with no
+  // cleanup-timing ambiguity at all.
+  const prevSaveDepsRef = useRef(null);
   useEffect(() => {
-    // The mount-skip guard resets itself via its own cleanup function (rather than a separate
-    // effect/ref-reset pattern) so it survives React StrictMode's dev-only mount→cleanup→remount
-    // double-invoke: without a cleanup on this exact branch, the guard flips true on the first
-    // simulated mount and stays true into the second, causing a spurious "Saving…" flash on
-    // every fresh page load in development even though nothing actually changed.
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      return () => { mountedRef.current = false; };
-    }
+    const deps = [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder];
+    const changed = prevSaveDepsRef.current !== null && deps.some((d, i) => d !== prevSaveDepsRef.current[i]);
+    prevSaveDepsRef.current = deps;
+    if (!changed) return;
     setSaveState('saving');
     const t = setTimeout(() => setSaveState('saved'), 600);
     return () => clearTimeout(t);
