@@ -1265,6 +1265,63 @@ function countCurrentBlockJC(residentId, block, schedule) {
   return count;
 }
 
+// ─── Generate-readiness checks ─────────────────────────────────────────────
+// Hoisted from RulesTab's inline special-day list (Rules tab's "Special-Day Rules" section) so
+// the Rules tab and the pre-generate readiness gate share the same labels.
+const SPECIAL_DAY_META = [
+  { key: 'codeBlueDays', label: 'Code Blue days' },
+  { key: 'advocacyDays', label: 'Advocacy days' },
+  { key: 'procDays', label: 'Procedure days' },
+  { key: 'anesDays', label: 'Anesthesia days' },
+];
+
+// Special-day lists that matter for THIS block's residents (derived from each schedulable
+// resident's effective specialDayRules, honoring chief overrides — not hardcoded) and are still
+// empty on the block.
+function getMissingSpecialDayLists(allResidents, block, dayRules) {
+  const relevantKeys = new Set();
+  for (const r of allResidents) {
+    if (!isSchedulable(r)) continue;
+    const dr = getEffectiveDayRules(eligKey(r), dayRules);
+    for (const rule of dr.specialDayRules || []) relevantKeys.add(rule.listKey);
+  }
+  const sd = block.specialDays || {};
+  return SPECIAL_DAY_META.filter(m => relevantKeys.has(m.key) && (sd[m.key] || []).length === 0);
+}
+
+// Extracted from JournalClubPlanner's inline presenter filter so the readiness gate can't drift
+// from what the planner card shows.
+function jcPresentersFor(emHomeResidents, ds, pgy) {
+  return emHomeResidents.filter(r => r.pgy === pgy && (r.jcPresentDates || []).includes(ds));
+}
+
+// First-Tuesday/PGY combinations inside this block's own date range with no presenter set.
+function getJCPresenterGaps(allResidents, block) {
+  const emHome = allResidents.filter(r => r.category === 'EM_HOME');
+  const gaps = [];
+  for (const ds of getFirstTuesdaysInRange(block.startDate, block.endDate)) {
+    for (const pgy of [1, 2, 3]) {
+      if (jcPresentersFor(emHome, ds, pgy).length === 0) gaps.push({ dateStr: ds, pgy });
+    }
+  }
+  return gaps;
+}
+
+// Human-readable readiness messages for the pre-Generate warning gate — empty array means ready.
+// Checks the manual, per-block dates a chief is expected to enter before generation: special-day
+// lists relevant to residents on this block, and Journal Club presenters for first Tuesdays that
+// fall within the block.
+function checkGenerateReadiness({ allResidents, block, dayRules }) {
+  const messages = [];
+  for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
+    messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
+  }
+  for (const g of getJCPresenterGaps(allResidents, block)) {
+    messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
+  }
+  return messages;
+}
+
 // Conferences (from AY-level data) that overlap with the given block range
 function getConferencesInBlock(startStr, endStr, ayConf = {}) {
   if (!startStr || !endStr) return [];
@@ -2395,7 +2452,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
                       {inBlock && <span className="ml-1.5 text-[9px] font-semibold px-1 py-0.5 rounded bg-indigo-100 text-indigo-600">this block</span>}
                     </td>
                     {[1,2,3].map(pgy => {
-                      const presenters = emHome.filter(r => r.pgy === pgy && (r.jcPresentDates||[]).includes(ds));
+                      const presenters = jcPresentersFor(emHome, ds, pgy);
                       return (
                         <td key={pgy} className="py-1 pr-3">
                           {presenters.length === 0 ? (
@@ -4281,12 +4338,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Special-Day Rules</div>
         <p className="text-xs text-gray-400 mb-1.5">Dates are edited on the Dashboard tab — this controls how each list affects eligibility.</p>
         <div className="space-y-1.5">
-          {[
-            {key:'codeBlueDays', label:'Code Blue days'},
-            {key:'advocacyDays', label:'Advocacy days'},
-            {key:'procDays', label:'Procedure days'},
-            {key:'anesDays', label:'Anesthesia days'},
-          ].map(({key,label})=>{
+          {SPECIAL_DAY_META.map(({key,label})=>{
             const rule = (dr.specialDayRules||[]).find(r=>r.listKey===key);
             return (
               <div key={key} className="flex items-center gap-2">
@@ -4778,6 +4830,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
   const [view, setView] = useState('grid'); // 'grid' | 'resident' — ephemeral, not persisted
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
@@ -4906,8 +4959,17 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     setDropConfirm(null);
   }
 
+  // Warns before generating if the block's manual per-block dates (special-day lists, JC
+  // presenters) haven't been entered — chief can override and generate anyway.
+  function requestGenerate() {
+    const issues = checkGenerateReadiness({ allResidents, block, dayRules });
+    if (issues.length) setConfirmGenerate(issues);
+    else runGenerate(false);
+  }
+
   function runGenerate(clearFirst) {
     setConfirmRegen(false);
+    setConfirmGenerate(null);
     const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory });
     if (!res) { showToast('Set block dates first', 'red'); return; }
     if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
@@ -4935,7 +4997,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
         </span>
         <span className="flex items-center gap-2">
-          <button onClick={()=>runGenerate(false)}
+          <button onClick={requestGenerate}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten."
             className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
             <Wand2 size={13}/> Generate Schedule
@@ -4989,7 +5051,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <Wand2 size={28} className="mx-auto mb-2 text-indigo-400"/>
           <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
           <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
-          <button onClick={()=>runGenerate(false)}
+          <button onClick={requestGenerate}
             className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
             <Wand2 size={14}/> Generate Schedule
           </button>
@@ -5023,9 +5085,26 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               This clears <strong>all current assignments — including ones you entered manually</strong> — and
               regenerates the whole schedule from scratch. This cannot be undone.
             </p>
+            <ReadinessWarningPanel issues={checkGenerateReadiness({ allResidents, block, dayRules })}/>
             <div className="flex justify-end gap-2">
               <button onClick={()=>setConfirmRegen(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
               <button onClick={()=>runGenerate(true)} className="px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear &amp; Regenerate</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmGenerate && (
+        <Modal title="Missing manual dates" onClose={()=>setConfirmGenerate(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
+              rules that depend on these dates may not apply correctly.
+            </p>
+            <ReadinessWarningPanel issues={confirmGenerate}/>
+            <div className="flex justify-end gap-2">
+              <button onClick={()=>setConfirmGenerate(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+              <button onClick={()=>runGenerate(false)} className="px-4 py-2 text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white rounded-lg">Generate Anyway</button>
             </div>
           </div>
         </Modal>
@@ -5189,6 +5268,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
 // Confirmation modal shown when a drag-drop swap/move has one or more violations — lists them and
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
+// Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
+// rose warning-panel style as DragConfirmModal's violation list below.
+function ReadinessWarningPanel({ issues }) {
+  if (!issues.length) return null;
+  return (
+    <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-rose-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
+      {issues.map((w,i)=><p key={i} className="text-xs text-rose-600 ml-4">{w}</p>)}
+    </div>
+  );
+}
+
 function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const { src, tgt, kind, violations } = dropConfirm;
   const srcShift = SHIFT_MAP[src.sid];
