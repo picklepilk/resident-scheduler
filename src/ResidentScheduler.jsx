@@ -6144,10 +6144,11 @@ function reorderIds(order, fromId, toId) {
 }
 
 // Sidebar nav — a separate component so drag-hover state doesn't re-render the active tab's content.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, violCount, emResidentCount, offServiceCount }) {
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
   const orderedTabs = useMemo(()=>reconcileTabOrder(tabOrder, TABS),[tabOrder]);
+  const clean = hasSchedule && issueCounts.errors === 0 && issueCounts.warns === 0;
 
   function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
 
@@ -6156,7 +6157,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, violCount, emResidentC
       <nav className="flex flex-col gap-0.5 px-2">
         {orderedTabs.map(t=>{
           const Icon=t.icon; const active=tab===t.id;
-          const badge=t.id==='validation'&&violCount>0?violCount:null;
+          const isValidation = t.id==='validation';
           const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
           const iconColor = active?'text-white':'text-slate-400';
           return (
@@ -6171,22 +6172,50 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, violCount, emResidentC
               </span>
               <Icon size={15} className={`shrink-0 ${iconColor}`}/>
               <span className="flex-1">{t.label}</span>
-              {badge && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
-                  {badge}
+              {isValidation && (issueCounts.errors > 0 || issueCounts.warns > 0) && (
+                <span className="flex items-center gap-1">
+                  {issueCounts.errors > 0 && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
+                      {issueCounts.errors}
+                    </span>
+                  )}
+                  {issueCounts.warns > 0 && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
+                      {issueCounts.warns}
+                    </span>
+                  )}
                 </span>
+              )}
+              {isValidation && clean && (
+                <CheckCircle size={13} className={active?'text-white':'text-emerald-500'}/>
               )}
             </button>
           );
         })}
       </nav>
 
+      {/* Legend */}
+      <div className="mt-3 px-3 py-3 border-t border-gray-100">
+        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Legend</p>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {SHIFT_AREAS.map(area => (
+            <span key={area} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${SHIFT_MAP[`${area}-D`].chip}`}>{area}</span>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-gray-400">
+          <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">J</span>
+        </div>
+      </div>
+
       {/* Sidebar footer */}
       <div className="mt-auto px-3 py-3 border-t border-gray-100">
         <div className="text-xs text-gray-400 space-y-0.5">
           <p className="font-medium text-gray-500">{emResidentCount} EM residents</p>
           <p>{offServiceCount} off-service this block</p>
-          {violCount > 0 && <p className="text-red-500 font-medium">{violCount} violation{violCount!==1?'s':''}</p>}
+          {issueCounts.errors > 0 && <p className="text-red-500 font-medium">{issueCounts.errors} error{issueCounts.errors!==1?'s':''}</p>}
+          {issueCounts.warns > 0 && <p className="text-amber-500 font-medium">{issueCounts.warns} warning{issueCounts.warns!==1?'s':''}</p>}
         </div>
       </div>
     </aside>
@@ -6272,7 +6301,7 @@ export default function ResidentScheduler() {
     errors: issues.filter(i=>i.level==='error').length,
     warns: issues.filter(i=>i.level!=='error').length,
   }),[issues]);
-  const violCount = issues.length;
+  const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
@@ -6424,7 +6453,7 @@ export default function ResidentScheduler() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Vertical sidebar */}
         <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
-          violCount={violCount} emResidentCount={emRoster.length}
+          issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
           offServiceCount={(block.offServiceResidents||[]).length}/>
 
         {/* Main content */}
