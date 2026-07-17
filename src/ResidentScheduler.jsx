@@ -2332,27 +2332,23 @@ function summarizeGenerationReport(report, appSettings = {}) {
 // doc.text()/autoTable cells, or it corrupts the line's letter spacing. Plain ASCII only.
 
 function pdfSave(doc, filename) {
-  const inIframe = window.self !== window.top;
-  try {
-    if (inIframe) {
-      // iframe embeds (e.g. Teams): blob URL opened in a new tab, since doc.save() is blocked
-      const blob = doc.output('blob');
-      const url  = URL.createObjectURL(blob);
-      const a    = window.open(url, '_blank');
-      if (!a) {
-        const link = document.createElement('a');
-        link.href = url; link.target = '_blank'; link.download = filename;
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-    } else {
-      doc.save(filename);
+  // No try/catch here: a failure has no reason to succeed on a same-arguments retry (there's
+  // nothing left to fall back to once the iframe branch's own popup-blocked handling has already
+  // run), so this lets the error propagate to the caller, which shows the chief a toast instead
+  // of either silently doing nothing or crashing uncaught with zero feedback.
+  if (window.self !== window.top) {
+    // iframe embeds (e.g. Teams): blob URL opened in a new tab, since doc.save() is blocked
+    const blob = doc.output('blob');
+    const url  = URL.createObjectURL(blob);
+    const a    = window.open(url, '_blank');
+    if (!a) {
+      const link = document.createElement('a');
+      link.href = url; link.target = '_blank'; link.download = filename;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
     }
-  } catch {
-    // doc.save() is a no-op/no-op-adjacent inside an iframe (the case the blob branch above
-    // exists to work around), so retrying it here would just rethrow — only fall back to it
-    // when the failure happened outside the iframe branch.
-    if (!inIframe) doc.save(filename);
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } else {
+    doc.save(filename);
   }
 }
 
@@ -2393,6 +2389,10 @@ function pdfPageFooter(doc, left) {
   doc.text('Page ' + doc.internal.getCurrentPageInfo().pageNumber, W - 12, H - 6, { align: 'right' });
 }
 
+// Raw RGB, since jsPDF can't consume Tailwind classes — the PDF counterpart of the Shift Matrix
+// tab's `areaColor` light-tint map (search this file for that name). Deliberately not merged into
+// one shared constant (different shade families for different rendering contexts), but if you add
+// a new shift area, update both, plus SHIFTS[].chip.
 const PDF_AREA_LIGHT = {
   POD: [219, 234, 254], PED: [209, 250, 229], FLEX: [237, 233, 254],
   MT: [254, 243, 199], TRAUMA: [254, 226, 226],
@@ -4348,6 +4348,11 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
     return ids.map(id => BLOCK_TYPE_MAP[id]).filter(b => b && b.schedulable);
   }
 
+  // Per-area light-tint color, one of three independent per-area color reps in this file (also:
+  // SHIFTS[].chip — solid per-shift-id chip colors, and PDF_AREA_LIGHT in the PDF export section —
+  // raw RGB, since jsPDF can't consume Tailwind classes). Not merged into one shared constant:
+  // each uses a shade tuned for its own context (light-50 web tint here vs a more visible -100-ish
+  // RGB tint for PDF backgrounds) — but if you add a new shift area, update all three.
   const areaColor = { POD:'text-blue-700 bg-blue-50 border-blue-200', PED:'text-emerald-700 bg-emerald-50 border-emerald-200', FLEX:'text-purple-700 bg-purple-50 border-purple-200', MT:'text-amber-700 bg-amber-50 border-amber-200', TRAUMA:'text-red-700 bg-red-50 border-red-200' };
 
   function CellButton({ k, s, checked, inherited = false, onToggle }) {
@@ -4912,7 +4917,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                 );
               })}
               {!isDefault && (
-                <button onClick={() => setAppSettings(p => ({ ...p, rulePriority: DEFAULT_RULE_PRIORITY }))}
+                <button onClick={() => setAppSettings(p => ({ ...p, rulePriority: [...DEFAULT_RULE_PRIORITY] }))}
                   className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
               )}
             </div>
@@ -6816,8 +6821,18 @@ export default function ResidentScheduler() {
   function runExport(kind) {
     if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}.csv`, buildGridCSVRows());
     else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
-    else if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
-    else if (kind==='pdf-resident') exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule });
+    else if (kind==='pdf-matrix' || kind==='pdf-resident') {
+      try {
+        if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
+        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule });
+      } catch {
+        // pdfSave() has nothing left to fall back to once it fails, so it propagates here —
+        // surface it instead of leaving the chief thinking the export silently succeeded.
+        showToast('PDF export failed — check your browser settings and try again.', 'red');
+        setExportConfirm(null);
+        return;
+      }
+    }
     setExportConfirm(null);
   }
 
