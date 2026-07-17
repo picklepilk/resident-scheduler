@@ -97,15 +97,19 @@ names below rather than trusting offsets.
   never generates a schedule.
 - ~500–1060 `REST-PERIOD UTILITIES` / circadian engine — `checkRestViolations` (legal-rest-hour
   check only), then **`CIRCADIAN SCHEDULING RULES`**: `NIGHT_RULES` (`minRun`/`idealRun`/`maxRun`
-  4-6-6, `postNightDayRestH` 24, `maxPerBlock` 6), `isNightShiftId`, `isNightOnlyResident` (FM-3 —
-  exempt from the block-wide night cap and the short-run warning), `nightRunBefore`/`nightRunAfter`,
-  `checkCircadianViolations(resident, dateStr, newShiftId, rs, {nightOnly})` → `[{message,level}]`
-  (max-run, <24h post-nights-before-a-day-shift, and eve→day-next-day/reverse are all `'error'`;
-  the <24h rest check runs in **both directions** — backward from an incoming day shift AND forward
-  from an incoming night shift to a day shift already sitting 1-2 days later, since the generator's
-  optional fill pass can place a night shift after a day shift is already scheduled; a one-directional
-  version of this check let bad night→day sequences through generation — see "Circadian rules"
-  below), then `isTraumaCapSubject`/`getTraumaCap`, `isSchedulable` (EM_HOME/
+  4-6-6, `postNightDayRestH` 24, `maxPerBlock` 6), `GR_START_HOUR` (08:00, Grand Rounds start used
+  by the postNightRest soft rule), `isNightShiftId`, `isNightOnlyResident` (FM-3 — exempt from the
+  block-wide night cap and the short-run warning), `nightRunBefore`/`nightRunAfter`, `grRestGapH`
+  (hours between a night shift's end and Grand Rounds on the resident's next GR weekday — GR is
+  never a schedule entry, so this is the only way the postNightRest rule can see it), then
+  `checkCircadianViolations(resident, dateStr, newShiftId, rs, {nightOnly})` →
+  `[{message,level,rule?}]` (max-run and eve→day-next-day/reverse are hard `'error'`; the ≥24h
+  post-night rest preference — including Grand Rounds the next morning — is `'warn'` tagged
+  `rule:'postNightRest'`, a ranked **soft rule** the generator only breaks per `appSettings.
+  rulePriority` — see "Soft Rule Priority" below; the check runs in **both directions** — backward
+  from an incoming day shift AND forward from an incoming night shift to a day shift already
+  sitting 1-2 days later, since the generator's optional fill pass can place a night shift after a
+  day shift is already scheduled), then `isTraumaCapSubject`/`getTraumaCap`, `isSchedulable` (EM_HOME/
   EM_BAMC default to the `'EM'` rotation when `blockType` is missing — this is also what fixes
   BAMC residents added via the Off-Service tab, which never assigns one), `isNightOnlyResident`.
 - `traumaPedsHalf`/`isTraumaPedsSplitResident`/`TRAUMA_PEDS_SPLIT` ({trauma:8, peds:11}) — the
@@ -221,16 +225,29 @@ names below rather than trusting offsets.
   distinguished by `activeWhen`, so a saved block's own `startDate` always resolves to the correct
   rule — don't try to "clean up" this into a single gate.
 - **Circadian rules** (see `NIGHT_RULES`): nights should cluster into one run of 4-6 (max 6, hard);
-  ≥24h off is required before resuming a day shift after a night run, checked in both directions
-  (backward when placing a day shift, forward when placing a night shift ahead of an already-placed
-  day shift — the generator's optional fill pass runs after TRAUMA-D is filled, so a one-directional
-  check let violations slip through generation) — Grand Rounds the next morning is fine (GR isn't a
-  shift, so it never appears in the schedule map and never trips this check);
   an evening shift can never be immediately followed by a day shift the next day, or vice versa
   (hard, even when the plain rest-hour math would otherwise clear it); max 6 total night shifts per
   block, except residents whose entire eligibility is night-only (today: FM-3) — `isNightOnlyResident`
   exempts them from both the per-block cap and the short-run warning, since FM-3's Mon/Tue/Wed-only
-  day rule makes a 4+-night run structurally impossible anyway.
+  day rule makes a 4+-night run structurally impossible anyway. **≥24h off after a night run before
+  resuming a day shift — or before Grand Rounds — is a ranked *soft* rule** (`rule:'postNightRest'`
+  in `checkCircadianViolations`, `grRestGapH` covers the GR case since GR is never a schedule
+  entry), checked in both directions (backward when placing a day shift, forward when placing a
+  night shift ahead of an already-placed day shift — the generator's optional fill pass runs after
+  TRAUMA-D is filled, so a one-directional check let violations slip through generation). See
+  "Soft Rule Priority" below for how the generator decides whether to break it.
+- **Soft Rule Priority** (`appSettings.rulePriority`, `SOFT_RULES`, `DEFAULT_RULE_PRIORITY`,
+  `normalizeRulePriority`, `ruleRank` — all near `NIGHT_RULES`): a chief-orderable ranking of three
+  soft rules — `coverageMin`, `seniorComposition`, `postNightRest` — edited on the Rules tab
+  ("Soft Rule Priority" card, up/down reorder). Default order ranks `coverageMin` highest, so the
+  generator's min-fill pass reaches for a rest-violating or junior candidate before leaving a slot
+  unfilled (recorded in `report.restCompromises`/`report.seniorGaps`); reordering `postNightRest`
+  or `seniorComposition` above `coverageMin` instead leaves the slot unfilled to protect that rule
+  (`report.unfilled` reasons `'restProtected'`/`'seniorProtected'`) — see `candidatePool`'s
+  `{candidates, restFallback}` split and `fillDayPass`'s min-phase fallback logic in
+  `generateSchedule`. `rulePriority` lives in `res_app_settings`, already covered by
+  `LS_BACKUP_KEYS` — no new backup key or LEGACY migration needed (`normalizeRulePriority` handles
+  an old backup with no `rulePriority` field by falling back to the default order).
 - **Journal Club**: first Tuesday of each month, 18:00-21:00; "worked" is derived from
   `SHIFT_TIMING` overlap (`shiftOverlapsJC`), not a hand-maintained shift-id list, so it
   automatically covers PED-S and Trauma Night. Max 3 worked per academic year (July 1–July 1),

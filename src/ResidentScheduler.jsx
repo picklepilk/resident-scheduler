@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -374,7 +374,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 7 consecutive work days — Grand Rounds counts
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
-const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; 24h off is required before returning to a day shift after nights (GR the next morning is fine); an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3, are exempt from the per-block cap). Enforced by the generator and Validation.';
+const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3, are exempt from the per-block cap) — all enforced. 24h off after a night shift before a day shift or Grand Rounds is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3); every staffed POD shift needs an EM PGY-3 (fallback PGY-2). Extra slots skew toward EM PGY-1/off-service. Enforced by the generator; Validation warns if a staffed group is missing its senior.';
 const JC_RULE_NOTE = 'Journal Club: first Tuesday of the month, 18:00-21:00 (any shift overlapping that window counts as "worked," including PED Swing and Trauma Night). Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each month (set per-resident on the resident\'s profile); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date. Enforced by the generator and Validation (error if violated).';
@@ -955,6 +955,29 @@ function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
 // immediately followed by a day shift the next day (or vice versa) — only a night shift or
 // another evening/day shift after a rest gap.
 const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
+// Grand Rounds start hour, used to compute rest gap between a night shift's end and GR the
+// following morning for the postNightRest soft rule (GR itself is never a schedule entry).
+const GR_START_HOUR = 8;
+// ─── SOFT RULE PRIORITY ─────────────────────────────────────────────────────
+// A small, ranked set of soft rules the generator breaks in reverse-priority order when it can't
+// satisfy all of them for a slot. Keep this list short and deliberate — it's not a general rules
+// engine, just the conflict-resolution order for the three rules that can genuinely trade off
+// against each other during min-coverage fill.
+const SOFT_RULES = [
+  { id: 'coverageMin', label: 'Minimum shift coverage', description: 'Fill every shift to its configured minimum staffing.' },
+  { id: 'seniorComposition', label: 'FLEX/POD senior composition', description: 'Staff the senior PGY (primary, fallback the other) on every FLEX/POD shift.' },
+  { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day shift or Grand Rounds following a night shift.' },
+];
+const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
+// Accepts an untrusted persisted value (old backup, hand-edited storage) and returns a valid,
+// complete ordering: unknown ids dropped, missing ids appended in default order.
+function normalizeRulePriority(arr) {
+  const ids = new Set(SOFT_RULES.map(r => r.id));
+  const cleaned = Array.isArray(arr) ? arr.filter(id => ids.has(id)) : [];
+  const missing = DEFAULT_RULE_PRIORITY.filter(id => !cleaned.includes(id));
+  return [...cleaned, ...missing];
+}
+function ruleRank(appSettings, id) { return normalizeRulePriority(appSettings?.rulePriority).indexOf(id); }
 function isNightShiftId(sid) { return SHIFT_MAP[sid]?.type === 'night'; }
 // Residents whose entire effective eligibility is night-only (today: FM-3/PED-N) are exempt from
 // the block-wide night cap and the short-night-run warning — for FM-3 specifically, the Mon/Tue/
@@ -977,9 +1000,25 @@ function nightRunBefore(rs, dateStr) { return nightRun(rs, dateStr, -1); }
 // can avoid stranding a short run when deciding what to place on an adjacent day.
 function nightRunAfter(rs, dateStr) { return nightRun(rs, dateStr, 1); }
 function countNightsInSchedule(rs) { return Object.values(rs).filter(isNightShiftId).length; }
+// Hours between the end of a night shift on dateStr and Grand Rounds (GR_START_HOUR) on the
+// resident's next GR weekday, checked up to 2 days out — or null if no GR falls in that window.
+// GR is never a schedule entry, so this is the only way the postNightRest soft rule can see it.
+function grRestGapH(resident, dateStr, nightShiftId) {
+  const g = grWorkDow(resident);
+  if (g == null) return null;
+  for (let offset = 1; offset <= 2; offset++) {
+    const d = addDays(parseDate(dateStr), offset);
+    if (d.getDay() !== g) continue;
+    const grStartMs = new Date(d.getFullYear(), d.getMonth(), d.getDate(), GR_START_HOUR, 0, 0).getTime();
+    return (grStartMs - shiftEndMs(nightShiftId, dateStr)) / 3_600_000;
+  }
+  return null;
+}
+
 // Evaluates placing newShiftId on dateStr against a resident's existing schedule rs (schedule
-// shape: {dateStr: shiftId}). Returns [{message, level}] — used by both the generator (hard
-// filter on 'error'-level results) and validateAll/the picker (surfaced as-is).
+// shape: {dateStr: shiftId}). Returns [{message, level, rule?}] — used by both the generator
+// (hard filter on 'error'-level results, soft-ranked handling of rule:'postNightRest' warnings)
+// and validateAll/the picker (surfaced as-is).
 function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly = false } = {}) {
   const violations = [];
   const newType = SHIFT_MAP[newShiftId]?.type;
@@ -998,30 +1037,35 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     }
     // Mirror of the 'day' branch below, but looking forward — a fill pass can place this night
     // shift AFTER a day shift already sits on dateStr+1/+2 (e.g. the generator's optional pass
-    // runs after TRAUMA-D is already filled), so the 24h rest rule must be checked in both
-    // directions, not just backward from an incoming day shift.
+    // runs after TRAUMA-D is already filled), so the 24h rest preference must be checked in both
+    // directions, not just backward from an incoming day shift. Soft rule (rank: postNightRest) —
+    // the generator only breaks it when higher-ranked rules would otherwise go unmet.
     for (let offset = 1; offset <= 2; offset++) {
       const checkDs = toDateStr(addDays(parseDate(dateStr), offset));
       const laterSid = rs[checkDs];
       if (!laterSid || SHIFT_MAP[laterSid]?.type !== 'day') continue;
       const gapH = (shiftStartMs(laterSid, checkDs) - shiftEndMs(newShiftId, dateStr)) / 3_600_000;
       if (gapH < NIGHT_RULES.postNightDayRestH)
-        violations.push({ message: `Only ${gapH}h off before the day shift already scheduled after this night shift — need ${NIGHT_RULES.postNightDayRestH}h`, level: 'error' });
+        violations.push({ message: `Only ${gapH}h off before the day shift already scheduled after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest' });
       break; // only the soonest day shift after matters for this check
     }
+    // Grand Rounds the following morning counts against the same soft rule — GR isn't a schedule
+    // entry, so it's checked separately via grRestGapH rather than scanning rs.
+    const grGapH = grRestGapH(resident, dateStr, newShiftId);
+    if (grGapH != null && grGapH < NIGHT_RULES.postNightDayRestH)
+      violations.push({ message: `Only ${grGapH}h off before Grand Rounds after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest' });
   }
 
   if (newType === 'day') {
-    // Look back up to 2 days for the most recent night shift and check the 24h rest requirement
-    // before resuming days (Grand Rounds attendance the morning after the last night is fine —
-    // GR isn't a shift, so it never appears in rs and never trips this check).
+    // Look back up to 2 days for the most recent night shift and check the 24h rest preference
+    // before resuming days. Soft rule (rank: postNightRest).
     for (let offset = 1; offset <= 2; offset++) {
       const checkDs = toDateStr(addDays(parseDate(dateStr), -offset));
       const priorSid = rs[checkDs];
       if (!priorSid || !isNightShiftId(priorSid)) continue;
       const gapH = (shiftStartMs(newShiftId, dateStr) - shiftEndMs(priorSid, checkDs)) / 3_600_000;
       if (gapH < NIGHT_RULES.postNightDayRestH)
-        violations.push({ message: `Only ${gapH}h off after night shifts before this day shift — need ${NIGHT_RULES.postNightDayRestH}h`, level: 'error' });
+        violations.push({ message: `Only ${gapH}h off after night shifts before this day shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest' });
       break; // only the most recent night shift matters for this check
     }
   }
@@ -1250,6 +1294,7 @@ const DEFAULT_APP_SETTINGS = {
   defaultBlockLength: 28,     // days — auto-fills end date when start date is set
   maxSavedBlocks: 24,         // history depth on the Home tab
   targetOverrides: {},        // { [CATEGORY_PGY]: number, CHIEF: number } — overrides SHIFT_TARGETS/BLOCK_TARGETS
+  rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
 };
 
 // Effective shift target for a resident, honoring Settings overrides, then rotation-specific
@@ -1619,15 +1664,26 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
         }
       }
 
-      // Post-night-day and eve→day-next-day turnarounds — delegate to checkCircadianViolations's
-      // 'day' branch (it looks backward from dateStr through the already-complete schedule) so this
-      // retrospective check can't drift from the generator/picker's real-time version of the same rule.
+      // Post-night-day (soft postNightRest preference) and eve→day-next-day (hard) turnarounds —
+      // delegate to checkCircadianViolations's 'day' branch (it looks backward from dateStr
+      // through the already-complete schedule) so this retrospective check can't drift from the
+      // generator/picker's real-time version of the same rule. Every returned level is surfaced
+      // now — the 24h rest rule is a warn since it was demoted to a ranked soft rule.
       for (const a of assignments) {
         if (SHIFT_MAP[a.sid]?.type !== 'day') continue;
         for (const v of checkCircadianViolations(resident, a.ds, a.sid, rs)) {
-          if (v.level === 'error')
-            issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level });
         }
+      }
+
+      // Grand Rounds the morning after a night shift counts against the same postNightRest soft
+      // rule — GR isn't a schedule entry, so it's checked separately via grRestGapH.
+      for (const a of assignments) {
+        if (SHIFT_MAP[a.sid]?.type !== 'night') continue;
+        const grGapH = grRestGapH(resident, a.ds, a.sid);
+        if (grGapH != null && grGapH < NIGHT_RULES.postNightDayRestH)
+          issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid,
+            message: `Only ${grGapH}h off before Grand Rounds after this night shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn' });
       }
     }
 
@@ -1800,7 +1856,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     generatedAt: new Date().toISOString(),
     mode: clearFirst ? 'regenerate' : 'fill',
     totalSlots: 0, keptManual, filled: 0, optionalFilled: 0,
-    unfilled: [], underTarget: [], jeopardyPlacements: [], seniorGaps: [],
+    unfilled: [], underTarget: [], jeopardyPlacements: [], seniorGaps: [], restCompromises: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -1849,25 +1905,35 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     }
     if (enforceRest) {
       pool = pool.filter(r => checkRestViolations(r.id, ds, shift.id, schedule).length === 0);
-      if (!pool.length) return { candidates: [], reason: 'allRestBlocked' };
+      if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
     }
-    // Circadian rules: never let the generator create a >6-night run, a <24h turnaround from
-    // nights back to days, or an eve→day-next-day (or reverse) turnaround.
-    pool = pool.filter(r => checkCircadianViolations(r, ds, shift.id, schedule[r.id], { nightOnly: nightOnly[r.id] }).every(v => v.level !== 'error'));
-    if (!pool.length) return { candidates: [], reason: 'circadianBlocked' };
+    // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
+    // 24h post-night rest preference (rule: 'postNightRest') is a ranked soft rule — violators
+    // stay in the pool as `restFallback` rather than being excluded; fillDayPass decides whether
+    // to use them, based on the chief's Soft Rule Priority order.
+    const circadianResults = pool.map(r => ({ r, v: checkCircadianViolations(r, ds, shift.id, schedule[r.id], { nightOnly: nightOnly[r.id] }) }));
+    pool = circadianResults.filter(c => c.v.every(v => v.level !== 'error')).map(c => c.r);
+    if (!pool.length) return { candidates: [], restFallback: [], reason: 'circadianBlocked' };
     // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest).
     if (SHIFT_MAP[shift.id]?.type === 'night') {
       pool = pool.filter(r => nightOnly[r.id] || nightCount[r.id] < NIGHT_RULES.maxPerBlock);
-      if (!pool.length) return { candidates: [], reason: 'nightCapped' };
+      if (!pool.length) return { candidates: [], restFallback: [], reason: 'nightCapped' };
     }
     if (shift.area === 'PED') {
       pool = pool.filter(r => !(isPedsEmMix(r) && pedsCount[r.id] >= PEDS_EM_MIX.max));
-      if (!pool.length) return { candidates: [], reason: 'pedsMixCapped' };
+      if (!pool.length) return { candidates: [], restFallback: [], reason: 'pedsMixCapped' };
     }
     // Hard 7-consecutive-work-day rule — GR days count as work days (see isStreakWorkDay)
     pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds) <= MAX_CONSECUTIVE_WORK_DAYS);
-    if (!pool.length) return { candidates: [], reason: 'streakBlocked' };
-    return { candidates: pool, reason: null };
+    if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
+    // Final split: candidates = clean of the postNightRest preference; restFallback = the same
+    // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
+    const restFallback = pool;
+    const candidates = pool.filter(r => {
+      const v = circadianResults.find(c => c.r === r)?.v || [];
+      return v.every(x => x.rule !== 'postNightRest');
+    });
+    return { candidates, restFallback, reason: null };
   }
 
   // Weights are ordered by priority, each comfortably larger than the sum below it so a
@@ -1955,21 +2021,45 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     }
     slots.sort((a, b) => sortPool[a.shift.id] - sortPool[b.shift.id]);
 
+    // Rule ranks for this pass's priority-aware fallback decisions — larger index = less
+    // important = broken first. Read once per day pass; cheap and appSettings doesn't change
+    // mid-generation.
+    const covRank = ruleRank(appSettings, 'coverageMin');
+    const seniorRank = ruleRank(appSettings, 'seniorComposition');
+    const restRank = ruleRank(appSettings, 'postNightRest');
+
     for (const slot of slots) {
-      let { candidates, reason } = candidatePool(slot.shift, ds);
+      let { candidates, restFallback, reason } = candidatePool(slot.shift, ds);
+      let restCompromise = false;
+
+      // If the clean pool is empty but a rest-violating pool exists, use it only when the chief
+      // has ranked postNightRest below coverageMin (break the less important rule). Optional-
+      // phase headroom is never worth a rest violation — restFallback only applies to 'min'.
+      if (!candidates.length && phase === 'min' && restFallback?.length) {
+        if (restRank > covRank) { candidates = restFallback; restCompromise = true; }
+        else {
+          report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: 'restProtected' });
+          continue;
+        }
+      }
       if (!candidates.length) {
         if (phase === 'min') report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason });
         continue;
       }
       // FLEX/POD seniority composition: while this shift/day has no senior yet, restrict to the
-      // senior sub-pool if one exists; otherwise fall back to the full pool and record the gap
-      // (staffing junior beats leaving a min-coverage slot empty).
+      // senior sub-pool if one exists. If none exists, staffing junior beats leaving a min-
+      // coverage slot empty UNLESS the chief ranks seniorComposition above coverageMin, in which
+      // case the slot is left unfilled instead (min phase only — optional headroom keeps its
+      // pre-priority behavior of always falling back to junior).
       // Computed once per slot (not per candidate below — it doesn't depend on the candidate).
       const seniorFilled = SENIOR_COMPOSITION[slot.shift.area] ? hasSenior(slot.shift.id, ds) : null;
       if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled) {
         const seniorPool = candidates.filter(r => isSeniorFor(slot.shift.area, r));
         if (seniorPool.length) candidates = seniorPool;
-        else {
+        else if (phase === 'min' && seniorRank < covRank) {
+          report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: 'seniorProtected' });
+          continue;
+        } else {
           const gapKey = `${ds}__${slot.shift.id}`;
           if (!seniorGapKeys.has(gapKey)) { seniorGapKeys.add(gapKey); report.seniorGaps.push({ dateStr: ds, shiftId: slot.shift.id }); }
         }
@@ -1988,6 +2078,9 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (best.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
       if (jeoPolicy === 'warn' && (best.jeopardyDates || []).includes(ds)) {
         report.jeopardyPlacements.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
+      }
+      if (restCompromise) {
+        report.restCompromises.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
       }
       if (phase === 'min') report.filled++; else report.optionalFilled++;
     }
@@ -2056,9 +2149,11 @@ function summarizeGenerationReport(report, appSettings = {}) {
     if (reasonCounts.pedsMixCapped) recs.push(`Peds/EM residents have hit their ${PEDS_EM_MIX.max}-peds-shift cap — cover ${label} with other peds-eligible residents.`);
     if (reasonCounts.streakBlocked) recs.push(`All eligible residents would have exceeded ${MAX_CONSECUTIVE_WORK_DAYS} consecutive work days (GR counts as a work day) — rearrange days off nearby, or Generate again.`);
     if (reasonCounts.halfTargetMet) recs.push(`Trauma/Peds rotators had already completed their ${TRAUMA_PEDS_SPLIT.trauma}-trauma/${TRAUMA_PEDS_SPLIT.peds}-peds half targets — remaining ${label} slots need another eligible resident, assigned manually.`);
-    if (reasonCounts.circadianBlocked) recs.push(`All eligible residents were blocked by a circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, ${NIGHT_RULES.postNightDayRestH}h off after nights before a day shift, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
+    if (reasonCounts.circadianBlocked) recs.push(`All eligible residents were blocked by a hard circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
     if (reasonCounts.nightCapped) recs.push(`Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block cap — spread nights across more residents, or cover ${label} manually.`);
     if (reasonCounts.jcCapped) recs.push(`Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts Published blocks) — cover ${label} with a resident under the cap.`);
+    if (reasonCounts.restProtected) recs.push(`Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
+    if (reasonCounts.seniorProtected) recs.push(`Left unfilled to protect FLEX/POD senior composition — no senior PGY was eligible for ${label}. Reorder Soft Rule Priority on the Rules tab to staff a junior instead, or assign manually.`);
 
     return { shiftId, slots, reasonCounts, structural, gapDows, recommendations: recs };
   }).sort((a, b) => (a.structural ? 1 : 0) - (b.structural ? 1 : 0));
@@ -4239,7 +4334,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
   );
 }
 
-function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, setDayRules, coverage, setCoverage }) {
+function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSettings, dayRules, setDayRules, coverage, setCoverage }) {
   const [showAll, setShowAll] = useState(true);
   const [openKeys, setOpenKeys] = useState({});
 
@@ -4368,6 +4463,47 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, dayRules, s
           Minimum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).min, 0)}</strong> – maximum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).max, 0)}</strong> resident-shifts per day.
           The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1 since only FM-3 is ever eligible for it. Trauma day-of-week limits still apply on top.
         </p>
+      </SectionCard>
+
+      <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way.">
+        {(() => {
+          const priority = normalizeRulePriority(appSettings?.rulePriority);
+          const isDefault = priority.every((id, i) => id === DEFAULT_RULE_PRIORITY[i]);
+          function move(i, dir) {
+            const j = i + dir;
+            if (j < 0 || j >= priority.length) return;
+            const next = [...priority];
+            [next[i], next[j]] = [next[j], next[i]];
+            setAppSettings(p => ({ ...p, rulePriority: next }));
+          }
+          return (
+            <div className="space-y-1.5">
+              {priority.map((id, i) => {
+                const rule = SOFT_RULES.find(r => r.id === id);
+                if (!rule) return null;
+                return (
+                  <div key={id} className="flex items-center gap-3 px-3 py-2 rounded-lg border border-gray-200 bg-gray-50">
+                    <span className="text-xs font-semibold text-gray-400 w-4">{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-800">{rule.label}</div>
+                      <div className="text-xs text-gray-500">{rule.description}</div>
+                    </div>
+                    <div className="flex flex-col shrink-0">
+                      <button onClick={() => move(i, -1)} disabled={i === 0}
+                        className="text-gray-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-gray-400" title="Move up"><ChevronUp size={14}/></button>
+                      <button onClick={() => move(i, 1)} disabled={i === priority.length - 1}
+                        className="text-gray-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-gray-400" title="Move down"><ChevronDown size={14}/></button>
+                    </div>
+                  </div>
+                );
+              })}
+              {!isDefault && (
+                <button onClick={() => setAppSettings(p => ({ ...p, rulePriority: DEFAULT_RULE_PRIORITY }))}
+                  className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
+              )}
+            </div>
+          );
+        })()}
       </SectionCard>
 
       <SectionCard title="Trauma Block Types" subtitle='Rotations treated as "trauma blocks" for the EM Home PGY-1 trauma-eligibility gate.'>
@@ -5220,7 +5356,7 @@ function GenerationReportCard({ report, appSettings }) {
         </p>
       </div>
       <div className="p-4 space-y-3">
-        {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (
+        {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (
           <p className="text-sm text-emerald-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
         )}
 
@@ -5241,6 +5377,17 @@ function GenerationReportCard({ report, appSettings }) {
             <ul className="mt-1 space-y-0.5">
               {report.seniorGaps.map((g,i)=>(
                 <li key={i} className="text-xs text-gray-700">{formatDisplayDate(g.dateStr)} — {SHIFT_MAP[g.shiftId]?.label || g.shiftId} (no EM PGY-2/3 available — assign one manually)</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {(report.restCompromises||[]).length > 0 && (
+          <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-amber-700">24h post-night rest preference broken to fill minimum coverage</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.restCompromises.map((c,i)=>(
+                <li key={i} className="text-xs text-gray-700">{formatDisplayDate(c.dateStr)} — {SHIFT_MAP[c.shiftId]?.label || c.shiftId} — {c.name} (reorder Soft Rule Priority on the Rules tab to change this)</li>
               ))}
             </ul>
           </div>
@@ -6116,7 +6263,7 @@ export default function ResidentScheduler() {
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast}/>}
-          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
+          {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
