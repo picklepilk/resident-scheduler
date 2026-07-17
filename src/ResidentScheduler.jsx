@@ -304,6 +304,31 @@ function getCoverageFor(shiftId, coverage = {}) {
   return normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
 }
 
+// Per-date coverage counts vs configured min/max, computed from the FULL schedule (never
+// category-filtered rows) — shared by the grid's coverage footer (ScheduleGrid) and the
+// Dashboard stat tiles (DashboardTab) so both read the same numbers.
+function computeCoverageByDate(dates, sched, coverage, allResidents) {
+  const m = {};
+  for (const ds of dates) {
+    const dow = parseDate(ds).getDay();
+    let filled = 0, minTotal = 0;
+    const perShift = {};
+    const belowMin = [], aboveMax = [];
+    for (const s of SHIFTS) {
+      if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
+      const cov = getCoverageFor(s.id, coverage);
+      const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
+      perShift[s.id] = { count, min: cov.min, max: cov.max };
+      minTotal += cov.min;
+      filled += count;
+      if (cov.min > 0 && count < cov.min) belowMin.push(`${s.id} ${count}/${cov.min}`);
+      if (count > cov.max) aboveMax.push(`${s.id} ${count}/${cov.max}`);
+    }
+    m[ds] = { perShift, filled, minTotal, belowMin, aboveMax };
+  }
+  return m;
+}
+
 // ─── Legacy defaults (pre rules-correction passes) ─────────────────────────
 // Snapshots of OLD DEFAULT_DAY_RULES / BASE_ELIGIBILITY entries for keys whose defaults changed,
 // one array per key so a key can accumulate a snapshot from EACH correction pass over time. A
@@ -2242,6 +2267,41 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
+// Dashboard summary tile — ported from the sibling em-scheduler app.
+function StatCard({ label, value, sub, icon: Icon, tone = "slate", bar = null }) {
+  const toneBg = {
+    slate: "bg-slate-50 text-slate-700",
+    sky:   "bg-sky-50 text-sky-700",
+    pink:  "bg-pink-50 text-pink-700",
+    amber: "bg-amber-50 text-amber-700",
+    violet:"bg-violet-50 text-violet-700",
+    green: "bg-emerald-50 text-emerald-700",
+    red:   "bg-rose-50 text-rose-700",
+  }[tone];
+  const barColor = {
+    green: "bg-emerald-500", amber: "bg-amber-500", red: "bg-rose-500",
+    sky: "bg-sky-500", violet: "bg-violet-500", blue: "bg-blue-500", slate: "bg-slate-400",
+  }[bar?.color] || "bg-slate-400";
+  return (
+    <div className="bg-white rounded-lg border border-slate-200 p-4 flex items-start gap-3">
+      <div className={`p-2 rounded-md ${toneBg}`}>
+        {Icon && <Icon size={18}/>}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-slate-500 font-medium">{label}</div>
+        <div className="text-2xl font-semibold text-slate-900 mt-0.5 tabular-nums">{value}</div>
+        {bar && (
+          <div className="h-1.5 rounded-full bg-slate-100 mt-1.5 overflow-hidden" title={bar.title || undefined}>
+            <div className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                 style={{ width: `${Math.max(0, Math.min(100, bar.pct || 0))}%` }}/>
+          </div>
+        )}
+        {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
 // Honest local-only autosave pill (no remote sync — this app is localStorage-only) — a brief
 // "Saving…" flicker whenever persisted state changes, settling back to "Saved locally".
 function AutosaveIndicator({ state }) {
@@ -2509,7 +2569,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
   );
 }
 
-function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount, blocksHistory }) {
+function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, coverage, blocksHistory }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
@@ -2518,6 +2578,13 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
 
   const shiftCount = Object.values(schedule).reduce((s, d) => s + Object.values(d).filter(Boolean).length, 0);
   const schedulableCount = allResidents.filter(r => isSchedulable(r)).length;
+
+  // Reuses the same computeCoverageByDate the Schedule tab's coverage footer runs, so the
+  // "Shifts Filled" tile can never drift from what the grid shows.
+  const blockDates = useMemo(()=>getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
+  const coverageByDate = useMemo(()=>computeCoverageByDate(blockDates, schedule, coverage||{}, allResidents), [blockDates, schedule, coverage, allResidents]);
+  const minTotal = blockDates.reduce((s,ds)=>s+(coverageByDate[ds]?.minTotal||0), 0);
+  const fillPct = minTotal > 0 ? Math.round((shiftCount/minTotal)*100) : 0;
 
   function updSD(field, newDates) {
     updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: newDates } }));
@@ -2528,6 +2595,23 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
 
   return (
     <div className="space-y-5 max-w-3xl">
+
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Schedulable Residents" value={schedulableCount} sub={`of ${allResidents.length} on block`}
+          icon={Users} tone="sky"/>
+        <StatCard label="Shifts Filled" value={block.startDate ? shiftCount : '—'}
+          sub={block.startDate ? `of ${minTotal} min coverage slots` : 'set block dates'}
+          icon={CalendarDays} tone={block.startDate && minTotal > 0 && shiftCount >= minTotal ? 'green' : 'amber'}
+          bar={block.startDate && minTotal > 0 ? { pct: fillPct, color: shiftCount >= minTotal ? 'green' : 'amber' } : null}/>
+        <StatCard label="Violations" value={block.startDate ? issueCounts.errors : '—'}
+          sub={block.startDate ? `${issueCounts.warns} warning${issueCounts.warns !== 1 ? 's' : ''}` : 'set block dates'}
+          icon={AlertCircle} tone={issueCounts.errors > 0 ? 'red' : 'green'}/>
+        <StatCard label="Days Remaining"
+          value={progress ? progress.remaining : '—'}
+          sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
+          icon={Activity} tone="slate"/>
+      </div>
 
       {/* Block Overview */}
       <CollapsibleCard title="Block Overview">
@@ -2542,15 +2626,6 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, violationCount
                   {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
                   <span className="text-gray-400 ml-2">· {block.academicYear}</span>
                 </p>
-                <div className="flex gap-4 mt-1.5 text-xs text-gray-500">
-                  <span>{schedulableCount} schedulable residents</span>
-                  <span>{shiftCount} shifts assigned</span>
-                  {violationCount > 0 && (
-                    <span className="text-red-600 font-medium flex items-center gap-1">
-                      <AlertCircle size={11}/> {violationCount} violation{violationCount !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                </div>
               </div>
               {progress && (
                 <div className="text-right shrink-0">
@@ -4861,27 +4936,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   const [covExpanded, setCovExpanded] = useState(false);
   // Per-date coverage counts vs configured min/max — always computed from the FULL schedule
   // (never catFilter-ed rows), or filtering to one category would show phantom understaffing.
-  const coverageByDate = useMemo(()=>{
-    const m = {};
-    for (const ds of dates) {
-      const dow = parseDate(ds).getDay();
-      let filled = 0, minTotal = 0;
-      const perShift = {};
-      const belowMin = [], aboveMax = [];
-      for (const s of SHIFTS) {
-        if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
-        const cov = getCoverageFor(s.id, coverage);
-        const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
-        perShift[s.id] = { count, min: cov.min, max: cov.max };
-        minTotal += cov.min;
-        filled += count;
-        if (cov.min > 0 && count < cov.min) belowMin.push(`${s.id} ${count}/${cov.min}`);
-        if (count > cov.max) aboveMax.push(`${s.id} ${count}/${cov.max}`);
-      }
-      m[ds] = { perShift, filled, minTotal, belowMin, aboveMax };
-    }
-    return m;
-  },[dates, sched, coverage, allResidents]);
+  const coverageByDate = useMemo(()=>computeCoverageByDate(dates, sched, coverage, allResidents),[dates, sched, coverage, allResidents]);
   const activeCoverageShifts = useMemo(()=>
     SHIFTS.filter(s => dates.some(ds => {
       const info = coverageByDate[ds]?.perShift[s.id];
@@ -6210,7 +6265,14 @@ export default function ResidentScheduler() {
     return [...em,...(block.offServiceResidents||[])];
   },[emRoster,block.emBlockAssignments,block.offServiceResidents]);
 
-  const violCount = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory).length,[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
+  // Single validateAll pass shared by the sidebar badge, pendingErrorCount, and the Dashboard
+  // stat tiles — running it once per relevant state change instead of once per consumer.
+  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
+  const issueCounts = useMemo(()=>({
+    errors: issues.filter(i=>i.level==='error').length,
+    warns: issues.filter(i=>i.level!=='error').length,
+  }),[issues]);
+  const violCount = issues.length;
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
@@ -6306,8 +6368,7 @@ export default function ResidentScheduler() {
   }
 
   function pendingErrorCount() {
-    return validateAll(allResidents, block.schedule||{}, block, eligOverrides, appSettings, dayRules, coverage, blocksHistory)
-      .filter(i=>i.level==='error').length;
+    return issueCounts.errors;
   }
 
   function runExport(kind) {
@@ -6378,7 +6439,7 @@ export default function ResidentScheduler() {
           )}
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
-              ayConf={currentAyConf} violationCount={violCount} blocksHistory={blocksHistory}/>
+              ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
