@@ -2140,11 +2140,15 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
 
     // Actual hours short of the 24h postNightRest target for candidate r on shiftId, or null if
     // r has no such violation — used to break ties among restCompromise candidates by severity
-    // instead of score() alone (see the selection loop below).
+    // instead of score() alone (see the selection loop below). A 'night' placement can carry TWO
+    // independent postNightRest entries (an already-scheduled day shift 1-2 days later, AND Grand
+    // Rounds the next morning — see checkCircadianViolations) — take the smallest gapH (the
+    // worse of the two) so a candidate's severity reflects their worst violation, not whichever
+    // entry happened to be pushed first.
     function restGapH(r, shiftId) {
       const v = checkCircadianViolations(r, ds, shiftId, schedule[r.id], { nightOnly: nightOnly[r.id] });
-      const g = v.find(x => x.rule === 'postNightRest' && typeof x.gapH === 'number');
-      return g ? g.gapH : null;
+      const gaps = v.filter(x => x.rule === 'postNightRest' && typeof x.gapH === 'number').map(x => x.gapH);
+      return gaps.length ? Math.min(...gaps) : null;
     }
 
     for (const slot of slots) {
@@ -2316,8 +2320,8 @@ function summarizeGenerationReport(report, appSettings = {}) {
 // doc.text()/autoTable cells, or it corrupts the line's letter spacing. Plain ASCII only.
 
 function pdfSave(doc, filename) {
+  const inIframe = window.self !== window.top;
   try {
-    const inIframe = window.self !== window.top;
     if (inIframe) {
       // iframe embeds (e.g. Teams): blob URL opened in a new tab, since doc.save() is blocked
       const blob = doc.output('blob');
@@ -2333,7 +2337,10 @@ function pdfSave(doc, filename) {
       doc.save(filename);
     }
   } catch {
-    doc.save(filename);
+    // doc.save() is a no-op/no-op-adjacent inside an iframe (the case the blob branch above
+    // exists to work around), so retrying it here would just rethrow — only fall back to it
+    // when the failure happened outside the iframe branch.
+    if (!inIframe) doc.save(filename);
   }
 }
 
@@ -5116,6 +5123,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
   const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules);
+  const allSoft = v.length > 0 && v.every(w => w.level === 'warn');
 
   function confirm() {
     onSelect(pending);
@@ -5155,8 +5163,10 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
       )}
 
       {pending && v.length > 0 && (
-        <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 mb-3">
-          <div className="flex items-center gap-1.5 text-rose-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Violation detected</div>
+        <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+          <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
+            <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
+          </div>
           {v.map((w,i)=>(
             <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
               {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
@@ -5655,6 +5665,7 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const { src, tgt, kind, violations } = dropConfirm;
   const srcShift = SHIFT_MAP[src.sid];
   const tgtShift = tgt.sid ? SHIFT_MAP[tgt.sid] : null;
+  const allSoft = violations.length > 0 && violations.every(w => w.level === 'warn');
   return (
     <Modal title={kind === 'swap' ? 'Confirm Swap' : 'Confirm Move'} onClose={onCancel}>
       <div className="flex items-center gap-3 mb-3 text-sm">
@@ -5672,8 +5683,10 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
           </>
         )}
       </div>
-      <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 mb-3">
-        <div className="flex items-center gap-1.5 text-rose-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Violation detected</div>
+      <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+        <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
+          <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
+        </div>
         {violations.map((w,i)=>(
           <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
             {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
