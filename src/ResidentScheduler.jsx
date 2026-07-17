@@ -2620,9 +2620,13 @@ function SectionCard({ title, subtitle, children, action }) {
 // (e.g. HomeTab's Current Block) that needs the same toggle but a body CollapsibleCard's
 // single padded div can't express.
 function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
+  // A real <button> here would make any button inside `action` (e.g. HomeTab's Save Block/New
+  // Block) an invalid nested <button>, which React flags as a hydration error — role="button" +
+  // keyboard handling keeps this toggle accessible without nesting interactive elements.
   return (
-    <button onClick={onToggle}
-      className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left">
+    <div role="button" tabIndex={0} onClick={onToggle}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+      className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left cursor-pointer">
       <div>
         <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
         {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
@@ -2631,7 +2635,7 @@ function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
         {action && <span onClick={e => e.stopPropagation()} className="flex items-center gap-2">{action}</span>}
         <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
       </div>
-    </button>
+    </div>
   );
 }
 
