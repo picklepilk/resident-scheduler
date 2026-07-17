@@ -578,6 +578,19 @@ function getBlockDates(start, end) {
   return dates;
 }
 
+// Pads and chunks a block's date range into Sunday-start week rows for the calendar sub-view —
+// one continuous grid for the whole block rather than calendar-month pagination, since blocks
+// are a fixed ~28 days and routinely span two calendar months.
+function buildWeekRows(dates) {
+  if (!dates.length) return [];
+  const pad = parseDate(dates[0]).getDay();
+  const padded = [...Array(pad).fill(null), ...dates];
+  while (padded.length % 7 !== 0) padded.push(null);
+  const rows = [];
+  for (let i = 0; i < padded.length; i += 7) rows.push(padded.slice(i, i + 7));
+  return rows;
+}
+
 function prettyDate(s) {
   if (!s) return '';
   const d = parseDate(s);
@@ -4919,7 +4932,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
-  const [view, setView] = useState('grid'); // 'grid' | 'resident' — ephemeral, not persisted
+  const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
+  const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
@@ -5085,6 +5099,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       <SubTabs value={view} onChange={setView} options={[
         {id:'grid', label:'Grid', icon:Table2},
         {id:'resident', label:'By Resident', icon:Users},
+        {id:'calendar', label:'Calendar', icon:CalendarDays},
       ]}/>
 
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -5100,6 +5115,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           );
         })}
       </div>
+
+      {/* Calendar-view-only shift-area filter */}
+      {view==='calendar' && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          {['ALL',...SHIFT_AREAS].map(area=>(
+            <button key={area} onClick={()=>setAreaFilter(area)}
+              className={`text-xs px-2.5 py-1 rounded-full border font-medium transition-colors ${areaFilter===area?'bg-gray-700 text-white border-gray-700':'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}>
+              {area}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Legend */}
       {view==='grid' && (
@@ -5317,6 +5344,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           onRowClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
+      {view==='calendar' && (
+        <ScheduleCalendarView dates={dates} residents={filtered} sched={sched} coverageByDate={coverageByDate}
+          areaFilter={areaFilter} onChipClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+      )}
+
       {dropConfirm && (
         <DragConfirmModal dropConfirm={dropConfirm}
           onCancel={()=>setDropConfirm(null)}
@@ -5400,6 +5432,62 @@ function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, onRowC
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Month-style (continuous Sunday-start week rows, no pagination) calendar sub-view of the
+// Schedule tab. Read-mostly — editing goes through the same ShiftPickerModal as the grid via
+// onChipClick, so there's exactly one place that validates and commits a shift change.
+function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick }) {
+  const weekRows = useMemo(()=>buildWeekRows(dates), [dates]);
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+      <div className="overflow-x-auto schedule-scroll">
+        <div style={{minWidth: 1100}}>
+          <div className="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
+            {DOW.map(d => (
+              <div key={d} className="px-2 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide text-center border-r border-gray-100 last:border-r-0">{d}</div>
+            ))}
+          </div>
+          {weekRows.map((row, i) => (
+            <div key={i} className="grid grid-cols-7 border-b border-gray-100 last:border-b-0">
+              {row.map((ds, j) => {
+                if (!ds) return <div key={j} className="min-h-[120px] bg-slate-50/40 border-r border-gray-100 last:border-r-0"/>;
+                const d = parseDate(ds);
+                const isWed = d.getDay() === 3;
+                const cov = coverageByDate[ds];
+                const assignments = residents
+                  .map(r => ({ r, sid: sched[r.id]?.[ds] }))
+                  .filter(({sid}) => sid && (areaFilter==='ALL' || SHIFT_MAP[sid]?.area === areaFilter))
+                  .sort((a,b) => SHIFTS.findIndex(s=>s.id===a.sid) - SHIFTS.findIndex(s=>s.id===b.sid));
+                return (
+                  <div key={ds} className={`min-h-[120px] border-r border-gray-100 last:border-r-0 p-1.5 ${isWed?'bg-yellow-50/40':''}`}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-xs font-semibold ${isWed?'text-yellow-700':'text-gray-600'}`}>{d.getMonth()+1}/{d.getDate()}</span>
+                      {cov && cov.minTotal > 0 && (
+                        <span className={`text-[10px] tabular-nums ${cov.belowMin.length ? 'text-rose-500 font-semibold' : 'text-gray-400'}`}
+                          title={cov.belowMin.length ? `Below minimum: ${cov.belowMin.join(', ')}` : undefined}>
+                          {cov.filled}/{cov.minTotal}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {assignments.map(({r, sid}) => (
+                        <button key={`${r.id}_${sid}`} onClick={()=>onChipClick(r, ds)}
+                          className={`text-[10px] font-medium px-1 py-0.5 rounded truncate text-left ${SHIFT_MAP[sid]?.chip}`}
+                          title={`${sid} — ${r.lastName}, ${r.firstName}`}>
+                          {sid} · {r.lastName}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
