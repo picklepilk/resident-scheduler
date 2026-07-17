@@ -27,18 +27,48 @@ to CSV, with JSON backup/restore in the Settings tab.
   strings elsewhere. `PED-S` (Peds Swing, 11:00–20:00, type `'swing'`) is EM-Home-PGY-2-only and
   only exists Mon/Tue/Thu/Fri (`SHIFT_DOW`) — see "Journal Club / Grand Rounds / circadian rules"
   below for why `'swing'` is its own type rather than reusing `'eve'`.
-- Persistence is local-only: a `useLocalStorage` hook backs ten state slots under `res_*` keys.
-  Nine round-trip through `LS_BACKUP_KEYS`: EM roster, current block, blocks history, eligibility
-  overrides, AY data, app settings, chief-editable day rules, shift coverage, and sidebar tab order.
-  The Settings tab exports/imports/resets all nine as one JSON backup. No backend, no
-  fetch/Supabase anywhere — **a new `res_*` key must be added to `LS_BACKUP_KEYS` or it silently
-  won't round-trip** through backup/restore. The tenth slot, `res_dark_mode`, is **deliberately
-  excluded** from `LS_BACKUP_KEYS` — it's a device/viewer display preference, not chief scheduling
-  data, so restoring a colleague's backup shouldn't flip your own theme (see "Dark mode" below).
-  Anything read back from a backup (or hand-edited localStorage) should be treated as untrusted
-  shape — e.g. `reconcileTabOrder` guards with `Array.isArray` before trusting a persisted array,
-  and `getCoverageFor`/`normalizeCoverageEntry` accepts either the old single-number coverage shape
-  or the current `{min,max}` shape so an old backup restores without a migration step.
+- Persistence is local-first, with optional cloud sync layered on top: a `useLocalStorage` hook
+  backs ten state slots under `res_*` keys, synchronously written to `localStorage` on every
+  change regardless of whether cloud sync is configured. Nine round-trip through
+  `LS_BACKUP_KEYS`: EM roster, current block, blocks history, eligibility overrides, AY data, app
+  settings, chief-editable day rules, shift coverage, and sidebar tab order. The Settings tab
+  exports/imports/resets all nine as one JSON backup (kept as a manual, offline safety net — see
+  "Cloud sync" below for the automatic path) — **a new `res_*` key must be added to
+  `LS_BACKUP_KEYS` or it silently won't round-trip** through backup/restore **or cloud sync**
+  (the sync payload is built directly from that same list). The tenth slot, `res_dark_mode`, is
+  **deliberately excluded** from `LS_BACKUP_KEYS` — it's a device/viewer display preference, not
+  chief scheduling data, so restoring a colleague's backup (or syncing from another device)
+  shouldn't flip your own theme (see "Dark mode" below). Anything read back from a backup, cloud
+  row, or hand-edited localStorage should be treated as untrusted shape — e.g. `reconcileTabOrder`
+  guards with `Array.isArray` before trusting a persisted array, and
+  `getCoverageFor`/`normalizeCoverageEntry` accepts either the old single-number coverage shape or
+  the current `{min,max}` shape so an old backup restores without a migration step.
+- **Cloud sync** (`// ─── SUPABASE SYNC ───` section, before `LS_BACKUP_KEYS`): optional
+  cross-device sync via a hand-rolled `fetch`-based PostgREST client (`sbFetch`, no
+  `@supabase/supabase-js` dependency — ported from the sibling em-scheduler app's proven pattern),
+  gated by a module-level `SUPABASE_ENABLED` flag computed from `VITE_SUPABASE_URL`/
+  `VITE_SUPABASE_ANON_KEY` (see `.env.example`) — absent, the app behaves exactly as before this
+  feature existed. Env vars are injected via Vite's `%VITE_*%` HTML token substitution into
+  `window.__SUPABASE_URL__`/`__SUPABASE_ANON__` (not `import.meta.env` directly); an
+  `isUnresolvedToken` guard treats a literal unresolved `%VITE_...%` string (what Vite leaves in
+  place, not an empty string, when the var isn't defined for that build — verified: a build with
+  no `.env` leaves the literal token in `dist/index.html`) the same as "not configured," so a
+  fork/preview build without the vars set falls back to clean local-only mode instead of a
+  permanent "Sync error." One Supabase table, `res_state`, one fixed row (`id: 'main'`) holding
+  the whole `LS_BACKUP_KEYS`-shaped document as a single `jsonb` blob — unlike a per-record table,
+  nothing here needs independent archiving at the row level, so one row is the right shape (see
+  the section's own comment for the exact schema/RLS policy, and for the note that this policy is
+  intentionally wide-open, same posture em-scheduler already accepts). A debounced (1.5s)
+  `useEffect` upserts on any of the nine tracked values changing, gated by `dbReady` so it never
+  fires before the mount-time load-and-overlay effect (`sbLoadState`) finishes applying whatever
+  the cloud already had — each key is applied individually there, not a blanket overwrite, so an
+  older cloud row missing a since-added key never wipes a newer local field back to its default.
+  Conflict handling is last-write-wins/full-document-overwrite — no merge, no version check, same
+  accepted tradeoff as em-scheduler (one coordinator, multiple devices, used sequentially not
+  concurrently). `SettingsTab`'s `clearAll()`/`importData()` both explicitly push to
+  (`sbDeleteState`) or from (`sbSaveState`) the cloud **before** their `window.location.reload()`
+  — without that, the reload's own mount-time overlay would silently restore the cloud's
+  still-stale copy over what the button/import just did locally.
 
 ## Running / building / deploying
 ```bash
@@ -160,8 +190,9 @@ names below rather than trusting offsets.
 - tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
   `CollapsibleHeader`, `SubTabs` — segmented-control sub-view switcher, ported from the sibling
   `em-scheduler` app; `StatCard` — Dashboard summary tile, also ported from em-scheduler;
-  `AutosaveIndicator` — honest local-only "Saving…"/"Saved locally" pill, since this app has no
-  remote sync), `SPECIAL DAYS LIST`, `DASHBOARD TAB` (special days now live only here, not
+  `AutosaveIndicator` — "Saving…"/"Saved locally" pill, now also cloud-aware
+  ("Synced"/"Sync error") when cloud sync is configured — see "Cloud sync" above), `SPECIAL DAYS
+  LIST`, `DASHBOARD TAB` (special days now live only here, not
   Home; opens with a `StatCard` row — schedulable residents, shifts filled vs minimum coverage,
   error/warning counts, days remaining — computed via `computeCoverageByDate` (shared with the
   Schedule tab, see below) and the root's consolidated `issues`/`issueCounts` memo, never a second

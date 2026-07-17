@@ -2568,15 +2568,30 @@ function StatCard({ label, value, sub, icon: Icon, tone = "slate", bar = null })
   );
 }
 
-// Honest local-only autosave pill (no remote sync — this app is localStorage-only) — a brief
-// "Saving…" flicker whenever persisted state changes, settling back to "Saved locally".
-function AutosaveIndicator({ state }) {
-  const saving = state === 'saving';
+// Autosave pill — always shows the local-only "Saving…"/"Saved locally" behavior, plus (when
+// cloud sync is configured — see SUPABASE SYNC) a cloud-aware "Loading…"/"Synced"/"Sync error"
+// state layered on top.
+function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
+  const saving = state === 'saving' || (cloudEnabled && dbStatus === 'saving');
+  if (cloudEnabled && dbStatus === 'loading') {
+    return (
+      <span className="flex items-center gap-1 text-[11px] font-medium text-slate-400">
+        <RefreshCw size={11} className="animate-spin"/> Loading…
+      </span>
+    );
+  }
+  if (cloudEnabled && dbStatus === 'error') {
+    return (
+      <span title={dbError} className="flex items-center gap-1 text-[11px] font-medium text-rose-500">
+        <AlertCircle size={11}/> Sync error
+      </span>
+    );
+  }
   return (
-    <span title="Data auto-saved to this browser's local storage"
+    <span title={cloudEnabled ? 'Synced across your devices' : "Data auto-saved to this browser's local storage"}
       className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-slate-400'}`}>
       {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
-      {saving ? 'Saving…' : 'Saved locally'}
+      {saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally')}
     </span>
   );
 }
@@ -6035,6 +6050,96 @@ function ValidationTab({ issues, block, appSettings }) {
   );
 }
 
+// ─── SUPABASE SYNC ────────────────────────────────────────────────────────────
+// Optional cross-device cloud sync, ported from the sibling em-scheduler app's proven pattern:
+// a hand-rolled fetch()-based PostgREST client (no @supabase/supabase-js dependency), gated by
+// a SUPABASE_ENABLED flag so the app runs exactly as before (pure localStorage) if unconfigured.
+// One table, one fixed row — unlike em-scheduler's em_blocks (one row per independently-
+// archivable block), this app's nine res_* localStorage slots are already one shared department
+// document (blocksHistory is already a single flattened array in ONE slot), so a single row
+// keyed by RES_STATE_ROW_ID holding the whole LS_BACKUP_KEYS-shaped object as one jsonb blob is
+// the minimal-impedance-mismatch choice — no per-block rows to keep in sync.
+//
+// Database schema (run once in the Supabase project's SQL editor):
+//   create table res_state (
+//     id       text primary key,
+//     data     jsonb not null,   -- the whole LS_BACKUP_KEYS-shaped document — a new res_* key
+//                                -- never needs a schema migration here, only an LS_BACKUP_KEYS
+//                                -- addition, same philosophy as em-scheduler's own data jsonb column
+//     saved_at timestamptz default now()
+//   );
+//   alter table res_state enable row level security;
+//   create policy "public_read_write" on res_state for all using (true) with check (true);
+// (Wide-open RLS policy is intentional — same "accountability, not hard security" posture
+// em-scheduler already accepts: the anon key is safe to expose client-side by Supabase's design,
+// but this policy means anyone who extracts it from the deployed bundle's network requests has
+// full read/write on this one row.)
+//
+// Set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (see .env.example) to enable; absent, the app
+// is unchanged from before this feature existed.
+
+const RES_STATE_ROW_ID = 'main';
+
+const SUPABASE_URL_RAW  = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_URL__)  || '';
+const SUPABASE_ANON_RAW = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_ANON__) || '';
+// Vite's %VITE_...% HTML token substitution leaves the literal unresolved token string in place
+// (only a build-time warning, not an empty string) when the env var isn't defined for that build
+// context — e.g. a fork PR preview, or a build with no .env. Without this guard, SUPABASE_ENABLED
+// would be truthy for that broken value, sbFetch would call fetch("%VITE_SUPABASE_URL%/rest/v1/...")
+// — a same-origin relative URL the browser resolves to something that isn't JSON (often this
+// app's own index.html via the SPA redirect) — and JSON.parse would throw, landing the app in a
+// permanent "Sync error" instead of the intended clean local-only fallback.
+const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
+const SUPABASE_URL     = isUnresolvedToken(SUPABASE_URL_RAW)  ? '' : SUPABASE_URL_RAW;
+const SUPABASE_ANON    = isUnresolvedToken(SUPABASE_ANON_RAW) ? '' : SUPABASE_ANON_RAW;
+const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
+
+const sbFetch = async (path, opts = {}) => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+    headers: {
+      'apikey': SUPABASE_ANON,
+      'Authorization': `Bearer ${SUPABASE_ANON}`,
+      'Content-Type': 'application/json',
+      'Prefer': opts.prefer || 'return=representation',
+      ...opts.headers,
+    },
+    method: opts.method || 'GET',
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`Supabase ${opts.method || 'GET'} ${path}: ${msg}`);
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+};
+
+// Upsert the whole department document — POST with Prefer: resolution=merge-duplicates is an
+// upsert keyed on the table's PK, same pattern em-scheduler uses (no ON CONFLICT SQL needed).
+const sbSaveState = async (data) => {
+  if (!SUPABASE_ENABLED) return;
+  await sbFetch('/res_state', {
+    method: 'POST',
+    prefer: 'resolution=merge-duplicates,return=minimal',
+    body: { id: RES_STATE_ROW_ID, data, saved_at: new Date().toISOString() },
+  });
+};
+
+// Loads the single shared row — null if never saved yet (or unconfigured).
+const sbLoadState = async () => {
+  if (!SUPABASE_ENABLED) return null;
+  const rows = await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}&select=data,saved_at`);
+  return rows && rows[0] ? rows[0] : null;
+};
+
+// Best-effort delete of the shared cloud row — used by SettingsTab's clearAll() so "Clear All
+// Data" isn't silently undone by the next mount's cloud overlay restoring the erased document.
+const sbDeleteState = async () => {
+  if (!SUPABASE_ENABLED) return;
+  await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}`, { method: 'DELETE', prefer: 'return=minimal' });
+};
+
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 
 // `res_dark_mode` is deliberately NOT in this list — it's a device/viewer display preference,
@@ -6076,7 +6181,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const parsed = JSON.parse(reader.result);
         const d = parsed.data || parsed;
@@ -6085,6 +6190,11 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           if (d[k] !== undefined && d[k] !== null) { localStorage.setItem(k, JSON.stringify(d[k])); n++; }
         }
         if (n === 0) { showToast('No recognizable data found in that file', 'red'); return; }
+        // Push the imported data to the cloud BEFORE reloading — otherwise the reload's mount-
+        // time overlay (see SUPABASE SYNC) fetches the still-stale pre-import cloud row and
+        // silently overwrites the import that was just written to localStorage. Best-effort: a
+        // network failure here shouldn't block the local import from taking effect.
+        if (SUPABASE_ENABLED) { try { await sbSaveState(d); } catch { /* local import still succeeds */ } }
         window.location.reload();
       } catch {
         showToast('Could not read backup file — is it a valid export?', 'red');
@@ -6094,8 +6204,12 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     e.target.value = '';
   }
 
-  function clearAll() {
+  async function clearAll() {
     for (const k of LS_BACKUP_KEYS) localStorage.removeItem(k);
+    // Delete the cloud row too, BEFORE reloading — otherwise the reload's mount-time overlay
+    // fetches the still-intact cloud row and silently restores everything this just erased.
+    // Best-effort: a network failure here shouldn't block the local clear from taking effect.
+    if (SUPABASE_ENABLED) { try { await sbDeleteState(); } catch { /* local clear still succeeds */ } }
     window.location.reload();
   }
 
@@ -6220,7 +6334,9 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       </CollapsibleCard>
 
       {/* Data management */}
-      <CollapsibleCard title="Data Management" subtitle="All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly.">
+      <CollapsibleCard title="Data Management" subtitle={SUPABASE_ENABLED
+        ? "Data syncs automatically across your devices. Use these for a manual, offline point-in-time backup — a safety net if cloud sync is ever unavailable."
+        : "All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly."}>
         <div className="flex gap-2 flex-wrap">
           <button onClick={exportData}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
@@ -6638,6 +6754,41 @@ export default function ResidentScheduler() {
   // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
   const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
 
+  // Cross-device cloud sync (see the SUPABASE SYNC section) — dbReady gates the debounced
+  // cloud-save effect below so it never fires before the mount-time load-and-overlay finishes
+  // (an autosave firing first could push stale local defaults up before this device has even
+  // seen another device's saved data). dbStatus/dbError feed AutosaveIndicator's cloud states.
+  const [dbReady, setDbReady] = useState(false);
+  const [dbStatus, setDbStatus] = useState('idle'); // 'idle' | 'loading' | 'saving' | 'error'
+  const [dbError, setDbError] = useState(null);
+  const saveTimerRef = useRef(null);
+
+  // On mount: each useLocalStorage's lazy initializer has already loaded its localStorage value
+  // synchronously (instant, no network) before this runs. If cloud sync is configured, overlay
+  // with the cloud copy — it may be newer (e.g. edited on another device). Each key is applied
+  // individually (not a blanket overwrite) so a cloud row saved by an older app version, missing
+  // a key since added to LS_BACKUP_KEYS, never wipes a newer local-only field back to its default.
+  useEffect(() => {
+    if (!SUPABASE_ENABLED) { setDbReady(true); return; }
+    setDbStatus('loading');
+    sbLoadState().then(row => {
+      if (row && row.data) applyRemoteState(row.data);
+      setDbReady(true); setDbStatus('idle');
+    }).catch(e => { setDbError(e.message); setDbStatus('error'); setDbReady(true); });
+    function applyRemoteState(d) {
+      if (d.res_em_roster !== undefined)             setEmRoster(d.res_em_roster);
+      if (d.res_current_block !== undefined)         setBlock(d.res_current_block);
+      if (d.res_blocks_history !== undefined)        setBlocksHistory(d.res_blocks_history);
+      if (d.res_eligibility_overrides !== undefined) setEligOverrides(d.res_eligibility_overrides);
+      if (d.res_ay_data !== undefined)               setAyData(d.res_ay_data);
+      if (d.res_app_settings !== undefined)          setAppSettings(d.res_app_settings);
+      if (d.res_day_rules !== undefined)             setDayRules(d.res_day_rules);
+      if (d.res_coverage !== undefined)              setCoverage(d.res_coverage);
+      if (d.res_tab_order !== undefined)             setTabOrder(d.res_tab_order);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Honest local-only autosave indicator: useLocalStorage already persists synchronously on
   // every state change, this just gives the chief a brief visual confirmation it happened.
   const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving'
@@ -6661,6 +6812,28 @@ export default function ResidentScheduler() {
     const t = setTimeout(() => setSaveState('saved'), 600);
     return () => clearTimeout(t);
   }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder]);
+
+  // Debounced cloud sync — a SEPARATE effect from the pill-timer one above, not folded together:
+  // that effect's prevSaveDepsRef reference-diffing exists specifically to dodge a StrictMode
+  // hazard around a boolean skip-guard (see its comment); this is a plain setTimeout/clearTimeout
+  // debounce keyed directly off the dependency array, which is inherently StrictMode-safe
+  // (double-invoke schedules, clears via cleanup, reschedules once — no duplicate network call).
+  // A 1.5s network debounce is also a different concern from the 600ms UI-pill timer above.
+  useEffect(() => {
+    if (!dbReady || !SUPABASE_ENABLED) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      setDbStatus('saving');
+      sbSaveState({
+        res_em_roster: emRoster, res_current_block: block, res_blocks_history: blocksHistory,
+        res_eligibility_overrides: eligOverrides, res_ay_data: ayData, res_app_settings: appSettings,
+        res_day_rules: dayRules, res_coverage: coverage, res_tab_order: tabOrder,
+      }).then(() => setDbStatus('idle'))
+        .catch(e => { setDbError(e.message); setDbStatus('error'); });
+    }, 1500);
+    return () => clearTimeout(saveTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, dbReady]);
 
   // One-time prune: a saved override that's a no-op copy of a since-corrected default (see
   // LEGACY_DAY_RULE_DEFAULTS/LEGACY_ELIGIBILITY_DEFAULTS) would otherwise mask the new default
@@ -6864,7 +7037,7 @@ export default function ResidentScheduler() {
           </div>
           <div className="flex items-center gap-2 flex-none">
             <span className="text-xs text-slate-400">{allResidents.length} residents</span>
-            <AutosaveIndicator state={saveState}/>
+            <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               className="p-2 rounded-md text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
