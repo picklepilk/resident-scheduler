@@ -2242,6 +2242,19 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
+// Honest local-only autosave pill (no remote sync — this app is localStorage-only) — a brief
+// "Saving…" flicker whenever persisted state changes, settling back to "Saved locally".
+function AutosaveIndicator({ state }) {
+  const saving = state === 'saving';
+  return (
+    <span title="Data auto-saved to this browser's local storage"
+      className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-slate-400'}`}>
+      {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
+      {saving ? 'Saving…' : 'Saved locally'}
+    </span>
+  );
+}
+
 function Toast({ toast, onClose }) {
   if (!toast) return null;
   const s = { amber:'bg-amber-50 border-amber-300 text-amber-800', red:'bg-rose-50 border-rose-300 text-rose-800', green:'bg-emerald-50 border-emerald-300 text-emerald-800' };
@@ -6144,6 +6157,17 @@ export default function ResidentScheduler() {
   const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
   const [tabOrder, setTabOrder]           = useLocalStorage('res_tab_order', TABS.map(t=>t.id));
 
+  // Honest local-only autosave indicator: useLocalStorage already persists synchronously on
+  // every state change, this just gives the chief a brief visual confirmation it happened.
+  const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving'
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    setSaveState('saving');
+    const t = setTimeout(() => setSaveState('saved'), 600);
+    return () => clearTimeout(t);
+  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder]);
+
   // One-time prune: a saved override that's a no-op copy of a since-corrected default (see
   // LEGACY_DAY_RULE_DEFAULTS/LEGACY_ELIGIBILITY_DEFAULTS) would otherwise mask the new default
   // forever, since overrides replace a key's default wholesale. Genuinely customized overrides
@@ -6303,24 +6327,30 @@ export default function ResidentScheduler() {
   return (
     <div className="h-screen flex flex-col bg-slate-100 overflow-hidden">
       {/* Header */}
-      <header className="bg-indigo-700 text-white shadow-lg shrink-0">
+      <header className="bg-white border-b border-slate-200 shrink-0">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-base font-bold tracking-tight">EM Residency Scheduler</h1>
-            <p className="text-indigo-200 text-xs">
-              {block.name||'No block name'} · {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
-            </p>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-md bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center text-white flex-none">
+              <CalendarDays size={18}/>
+            </div>
+            <div className="flex flex-col min-w-0">
+              <h1 className="text-sm font-semibold tracking-tight text-slate-900 truncate">EM Residency Scheduler</h1>
+              <p className="text-[11px] text-slate-500 leading-none mt-0.5 truncate">
+                {block.name||'No block name'} · {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-indigo-300">{allResidents.length} residents</span>
+          <div className="flex items-center gap-2 flex-none">
+            <span className="text-xs text-slate-400">{allResidents.length} residents</span>
+            <AutosaveIndicator state={saveState}/>
             {block.startDate && (
               <>
                 <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg transition-colors">
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
                   <Download size={12}/> Grid CSV
                 </button>
                 <button onClick={()=>requestExport('qgenda')} title="One row per shift with real start/end times — for QGenda import"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 rounded-lg transition-colors">
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
                   <Download size={12}/> QGenda CSV
                 </button>
               </>
