@@ -7026,6 +7026,140 @@ function FeedbackWidget({ page, showToast }) {
   );
 }
 
+// ─── FEEDBACK ADMIN TAB ─────────────────────────────────────────────────────
+// Password-gated triage view — goes through netlify/functions/feedback-admin.js (service-role
+// key, server-only) rather than sbFetch/the anon key, since anon has no SELECT policy on
+// `feedback`. Password is held in sessionStorage once accepted (cleared when the browser tab
+// closes, matching the "Track A" shared-password posture used by the sibling Kitchen
+// Inventory / ecowater-pricing-app feedback features).
+const FEEDBACK_ADMIN_SS_KEY = 'res_feedback_admin_password';
+const FEEDBACK_STATUS_OPTIONS = ['new', 'reviewed', 'resolved'];
+const FEEDBACK_TYPE_BADGE = {
+  bug:   'bg-red-100 text-red-700',
+  crash: 'bg-orange-100 text-orange-700',
+  idea:  'bg-emerald-100 text-emerald-700',
+};
+
+async function fetchFeedbackAdmin(password) {
+  const res = await fetch('/api/feedback-admin/', { headers: { 'x-feedback-password': password } });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+async function updateFeedbackStatus(password, id, status) {
+  const res = await fetch('/api/feedback-admin/', {
+    method: 'PATCH',
+    headers: { 'x-feedback-password': password, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, status }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
+function FeedbackAdminTab() {
+  const [password, setPassword] = useState(() => sessionStorage.getItem(FEEDBACK_ADMIN_SS_KEY) || '');
+  const [unlocked, setUnlocked] = useState(() => Boolean(sessionStorage.getItem(FEEDBACK_ADMIN_SS_KEY)));
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [rows, setRows] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [busyId, setBusyId] = useState(null);
+
+  async function load(pw) {
+    setLoadError('');
+    try {
+      const data = await fetchFeedbackAdmin(pw);
+      setRows(data);
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    if (unlocked && password) load(password);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlocked]);
+
+  async function handleUnlock() {
+    setAuthError('');
+    try {
+      await fetchFeedbackAdmin(passwordInput);
+      sessionStorage.setItem(FEEDBACK_ADMIN_SS_KEY, passwordInput);
+      setPassword(passwordInput);
+      setUnlocked(true);
+    } catch (e) {
+      setAuthError(e.message || 'Incorrect password');
+    }
+  }
+
+  async function handleStatusChange(id, status) {
+    setBusyId(id);
+    try {
+      await updateFeedbackStatus(password, id, status);
+      setRows(prev => prev.map(r => (r.id === id ? { ...r, status } : r)));
+    } catch (e) {
+      setLoadError(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (!unlocked) {
+    return (
+      <div className="max-w-sm mx-auto mt-16 space-y-3">
+        <div className="flex items-center gap-2 text-gray-700"><Lock size={16}/><h2 className="font-semibold">Feedback Admin</h2></div>
+        <p className="text-sm text-gray-500">Enter the admin password to view submitted feedback.</p>
+        <input type="password" value={passwordInput} onChange={e => setPasswordInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleUnlock(); }}
+          placeholder="Admin password"
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
+        {authError && <p className="text-xs text-red-500">{authError}</p>}
+        <button onClick={handleUnlock} className="px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg font-medium">Unlock</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-gray-800">Feedback ({rows ? rows.length : '…'})</h2>
+        <button onClick={() => load(password)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg">
+          <RefreshCw size={12}/> Refresh
+        </button>
+      </div>
+      {loadError && <p className="text-sm text-red-500">{loadError}</p>}
+      {rows && rows.length === 0 && <p className="text-sm text-gray-400">No feedback yet.</p>}
+      <div className="space-y-2">
+        {(rows || []).map(r => (
+          <div key={r.id} className="bg-white border border-gray-200 rounded-lg p-3 space-y-1.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase ${FEEDBACK_TYPE_BADGE[r.type] || 'bg-gray-100 text-gray-600'}`}>{r.type}</span>
+                <span className="text-xs text-gray-400">{new Date(r.created_at).toLocaleString()}</span>
+                {r.page && <span className="text-xs text-gray-400">· {r.page}</span>}
+              </div>
+              <select value={r.status} disabled={busyId === r.id}
+                onChange={e => handleStatusChange(r.id, e.target.value)}
+                className="text-xs border border-gray-300 rounded-md px-2 py-1">
+                {FEEDBACK_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <p className="text-sm text-gray-800 whitespace-pre-wrap">{r.message}</p>
+            {r.contact && <p className="text-xs text-gray-500">Contact: {r.contact}</p>}
+            {r.meta?.stack && <pre className="text-[10px] text-gray-400 bg-gray-50 rounded p-2 overflow-x-auto">{r.meta.stack}</pre>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -7038,6 +7172,7 @@ const TABS = [
   { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
+  { id: 'feedback',   label: 'Feedback',      icon: MessageSquare },
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
 
@@ -7063,10 +7198,15 @@ function reorderIds(order, fromId, toId) {
 }
 
 // Sidebar nav — a separate component so drag-hover state doesn't re-render the active tab's content.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount }) {
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
-  const orderedTabs = useMemo(()=>reconcileTabOrder(tabOrder, TABS),[tabOrder]);
+  // The 'feedback' tab only ever renders when cloud sync is configured (it has nothing to
+  // show otherwise — see the root's SUPABASE_ENABLED gate on FeedbackAdminTab).
+  const orderedTabs = useMemo(
+    () => reconcileTabOrder(tabOrder, TABS).filter(t => t.id !== 'feedback' || cloudEnabled),
+    [tabOrder, cloudEnabled]
+  );
   const clean = hasSchedule && issueCounts.errors === 0 && issueCounts.warns === 0;
 
   function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
@@ -7503,7 +7643,7 @@ export default function ResidentScheduler() {
         {/* Vertical sidebar */}
         <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
           issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
-          offServiceCount={(block.offServiceResidents||[]).length}/>
+          offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}/>
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
@@ -7526,6 +7666,7 @@ export default function ResidentScheduler() {
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
+          {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
       </div>
