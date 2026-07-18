@@ -25,9 +25,9 @@ const SHIFTS = [
   { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: 'bg-blue-600 text-white' },
   { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: 'bg-blue-400 text-white' },
   { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: 'bg-blue-900 text-white' },
-  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: 'bg-emerald-600 text-white' },
-  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: 'bg-emerald-400 text-white' },
-  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: 'bg-emerald-900 text-white' },
+  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: 'bg-green-600 text-white' },
+  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: 'bg-green-400 text-white' },
+  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: 'bg-green-900 text-white' },
   { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: 'bg-purple-600 text-white' },
   { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: 'bg-purple-400 text-white' },
   { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: 'bg-purple-900 text-white' },
@@ -39,7 +39,7 @@ const SHIFTS = [
   // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
   // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
   // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
-  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: 'bg-teal-600 text-white' },
+  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: 'bg-green-700 text-white' },
 ];
 const SHIFT_MAP = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
 const SHIFT_AREAS = ['POD', 'PED', 'FLEX', 'MT', 'TRAUMA'];
@@ -71,15 +71,15 @@ const SHIFT_TIMING = {
 const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5] };
 
 const CATEGORIES = [
-  { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-indigo-50',  badge: 'bg-indigo-600 text-white' },
-  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-sky-50',     badge: 'bg-sky-600 text-white' },
-  { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [1,3],   persistent: false, rowBg: 'bg-emerald-50', badge: 'bg-emerald-600 text-white' },
+  { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-blue-50',    badge: 'bg-blue-700 text-white' },
+  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-white' },
+  { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [1,3],   persistent: false, rowBg: 'bg-green-50',   badge: 'bg-green-600 text-white' },
   { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-white' },
   { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-white' },
-  { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-pink-50',    badge: 'bg-pink-600 text-white' },
-  { id: 'ANES',    label: 'Anesthesiology',    shortLabel: 'ANES', pgyOptions: [1],     persistent: false, rowBg: 'bg-violet-50',  badge: 'bg-violet-600 text-white' },
-  { id: 'PSYCH',   label: 'Psychiatry',        shortLabel: 'PSYCH',pgyOptions: [1],     persistent: false, rowBg: 'bg-teal-50',    badge: 'bg-teal-600 text-white' },
-  { id: 'POD',     label: 'Podiatry',          shortLabel: 'POD',  pgyOptions: [1],     persistent: false, rowBg: 'bg-stone-50',   badge: 'bg-stone-500 text-white' },
+  { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-400 text-white' },
+  { id: 'ANES',    label: 'Anesthesiology',    shortLabel: 'ANES', pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-600 text-white' },
+  { id: 'PSYCH',   label: 'Psychiatry',        shortLabel: 'PSYCH',pgyOptions: [1],     persistent: false, rowBg: 'bg-amber-50',   badge: 'bg-amber-600 text-white' },
+  { id: 'POD',     label: 'Podiatry',          shortLabel: 'POD',  pgyOptions: [1],     persistent: false, rowBg: 'bg-gray-50',    badge: 'bg-gray-500 text-white' },
 ];
 const CAT_MAP = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
 
@@ -159,12 +159,14 @@ const BASE_ELIGIBILITY = {
 //   onlyDaysEnabled/onlyDays                — inverse: ONLY these weekdays are schedulable
 //   dayTypeRestrictions: [{days:number[], mode:'onlyDay'|'noNight'|'onlyNight'|'noDay'}]
 //   shiftGates: [{id, shiftIds:string[]|'ALL', blockTypeFilter:{mode:'only'|'except', ids?:string[], ref?:'TRAUMA_BLOCKS'}|null,
-//                 allowedDays?:number[], nightExcludedDays?:number[], outsideAction:'stripShiftIds'|'blockEntireDay', overrideImmune:boolean}]
+//                 allowedDays?:number[], nightExcludedDays?:number[], outsideAction:'stripShiftIds'|'blockEntireDay', overrideImmune:boolean,
+//                 scope?:'generator'}]  — scope:'generator' hides the gate from the manual picker (auto-fill only), same idiom as dayTypeRestrictions[].scope
 //   specialDayRules: [{listKey:'codeBlueDays'|'advocacyDays'|'procDays'|'anesDays', offset:'sameDay'|'dayBefore'|'sameDayAndDayBefore'}]
 //   residentFlagOverrides: [{flag:string, fullBlockDays:number[]}]  — replaces dayTypeRestrictions when resident[flag] is true
 const DEFAULT_DAY_RULES = {
   EM_HOME_1: {
-    fullBlockDays: [3], // GR Wednesday
+    // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
+    dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
     shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
         blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -172,10 +174,15 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] },
         allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
+      // only, so the manual picker can still place one when needed.
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null,
+        allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ],
   },
   EM_HOME_2: {
-    fullBlockDays: [3],
+    // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
+    dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
     shiftGates: [
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'],
         blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -210,7 +217,8 @@ const DEFAULT_DAY_RULES = {
     ],
   },
   EM_HOME_3: {
-    fullBlockDays: [3],
+    // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
+    dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
     shiftGates: [
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null,
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
@@ -225,6 +233,12 @@ const DEFAULT_DAY_RULES = {
     // manual pick (scope:'generator' hides it from auto-fill; validateAll warns past one/block).
     dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }],
     specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
+    // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
+    // only, so the manual picker can still place one when needed.
+    shiftGates: [
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null,
+        allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ],
   },
   PEDS_1: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
   PEDS_3: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
@@ -345,7 +359,19 @@ function computeCoverageByDate(dates, sched, coverage, allResidents) {
 // the current, corrected default forever. See the one-time prune effect in the root component.
 const LEGACY_DAY_RULE_DEFAULTS = {
   PSYCH_1: [{ fullBlockDays: [2], dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [3], mode: 'onlyDay' }] }],
-  EM_BAMC_1: [{ dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }] }],
+  EM_BAMC_1: [
+    { dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }] },
+    // Pre-MT-intern-gate shape (still fullBlockDays:[4] Thursday GR + generator-scoped Wed-night exception, no shiftGates).
+    { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }] },
+  ],
+  // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
+  // (Ratna rules pass) corrected this to day-shifts-only, since residents CAN work Wednesday
+  // evenings/nights as long as it doesn't conflict with Grand Rounds itself.
+  EM_HOME_1: [{ fullBlockDays: [3], shiftGates: [
+    { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+    { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+    { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+  ] }],
   EM_HOME_2: [
     { fullBlockDays: [3], shiftGates: [
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -361,8 +387,27 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-GR-Wednesday-correction shape (full Aug-2026/PED-S gate set, still fullBlockDays:[3]).
+    { fullBlockDays: [3], shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_ems_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'], blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null, allowedDays: [1,2,4,5], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
-  EM_HOME_3: [{ fullBlockDays: [3] }],
+  EM_HOME_3: [
+    { fullBlockDays: [3] },
+    // Pre-GR-Wednesday-correction shape (trauma D/N windows added, still fullBlockDays:[3]).
+    { fullBlockDays: [3], shiftGates: [
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+  ],
 };
 const LEGACY_ELIGIBILITY_DEFAULTS = {
   EM_HOME_1: [['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D']],
@@ -410,7 +455,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 7 consecutive work days — Grand Rounds counts
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3, are exempt from the per-block cap) — all enforced. 24h off after a night shift before a day shift or Grand Rounds is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3); every staffed POD shift needs an EM PGY-3 (fallback PGY-2). Extra slots skew toward EM PGY-1/off-service. Enforced by the generator; Validation warns if a staffed group is missing its senior.';
 const JC_RULE_NOTE = 'Journal Club: first Tuesday of the month, 18:00-21:00 (any shift overlapping that window counts as "worked," including PED Swing and Trauma Night). Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each month (set per-resident on the resident\'s profile); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
-const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date. Enforced by the generator and Validation (error if violated).';
+const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -446,6 +491,7 @@ const RULE_NOTES = {
       'Wednesday overnight (runs into Thursday GR): allowed once per block, manual assignment only — the generator never auto-places it; Validation warns past one.',
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
+      'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
       SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE,
     ],
   },
@@ -458,7 +504,7 @@ const RULE_NOTES = {
     tbdItems: ['Advocacy day list — chief provides each block'],
   },
   FM_1: {
-    specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no Peds nights, no emphasis on Peds) — generator keeps them mostly on POD.'],
+    specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no Peds nights, no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.'],
   },
   FM_3: {
     specialNotes: ['FM-3 ONLY works Peds nights (PED-N), Mon/Tue/Wed — the only category/PGY eligible for that shift program-wide. Gaps on other days, or any day with no FM-3 on the block, are expected.'],
@@ -477,7 +523,9 @@ const RULE_NOTES = {
   PSYCH_1: {
     specialNotes: ['Monday: no night shifts. Tuesday: no day shifts (evening/night OK). Wednesday: day-only.'],
   },
-  POD_1: {},
+  POD_1: {
+    specialNotes: ['Podiatry typically only rotates with EM ~December–February and covers a low number of shifts — no built-in seasonality; confine a podiatry resident to those months via their Availability setting (Date ranges) on the resident profile / Off-Service tab.'],
+  },
 };
 
 const DOW_MODE_LABEL = { onlyDay: 'day shifts only', noNight: 'no night shifts', onlyNight: 'night shifts only', noDay: 'no day shifts' };
@@ -515,7 +563,7 @@ function describeShiftGates(dr) {
     let effText = '';
     if (g.activeWhen?.blockStartBefore) effText = ` (blocks starting before ${g.activeWhen.blockStartBefore})`;
     else if (g.activeWhen?.blockStartOnOrAfter) effText = ` (blocks starting ${g.activeWhen.blockStartOnOrAfter} or later)`;
-    out.push({ ids: ids.length ? ids : ['ALL'], note: `${shiftLabel}${scope ? ' ' + scope : ''}${dayText}${effText}.${g.overrideImmune ? ' (applies even over a rotation-specific matrix override)' : ''}` });
+    out.push({ ids: ids.length ? ids : ['ALL'], note: `${shiftLabel}${scope ? ' ' + scope : ''}${dayText}${effText}.${g.overrideImmune ? ' (applies even over a rotation-specific matrix override)' : ''}${g.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}` });
   }
   return out;
 }
@@ -584,6 +632,22 @@ function getBlockDates(start, end) {
   const dates = []; let cur = parseDate(start); const last = parseDate(end);
   while (cur <= last) { dates.push(toDateStr(cur)); cur = addDays(cur, 1); }
   return dates;
+}
+
+// Full Saturday+Sunday weekend pairs fully contained within a block's date range (a weekend
+// straddling the block's edge, with only one of the two days inside, is excluded — not a
+// resident's fault, and the adjacent block may cover the other half). Shared by generateSchedule
+// (soft nudge) and validateAll (warning) so "one full weekend off" can't drift between the two.
+function getBlockWeekends(dates) {
+  const dateSet = new Set(dates);
+  const weekends = [];
+  for (const ds of dates) {
+    if (parseDate(ds).getDay() === 6) {
+      const sun = toDateStr(addDays(parseDate(ds), 1));
+      if (dateSet.has(sun)) weekends.push([ds, sun]);
+    }
+  }
+  return weekends;
 }
 
 // Pads and chunks a block's date range into Sunday-start week rows for the calendar sub-view —
@@ -1154,9 +1218,37 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
 // the two never silently diverge on who the trauma cap applies to. PGY-2 AND PGY-3 both aim for
 // only 1-2 trauma shifts/block during EM rotations (nights preferred, days only if necessary).
 function isTraumaCapSubject(resident) { return resident.category === 'EM_HOME' && (resident.pgy === 2 || resident.pgy === 3); }
+// Trauma-night PGY-by-weekday preference (chief feedback): prefer PGY-2 on Fri/Sat, PGY-3 on
+// Sun/Mon — a soft generator nudge, not a hard restriction (trauma_n_window already allows any
+// PGY-2/3 on any of the four nights; this only breaks ties toward the preferred pairing).
+function traumaNightPgyPrefersDow(pgy, dow) {
+  return (pgy === 2 && (dow === 5 || dow === 6)) || (pgy === 3 && (dow === 0 || dow === 1));
+}
+// Yearly trauma-night count across PUBLISHED saved blocks (same excludeBlockId/AY-match pattern
+// as countPublishedJC) — used only to nudge the generator toward balancing trauma-night load
+// between PGY-2/3 across the academic year, not as a hard cap.
+function countPublishedTraumaNights(residentId, ay, blocksHistory = [], excludeBlockId = null) {
+  let count = 0;
+  for (const snap of blocksHistory) {
+    if (!snap?.published || snap.id === excludeBlockId) continue;
+    if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
+    const rs = snap.data?.schedule?.[residentId];
+    if (!rs) continue;
+    count += Object.values(rs).filter(s => s === 'TRAUMA-N').length;
+  }
+  return count;
+}
 // emTraumaCap replaces the old pgy2TraumaCap setting; legacy saved values are still honored so
 // existing localStorage isn't silently reinterpreted until the chief touches the Settings field.
 function getTraumaCap(appSettings = {}) { return appSettings.emTraumaCap ?? appSettings.pgy2TraumaCap ?? 2; }
+// PGY-2/3 EM Home residents NOT already on a dedicated peds-mix rotation (Peds/EM, Trauma/Peds,
+// Peds/Trauma — those have their own protected peds sub-targets) should still pick up a small
+// number of peds shifts per block to fill gaps — chief feedback: "a few" (~2-3), not an emphasis.
+// Configurable in Settings; a soft generator nudge only, never a requirement.
+function getGeneralPedsTarget(appSettings = {}) { return appSettings.generalPedsMonthlyTarget ?? 2; }
+function isGeneralPedsCandidate(resident, traumaBlocks) {
+  return isTraumaCapSubject(resident) && !isPedsEmMix(resident) && !isTraumaPedsSplitResident(resident, traumaBlocks);
+}
 // EM Home and EM BAMC residents default to the 'EM' rotation when no blockType is on file —
 // this matches how EM Home residents already default (see the roster creation sites) and fixes
 // EM_BAMC residents added via the Off-Service tab, which never assigns them a blockType at all.
@@ -1416,6 +1508,8 @@ const DEFAULT_APP_SETTINGS = {
   maxSavedBlocks: 24,         // history depth on the Home tab
   targetOverrides: {},        // { [CATEGORY_PGY]: number, CHIEF: number } — overrides SHIFT_TARGETS/BLOCK_TARGETS
   rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
+  generalPedsMonthlyTarget: 2, // soft nudge: PGY-2/3 not on a dedicated peds rotation aim for this many peds shifts/block
+  enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
 };
 
 // Effective shift target for a resident, honoring Settings overrides, then rotation-specific
@@ -1540,6 +1634,7 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
 
   // 2. Shift/rotation gates — subset-of-shifts or block-type day windows
   for (const g of dr.shiftGates || []) {
+    if (g.scope === 'generator' && !ctx.forGenerator) continue; // manual picker still allows it
     if (!gateActiveForBlock(g.activeWhen, ctx.blockStart)) continue;
     if (!blockTypeFilterPasses(g.blockTypeFilter, bt, traumaBlocks)) continue;
     if (!g.overrideImmune && rotationSpecific) continue; // chief's explicit matrix override wins
@@ -1591,9 +1686,12 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   }
 
   // 7. Grand Rounds lecture — no evening/night shift the day before a lecture date (hard, both
-  // generator and manual picker).
+  // generator and manual picker); the generator additionally keeps the whole day off (chief
+  // feedback: try to give the lecturer the full day before off) — the manual picker still allows
+  // a day shift if the chief needs to place one.
   if ((resident.grLectureDates || []).includes(toDateStr(addDays(date, 1)))) {
     eligible = eligible.filter(s => !['eve', 'night'].includes(SHIFT_MAP[s]?.type));
+    if (ctx.forGenerator) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'day');
   }
 
   return eligible;
@@ -1630,7 +1728,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
         let msg = 'Shift not eligible for this resident on this day';
-        if (resident.category === 'EM_HOME' && dow === 3) msg = 'GR Wednesday — EM Home not schedulable in ED';
+        if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
         else if (!SHIFT_MAP[sid]) msg = 'Unknown shift type';
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg, level: 'error' });
       }
@@ -1661,6 +1759,15 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: 'warn' });
     }
 
+    // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
+    // least one Sat+Sun pair with no shifts either day.
+    if (appSettings.enforceWeekendOff !== false && isSchedulable(resident)) {
+      const weekends = getBlockWeekends(blockDates);
+      if (weekends.length && !weekends.some(([sat, sun]) => !rs[sat] && !rs[sun]))
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          message: 'No full weekend (Sat+Sun) off this block', level: 'warn' });
+    }
+
     // Peds/EM mix (PGY-2 on PEDS_EM): aim for 10–12 peds shifts of the 19 total
     if (isPedsEmMix(resident)) {
       const pedsCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
@@ -1672,6 +1779,17 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       else if (pedsCount < PEDS_EM_MIX.min && target != null && totalCount >= target)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: 'warn' });
+    }
+
+    // FM-1 peds is fill-in PRN only — flag if they've ended up primarily peds (soft ~1/3-of-target
+    // ceiling; chief feedback: use them to fill gaps, don't let peds become their emphasis).
+    if (resident.category === 'FM' && resident.pgy === 1) {
+      const pedsCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
+      const fm1Target = getShiftTarget(resident, appSettings);
+      const fm1Cap = fm1Target != null ? Math.ceil(fm1Target / 3) : null;
+      if (fm1Cap != null && pedsCount > fm1Cap)
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          message: `FM-1 peds shifts: ${pedsCount} — peds is meant to be fill-in PRN, not the emphasis (soft ceiling ~${fm1Cap})`, level: 'warn' });
     }
 
     // Trauma/Peds rotation: protected 8-trauma/11-peds split within the combined 19-shift target
@@ -1914,6 +2032,27 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     }
   }
 
+  // No two EM interns (Home or BAMC PGY-1) on the same shift/team (soft — flagged for review,
+  // not blocked; a hard block would leave a min-coverage slot empty when only interns remain).
+  const internsByDateShift = {};
+  for (const resident of allResidents) {
+    if (!((resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') && resident.pgy === 1)) continue;
+    const rs = schedule[resident.id] || {};
+    for (const [ds, sid] of Object.entries(rs)) {
+      if (!sid) continue;
+      const k = `${ds}__${sid}`;
+      (internsByDateShift[k] ||= []).push({ resident, ds, sid });
+    }
+  }
+  for (const entries of Object.values(internsByDateShift)) {
+    if (entries.length <= 1) continue;
+    const names = entries.map(e => `${e.resident.firstName} ${e.resident.lastName}`).join(', ');
+    for (const e of entries) {
+      issues.push({ residentId: e.resident.id, name: `${e.resident.firstName} ${e.resident.lastName}`, dateStr: e.ds, shiftId: e.sid,
+        message: `${entries.length} interns on ${e.sid} (${names}) — avoid pairing two interns on the same shift`, level: 'warn' });
+    }
+  }
+
   return issues;
 }
 
@@ -1931,12 +2070,18 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
   const traumaCap   = getTraumaCap(appSettings);
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+  const generalPedsTarget = getGeneralPedsTarget(appSettings);
+  const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
+  const blockWeekends = getBlockWeekends(dates);
 
   const schedule = {};
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
 
   // Per-resident running state, seeded from kept assignments
   const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
+  // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
+  // trauma-night load between PGY-2/3 across the year (see traumaNightPgyPrefersDow in score()).
+  const traumaNightYearly = {};
   let keptManual = 0;
   for (const r of allResidents) {
     target[r.id] = getShiftTarget(r, appSettings);
@@ -1946,6 +2091,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     pedsCount[r.id] = 0;
     nightCount[r.id] = 0;
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
+    traumaNightYearly[r.id] = isTraumaCapSubject(r) ? countPublishedTraumaNights(r.id, block.academicYear, blocksHistory, block.id) : 0;
     // Cross-block JC count (published blocks this AY) plus what's already kept in this block —
     // seeded once; kept assignments in `schedule[r.id]` are counted below via countCurrentBlockJC
     // rather than double-walking the loop, since that helper already knows how to find first
@@ -1961,6 +2107,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (sh?.area === 'TRAUMA') traumaCount[r.id]++;
       if (sh?.area === 'PED') pedsCount[r.id]++;
       if (sh?.type === 'night') nightCount[r.id]++;
+      if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
     }
   }
 
@@ -1993,6 +2140,26 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     return allResidents.some(r => schedule[r.id][ds] === shiftId && isSeniorFor(SHIFT_MAP[shiftId].area, r));
   }
   const seniorGapKeys = new Set();
+  // Peds class-balance (chief feedback): true if any resident (self or another) of this exact
+  // category+PGY already has a Peds shift on ds — used to avoid stacking the same experience
+  // level on consecutive peds days.
+  function pedsClassOnDate(category, pgy, ds) {
+    return allResidents.some(other => other.category === category && other.pgy === pgy && SHIFT_MAP[schedule[other.id]?.[ds]]?.area === 'PED');
+  }
+  // One full weekend off (chief feedback): true when ds falls in a weekend pair that's still
+  // fully free for r AND it's the only such pair r has left — assigning here would consume it.
+  // A resident who already has zero free weekends left isn't flagged again (nothing left to
+  // protect); one with 2+ free weekends left is unaffected (plenty of headroom).
+  function isLastFreeWeekend(r, ds) {
+    const dow = parseDate(ds).getDay();
+    if (dow !== 6 && dow !== 0) return false;
+    const pair = blockWeekends.find(([sat, sun]) => sat === ds || sun === ds);
+    if (!pair) return false;
+    const [sat, sun] = pair;
+    if (schedule[r.id][sat] || schedule[r.id][sun]) return false; // this weekend already broken
+    const freeCount = blockWeekends.filter(([s, u]) => !schedule[r.id][s] && !schedule[r.id][u]).length;
+    return freeCount === 1;
+  }
 
   // Candidate pool; the filter that empties it names the unfilled reason.
   function candidatePool(shift, ds) {
@@ -2063,7 +2230,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // entirely upstream, in getEligibleShifts). The trauma-nights-over-days preference (30) and
   // Peds/EM mix nudge (25) sit just below jeopardy avoidance; the "don't strand a short night
   // run" penalty (25) and FM-1 peds-fill-in discount (15) are minor tie-breaking preferences.
-  // Math.random() only breaks exact ties.
+  // The trauma-night PGY/weekday preference (12) and its yearly-balance term (-2/night worked)
+  // are minor tie-breaks, same tier as the FM-1 discount. Math.random() only breaks exact ties.
   function score(r, shift, ds, seniorFilled) {
     const t = target[r.id];
     const deficit = (t - assigned[r.id]) / t;
@@ -2074,8 +2242,15 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const traumaDaySenior = shift.id === 'TRAUMA-D' && r.category === 'EM_HOME' && r.pgy >= 2 ? 1 : 0;
     // Peds/EM PGY-2s should hit at least 10 peds shifts before other rotations sap the slot
     const pedsMixNeedsMore = shift.area === 'PED' && isPedsEmMix(r) && pedsCount[r.id] < PEDS_EM_MIX.min ? 1 : 0;
-    // FM-1s default to POD; Peds is fill-in PRN only
+    // FM-1s default to POD; Peds is fill-in PRN only — once they're already at/above a soft
+    // ~1/3-of-target ceiling, discourage further peds more strongly (chief feedback: don't let
+    // them end up primarily peds). validateAll separately warns if this ceiling is exceeded.
     const fm1OnPeds = shift.area === 'PED' && r.category === 'FM' && r.pgy === 1 ? 1 : 0;
+    const fm1OverPedsCap = fm1OnPeds && t != null && pedsCount[r.id] >= Math.ceil(t / 3) ? 1 : 0;
+    // BAMC interns: prefer Flex/POD/Peds day shifts, especially Wednesday (chief feedback) —
+    // the weakest of the new soft nudges, purely a tie-breaker.
+    const bamcFlexPodPedsDay = r.category === 'EM_BAMC' && shift.type === 'day' && ['FLEX','POD','PED'].includes(shift.area) ? 1 : 0;
+    const bamcWedBonus = bamcFlexPodPedsDay && parseDate(ds).getDay() === 3 ? 1 : 0;
     // Circadian night clustering: strongly prefer extending an existing night run over starting
     // an isolated one; avoid starting a run that can't reach the 4-night minimum; avoid placing
     // a non-night shift that would strand an existing short (1-3) night run mid-stretch.
@@ -2100,8 +2275,37 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // Mildly steer away from a resident's 3rd (final allowed) journal club this AY, once they're
     // already at 2 — candidatePool already hard-blocks a 4th.
     const jcNearCap = r.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(shift.id) && jcCount[r.id] === 2 ? 1 : 0;
+    // Trauma nights: prefer PGY-2 on Fri/Sat, PGY-3 on Sun/Mon (trauma_n_window already allows
+    // any PGY-2/3 on any of the four nights — this only breaks ties toward the preferred
+    // pairing), and mildly favor whichever senior has worked fewer trauma nights this academic
+    // year so the load balances over time rather than per block.
+    const traumaNightDowPref = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) && traumaNightPgyPrefersDow(r.pgy, parseDate(ds).getDay()) ? 1 : 0;
+    const traumaNightBalance = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) ? (traumaNightYearly[r.id] || 0) : 0;
+    // PGY-2/3 not already on a dedicated peds rotation should still pick up a few peds shifts a
+    // block to fill gaps (chief feedback) — nudge decays to 0 once they reach generalPedsTarget.
+    const generalPedsNudge = shift.area === 'PED' && isGeneralPedsCandidate(r, traumaBlocks) && pedsCount[r.id] < generalPedsTarget ? 1 : 0;
+    // Peds class-balance: avoid stacking the same PGY class on consecutive peds days — mildly
+    // discourage placing this class again the day right before/after another peds assignment
+    // from the same class level.
+    const pedsClassRepeat = shift.area === 'PED' && (
+      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(parseDate(ds), -1))) ||
+      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(parseDate(ds), 1)))
+    ) ? 1 : 0;
+    // One full weekend off: avoid spending a resident's last remaining free weekend when another
+    // candidate has one to spare.
+    const weekendOffRisk = enforceWeekendOff && isLastFreeWeekend(r, ds) ? 1 : 0;
+    // No two EM interns (Home or BAMC PGY-1) on the same shift/team — strongly discouraged but
+    // still fallback-allowed (candidatePool doesn't exclude on this; leaving the slot unfilled
+    // would be worse than pairing two interns).
+    const isEmIntern = (r.category === 'EM_HOME' || r.category === 'EM_BAMC') && r.pgy === 1;
+    const secondIntern = isEmIntern && allResidents.some(other =>
+      other.id !== r.id && (other.category === 'EM_HOME' || other.category === 'EM_BAMC') &&
+      other.pgy === 1 && schedule[other.id][ds] === shift.id) ? 1 : 0;
     return 100 * deficit + 40 * nightCluster - 20 * mixShare - 15 * Math.max(0, streak - 3) - 50 * jeo
-      - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap + Math.random();
+      - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap
+      + 12 * traumaNightDowPref - 2 * traumaNightBalance + 10 * generalPedsNudge - 10 * pedsClassRepeat
+      - 18 * weekendOffRisk - 35 * secondIntern - 20 * fm1OverPedsCap
+      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + Math.random();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -2243,6 +2447,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (slot.shift.area === 'TRAUMA') traumaCount[best.id]++;
       if (slot.shift.area === 'PED') pedsCount[best.id]++;
       if (slot.shift.type === 'night') nightCount[best.id]++;
+      if (slot.shift.id === 'TRAUMA-N') traumaNightYearly[best.id] = (traumaNightYearly[best.id] || 0) + 1;
       if (best.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
       if (jeoPolicy === 'warn' && (best.jeopardyDates || []).includes(ds)) {
         report.jeopardyPlacements.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
@@ -2536,33 +2741,33 @@ function Modal({ title, onClose, children, wide = false }) {
 // Dashboard summary tile — ported from the sibling em-scheduler app.
 function StatCard({ label, value, sub, icon: Icon, tone = "slate", bar = null }) {
   const toneBg = {
-    slate: "bg-slate-50 text-slate-700",
-    sky:   "bg-sky-50 text-sky-700",
-    pink:  "bg-pink-50 text-pink-700",
+    slate: "bg-gray-50 text-gray-700",
+    sky:   "bg-blue-50 text-blue-700",
+    pink:  "bg-purple-50 text-purple-700",
     amber: "bg-amber-50 text-amber-700",
-    violet:"bg-violet-50 text-violet-700",
-    green: "bg-emerald-50 text-emerald-700",
-    red:   "bg-rose-50 text-rose-700",
+    violet:"bg-purple-100 text-purple-800",
+    green: "bg-green-50 text-green-700",
+    red:   "bg-red-50 text-red-700",
   }[tone];
   const barColor = {
-    green: "bg-emerald-500", amber: "bg-amber-500", red: "bg-rose-500",
-    sky: "bg-sky-500", violet: "bg-violet-500", blue: "bg-blue-500", slate: "bg-slate-400",
-  }[bar?.color] || "bg-slate-400";
+    green: "bg-green-500", amber: "bg-amber-500", red: "bg-red-500",
+    sky: "bg-blue-500", violet: "bg-purple-500", blue: "bg-blue-500", slate: "bg-gray-400",
+  }[bar?.color] || "bg-gray-400";
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-4 flex items-start gap-3">
+    <div className="bg-white rounded-lg border border-gray-200 p-4 flex items-start gap-3">
       <div className={`p-2 rounded-md ${toneBg}`}>
         {Icon && <Icon size={18}/>}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-slate-500 font-medium">{label}</div>
-        <div className="text-2xl font-semibold text-slate-900 mt-0.5 tabular-nums">{value}</div>
+        <div className="text-xs text-gray-500 font-medium">{label}</div>
+        <div className="text-2xl font-semibold text-gray-900 mt-0.5 tabular-nums font-mono">{value}</div>
         {bar && (
-          <div className="h-1.5 rounded-full bg-slate-100 mt-1.5 overflow-hidden" title={bar.title || undefined}>
+          <div className="h-1.5 rounded-full bg-gray-100 mt-1.5 overflow-hidden" title={bar.title || undefined}>
             <div className={`h-full rounded-full transition-all duration-500 ${barColor}`}
                  style={{ width: `${Math.max(0, Math.min(100, bar.pct || 0))}%` }}/>
           </div>
         )}
-        {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
+        {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
       </div>
     </div>
   );
@@ -2575,21 +2780,21 @@ function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
   const saving = state === 'saving' || (cloudEnabled && dbStatus === 'saving');
   if (cloudEnabled && dbStatus === 'loading') {
     return (
-      <span className="flex items-center gap-1 text-[11px] font-medium text-slate-400">
+      <span className="flex items-center gap-1 text-[11px] font-medium text-gray-400">
         <RefreshCw size={11} className="animate-spin"/> Loading…
       </span>
     );
   }
   if (cloudEnabled && dbStatus === 'error') {
     return (
-      <span title={dbError} className="flex items-center gap-1 text-[11px] font-medium text-rose-500">
+      <span title={dbError} className="flex items-center gap-1 text-[11px] font-medium text-red-500">
         <AlertCircle size={11}/> Sync error
       </span>
     );
   }
   return (
     <span title={cloudEnabled ? 'Synced across your devices' : "Data auto-saved to this browser's local storage"}
-      className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-slate-400'}`}>
+      className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-gray-400'}`}>
       {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
       {saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally')}
     </span>
@@ -2598,7 +2803,7 @@ function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
 
 function Toast({ toast, onClose }) {
   if (!toast) return null;
-  const s = { amber:'bg-amber-50 border-amber-300 text-amber-800', red:'bg-rose-50 border-rose-300 text-rose-800', green:'bg-emerald-50 border-emerald-300 text-emerald-800' };
+  const s = { amber:'bg-amber-50 border-amber-300 text-amber-800', red:'bg-red-50 border-red-300 text-red-800', green:'bg-green-50 border-green-300 text-green-800' };
   return (
     <div className={`no-print fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border ${s[toast.tone] || s.amber}`}>
       <span>{toast.msg}</span>
@@ -2620,7 +2825,7 @@ function SubTabs({ value, onChange, options }) {
             {Ic && <Ic size={14}/>}
             {o.label}
             {typeof o.badge !== 'undefined' && o.badge > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded tabular-nums ${active ? 'bg-gray-200 text-gray-600' : 'bg-gray-300/70 text-gray-600'}`}>{o.badge}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded tabular-nums font-mono ${active ? 'bg-gray-200 text-gray-600' : 'bg-gray-300/70 text-gray-600'}`}>{o.badge}</span>
             )}
           </button>
         );
@@ -2710,9 +2915,9 @@ function SpecialDaysList({ label, hint, dates = [], onUpdate, chipClass = 'bg-gr
       <div className="flex items-center gap-1.5">
         <input type="date" value={newDate} onChange={e => setNewDate(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && add()}
-          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white" />
+          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
         <button onClick={add} disabled={!newDate}
-          className="text-xs px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+          className="text-xs px-2.5 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
           Add
         </button>
       </div>
@@ -2749,12 +2954,12 @@ function AvailabilityRangesEditor({ ranges = [], onUpdate }) {
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
         <input type="date" value={start} onChange={e => setStart(e.target.value)}
-          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white" />
+          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
         <span className="text-xs text-gray-400">→</span>
         <input type="date" value={end} onChange={e => setEnd(e.target.value)}
-          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white" />
+          className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
         <button onClick={add} disabled={!start || !end || start > end}
-          className="text-xs px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+          className="text-xs px-2.5 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
           Add
         </button>
       </div>
@@ -2807,7 +3012,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
                   <tr key={ds} className="border-b border-gray-50">
                     <td className="py-1 pr-3 whitespace-nowrap">
                       {formatDisplayDate(ds)}
-                      {inBlock && <span className="ml-1.5 text-[9px] font-semibold px-1 py-0.5 rounded bg-indigo-100 text-indigo-600">this block</span>}
+                      {inBlock && <span className="ml-1.5 text-[9px] font-semibold px-1 py-0.5 rounded bg-primary/10 text-primary">this block</span>}
                     </td>
                     {[1,2,3].map(pgy => {
                       const presenters = jcPresentersFor(emHome, ds, pgy);
@@ -2816,7 +3021,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
                           {presenters.length === 0 ? (
                             <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isPast ? 'bg-gray-100 text-gray-400' : 'bg-amber-50 text-amber-600'}`}>unassigned</span>
                           ) : (
-                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${presenters.length > 1 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${presenters.length > 1 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
                               {presenters.map(p => `${p.lastName}, ${p.firstName}`).join(' + ')}
                             </span>
                           )}
@@ -2838,7 +3043,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
           <div className="flex flex-wrap gap-1.5">
             {emHome.map(r => {
               const count = countPublishedJC(r.id, block.academicYear, blocksHistory, block.id) + countCurrentBlockJC(r.id, block, block.schedule || {});
-              const cls = count > JC_MAX_PER_AY ? 'bg-rose-50 text-rose-600' : count === JC_MAX_PER_AY ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600';
+              const cls = count > JC_MAX_PER_AY ? 'bg-red-50 text-red-600' : count === JC_MAX_PER_AY ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600';
               return (
                 <span key={r.id} className={`text-[10px] font-medium px-2 py-1 rounded-full ${cls}`}>
                   {r.lastName}, {r.firstName} · {count}/{JC_MAX_PER_AY}
@@ -2931,7 +3136,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
             {progress && (
               <div>
                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${progress.pct}%` }}/>
+                  <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${progress.pct}%` }}/>
                 </div>
                 <p className="text-xs text-gray-400 mt-0.5">{progress.pct}% complete</p>
               </div>
@@ -2971,7 +3176,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
           subtitle="Anesthesia: never schedulable (social hour) — enforced automatically.">
           <div className="flex flex-wrap gap-2">
             {firstFridays.map(d => (
-              <span key={d} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-50 border border-violet-200 text-sm font-medium text-violet-700">
+              <span key={d} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-sm font-medium text-purple-700">
                 <CalendarDays size={13}/>
                 {formatDisplayDate(d)}
               </span>
@@ -2995,21 +3200,21 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
             hint="Peds resident off the night before"
             dates={sd.advocacyDays || []}
             onUpdate={d => updSD('advocacyDays', d)}
-            chipClass="bg-emerald-100 text-emerald-700 border border-emerald-200"
+            chipClass="bg-green-100 text-green-700 border border-green-200"
           />
           <SpecialDaysList
             label="BAMC Procedure Days"
             hint="BAMC resident off night before + day of (may work night-of if critical)"
             dates={sd.procDays || []}
             onUpdate={d => updSD('procDays', d)}
-            chipClass="bg-sky-100 text-sky-700 border border-sky-200"
+            chipClass="bg-blue-100 text-blue-700 border border-blue-200"
           />
           <SpecialDaysList
             label="Anesthesia US Days"
             hint="Anesthesia resident off these days (email Gardner annually for dates)"
             dates={sd.anesDays || []}
             onUpdate={d => updSD('anesDays', d)}
-            chipClass="bg-violet-100 text-violet-700 border border-violet-200"
+            chipClass="bg-purple-100 text-purple-700 border border-purple-200"
           />
         </div>
       </CollapsibleCard>
@@ -3186,7 +3391,7 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
             <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-40 overflow-y-auto">
               {preview.blocks.map(b => (
                 <div key={b.start} className="flex items-center gap-2 px-3 py-1.5 text-xs">
-                  <Check size={12} className="text-emerald-500 shrink-0"/>
+                  <Check size={12} className="text-green-500 shrink-0"/>
                   <span className="text-gray-700">{b.name}</span>
                   <span className="ml-auto text-gray-400">{b.assignCount} EM · {b.offCount} off-service</span>
                 </div>
@@ -3214,7 +3419,7 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
           <button type="button" onClick={commit} disabled={!preview}
-            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
             Import {preview ? preview.blocks.length : ''} block{preview?.blocks.length !== 1 ? 's' : ''}
           </button>
         </div>
@@ -3237,17 +3442,17 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   ].filter(Boolean);
 
   return (
-    <div className="bg-indigo-50 border-b border-indigo-100">
+    <div className="bg-primary/10 border-b border-primary/20">
       <button onClick={() => setOpen(p => !p)}
-        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-indigo-100 transition-colors">
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-primary/10 transition-colors">
         <div className="flex items-center gap-2 min-w-0">
-          <CalendarDays size={13} className="text-indigo-500 shrink-0"/>
-          <span className="text-xs font-semibold text-indigo-700">Conference &amp; ITE Dates</span>
+          <CalendarDays size={13} className="text-primary shrink-0"/>
+          <span className="text-xs font-semibold text-primary">Conference &amp; ITE Dates</span>
           {parts.length > 0
-            ? <span className="text-xs text-indigo-500 truncate">{parts.join(' · ')}</span>
-            : <span className="text-xs text-indigo-400 italic">Not set — click to add</span>}
+            ? <span className="text-xs text-primary truncate">{parts.join(' · ')}</span>
+            : <span className="text-xs text-primary italic">Not set — click to add</span>}
         </div>
-        <ChevronDown size={13} className={`text-indigo-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
+        <ChevronDown size={13} className={`text-primary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
       </button>
 
       {open && (
@@ -3263,20 +3468,20 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
               {range ? (
                 <div className="flex items-center gap-1">
                   <input type="date" value={conf[f1]||''} onChange={e=>set(f1,e.target.value)}
-                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white flex-1"/>
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white flex-1"/>
                   <span className="text-gray-400 text-xs">–</span>
                   <input type="date" value={conf[f2]||''} onChange={e=>set(f2,e.target.value)}
-                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white flex-1"/>
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white flex-1"/>
                 </div>
               ) : (
                 <input type="date" value={conf[f1]||''} onChange={e=>set(f1,e.target.value)}
-                  className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white w-full"/>
+                  className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white w-full"/>
               )}
             </div>
           ))}
           <div className="col-span-2 flex justify-end pt-1">
             <button onClick={() => setOpen(false)}
-              className="text-xs px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors font-medium">
+              className="text-xs px-3 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors font-medium">
               Done
             </button>
           </div>
@@ -3332,7 +3537,7 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
           open={blockOpen} onToggle={() => setBlockOpen(p => !p)}
           action={<>
             <button onClick={onSaveBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
               <Save size={12}/> Save Block
             </button>
             <button onClick={onNewBlock}
@@ -3382,7 +3587,7 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
             {!block.startDate ? 'Set start date above to begin' : `Ready · ${daysInBlock} day block`}
           </span>
           <button onClick={onContinue} disabled={!block.startDate}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg transition-colors">
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg transition-colors">
             Go to Schedule <ChevronRight size={14}/>
           </button>
         </div>
@@ -3414,16 +3619,16 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
 
             {/* AY folder header */}
             <button onClick={() => toggleYear(year)}
-              className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-left">
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left">
               <div className="flex items-center gap-2.5">
-                <Archive size={14} className="text-slate-500"/>
-                <span className="font-bold text-slate-800 text-sm">{year}</span>
-                <span className="text-xs text-slate-400">{blocks.length} block{blocks.length !== 1 ? 's' : ''}</span>
+                <Archive size={14} className="text-gray-500"/>
+                <span className="font-bold text-gray-800 text-sm">{year}</span>
+                <span className="text-xs text-gray-400">{blocks.length} block{blocks.length !== 1 ? 's' : ''}</span>
                 {year === block.academicYear && (
-                  <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-medium">Current</span>
+                  <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-medium">Current</span>
                 )}
               </div>
-              <ChevronDown size={14} className={`text-slate-400 transition-transform ${openYears[year] ? 'rotate-180' : ''}`}/>
+              <ChevronDown size={14} className={`text-gray-400 transition-transform ${openYears[year] ? 'rotate-180' : ''}`}/>
             </button>
 
             {openYears[year] && (
@@ -3446,7 +3651,7 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
                           <div className="font-medium text-gray-800 text-sm truncate flex items-center gap-1.5">
                             {b.name || 'Unnamed'}
                             {b.published && (
-                              <span className="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium shrink-0">Published</span>
+                              <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium shrink-0">Published</span>
                             )}
                           </div>
                           <div className="text-xs text-gray-400 mt-0.5">
@@ -3458,11 +3663,11 @@ function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, set
                         <div className="flex items-center gap-2 shrink-0">
                           <button onClick={() => onTogglePublished(b.id)}
                             title="Published blocks count toward each resident's 3-journal-club-per-year cap"
-                            className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${b.published ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-500 hover:border-emerald-300'}`}>
+                            className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${b.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-white border-gray-200 text-gray-500 hover:border-green-300'}`}>
                             {b.published ? 'Published' : 'Publish'}
                           </button>
                           <button onClick={() => onLoadBlock(b)}
-                            className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+                            className="px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
                             Load
                           </button>
                         </div>
@@ -3627,7 +3832,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
         {lockPgy ? (
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">PGY Level</label>
-            <span className="inline-flex items-center text-sm px-3 py-1.5 rounded-lg font-semibold bg-indigo-100 text-indigo-800">
+            <span className="inline-flex items-center text-sm px-3 py-1.5 rounded-lg font-semibold bg-primary/10 text-primary">
               PGY-{form.pgy}
             </span>
           </div>
@@ -3638,7 +3843,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
               {pgyOpts.map(p => (
                 <button key={p} type="button" onClick={() => set('pgy', p)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-                    form.pgy === p ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-400'
+                    form.pgy === p ? 'bg-primary text-white border-primary' : 'bg-white text-gray-700 border-gray-300 hover:border-primary'
                   }`}>
                   PGY-{p}
                 </button>
@@ -3671,7 +3876,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
             {form.availabilityMode === 'days' && (
               <SpecialDaysList label="Can-Work Dates" dates={form.canWorkDates}
                 onUpdate={d => set('canWorkDates', d)}
-                chipClass="bg-emerald-100 text-emerald-700 border border-emerald-200"/>
+                chipClass="bg-green-100 text-green-700 border border-green-200"/>
             )}
           </div>
         )}
@@ -3710,7 +3915,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
             {form.jeopardyDates.length === 0
               ? <span className="text-xs text-gray-300 italic">None set</span>
               : form.jeopardyDates.map(d => (
-                <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 border border-violet-200">
+                <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700 border border-purple-200">
                   {formatDisplayDate(d)}
                   <button type="button" onClick={() => removeJeoDate(d)} className="hover:opacity-60"><X size={10}/></button>
                 </span>
@@ -3720,9 +3925,9 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
           <div className="flex items-center gap-1.5">
             <input type="date" value={newJeoDate} onChange={e => setNewJeoDate(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addJeoDate())}
-              className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-violet-400 bg-white" />
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-purple-400 bg-white" />
             <button type="button" onClick={addJeoDate} disabled={!newJeoDate}
-              className="text-xs px-2.5 py-1 bg-violet-500 hover:bg-violet-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+              className="text-xs px-2.5 py-1 bg-purple-500 hover:bg-purple-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
               Add
             </button>
           </div>
@@ -3737,7 +3942,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
               {form.jcPresentDates.length === 0
                 ? <span className="text-xs text-gray-300 italic">None set</span>
                 : form.jcPresentDates.map(d => (
-                  <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-teal-100 text-teal-700 border border-teal-200">
+                  <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200">
                     {formatDisplayDate(d)}
                     <button type="button" onClick={() => removeJcDate(d)} className="hover:opacity-60"><X size={10}/></button>
                   </span>
@@ -3747,9 +3952,9 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
             <div className="flex items-center gap-1.5">
               <input type="date" value={newJcDate} onChange={e => { setNewJcDate(e.target.value); setJcError(''); }}
                 onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addJcDate())}
-                className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-400 bg-white" />
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white" />
               <button type="button" onClick={addJcDate} disabled={!newJcDate}
-                className="text-xs px-2.5 py-1 bg-teal-500 hover:bg-teal-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+                className="text-xs px-2.5 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
                 Add
               </button>
             </div>
@@ -3766,7 +3971,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
               {form.grLectureDates.length === 0
                 ? <span className="text-xs text-gray-300 italic">None set</span>
                 : form.grLectureDates.map(d => (
-                  <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-700 border border-sky-200">
+                  <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200">
                     {formatDisplayDate(d)}
                     <button type="button" onClick={() => removeGrDate(d)} className="hover:opacity-60"><X size={10}/></button>
                   </span>
@@ -3776,9 +3981,9 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
             <div className="flex items-center gap-1.5">
               <input type="date" value={newGrDate} onChange={e => { setNewGrDate(e.target.value); setGrError(''); }}
                 onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addGrDate())}
-                className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-400 bg-white" />
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white" />
               <button type="button" onClick={addGrDate} disabled={!newGrDate}
-                className="text-xs px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+                className="text-xs px-2.5 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
                 Add
               </button>
             </div>
@@ -3788,7 +3993,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
 
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
-          <button type="submit" className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors">{submitLabel}</button>
+          <button type="submit" className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg font-medium transition-colors">{submitLabel}</button>
         </div>
       </form>
     </Modal>
@@ -3880,7 +4085,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
         </p>
         <textarea value={text} onChange={e => { setText(e.target.value); setPreview(null); }} rows={6}
           placeholder={'Doe, Jane\tEM - Home\t1\nSmith, John\tEM - Home\t1'}
-          className="w-full text-xs font-mono border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"/>
+          className="w-full text-xs font-mono border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-primary"/>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => fileRef.current?.click()}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
@@ -3888,7 +4093,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
           </button>
           <input ref={fileRef} type="file" accept=".csv,.tsv,.txt" onChange={pickFile} className="hidden"/>
           <button type="button" onClick={parse} disabled={!text.trim()}
-            className="ml-auto px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg">
+            className="ml-auto px-3.5 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg">
             Parse
           </button>
         </div>
@@ -3898,7 +4103,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
             {preview.rows.map((r,i) => (
               <div key={`ok-${i}`} className="flex items-center gap-2 px-3 py-1.5 text-xs">
                 {r.status === 'new'
-                  ? <Check size={12} className="text-emerald-500 shrink-0"/>
+                  ? <Check size={12} className="text-green-500 shrink-0"/>
                   : <span className="text-gray-300 shrink-0 text-[10px] font-semibold">—</span>}
                 <span className="text-gray-700">{r.firstName} {r.lastName}</span>
                 <span className="text-gray-400">PGY-{r.pgy} · {CAT_MAP[r.category].shortLabel}</span>
@@ -3920,7 +4125,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
           <button type="button" onClick={commit} disabled={!preview || newCount === 0}
-            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
             Import {newCount > 0 ? newCount : ''} resident{newCount!==1?'s':''}
           </button>
         </div>
@@ -3982,7 +4187,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
           <span className="text-xs text-gray-500 font-medium shrink-0">Add:</span>
           {[1, 2, 3].map(pgy => (
             <button key={pgy} onClick={() => setShowAdd({ pgy, category: 'EM_HOME' })}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
               <Plus size={11}/> EM PGY-{pgy}
             </button>
           ))}
@@ -4007,7 +4212,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
           <button onClick={() => toggle(key)}
             className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left">
             <div className="flex items-center gap-2.5">
-              <span className="text-xs font-bold text-gray-600 uppercase tracking-widest">PGY-{pgy}</span>
+              <span className="font-display text-xs font-bold text-gray-600 uppercase tracking-widest">PGY-{pgy}</span>
               <span className="text-xs text-gray-400">{list.length} resident{list.length !== 1 ? 's' : ''}</span>
               {schedulableCount < list.length && (
                 <span className="text-xs text-gray-400">{schedulableCount} schedulable</span>
@@ -4042,7 +4247,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                             <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
                           ))}
                           {(res.jeopardyDates || []).map(d => (
-                            <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-600 border border-violet-200 font-medium">J: {formatDisplayDate(d)}</span>
+                            <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 border border-purple-200 font-medium">J: {formatDisplayDate(d)}</span>
                           ))}
                         </div>
                       )}
@@ -4050,7 +4255,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                     {/* Edit + Remove */}
                     <div className="flex items-center gap-0.5 shrink-0">
                       <button onClick={() => setEditResident(res)} title="Edit profile"
-                        className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors">
+                        className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded transition-colors">
                         <Edit2 size={13}/>
                       </button>
                       <button onClick={() => setConfirmRemove(res.id)} title="Remove resident"
@@ -4064,7 +4269,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                     <div className="flex items-center gap-2">
                       <label className="text-xs text-gray-500 shrink-0">Rotation:</label>
                       <select value={bt} onChange={e => setBA(res.id, 'blockType', e.target.value)}
-                        className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400">
+                        className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary">
                         {BLOCK_TYPES_EM
                           .filter(b => (EM_HOME_BLOCK_TYPES_BY_PGY[res.pgy] || []).includes(b.id))
                           .map(b => (
@@ -4083,7 +4288,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                       <div className="flex items-center gap-1.5 ml-auto">
                         <span className={`text-xs font-medium ${over ? 'text-red-500' : 'text-gray-400'}`}>{cnt}/{tgt}</span>
                         <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${over ? 'bg-red-500' : cnt >= tgt ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+                          <div className={`h-full rounded-full ${over ? 'bg-red-500' : cnt >= tgt ? 'bg-green-500' : 'bg-primary'}`}
                             style={{ width: `${Math.min(100, tgt ? cnt / tgt * 100 : 0)}%` }}/>
                         </div>
                       </div>
@@ -4236,7 +4441,7 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
                               chipClass="bg-orange-100 text-orange-600 border border-orange-200"/>
                             <SpecialDaysList label="Jeopardy Call Dates" dates={res.jeopardyDates || []}
                               onUpdate={d => setField(res.id, 'jeopardyDates', d)}
-                              chipClass="bg-violet-100 text-violet-600 border border-violet-200"/>
+                              chipClass="bg-purple-100 text-purple-600 border border-purple-200"/>
                           </div>
                           {/* Availability: full block (default) / date ranges / specific days only */}
                           <div className="mt-3">
@@ -4255,14 +4460,14 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
                             {res.availabilityMode === 'days' && (
                               <SpecialDaysList label="Can-Work Dates" dates={res.canWorkDates || []}
                                 onUpdate={d => setField(res.id, 'canWorkDates', d)}
-                                chipClass="bg-emerald-100 text-emerald-700 border border-emerald-200"/>
+                                chipClass="bg-green-100 text-green-700 border border-green-200"/>
                             )}
                           </div>
                         </div>
                         {/* Edit + Remove */}
                         <div className="flex items-center gap-0.5 shrink-0">
                           <button onClick={() => setEditResident(res)} title="Edit profile"
-                            className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors">
+                            className="p-1.5 text-gray-400 hover:text-primary hover:bg-primary/10 rounded transition-colors">
                             <Edit2 size={13}/>
                           </button>
                           <button onClick={() => removeRes(res.id)} title="Remove resident"
@@ -4285,7 +4490,7 @@ function OffServiceTab({ block, updateBlock, appSettings }) {
                         <div className="mt-2 flex items-center gap-1.5">
                           <span className={`text-xs font-medium ${over ? 'text-red-500' : 'text-gray-400'}`}>{cnt}/{tgt} shifts</span>
                           <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${over ? 'bg-red-500' : cnt >= tgt ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+                            <div className={`h-full rounded-full ${over ? 'bg-red-500' : cnt >= tgt ? 'bg-green-500' : 'bg-primary'}`}
                               style={{ width: `${Math.min(100, tgt ? cnt / tgt * 100 : 0)}%` }}/>
                           </div>
                         </div>
@@ -4368,14 +4573,14 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // raw RGB, since jsPDF can't consume Tailwind classes). Not merged into one shared constant:
   // each uses a shade tuned for its own context (light-50 web tint here vs a more visible -100-ish
   // RGB tint for PDF backgrounds) — but if you add a new shift area, update all three.
-  const areaColor = { POD:'text-blue-700 bg-blue-50 border-blue-200', PED:'text-emerald-700 bg-emerald-50 border-emerald-200', FLEX:'text-purple-700 bg-purple-50 border-purple-200', MT:'text-amber-700 bg-amber-50 border-amber-200', TRAUMA:'text-red-700 bg-red-50 border-red-200' };
+  const areaColor = { POD:'text-blue-700 bg-blue-50 border-blue-200', PED:'text-green-700 bg-green-50 border-green-200', FLEX:'text-purple-700 bg-purple-50 border-purple-200', MT:'text-amber-700 bg-amber-50 border-amber-200', TRAUMA:'text-red-700 bg-red-50 border-red-200' };
 
   function CellButton({ k, s, checked, inherited = false, onToggle }) {
     return (
       <td className="border-r border-gray-100 p-0 text-center">
         <button onClick={onToggle}
           title={`${checked ? 'Remove' : 'Add'} ${s.label}${inherited ? ' (inherits from category default — clicking creates a rotation override)' : ''}`}
-          className={`w-full h-9 flex items-center justify-center transition-colors ${checked ? 'bg-indigo-50 hover:bg-indigo-100' : 'hover:bg-gray-100'}`}>
+          className={`w-full h-9 flex items-center justify-center transition-colors ${checked ? 'bg-primary/10 hover:bg-primary/10' : 'hover:bg-gray-100'}`}>
           {checked
             ? <div className={`w-4 h-4 rounded flex items-center justify-center ${s.chip} ${inherited ? 'opacity-40' : ''}`}><Check size={9}/></div>
             : <div className={`w-4 h-4 rounded border-2 ${inherited ? 'border-gray-100' : 'border-gray-200'}`}/>}
@@ -4436,15 +4641,15 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                           {rotations.length > 0 && (
                             <button onClick={()=>setExpanded(p=>({...p,[row.key]:!p[row.key]}))}
                               title={isOpen ? 'Hide rotations' : 'Show per-rotation eligibility'}
-                              className="text-gray-400 hover:text-indigo-600 transition-colors -ml-1">
+                              className="text-gray-400 hover:text-primary transition-colors -ml-1">
                               <ChevronDown size={12} className={`transition-transform ${isOpen ? '' : '-rotate-90'}`}/>
                             </button>
                           )}
                           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${cat?.badge}`}>{row.sub}</span>
                           <span className="text-gray-700 font-medium">{row.label}</span>
-                          {mod && <span className="text-indigo-500 text-xs" title="Modified from default">✎</span>}
+                          {mod && <span className="text-primary text-xs" title="Modified from default">✎</span>}
                           {rotOverrideCount > 0 && (
-                            <span className="text-xs text-violet-500" title={`${rotOverrideCount} rotation override${rotOverrideCount!==1?'s':''}`}>
+                            <span className="text-xs text-purple-500" title={`${rotOverrideCount} rotation override${rotOverrideCount!==1?'s':''}`}>
                               {rotOverrideCount}⚙
                             </span>
                           )}
@@ -4456,7 +4661,7 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                           onToggle={()=>toggle(row.key, s.id)}/>
                       ))}
                       <td className="px-2">
-                        {mod && <button onClick={()=>resetRow(row.key)} title="Reset row"><RefreshCw size={11} className="text-gray-400 hover:text-indigo-600"/></button>}
+                        {mod && <button onClick={()=>resetRow(row.key)} title="Reset row"><RefreshCw size={11} className="text-gray-400 hover:text-primary"/></button>}
                       </td>
                     </tr>
 
@@ -4465,12 +4670,12 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                       const hasOv = subHasOverride(row.key, bt.id);
                       const eff = subEffective(row.key, bt.id);
                       return (
-                        <tr key={subKey(row.key, bt.id)} className="bg-slate-50/60 hover:bg-slate-100/60 transition-colors">
-                          <td className="sticky left-0 z-10 border-r border-gray-200 pl-9 pr-3 py-1.5 bg-slate-50">
+                        <tr key={subKey(row.key, bt.id)} className="bg-gray-50/60 hover:bg-gray-100/60 transition-colors">
+                          <td className="sticky left-0 z-10 border-r border-gray-200 pl-9 pr-3 py-1.5 bg-gray-50">
                             <div className="flex items-center gap-2">
                               <span className="text-gray-500 font-medium">{bt.label}</span>
                               {hasOv
-                                ? <span className="text-violet-500 text-xs font-medium" title="Rotation-specific override active">override ✎</span>
+                                ? <span className="text-purple-500 text-xs font-medium" title="Rotation-specific override active">override ✎</span>
                                 : <span className="text-gray-300 text-xs italic">inherits</span>}
                             </div>
                           </td>
@@ -4481,7 +4686,7 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                               onToggle={()=>subToggle(row.key, bt.id, s.id)}/>
                           ))}
                           <td className="px-2">
-                            {hasOv && <button onClick={()=>subReset(row.key, bt.id)} title="Remove override (revert to inherited)"><RefreshCw size={11} className="text-gray-400 hover:text-violet-600"/></button>}
+                            {hasOv && <button onClick={()=>subReset(row.key, bt.id)} title="Remove override (revert to inherited)"><RefreshCw size={11} className="text-gray-400 hover:text-purple-600"/></button>}
                           </td>
                         </tr>
                       );
@@ -4495,7 +4700,7 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
       </div>
 
       <div className="mt-3 space-y-1 text-xs text-gray-400">
-        <p><span className="font-medium text-gray-500">How rotation rows work:</span> a dimmed check = inherited from the category row above. Click any cell in a rotation row to create a rotation-specific override — that rotation then uses its own list (marked <span className="text-violet-500 font-medium">override ✎</span>) and ignores later changes to the parent row until you reset it.</p>
+        <p><span className="font-medium text-gray-500">How rotation rows work:</span> a dimmed check = inherited from the category row above. Click any cell in a rotation row to create a rotation-specific override — that rotation then uses its own list (marked <span className="text-purple-500 font-medium">override ✎</span>) and ignores later changes to the parent row until you reset it.</p>
         <p className="italic">A rotation override replaces built-in shift-type rules for that rotation (e.g. PGY-1 "no trauma outside trauma blocks"), but day-of-week rules (GR Wednesday, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) always still apply.</p>
       </div>
     </div>
@@ -4512,7 +4717,7 @@ function Collapsible({ title, badge, defaultOpen = true, titleClassName = 'text-
     <div>
       <button type="button" onClick={()=>setOpen(p=>!p)} className="w-full flex items-center gap-2 text-left group mb-1">
         <ChevronDown size={11} className={`text-gray-300 group-hover:text-gray-500 transition-transform shrink-0 ${open?'':'-rotate-90'}`}/>
-        <span className={`text-xs font-semibold uppercase tracking-wide ${titleClassName}`}>{title}</span>
+        <span className={`font-display text-xs font-semibold uppercase tracking-wide ${titleClassName}`}>{title}</span>
         {badge}
       </button>
       {open && <div className="pl-4">{children}</div>}
@@ -4520,9 +4725,9 @@ function Collapsible({ title, badge, defaultOpen = true, titleClassName = 'text-
   );
 }
 
-function DayPillRow({ days, onToggle, color = 'indigo' }) {
-  const on  = color === 'red' ? 'bg-red-600 text-white border-red-600' : 'bg-indigo-600 text-white border-indigo-600';
-  const off = color === 'red' ? 'bg-white text-gray-500 border-gray-200 hover:border-red-300' : 'bg-white text-gray-500 border-gray-200 hover:border-indigo-300';
+function DayPillRow({ days, onToggle, color = 'primary' }) {
+  const on  = color === 'red' ? 'bg-red-600 text-white border-red-600' : 'bg-primary text-white border-primary';
+  const off = color === 'red' ? 'bg-white text-gray-500 border-gray-200 hover:border-red-300' : 'bg-white text-gray-500 border-gray-200 hover:border-primary';
   return (
     <div className="flex gap-1 flex-wrap">
       {DOW.map((d,i)=>(
@@ -4566,13 +4771,13 @@ function DayRulesEditor({ rowKey, dr, update }) {
     <div className="space-y-4">
       {/* Full block / only days */}
       <div>
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Full-Day Block</div>
+        <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Full-Day Block</div>
         <p className="text-xs text-gray-400 mb-1.5">Whole day unschedulable for this type.</p>
         <DayPillRow color="red" days={dr.fullBlockDays||[]} onToggle={i=>update(d=>({...d, fullBlockDays: toggleIn(d.fullBlockDays, i)}))}/>
       </div>
 
       <div>
-        <label className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 cursor-pointer select-none">
+        <label className="flex items-center gap-2 font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5 cursor-pointer select-none">
           <input type="checkbox" checked={!!dr.onlyDaysEnabled} onChange={e=>update(d=>({...d, onlyDaysEnabled: e.target.checked}))} className="rounded"/>
           Restrict to only these days
         </label>
@@ -4584,8 +4789,8 @@ function DayRulesEditor({ rowKey, dr, update }) {
       {/* Day-type restrictions */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift-Type Restrictions</div>
-          <button onClick={addRestriction} className="text-xs text-indigo-600 hover:underline">+ Add</button>
+          <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift-Type Restrictions</div>
+          <button onClick={addRestriction} className="text-xs text-primary hover:underline">+ Add</button>
         </div>
         <div className="space-y-2">
           {(dr.dayTypeRestrictions||[]).map((r,i)=>(
@@ -4609,8 +4814,8 @@ function DayRulesEditor({ rowKey, dr, update }) {
       {/* Shift / rotation gates */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift &amp; Rotation Gates</div>
-          <button onClick={addGate} className="text-xs text-indigo-600 hover:underline">+ Add gate</button>
+          <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide">Shift &amp; Rotation Gates</div>
+          <button onClick={addGate} className="text-xs text-primary hover:underline">+ Add gate</button>
         </div>
         <div className="space-y-2">
           {(dr.shiftGates||[]).map((g,i)=>{
@@ -4669,7 +4874,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
                           return (
                             <button key={bt.id} type="button"
                               onClick={()=>updGate(i, { blockTypeFilter: { ...g.blockTypeFilter, ids: checked ? g.blockTypeFilter.ids.filter(x=>x!==bt.id) : [...(g.blockTypeFilter.ids||[]), bt.id] } })}
-                              className={`text-xs px-1.5 py-0.5 rounded border font-medium ${checked ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-gray-500 border-gray-200'}`}>
+                              className={`text-xs px-1.5 py-0.5 rounded border font-medium ${checked ? 'bg-gray-700 text-white border-gray-700' : 'bg-white text-gray-500 border-gray-200'}`}>
                               {bt.label}
                             </button>
                           );
@@ -4717,7 +4922,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
 
       {/* Special day rules */}
       <div>
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Special-Day Rules</div>
+        <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Special-Day Rules</div>
         <p className="text-xs text-gray-400 mb-1.5">Dates are edited on the Dashboard tab — this controls how each list affects eligibility.</p>
         <div className="space-y-1.5">
           {SPECIAL_DAY_META.map(({key,label})=>{
@@ -4744,7 +4949,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
 
       {/* Computed-date rules */}
       <div>
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Computed-Date Rules</div>
+        <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Computed-Date Rules</div>
         <p className="text-xs text-gray-400 mb-1.5">Dates derived from the calendar itself — no manual list needed.</p>
         <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
           <input type="checkbox" checked={(dr.computedDayRules||[]).some(c=>c.type==='firstFridayOfMonth')} className="rounded"
@@ -4758,7 +4963,7 @@ function DayRulesEditor({ rowKey, dr, update }) {
       {/* CCU-nights override (IM_2 only) */}
       {rowKey === 'IM_2' && (
         <div>
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">CCU Nights Override</div>
+          <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">CCU Nights Override</div>
           <p className="text-xs text-gray-400 mb-1.5">When a resident's "Covering CCU nights" flag is set, block these days instead of the Shift-Type Restrictions above.</p>
           <DayPillRow color="red" days={ccuOverride?.fullBlockDays||[]}
             onToggle={i=>update(d=>({...d, residentFlagOverrides: [{ flag:'isCCUNights', fullBlockDays: toggleIn(ccuOverride?.fullBlockDays, i) }] }))}/>
@@ -4818,7 +5023,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
       <div className="text-center py-12 text-gray-400 space-y-3">
         <Shield size={36} className="mx-auto opacity-40"/>
         <p className="text-sm">No schedulable residents active this block.</p>
-        <button onClick={()=>setShowAll(true)} className="text-xs text-indigo-600 hover:underline">Show all types anyway</button>
+        <button onClick={()=>setShowAll(true)} className="text-xs text-primary hover:underline">Show all types anyway</button>
       </div>
     );
   }
@@ -4830,7 +5035,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
           <h2 className="text-base font-semibold text-gray-800">Scheduling Rules</h2>
           <p className="text-xs text-gray-500 mt-0.5">{showAll ? 'All resident types' : `${displayRows.length} type${displayRows.length!==1?'s':''} active this block`} — edited here, no code changes needed.</p>
         </div>
-        <button onClick={()=>setShowAll(p=>!p)} className="text-xs text-indigo-600 hover:underline">
+        <button onClick={()=>setShowAll(p=>!p)} className="text-xs text-primary hover:underline">
           {showAll ? 'Show active only' : 'Show all types'}
         </button>
       </div>
@@ -4871,7 +5076,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                               const min = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
                               update({ min, max: Math.max(min, cov.max) });
                             }}
-                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-indigo-400 bg-indigo-50 text-indigo-800 font-semibold' : 'border-gray-200'}`}/>
+                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
                           <span className="text-gray-300">–</span>
                           <input type="number" min={0} max={maxCap} title="Maximum"
                             value={cov.max}
@@ -4879,10 +5084,10 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                               const max = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
                               update({ min: Math.min(cov.min, max), max });
                             }}
-                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-indigo-400 bg-indigo-50 text-indigo-800 font-semibold' : 'border-gray-200'}`}/>
+                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
                           {overridden && (
                             <button onClick={() => setCoverage(p => { const n = { ...p }; delete n[shift.id]; return n; })}
-                              title="Reset to default" className="text-gray-300 hover:text-indigo-600"><RefreshCw size={11}/></button>
+                              title="Reset to default" className="text-gray-300 hover:text-primary"><RefreshCw size={11}/></button>
                           )}
                         </span>
                       </td>
@@ -4924,16 +5129,16 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                     </div>
                     <div className="flex flex-col shrink-0">
                       <button onClick={() => move(i, -1)} disabled={i === 0}
-                        className="text-gray-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-gray-400" title="Move up"><ChevronUp size={14}/></button>
+                        className="text-gray-400 hover:text-primary disabled:opacity-20 disabled:hover:text-gray-400" title="Move up"><ChevronUp size={14}/></button>
                       <button onClick={() => move(i, 1)} disabled={i === priority.length - 1}
-                        className="text-gray-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-gray-400" title="Move down"><ChevronDown size={14}/></button>
+                        className="text-gray-400 hover:text-primary disabled:opacity-20 disabled:hover:text-gray-400" title="Move down"><ChevronDown size={14}/></button>
                     </div>
                   </div>
                 );
               })}
               {!isDefault && (
                 <button onClick={() => setAppSettings(p => ({ ...p, rulePriority: [...DEFAULT_RULE_PRIORITY] }))}
-                  className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
+                  className="text-xs text-gray-400 hover:text-primary flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
               )}
             </div>
           );
@@ -4952,7 +5157,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
             );
           })}
           {traumaBlocksModified && (
-            <button onClick={resetTraumaBlocks} className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1"><RefreshCw size={11}/> Reset</button>
+            <button onClick={resetTraumaBlocks} className="text-xs text-gray-400 hover:text-primary flex items-center gap-1"><RefreshCw size={11}/> Reset</button>
           )}
         </div>
       </SectionCard>
@@ -4979,7 +5184,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               <div className="flex items-center gap-3">
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat?.badge}`}>{row.sub}</span>
                 <span className="font-semibold text-gray-800 text-sm">{row.label}</span>
-                {modified && <span className="text-indigo-500 text-xs" title="Modified from default">✎</span>}
+                {modified && <span className="text-primary text-xs" title="Modified from default">✎</span>}
                 {(modified || eligOverrides[row.key]) && DAY_RULE_DEFAULTS_CHANGED.has(row.key) && (
                   <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium"
                     title="This type's built-in default rules changed in a recent update — your saved override predates that change. Review it, or Reset to pick up the correction.">
@@ -4987,7 +5192,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                   </span>
                 )}
                 {active.length > 0 && (
-                  <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium">
+                  <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
                     {active.length} active: {active.map(r=>`${r.lastName}`).join(', ')}
                   </span>
                 )}
@@ -5003,7 +5208,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                 {/* Target */}
                 <div className="pt-3 flex items-center justify-between">
                   <div>
-                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Shift Target</div>
+                    <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Shift Target</div>
                     <p className="text-sm text-gray-700">
                       {target != null ? `${target} shifts/block` : 'Per Amion — not set by this app (self-cover)'}
                       {Object.keys(BLOCK_TARGETS).some(k => k.startsWith(`${row.key}__`)) && (
@@ -5012,7 +5217,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                     </p>
                   </div>
                   {modified && (
-                    <button onClick={()=>resetDr(row.key)} className="text-xs text-gray-400 hover:text-indigo-600 flex items-center gap-1 shrink-0"><RefreshCw size={11}/> Reset rules</button>
+                    <button onClick={()=>resetDr(row.key)} className="text-xs text-gray-400 hover:text-primary flex items-center gap-1 shrink-0"><RefreshCw size={11}/> Reset rules</button>
                   )}
                 </div>
 
@@ -5027,7 +5232,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                     {effectiveShifts.length===0 && <span className="text-xs text-gray-400 italic">None configured</span>}
                   </div>
                   {eligOverrides[row.key] && (
-                    <p className="text-xs text-indigo-600 mt-1">✎ Matrix overrides are active for this type — edit on the Shift Matrix tab.</p>
+                    <p className="text-xs text-primary mt-1">✎ Matrix overrides are active for this type — edit on the Shift Matrix tab.</p>
                   )}
                 </Collapsible>
 
@@ -5062,7 +5267,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                       {rn.blockTypeNotes.map((bn,i)=>(
                         <div key={i} className="flex items-start gap-2 text-xs">
                           <div className="flex gap-1 shrink-0 flex-wrap">
-                            {bn.ids.map(id=><span key={id} className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-medium">{BLOCK_TYPE_MAP[id]?.label||id}</span>)}
+                            {bn.ids.map(id=><span key={id} className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded font-medium">{BLOCK_TYPE_MAP[id]?.label||id}</span>)}
                           </div>
                           <span className="text-gray-600">{bn.note}</span>
                         </div>
@@ -5123,8 +5328,8 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // 1. Eligibility check
   if (!eligible.includes(sid)) {
     const dow = parseDate(dateStr).getDay();
-    vs.push({ message: resident.category === 'EM_HOME' && dow === 3
-      ? 'GR Wednesday — EM Home not schedulable in ED'
+    vs.push({ message: resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day'
+      ? 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)'
       : 'Shift not in eligibility matrix for this resident/day combination', level: 'error' });
   }
   // 2. Jeopardy call warning (policy 'warn'; 'block' already empties the eligible list)
@@ -5164,7 +5369,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         {CAT_MAP[resident.category]?.label} · PGY-{resident.pgy}
         {resident.blockType && resident.category !== 'PEDS' && <> · <span className="font-medium">{BLOCK_TYPE_MAP[resident.blockType]?.label || resident.blockType}</span></>}
         {currentShift && <> · Current: <span className="font-medium">{currentShift}</span></>}
-        {onJeopardy && <> · <span className="font-medium text-violet-600">Jeopardy call</span></>}
+        {onJeopardy && <> · <span className="font-medium text-purple-600">Jeopardy call</span></>}
       </p>
 
       {eligible.length === 0 ? (
@@ -5177,10 +5382,10 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
             const s=SHIFT_MAP[sid]; const active=pending===sid;
             return (
               <button key={sid} onClick={()=>setPending(active?null:sid)}
-                className={`flex flex-col items-start px-3 py-2.5 rounded-lg border-2 text-left transition-all ${active?'border-indigo-500 bg-indigo-50':'border-gray-200 hover:border-indigo-300'}`}>
+                className={`flex flex-col items-start px-3 py-2.5 rounded-lg border-2 text-left transition-all ${active?'border-primary bg-primary/10':'border-gray-200 hover:border-primary'}`}>
                 <div className="flex items-center gap-2 w-full">
                   <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${s.chip}`}>{sid}</span>
-                  {active && <CheckCircle size={13} className="text-indigo-500 ml-auto"/>}
+                  {active && <CheckCircle size={13} className="text-primary ml-auto"/>}
                 </div>
                 <span className="text-xs text-gray-400 mt-0.5">{s.hours}</span>
               </button>
@@ -5191,14 +5396,14 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
       {pending && <ViolationPanel violations={v}/>}
       {pending && v.length === 0 && (
-        <div className="flex items-center gap-1.5 text-emerald-600 text-xs mb-3"><CheckCircle size={13}/> No violations</div>
+        <div className="flex items-center gap-1.5 text-green-600 text-xs mb-3"><CheckCircle size={13}/> No violations</div>
       )}
 
       <div className="flex gap-2">
         {currentShift && <button onClick={()=>{onSelect(null);showToast(`Cleared ${name} on ${display}`,'amber');onClose();}} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg border border-red-200 font-medium">Clear</button>}
         <div className="flex-1"/>
         <button onClick={onClose} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-        {pending && <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-indigo-600 hover:bg-indigo-700'}`}>
+        {pending && <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-primary hover:bg-primary/90'}`}>
           {v.length>0?'Assign Anyway':'Assign Shift'}
         </button>}
       </div>
@@ -5376,7 +5581,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         <span className="flex items-center gap-2">
           <button onClick={requestGenerate}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten."
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
             <Wand2 size={13}/> Generate Schedule
           </button>
           <button onClick={()=>setConfirmRegen(true)}
@@ -5430,7 +5635,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
         <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
-        <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">J</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-600">J</span>
         <span>= grand rounds · approved off · jeopardy call</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
@@ -5439,12 +5644,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
       {/* Empty-schedule CTA */}
       {totalAssigned === 0 && (
-        <div className="text-center py-8 mb-3 bg-indigo-50/50 rounded-xl border-2 border-dashed border-indigo-200">
-          <Wand2 size={28} className="mx-auto mb-2 text-indigo-400"/>
+        <div className="text-center py-8 mb-3 bg-primary/10 rounded-xl border-2 border-dashed border-primary">
+          <Wand2 size={28} className="mx-auto mb-2 text-primary"/>
           <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
           <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
           <button onClick={requestGenerate}
-            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
             <Wand2 size={14}/> Generate Schedule
           </button>
           <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
@@ -5508,15 +5713,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <div style={{minWidth:NAME_W+CELL_W*dates.length}}>
             <div className="flex bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
               <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center px-3" style={{width:NAME_W,minWidth:NAME_W}}>
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Resident</span>
+                <span className="font-display text-xs font-semibold text-gray-400 uppercase tracking-wide">Resident</span>
               </div>
               {dates.map(ds=>{
                 const d=parseDate(ds); const dow=d.getDay(); const isWed=dow===3; const isWknd=dow===0||dow===6;
                 return (
                   <div key={ds} style={{width:CELL_W,minWidth:CELL_W}}
-                    className={`flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-slate-100':'bg-gray-50'}`}>
-                    <span className={`text-xs font-bold ${isWed?'text-yellow-700':isWknd?'text-slate-500':'text-gray-500'}`}>{DOW[dow]}</span>
-                    <span className={`text-xs ${isWed?'text-yellow-600':isWknd?'text-slate-400':'text-gray-400'}`}>{d.getMonth()+1}/{d.getDate()}</span>
+                    className={`flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-gray-100':'bg-gray-50'}`}>
+                    <span className={`text-xs font-bold ${isWed?'text-yellow-700':isWknd?'text-gray-500':'text-gray-500'}`}>{DOW[dow]}</span>
+                    <span className={`text-xs ${isWed?'text-yellow-600':isWknd?'text-gray-400':'text-gray-400'}`}>{d.getMonth()+1}/{d.getDate()}</span>
                   </div>
                 );
               })}
@@ -5560,7 +5765,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
                         const isGR=isWed&&res.category==='EM_HOME'&&elig.length===0;
                         const shift=sid?SHIFT_MAP[sid]:null;
-                        let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-slate-50':elig.length===0?'bg-gray-50':'bg-white';
+                        let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-purple-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
                         const clickable=(elig.length>0||sid)&&!isApprovedOff;
                         const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
@@ -5572,9 +5777,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                             onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
                             onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
                             title={isApprovedOff?'Approved day off':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
-                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-indigo-400':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
                             {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
-                            {isJeoBlocked&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-500">J</span></div>}
+                            {isJeoBlocked&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
                             {isGR&&!sid&&!isApprovedOff&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
                             {shift && (
                               <div draggable
@@ -5584,7 +5789,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                                 {sid}
                               </div>
                             )}
-                            {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-violet-600 bg-violet-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
+                            {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
                           </div>
                         );
                       })}
@@ -5603,11 +5808,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               </div>
               {dates.map(ds=>{
                 const cov = coverageByDate[ds];
-                const cls = cov.belowMin.length ? 'bg-rose-50 text-rose-600' : cov.aboveMax.length ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50/60 text-emerald-600';
+                const cls = cov.belowMin.length ? 'bg-red-50 text-red-600' : cov.aboveMax.length ? 'bg-amber-50 text-amber-600' : 'bg-green-50/60 text-green-600';
                 return (
                   <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:28}}
                     title={[...cov.belowMin,...cov.aboveMax].join('; ') || 'Coverage OK'}
-                    className={`flex items-center justify-center border-r border-gray-100 text-[10px] tabular-nums font-medium ${cls}`}>
+                    className={`flex items-center justify-center border-r border-gray-100 text-[10px] tabular-nums font-mono font-medium ${cls}`}>
                     {cov.filled}/{cov.minTotal}
                   </div>
                 );
@@ -5621,10 +5826,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                 {dates.map(ds=>{
                   const info = coverageByDate[ds].perShift[s.id];
                   if (!info) return <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:22}} className="border-r border-gray-50"/>;
-                  const cls = info.count<info.min ? 'text-rose-500 font-semibold' : info.count>info.max ? 'text-amber-500 font-semibold' : 'text-gray-400';
+                  const cls = info.count<info.min ? 'text-red-500 font-semibold' : info.count>info.max ? 'text-amber-500 font-semibold' : 'text-gray-400';
                   return (
                     <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:22}}
-                      className={`flex items-center justify-center border-r border-gray-50 text-[9px] tabular-nums ${cls}`}>
+                      className={`flex items-center justify-center border-r border-gray-50 text-[9px] tabular-nums font-mono ${cls}`}>
                       {info.count}/{info.min}
                     </div>
                   );
@@ -5666,31 +5871,31 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 // Confirmation modal shown when a drag-drop swap/move has one or more violations — lists them and
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
 // Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
-// rose warning-panel style as DragConfirmModal's violation list below.
+// red warning-panel style as DragConfirmModal's violation list below.
 function ReadinessWarningPanel({ issues }) {
   if (!issues.length) return null;
   return (
-    <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 mb-3">
-      <div className="flex items-center gap-1.5 text-rose-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
-      {issues.map((w,i)=><p key={i} className="text-xs text-rose-600 ml-4">{w}</p>)}
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
+      {issues.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
     </div>
   );
 }
 
 // Shared by ShiftPickerModal and DragConfirmModal — switches to amber "Soft rule flagged"
-// styling when every violation is a soft, chief-reorderable postNightRest warning, rose
+// styling when every violation is a soft, chief-reorderable postNightRest warning, red
 // "Violation detected" otherwise. Not reused by ReadinessWarningPanel above, which lists
 // missing-data gaps (plain strings, no severity level) rather than {message, level} objects.
 function ViolationPanel({ violations }) {
   if (!violations.length) return null;
   const allSoft = violations.every(w => w.level === 'warn');
   return (
-    <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
-      <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-rose-700'}`}>
+    <div className={`border rounded-lg p-3 mb-3 ${allSoft ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+      <div className={`flex items-center gap-1.5 font-medium text-sm mb-1 ${allSoft ? 'text-amber-700' : 'text-red-700'}`}>
         <AlertCircle size={13}/> {allSoft ? 'Soft rule flagged' : 'Violation detected'}
       </div>
       {violations.map((w,i)=>(
-        <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-rose-600'}`}>
+        <p key={i} className={`text-xs ml-4 ${w.level==='warn' ? 'text-amber-600' : 'text-red-600'}`}>
           {w.message}{w.level==='warn' && <span className="text-amber-400"> (soft rule — chief can reorder priority)</span>}
         </p>
       ))}
@@ -5762,13 +5967,13 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
         <div style={{minWidth: 1100}}>
           <div className="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
             {DOW.map(d => (
-              <div key={d} className="px-2 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide text-center border-r border-gray-100 last:border-r-0">{d}</div>
+              <div key={d} className="px-2 py-1.5 font-display text-xs font-semibold text-gray-400 uppercase tracking-wide text-center border-r border-gray-100 last:border-r-0">{d}</div>
             ))}
           </div>
           {weekRows.map((row, i) => (
             <div key={i} className="grid grid-cols-7 border-b border-gray-100 last:border-b-0">
               {row.map((ds, j) => {
-                if (!ds) return <div key={j} className="min-h-[120px] bg-slate-50/40 border-r border-gray-100 last:border-r-0"/>;
+                if (!ds) return <div key={j} className="min-h-[120px] bg-gray-50/40 border-r border-gray-100 last:border-r-0"/>;
                 const d = parseDate(ds);
                 const isWed = d.getDay() === 3;
                 const cov = coverageByDate[ds];
@@ -5781,7 +5986,7 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
                     <div className="flex items-center justify-between mb-1">
                       <span className={`text-xs font-semibold ${isWed?'text-yellow-700':'text-gray-600'}`}>{d.getMonth()+1}/{d.getDate()}</span>
                       {cov && cov.minTotal > 0 && (
-                        <span className={`text-[10px] tabular-nums ${cov.belowMin.length ? 'text-rose-500 font-semibold' : 'text-gray-400'}`}
+                        <span className={`text-[10px] tabular-nums font-mono ${cov.belowMin.length ? 'text-red-500 font-semibold' : 'text-gray-400'}`}
                           title={cov.belowMin.length ? `Below minimum: ${cov.belowMin.join(', ')}` : undefined}>
                           {cov.filled}/{cov.minTotal}
                         </span>
@@ -5868,7 +6073,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
             <div key={ws}>
               <div className="px-3 py-1 bg-gray-50 flex items-center justify-between text-[10px] text-gray-400">
                 <span>{formatDisplayDate(ws)} – {formatDisplayDate(toDateStr(addDays(parseDate(ws),6)))}</span>
-                <span className="tabular-nums">{rows.filter(r=>r.sid).length} shift{rows.filter(r=>r.sid).length!==1?'s':''}</span>
+                <span className="tabular-nums font-mono">{rows.filter(r=>r.sid).length} shift{rows.filter(r=>r.sid).length!==1?'s':''}</span>
               </div>
               {rows.map(({ds,sid,isOff,isJeo,isJC,isGR})=>{
                 const shift = sid ? SHIFT_MAP[sid] : null;
@@ -5879,12 +6084,12 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
                   <div key={ds} onClick={()=>onRowClick(res,ds)}
                     title={hasV ? violMap[vKey].map(v=>v.message).join('; ') : ''}
                     className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${hasV?'ring-1 ring-inset ring-red-400 bg-red-50':''}`}>
-                    <span className="text-[10px] text-gray-400 tabular-nums w-10 shrink-0">{DOW[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</span>
+                    <span className="text-[10px] text-gray-400 tabular-nums font-mono w-10 shrink-0">{DOW[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</span>
                     {shift && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${shift.chip}`}>{sid}</span>}
                     {shift && <span className="text-[10px] text-gray-400">{shift.hours}</span>}
                     {!shift && isOff && <span className="text-[10px] font-bold text-orange-500">OFF</span>}
-                    {!shift && isJeo && <span className="text-[10px] font-bold text-violet-500">J</span>}
-                    {isJC && <span className="text-[10px] font-bold px-1 rounded bg-indigo-100 text-indigo-600">JC</span>}
+                    {!shift && isJeo && <span className="text-[10px] font-bold text-purple-500">J</span>}
+                    {isJC && <span className="text-[10px] font-bold px-1 rounded bg-primary/10 text-primary">JC</span>}
                     {isGR && <span className="text-[10px] font-bold px-1 rounded bg-yellow-100 text-yellow-700">GR</span>}
                   </div>
                 );
@@ -5907,19 +6112,19 @@ function GenerationReportCard({ report, appSettings }) {
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-      <div className="px-4 py-3 border-b border-gray-100 bg-indigo-50/60">
+      <div className="px-4 py-3 border-b border-gray-100 bg-primary/10">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <span className="text-sm font-semibold text-indigo-900 flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
-          <span className="text-xs text-indigo-400">{new Date(report.generatedAt).toLocaleString()}</span>
+          <span className="text-sm font-semibold text-primary flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
+          <span className="text-xs text-primary">{new Date(report.generatedAt).toLocaleString()}</span>
         </div>
-        <p className="text-xs text-indigo-700 mt-1">
+        <p className="text-xs text-primary mt-1">
           Filled {report.filled} of {report.totalSlots} minimum coverage slots ({report.keptManual} kept from manual entries){report.optionalFilled > 0 ? `, plus ${report.optionalFilled} optional slots toward each shift's maximum` : ''}.
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
       </div>
       <div className="p-4 space-y-3">
         {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (
-          <p className="text-sm text-emerald-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
+          <p className="text-sm text-green-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
         )}
 
         {realGapGroups.map(g => (
@@ -5977,11 +6182,11 @@ function GenerationReportCard({ report, appSettings }) {
         )}
 
         {report.jeopardyPlacements.length > 0 && (
-          <div className="border border-violet-200 bg-violet-50/60 rounded-lg p-3">
-            <span className="text-xs font-semibold text-violet-700">Placed on jeopardy call dates (warn policy)</span>
+          <div className="border border-purple-200 bg-purple-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-purple-700">Placed on jeopardy call dates (warn policy)</span>
             <ul className="mt-1 space-y-0.5">
               {report.jeopardyPlacements.map((j,i)=>(
-                <li key={i} className="text-xs text-violet-700">{j.name} — {formatDisplayDate(j.dateStr)} · {j.shiftId}</li>
+                <li key={i} className="text-xs text-purple-700">{j.name} — {formatDisplayDate(j.dateStr)} · {j.shiftId}</li>
               ))}
             </ul>
           </div>
@@ -6009,7 +6214,7 @@ function ValidationTab({ issues, block, appSettings }) {
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
       <div className="text-center py-16">
-        <CheckCircle size={48} className="mx-auto mb-3 text-emerald-500"/>
+        <CheckCircle size={48} className="mx-auto mb-3 text-green-500"/>
         <p className="text-gray-700 font-semibold">No rule violations</p>
         <p className="text-sm text-gray-400 mt-1">All scheduled shifts comply with current rules.</p>
       </div>
@@ -6290,8 +6495,8 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                 { v: 'off',   l: 'Ignore', d: 'No restriction or warning' },
               ].map(({ v, l, d }) => (
                 <button key={v} onClick={()=>updS('jeopardyPolicy', v)}
-                  className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 text-left transition-all ${jeoPolicy===v?'border-violet-500 bg-violet-50':'border-gray-200 hover:border-violet-300 bg-white'}`}>
-                  <span className={`text-xs font-bold ${jeoPolicy===v?'text-violet-700':'text-gray-700'}`}>{l}</span>
+                  className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 text-left transition-all ${jeoPolicy===v?'border-purple-500 bg-purple-50':'border-gray-200 hover:border-purple-300 bg-white'}`}>
+                  <span className={`text-xs font-bold ${jeoPolicy===v?'text-purple-700':'text-gray-700'}`}>{l}</span>
                   <span className="text-xs text-gray-400 mt-0.5">{d}</span>
                 </button>
               ))}
@@ -6316,8 +6521,29 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </div>
             <input type="number" min="0" max="31" value={getTraumaCap(appSettings)}
               onChange={e=>updS('emTraumaCap', Math.max(0, Number(e.target.value) || 0))}
-              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-primary"/>
           </div>
+
+          {/* General peds nudge */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-700">PGY-2/3 peds shifts per block (fill-in)</label>
+              <p className="text-xs text-gray-400">Soft nudge for EM Home PGY-2/3 not already on a dedicated peds rotation (Peds/EM, Trauma↔Peds) to pick up this many peds shifts per block — a gap-filler, not an emphasis.</p>
+            </div>
+            <input type="number" min="0" max="31" value={getGeneralPedsTarget(appSettings)}
+              onChange={e=>updS('generalPedsMonthlyTarget', Math.max(0, Number(e.target.value) || 0))}
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-primary"/>
+          </div>
+
+          {/* Weekend off */}
+          <label className="flex items-start gap-2.5 cursor-pointer select-none">
+            <input type="checkbox" checked={appSettings.enforceWeekendOff !== false}
+              onChange={e=>updS('enforceWeekendOff', e.target.checked)} className="rounded mt-0.5"/>
+            <span>
+              <span className="block text-xs font-semibold text-gray-700">Try to give every resident one full weekend off</span>
+              <span className="block text-xs text-gray-400">Soft nudge: the generator avoids consuming a resident's last remaining free Saturday+Sunday when another candidate is available. Validation warns if a schedulable resident ends the block with none.</span>
+            </span>
+          </label>
         </div>
       </CollapsibleCard>
 
@@ -6337,9 +6563,9 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                 <div className="flex items-center gap-1 shrink-0">
                   <input type="number" min="0" max="31" value={ov ?? ''} placeholder={def ?? '—'}
                     onChange={e=>updTarget(row.key, e.target.value)}
-                    className={`w-14 text-xs border rounded-lg px-1.5 py-1 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400 ${ov != null ? 'border-indigo-300 bg-indigo-50 font-semibold' : 'border-gray-200'}`}/>
+                    className={`w-14 text-xs border rounded-lg px-1.5 py-1 text-center focus:outline-none focus:ring-1 focus:ring-primary ${ov != null ? 'border-primary bg-primary/10 font-semibold' : 'border-gray-200'}`}/>
                   {ov != null && (
-                    <button onClick={()=>updTarget(row.key, '')} title="Reset to default" className="text-gray-300 hover:text-indigo-500"><RefreshCw size={10}/></button>
+                    <button onClick={()=>updTarget(row.key, '')} title="Reset to default" className="text-gray-300 hover:text-primary"><RefreshCw size={10}/></button>
                   )}
                 </div>
               </div>
@@ -6359,7 +6585,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </div>
             <input type="number" min="7" max="60" value={appSettings.defaultBlockLength ?? 28}
               onChange={e=>updS('defaultBlockLength', Math.max(7, Number(e.target.value) || 28))}
-              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-primary"/>
           </div>
           <div className="flex items-center gap-3">
             <div className="flex-1">
@@ -6368,7 +6594,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </div>
             <input type="number" min="1" max="100" value={appSettings.maxSavedBlocks ?? 24}
               onChange={e=>updS('maxSavedBlocks', Math.max(1, Number(e.target.value) || 24))}
-              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-indigo-400"/>
+              className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-primary"/>
           </div>
         </div>
       </CollapsibleCard>
@@ -6379,7 +6605,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         : "All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly."}>
         <div className="flex gap-2 flex-wrap">
           <button onClick={exportData}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
             <Download size={14}/> Export Backup
           </button>
           <button onClick={()=>fileRef.current?.click()}
@@ -6392,7 +6618,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       </CollapsibleCard>
 
       {/* Pointers */}
-      <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">
+      <div className="bg-primary/10 border border-primary/20 rounded-xl px-4 py-3 text-xs text-primary flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0"/>
         <span>Conference &amp; ITE dates: <strong>Home tab</strong> → AY folder. Special days (Code Blue, advocacy, procedure, US days): <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
       </div>
@@ -6440,7 +6666,7 @@ function GuideSection({ id, title, open, onToggle, goTab, onNavigate, children }
         <div className="flex items-center gap-3">
           {goTab && open && (
             <span onClick={e=>{e.stopPropagation(); onNavigate?.(goTab.id);}}
-              className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer whitespace-nowrap">
+              className="text-[11px] font-medium text-primary hover:text-primary hover:underline cursor-pointer whitespace-nowrap">
               Open {goTab.label} →
             </span>
           )}
@@ -6503,7 +6729,7 @@ function UserGuideTab({ onNavigate }) {
       {/* Search + expand/collapse */}
       <div className="flex items-center gap-2">
         <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search the guide… (e.g. jeopardy, export, gray cell)"
-          className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"/>
+          className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary bg-white"/>
         {query && <button onClick={()=>setQuery('')} className="text-xs text-gray-500 hover:text-gray-700">Clear</button>}
         <button onClick={()=>setAll(true)} className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap">Expand all</button>
         <button onClick={()=>setAll(false)} className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap">Collapse all</button>
@@ -6514,7 +6740,7 @@ function UserGuideTab({ onNavigate }) {
         <div className="flex flex-wrap gap-1.5">
           {GUIDE_SECTIONS.map(s => (
             <button key={s.id} onClick={()=>jumpTo(s.id)}
-              className="text-[11px] px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-indigo-300 hover:text-indigo-700 hover:bg-indigo-50 transition-colors">
+              className="text-[11px] px-2.5 py-1 rounded-full border border-gray-200 bg-white text-gray-600 hover:border-primary hover:text-primary hover:bg-primary/10 transition-colors">
               {s.title.split(' — ')[0]}
             </button>
           ))}
@@ -6557,7 +6783,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Off-service residents are per-block</strong> — cleared on New Block/Block Reset, re-entered each month.</li>
           <li><strong>Import Roster</strong> — paste rows from a spreadsheet or upload a CSV (Name, Category, PGY — any Rotation/date columns are ignored) instead of adding residents one at a time. Shows a preview before committing; already-listed names are skipped automatically.</li>
           <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error. Off-service residents can add/remove these directly on their tile, no need to open Edit.</li>
-          <li><strong>Jeopardy Call Dates</strong> (violet "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
+          <li><strong>Jeopardy Call Dates</strong> (purple "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
           <li><strong>Availability</strong> (off-service only) — defaults to available all block; switch to <strong>Date ranges</strong> for a resident who only rotates with you part of the block, or <strong>Specific days only</strong> for a whitelist of exact dates (e.g. Peds residents' self-cover days from Amion). Outside their availability, the resident is unschedulable, same as an approved day off.</li>
           <li>Edit any profile with the pencil icon; the IM "CCU nights" toggle blocks Tue/Wed automatically.</li>
         </ul>
@@ -6566,8 +6792,8 @@ function UserGuideTab({ onNavigate }) {
       {show('matrix') && <GuideSection {...sec('matrix')}>
         <p>The matrix defines which shift types each <strong>residency + year</strong> can work. Checks are color-coded by area (POD, PED, FLEX, MT, Trauma).</p>
         <ul className="list-disc space-y-1">
-          <li>Click any cell to toggle. Modified rows show <span className="text-indigo-500">✎</span> and a per-row reset.</li>
-          <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-violet-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
+          <li>Click any cell to toggle. Modified rows show <span className="text-primary">✎</span> and a per-row reset.</li>
+          <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-purple-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
           <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and aren't edited here — see the Scheduling Rules tab, which now controls those directly.</li>
         </ul>
       </GuideSection>}
@@ -6585,9 +6811,9 @@ function UserGuideTab({ onNavigate }) {
 
       {show('grid') && <GuideSection {...sec('grid')}>
         <ul className="list-disc space-y-1">
-          <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents can't be in the ED.</li>
+          <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents have no day shifts (evenings/nights are still workable).</li>
           <li><strong className="text-orange-500">OFF</strong> (orange) — approved day off.</li>
-          <li><strong className="text-violet-600">J</strong> (violet) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
+          <li><strong className="text-purple-600">J</strong> (purple) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
           <li><strong className="text-red-500">Red ring</strong> — rule violation on that assignment.</li>
           <li>Gray cells have no eligible shifts that day (clinic day, weekend call, etc.).</li>
           <li>The shift picker validates <em>before</em> you commit: eligibility, jeopardy, and the rest-period rule (a shift's length = the hours off required after it; Trauma 12h → 12h rest).</li>
@@ -6614,7 +6840,7 @@ function UserGuideTab({ onNavigate }) {
         <div className="flex items-center gap-3 flex-wrap text-[11px] text-gray-600">
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span> Grand Rounds Wed</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-orange-100 text-orange-600">OFF</span> approved day off</span>
-          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-violet-100 text-violet-700">J</span> jeopardy call</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-purple-100 text-purple-700">J</span> jeopardy call</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
         </div>
@@ -6709,13 +6935,13 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
           const Icon=t.icon; const active=tab===t.id;
           const isValidation = t.id==='validation';
           const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
-          const iconColor = active?'text-white':'text-slate-400';
+          const iconColor = active?'text-white':'text-gray-400';
           return (
             <button key={t.id} onClick={()=>setTab(t.id)}
               onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
               onDragLeave={(e)=>{if(e.currentTarget.contains(e.relatedTarget))return; setDragOverTabId(p=>p===t.id?null:p);}}
               onDrop={(e)=>{e.preventDefault(); setTabOrder(reorderIds(orderedTabs.map(x=>x.id), dragTabId, t.id)); resetDrag();}}
-              className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left ${active?'bg-slate-900 text-white':'text-slate-600 hover:bg-slate-100 hover:text-slate-800'} ${dragOver?'ring-2 ring-inset ring-indigo-400':''}`}>
+              className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left ${active?'bg-primary text-white':'text-gray-600 hover:bg-gray-100 hover:text-gray-800'} ${dragOver?'ring-2 ring-inset ring-primary':''}`}>
               <span draggable onDragStart={()=>setDragTabId(t.id)} onDragEnd={resetDrag} title="Drag to reorder"
                 className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40">
                 <GripVertical size={13} className={iconColor}/>
@@ -6725,19 +6951,19 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
               {isValidation && (issueCounts.errors > 0 || issueCounts.warns > 0) && (
                 <span className="flex items-center gap-1">
                   {issueCounts.errors > 0 && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-rose-100 text-rose-700'}`}>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-red-100 text-red-700'}`}>
                       {issueCounts.errors}
                     </span>
                   )}
                   {issueCounts.warns > 0 && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
                       {issueCounts.warns}
                     </span>
                   )}
                 </span>
               )}
               {isValidation && clean && (
-                <CheckCircle size={13} className={active?'text-white':'text-emerald-500'}/>
+                <CheckCircle size={13} className={active?'text-white':'text-green-500'}/>
               )}
             </button>
           );
@@ -6746,7 +6972,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
 
       {/* Legend */}
       <div className="mt-3 px-3 py-3 border-t border-gray-100">
-        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Legend</p>
+        <p className="font-display text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Legend</p>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {SHIFT_AREAS.map(area => (
             <span key={area} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${SHIFT_MAP[`${area}-D`].chip}`}>{area}</span>
@@ -6755,7 +6981,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-gray-400">
           <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
-          <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">J</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-600">J</span>
         </div>
       </div>
 
@@ -7087,40 +7313,40 @@ export default function ResidentScheduler() {
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
   return (
-    <div className={`h-screen flex flex-col bg-slate-100 overflow-hidden ${darkMode ? 'res-dark' : ''}`}>
+    <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 shrink-0 no-print">
+      <header className="bg-white border-b border-gray-200 shrink-0 no-print">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-md bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center text-white flex-none">
+            <div className="w-8 h-8 rounded-md bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white flex-none">
               <CalendarDays size={18}/>
             </div>
             <div className="flex flex-col min-w-0">
-              <h1 className="text-sm font-semibold tracking-tight text-slate-900 truncate">EM Residency Scheduler</h1>
-              <p className="text-[11px] text-slate-500 leading-none mt-0.5 truncate">
+              <h1 className="font-display text-base font-semibold uppercase tracking-wide text-gray-900 truncate">EM Residency Scheduler</h1>
+              <p className="text-[11px] text-gray-500 leading-none mt-0.5 truncate">
                 {block.name||'No block name'} · {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-none">
-            <span className="text-xs text-slate-400">{allResidents.length} residents</span>
+            <span className="text-xs text-gray-400">{allResidents.length} residents</span>
             <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="p-2 rounded-md text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors">
+              className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
             {block.startDate && (
               <>
                 <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
                   <Download size={12}/> Grid CSV
                 </button>
                 <button onClick={()=>requestExport('qgenda')} title="One row per shift with real start/end times — for QGenda import"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
                   <Download size={12}/> QGenda CSV
                 </button>
                 <button onClick={()=>setPdfPicker(true)} title="Printable PDF — matrix or per-resident pages"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
                   <Download size={12}/> PDF
                 </button>
               </>
@@ -7193,7 +7419,7 @@ export default function ResidentScheduler() {
               <button onClick={()=>{isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="px-3 py-1.5 text-sm border border-gray-300 hover:bg-gray-50 rounded-lg text-gray-700">
                 {isSwitchNew?'Discard & New':'Switch Without Saving'}
               </button>
-              <button onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium">
+              <button onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg font-medium">
                 <Save size={13}/> Save &amp; {isSwitchNew?'New':'Switch'}
               </button>
             </div>
@@ -7229,12 +7455,12 @@ export default function ResidentScheduler() {
         <Modal title="Export PDF" onClose={()=>setPdfPicker(false)}>
           <div className="space-y-3">
             <button onClick={()=>{setPdfPicker(false); requestExport('pdf-matrix');}}
-              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors">
+              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-primary hover:bg-primary/10 transition-colors">
               <div className="text-sm font-semibold text-gray-800">Matrix (all residents)</div>
               <div className="text-xs text-gray-500 mt-0.5">One page, residents × dates — matches the Schedule tab grid. Landscape A3.</div>
             </button>
             <button onClick={()=>{setPdfPicker(false); requestExport('pdf-resident');}}
-              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors">
+              className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-primary hover:bg-primary/10 transition-colors">
               <div className="text-sm font-semibold text-gray-800">Per-resident pages</div>
               <div className="text-xs text-gray-500 mt-0.5">One page per schedulable resident, with date/shift/notes rows — good for a take-home printout.</div>
             </button>
