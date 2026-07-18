@@ -8,6 +8,7 @@ import {
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
+  MessageSquare, Bug, Zap, Lightbulb, Lock,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -6942,6 +6943,89 @@ function UserGuideTab({ onNavigate }) {
   );
 }
 
+// ─── FEEDBACK WIDGET ────────────────────────────────────────────────────────
+// Floating "Feedback" button, rendered by the root regardless of active tab. Hidden entirely
+// when SUPABASE_ENABLED is false — matches how AutosaveIndicator's cloud states only appear
+// when cloud sync is configured (see the root's own render call site).
+const FEEDBACK_TYPES = [
+  { id: 'bug',   label: 'Bug',   icon: Bug },
+  { id: 'crash', label: 'Crash', icon: Zap },
+  { id: 'idea',  label: 'Idea',  icon: Lightbulb },
+];
+
+function FeedbackWidget({ page, showToast }) {
+  const [open, setOpen] = useState(false);
+  const [type, setType] = useState('bug');
+  const [message, setMessage] = useState('');
+  const [contact, setContact] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  function reset() { setType('bug'); setMessage(''); setContact(''); }
+
+  async function handleSubmit() {
+    if (!message.trim()) { showToast('Please describe the issue or idea first', 'red'); return; }
+    setSubmitting(true);
+    try {
+      await submitFeedback({ type, message: message.trim(), contact: contact.trim(), page });
+      showToast('Thanks — feedback sent', 'green');
+      reset();
+      setOpen(false);
+    } catch (e) {
+      showToast(`Could not send feedback: ${e.message}`, 'red');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)} title="Report a bug, crash, or idea"
+        className="no-print fixed bottom-5 right-5 z-40 flex items-center gap-1.5 px-3.5 py-2.5 rounded-full bg-primary text-white shadow-lg hover:bg-primary/90 transition-colors text-sm font-medium">
+        <MessageSquare size={16}/> Feedback
+      </button>
+      {open && (
+        <Modal title="Send Feedback" onClose={() => { setOpen(false); reset(); }}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Type</label>
+              <div className="flex gap-1.5">
+                {FEEDBACK_TYPES.map(t => {
+                  const Ic = t.icon;
+                  return (
+                    <button key={t.id} onClick={() => setType(t.id)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${type === t.id ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+                      <Ic size={13}/> {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Message <span className="text-red-500">*</span></label>
+              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4}
+                placeholder="What happened, or what would help?"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Contact (optional)</label>
+              <input type="text" value={contact} onChange={e => setContact(e.target.value)}
+                placeholder="Email, if you'd like a reply"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => { setOpen(false); reset(); }} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
+              <button onClick={handleSubmit} disabled={submitting}
+                className="px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 disabled:opacity-50 text-white rounded-lg font-medium">
+                {submitting ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -7527,6 +7611,7 @@ export default function ResidentScheduler() {
         </Modal>
       )}
 
+      {SUPABASE_ENABLED && <FeedbackWidget page={tab} showToast={showToast}/>}
       <Toast toast={toast} onClose={()=>setToast(null)}/>
     </div>
   );
