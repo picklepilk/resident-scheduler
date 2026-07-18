@@ -83,6 +83,8 @@ to CSV, with JSON backup/restore in the Settings tab.
   onto the row mid-operation, and `importData` pushes only `LS_BACKUP_KEYS` keys (never
   `res_dark_mode`) into the shared document.
 
+- **User feedback** (`// ─── FEEDBACK ───` section, after the Supabase sync helpers; `// ─── FEEDBACK WIDGET ───`/`// ─── FEEDBACK ADMIN TAB ───` sections near `MAIN APP`): a floating bug/crash/idea widget (hidden when `SUPABASE_ENABLED` is false) posts to a separate `feedback` table in the same shared Supabase project via `submitFeedback()` — insert-only for the anon key (no `SELECT`/`UPDATE`/`DELETE` RLS policy for anon, unlike `res_state`'s wide-open posture). Every row carries `app_name: 'resident-scheduler'` since the table is shared with `em-scheduler`. `main.jsx` installs a `window.onerror`/`unhandledrejection` listener that auto-submits `type: 'crash'` reports through the same helper, deduped per session via `sessionStorage` and capped at 5/session. The only way to *read* feedback is the password-gated "Feedback" sidebar tab (also hidden when `SUPABASE_ENABLED` is false), which calls `netlify/functions/feedback-admin.js` — a server-only Netlify Function using the `SUPABASE_SERVICE_ROLE_KEY` env var to bypass RLS, gated by an `x-feedback-password` header checked against `FEEDBACK_ADMIN_PASSWORD`. Both of those are server-only Netlify environment variables (set in the Netlify dashboard for this site) — never `VITE_`-prefixed, never routed through the `%VITE_*%` HTML-token mechanism `index.html` uses for the client-exposed Supabase URL/anon key. See `.env.example` for the full list and `docs/superpowers/specs/2026-07-18-user-feedback-design.md` for the original design.
+
 ## Running / building / deploying
 ```bash
 npm run dev
