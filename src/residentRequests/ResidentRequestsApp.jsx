@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { supabase, AUTH_ENABLED } from '../supabaseClient';
 import LoginScreen from './LoginScreen';
 import ResidentPicker from './ResidentPicker';
+import RequestForm from './RequestForm';
 
 export default function ResidentRequestsApp() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
   const [profile, setProfile] = useState(undefined); // undefined = not fetched, null = no row yet
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!AUTH_ENABLED) { setSession(null); return; }
@@ -27,6 +29,10 @@ export default function ResidentRequestsApp() {
     return <ResidentPicker session={session} onLinked={residentId => setProfile({ resident_id: residentId })} />;
   }
 
-  // Task 7/8 fill this in.
-  return <div className="min-h-screen bg-gray-50 p-4">Linked to resident {profile.resident_id}.</div>;
+  // Task 8 fills in RequestList, keyed off refreshKey so a submission triggers a re-fetch.
+  return (
+    <div className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
+      <RequestForm residentId={profile.resident_id} onSubmitted={() => setRefreshKey(k => k + 1)} />
+    </div>
+  );
 }
