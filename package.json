@@ -9,6 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/barlow": "^5.1.0",
+    "@fontsource/barlow-condensed": "^5.1.0",
+    "@fontsource/jetbrains-mono": "^5.1.1",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.2",
     "lucide-react": "^0.475.0",
