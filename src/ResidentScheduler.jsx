@@ -6314,7 +6314,7 @@ const SUPABASE_ANON_RAW = (typeof globalThis !== 'undefined' && globalThis.__SUP
 const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
 const SUPABASE_URL     = isUnresolvedToken(SUPABASE_URL_RAW)  ? '' : SUPABASE_URL_RAW;
 const SUPABASE_ANON    = isUnresolvedToken(SUPABASE_ANON_RAW) ? '' : SUPABASE_ANON_RAW;
-const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
+export const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
 
 // When true, the root's debounced cloud-save is suppressed — set by SettingsTab's import/clear
 // while they own the cloud row, so a due auto-save timer can't race in and re-POST stale state
@@ -6378,6 +6378,48 @@ const sbLoadState = async () => {
 const sbDeleteState = async () => {
   if (!SUPABASE_ENABLED) return;
   await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}`, { method: 'DELETE', prefer: 'return=minimal' });
+};
+
+// ─── FEEDBACK ─────────────────────────────────────────────────────────────────
+// A brand-new table, structurally unrelated to the single-row res_state document — it needs
+// many independent rows (one per report), so it deliberately does NOT reuse res_state's sync
+// machinery (sbFetch is reused as the transport, but not syncBindings/LS_BACKUP_KEYS/the
+// debounced-save effect). Schema (run once in the same shared Supabase project's SQL editor —
+// see docs/superpowers/plans/2026-07-18-user-feedback-plan.md Task 1 for the full statement):
+//   create table feedback (
+//     id uuid primary key default gen_random_uuid(), created_at timestamptz not null default now(),
+//     app_name text not null default 'resident-scheduler',
+//     type text not null check (type in ('bug','crash','idea')), message text not null,
+//     contact text, page text, user_agent text, app_version text,
+//     status text not null default 'new' check (status in ('new','reviewed','resolved')), meta jsonb
+//   );
+//   alter table feedback enable row level security;
+//   create policy "anyone can submit feedback" on feedback for insert with check (true);
+// No select/update/delete policy for anon — the admin view (see netlify/functions/
+// feedback-admin.js) goes through a service-role key instead. Every insert hardcodes
+// app_name: 'resident-scheduler' so a future em-scheduler feedback feature on the same
+// project/table can't collide with this app's rows.
+//
+// Insert-only via the anon key. `prefer: 'return=minimal'` is required (not sbFetch's default
+// return=representation) — Postgres RLS only returns an INSERT...RETURNING row if a SELECT
+// policy also grants access to it, and there deliberately isn't one for anon; requesting a
+// representation here would come back empty/confusing instead of erroring loudly.
+export const submitFeedback = async ({ type, message, contact, page, meta }) => {
+  if (!SUPABASE_ENABLED) return;
+  await sbFetch('/feedback', {
+    method: 'POST',
+    prefer: 'return=minimal',
+    body: {
+      app_name: 'resident-scheduler',
+      type,
+      message,
+      contact: contact || null,
+      page: page || null,
+      user_agent: (typeof navigator !== 'undefined' && navigator.userAgent) || null,
+      app_version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null,
+      meta: meta || null,
+    },
+  });
 };
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
