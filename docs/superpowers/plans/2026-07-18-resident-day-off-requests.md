@@ -147,6 +147,28 @@ create policy "profiles_update_own" on profiles for update
   using (auth.uid() = id)
   with check (auth.uid() = id and role = 'resident');
 
+-- Every request table below (requests_select_own/insert_own/cancel_own) authorizes a resident
+-- purely by matching their profile's resident_id — so an UPDATE that re-links resident_id to a
+-- different value is a full impersonation path (read/submit/cancel requests as someone else), not
+-- just a data-integrity nicety. RLS's plain WITH CHECK can't express "this column may only change
+-- from NULL," so (same reasoning as the day_off_requests cancel-only-status trigger) this needs a
+-- BEFORE UPDATE trigger with real OLD/NEW access.
+create or replace function public.enforce_resident_id_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.resident_id is not null and new.resident_id is distinct from old.resident_id then
+    raise exception 'resident_id cannot be changed once set';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger profiles_resident_id_immutable
+  before update on profiles
+  for each row execute function public.enforce_resident_id_immutable();
+
 create table day_off_requests (
   id            uuid primary key default gen_random_uuid(),
   resident_id   text not null,
@@ -941,7 +963,7 @@ git commit -m "Add resident's own request list with cancel action"
 
 **Interfaces:**
 - Consumes: `supabase`, `AUTH_ENABLED` (Task 1); `<LoginScreen embedded title subtitle/>` (Task 5) — reused as-is rather than duplicating the magic-link-send form.
-- Produces: `<RequestsTab/>` mounted at `tab === 'requests'`; internally tracks its own `session`/`role` (independent of the resident app — this is a different login surface in the chief's own browser).
+- Produces: `<RequestsTab/>` mounted at `tab === 'requests'`; internally tracks its own `session`/`role` (independent of the resident app — this is a different login surface in the chief's own browser); accepts an `onRequestsChanged` callback (Task 11) that Task 10's `decide()` calls after a successful approve/deny, so the root's sidebar-badge/grid-marker state refreshes immediately.
 
 - [ ] **Step 1: Write the tab's login/role gate**
 
@@ -952,7 +974,7 @@ import { useEffect, useState } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 
-export default function RequestsTab({ emRoster, setEmRoster }) {
+export default function RequestsTab({ emRoster, setEmRoster, onRequestsChanged }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
 
@@ -990,8 +1012,12 @@ export default function RequestsTab({ emRoster, setEmRoster }) {
     return <p className="text-sm text-gray-400 p-4">Your account isn't set up for chief access yet. Contact the app admin.</p>;
   }
 
-  // Task 10 fills this in: the actual approval queue.
-  return <div className="p-4">Signed in as chief.</div>;
+  // Task 10 fills this in: a dedicated ApprovalQueue component (not inlined here — placing the
+  // queue's own hooks after the early returns above would violate the Rules of Hooks, since those
+  // returns fire conditionally across renders of this same mounted instance as session/role
+  // resolve asynchronously; ApprovalQueue only ever mounts once role==='chief' is already true, so
+  // every hook it declares runs consistently on every one of its own renders).
+  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} session={session} onRequestsChanged={onRequestsChanged} />;
 }
 ```
 
@@ -1017,7 +1043,7 @@ const TABS = [
 
 Add `Inbox` to the existing `lucide-react` import list at the top of the file (line 5–11).
 
-Then add the tab's render, next to the existing `tab==='validation'` line (~7401):
+Then add the tab's render, next to the existing `tab==='validation'` line (~7401) — `onRequestsChanged` is threaded in once Task 11 defines `refreshPendingRequests` at the root; until then, pass nothing extra (`RequestsTab`'s `onRequestsChanged` prop is optional/undefined-safe):
 
 ```jsx
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster}/>}
@@ -1048,14 +1074,15 @@ git commit -m "Add chief-facing Requests tab with login/role gate"
 - Modify: `src/RequestsTab.jsx`
 
 **Interfaces:**
-- Consumes: `emRoster`, `setEmRoster` (props from Task 9, sourced from `ResidentScheduler`'s root state).
-- Produces: writes to `day_off_requests.status`/`decision_note`/`decided_at`/`decided_by`, and to the matching resident's `approvedDatesOff` in `emRoster` — the exact field `getEligibleShifts`/the generator/the grid already treat as a hard block, so no further engine changes are needed.
+- Consumes: `emRoster`, `setEmRoster`, `onRequestsChanged` (props from Task 9, sourced from `ResidentScheduler`'s root state — `onRequestsChanged` set to Task 11's `refreshPendingRequests`).
+- Produces: writes to `day_off_requests.status`/`decision_note`/`decided_at`/`decided_by`, and to the matching resident's `approvedDatesOff` in `emRoster` — the exact field `getEligibleShifts`/the generator/the grid already treat as a hard block, so no further engine changes are needed. Calls `onRequestsChanged()` after every decision so the root's pending-count state doesn't wait for a remount/auth-state-change to reflect it.
 
-- [ ] **Step 1: Replace the "Signed in as chief" placeholder with the approval queue**
+- [ ] **Step 1: Add the approval queue as its own component**
 
-Modify `src/RequestsTab.jsx`, replacing the final `return` and adding the queue logic above it:
+Modify `src/RequestsTab.jsx`, adding a new `ApprovalQueue` component below `RequestsTab` (a separate component, not inlined into `RequestsTab`, per the Rules-of-Hooks note already in Task 9's Step 1 code):
 
 ```jsx
+function ApprovalQueue({ emRoster, setEmRoster, session, onRequestsChanged }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
 
@@ -1063,7 +1090,7 @@ Modify `src/RequestsTab.jsx`, replacing the final `return` and adding the queue 
     const { data } = await supabase.from('day_off_requests').select('*').order('submitted_at', { ascending: true });
     setRequests(data || []);
   }
-  useEffect(() => { if (role === 'chief') loadRequests(); }, [role]);
+  useEffect(() => { loadRequests(); }, []);
 
   function residentName(residentId) {
     const r = emRoster.find(x => x.id === residentId);
@@ -1081,6 +1108,7 @@ Modify `src/RequestsTab.jsx`, replacing the final `return` and adding the queue 
         : r));
     }
     loadRequests();
+    onRequestsChanged?.();
   }
 
   const pending = requests.filter(r => r.status === 'pending');
@@ -1118,9 +1146,10 @@ Modify `src/RequestsTab.jsx`, replacing the final `return` and adding the queue 
       </div>
     </div>
   );
+}
 ```
 
-(`useState`/`useEffect` are already imported at the top of this file from Task 9.)
+(`useState`/`useEffect` are already imported at the top of this file from Task 9. `RequestsTab`'s final `return` already renders `<ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} session={session} onRequestsChanged={onRequestsChanged} />` per Task 9's Step 1 — this step only adds the `ApprovalQueue` function definition itself.)
 
 - [ ] **Step 2: Verify**
 
@@ -1142,7 +1171,7 @@ git commit -m "Add chief approve/deny actions wired to approvedDatesOff"
 
 **Interfaces:**
 - Consumes: `supabase`, `AUTH_ENABLED` (Task 1).
-- Produces: extends `SidebarNav`'s props with `pendingRequestCount`; extends `ScheduleGrid`'s props with `pendingByResident` (a `Map<residentId, Set<dateStr>>`).
+- Produces: extends `SidebarNav`'s props with `pendingRequestCount`; extends `ScheduleGrid`'s props with `pendingByResident` (a `Map<residentId, Set<dateStr>>`); extends `RequestsTab`'s props with `onRequestsChanged` (a callback Task 10's `decide()` calls after a successful approve/deny, so the badge/marker update immediately instead of waiting for the next mount or auth-state-change — see Task 10's updated Step 1).
 
 - [ ] **Step 1: Add a root-level pending-requests fetch**
 
@@ -1151,19 +1180,22 @@ Modify `src/ResidentScheduler.jsx`'s root `ResidentScheduler` component, adding 
 ```js
   const [pendingRequests, setPendingRequests] = useState([]); // [{resident_id, dates}], chief-session-gated
 
+  // Exposed (not just effect-local) so Task 10's approve/deny can call it directly after a
+  // decision — without this, the sidebar badge and grid marker would only refresh on the next
+  // mount/auth-state-change, staying visibly stale immediately after the chief acts.
+  const refreshPendingRequests = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setPendingRequests([]); return; }
+    const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
+    setPendingRequests(data || []);
+  }, []);
+
   useEffect(() => {
     if (!AUTH_ENABLED) return;
-    let active = true;
-    async function refresh() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { if (active) setPendingRequests([]); return; }
-      const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
-      if (active) setPendingRequests(data || []);
-    }
-    refresh();
-    const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
-    return () => { active = false; sub.subscription.unsubscribe(); };
-  }, []);
+    refreshPendingRequests();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => refreshPendingRequests());
+    return () => sub.subscription.unsubscribe();
+  }, [refreshPendingRequests]);
 
   const pendingByResident = useMemo(() => {
     const m = new Map();
@@ -1177,7 +1209,7 @@ Modify `src/ResidentScheduler.jsx`'s root `ResidentScheduler` component, adding 
 
 Add the import at the top of the file: `import { supabase, AUTH_ENABLED } from './supabaseClient';`
 
-This fetch silently returns an empty list whenever the chief has no active Supabase session yet (they haven't visited/logged into the Requests tab this session) — RLS blocks the anonymous select, so `data` comes back `null`/`[]` rather than erroring; the UI simply shows no markers until they've signed in once.
+This fetch silently returns an empty list whenever the chief has no active Supabase session yet (they haven't visited/logged into the Requests tab this session) — RLS blocks the anonymous select, so `data` comes back `null`/`[]` rather than erroring; the UI simply shows no markers until they've signed in once. (No unmount guard: `ResidentScheduler` is the app's true root and never unmounts within a page's lifetime, matching the existing `dbReady` effect's own convention in this same component.)
 
 - [ ] **Step 2: Pass the count to SidebarNav**
 
@@ -1223,9 +1255,17 @@ And add a new corner badge right after the existing jeopardy one (~line 5809):
                             {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
 ```
 
+- [ ] **Step 3b: Wire the refresh callback into RequestsTab**
+
+Modify the `<RequestsTab .../>` call (~line 7442, added in Task 9) to also pass `onRequestsChanged={refreshPendingRequests}`:
+
+```jsx
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} onRequestsChanged={refreshPendingRequests}/>}
+```
+
 - [ ] **Step 4: Verify**
 
-As a resident, submit a new pending request for a specific date. As the chief (already signed into the Requests tab at least once this session, per Step 1's session-gating), open the Schedule tab — confirm a small blue "R" badge appears in the top-left corner of that resident's cell on that date, without blocking the cell from being clicked/assigned. Confirm the sidebar's "Requests" tab shows a matching count badge. Approve the request via the Requests tab, switch back to the Schedule tab — confirm the "R" badge is gone (no longer pending) and the cell now shows "OFF" instead.
+As a resident, submit a new pending request for a specific date. As the chief (already signed into the Requests tab at least once this session, per Step 1's session-gating), open the Schedule tab — confirm a small blue "R" badge appears in the top-left corner of that resident's cell on that date, without blocking the cell from being clicked/assigned. Confirm the sidebar's "Requests" tab shows a matching count badge. Approve the request via the Requests tab — confirm the sidebar badge count drops immediately (no reload/tab-switch needed, since `decide()` now calls `onRequestsChanged`), then switch to the Schedule tab and confirm the "R" badge is gone and the cell shows "OFF" instead.
 
 - [ ] **Step 5: Commit**
 
