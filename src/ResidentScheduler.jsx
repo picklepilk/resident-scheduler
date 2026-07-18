@@ -7061,19 +7061,22 @@ export default function ResidentScheduler() {
   // session means this silently resolves to an empty list rather than erroring.
   const [pendingRequests, setPendingRequests] = useState([]); // [{resident_id, dates}], chief-session-gated
 
+  // Exposed (not just effect-local) so Task 10's approve/deny can call it directly after a
+  // decision — without this, the sidebar badge and grid marker would only refresh on the next
+  // mount/auth-state-change, staying visibly stale immediately after the chief acts.
+  const refreshPendingRequests = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setPendingRequests([]); return; }
+    const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
+    setPendingRequests(data || []);
+  }, []);
+
   useEffect(() => {
     if (!AUTH_ENABLED) return;
-    let active = true;
-    async function refresh() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { if (active) setPendingRequests([]); return; }
-      const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
-      if (active) setPendingRequests(data || []);
-    }
-    refresh();
-    const { data: sub } = supabase.auth.onAuthStateChange(() => refresh());
-    return () => { active = false; sub.subscription.unsubscribe(); };
-  }, []);
+    refreshPendingRequests();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => refreshPendingRequests());
+    return () => sub.subscription.unsubscribe();
+  }, [refreshPendingRequests]);
 
   const pendingByResident = useMemo(() => {
     const m = new Map();
@@ -7439,7 +7442,7 @@ export default function ResidentScheduler() {
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} onRequestsChanged={refreshPendingRequests}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>

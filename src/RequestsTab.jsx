@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 
-export default function RequestsTab({ emRoster, setEmRoster }) {
+export default function RequestsTab({ emRoster, setEmRoster, onRequestsChanged }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
 
@@ -40,10 +40,10 @@ export default function RequestsTab({ emRoster, setEmRoster }) {
     return <p className="text-sm text-gray-400 p-4">Your account isn't set up for chief access yet. Contact the app admin.</p>;
   }
 
-  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} session={session} />;
+  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} session={session} onRequestsChanged={onRequestsChanged} />;
 }
 
-function ApprovalQueue({ emRoster, setEmRoster, session }) {
+function ApprovalQueue({ emRoster, setEmRoster, session, onRequestsChanged }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
 
@@ -69,6 +69,7 @@ function ApprovalQueue({ emRoster, setEmRoster, session }) {
         : r));
     }
     loadRequests();
+    onRequestsChanged?.();
   }
 
   const pending = requests.filter(r => r.status === 'pending');
