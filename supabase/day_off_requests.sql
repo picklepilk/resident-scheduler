@@ -29,6 +29,28 @@ create policy "profiles_update_own" on profiles for update
   using (auth.uid() = id)
   with check (auth.uid() = id and role = 'resident');
 
+-- Every request table below (requests_select_own/insert_own/cancel_own) authorizes a resident
+-- purely by matching their profile's resident_id — so an UPDATE that re-links resident_id to a
+-- different value is a full impersonation path (read/submit/cancel requests as someone else), not
+-- just a data-integrity nicety. RLS's plain WITH CHECK can't express "this column may only change
+-- from NULL," so (same reasoning as the day_off_requests cancel-only-status trigger) this needs a
+-- BEFORE UPDATE trigger with real OLD/NEW access.
+create or replace function public.enforce_resident_id_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.resident_id is not null and new.resident_id is distinct from old.resident_id then
+    raise exception 'resident_id cannot be changed once set';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger profiles_resident_id_immutable
+  before update on profiles
+  for each row execute function public.enforce_resident_id_immutable();
+
 create table day_off_requests (
   id            uuid primary key default gen_random_uuid(),
   resident_id   text not null,
