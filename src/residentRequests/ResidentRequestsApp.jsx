@@ -3,6 +3,7 @@ import { supabase, AUTH_ENABLED } from '../supabaseClient';
 import LoginScreen from './LoginScreen';
 import ResidentPicker from './ResidentPicker';
 import RequestForm from './RequestForm';
+import RequestList from './RequestList';
 
 export default function ResidentRequestsApp() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
@@ -29,10 +30,10 @@ export default function ResidentRequestsApp() {
     return <ResidentPicker session={session} onLinked={residentId => setProfile({ resident_id: residentId })} />;
   }
 
-  // Task 8 fills in RequestList, keyed off refreshKey so a submission triggers a re-fetch.
   return (
     <div className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
       <RequestForm residentId={profile.resident_id} onSubmitted={() => setRefreshKey(k => k + 1)} />
+      <RequestList residentId={profile.resident_id} refreshKey={refreshKey} />
     </div>
   );
 }
