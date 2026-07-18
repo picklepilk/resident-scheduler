@@ -51,3 +51,12 @@ export async function fetchBlocksForLookup() {
     .filter(b => b && b.startDate && b.endDate)
     .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
 }
+
+// Read-only roster fetch, same res_state row as fetchBlocksForLookup — returns only the fields
+// needed to let a resident identify themselves (never exposes shift/schedule data).
+export async function fetchRosterForPicker() {
+  const data = await fetchResState();
+  const roster = data && Array.isArray(data.res_em_roster) ? data.res_em_roster : [];
+  return roster.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName }))
+    .sort((a, b) => a.lastName.localeCompare(b.lastName));
+}
