@@ -25,6 +25,16 @@ const RES_STATE_ANON_KEY = '__SUPABASE_ANON__';
 // null on any failure (unconfigured, network error, empty row) rather than throwing, since every
 // caller only uses this for informational display (cutoff warning, block-grouping label, name
 // picker) — never a hard gate.
+//
+// KNOWN LIMITATION (accepted, not a regression — res_state has been wide-open by design since
+// before this feature; see ResidentScheduler.jsx's SUPABASE SYNC section): this pulls the WHOLE
+// shared document — the full generated schedule, every resident's shifts — to the resident's
+// browser before the caller narrows it down to just block dates or roster names. "Residents never
+// see the schedule" is enforced by this app's UI only, not by RLS/data-layer scoping; a resident
+// who inspects network traffic (or who simply navigates to the unauthenticated main `/` route on
+// the same origin) can already see the full schedule today, with or without this feature. Closing
+// this for real would mean serving `/requests` a narrow, RLS-scoped view (or Edge Function) instead
+// of this blob, and gating `/` itself — both out of scope here; left as a documented tradeoff.
 export async function fetchResState() {
   const url = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_URL_KEY]) || '';
   const anon = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_ANON_KEY]) || '';
@@ -52,8 +62,10 @@ export async function fetchBlocksForLookup() {
     .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
 }
 
-// Read-only roster fetch, same res_state row as fetchBlocksForLookup — returns only the fields
-// needed to let a resident identify themselves (never exposes shift/schedule data).
+// Read-only roster fetch, same res_state row as fetchBlocksForLookup — only RENDERS the fields
+// needed to let a resident identify themselves. See fetchResState's own comment above: the
+// underlying fetch still pulls the whole shared document (including the full schedule) to the
+// browser first; this function just narrows what's returned/displayed, not what crossed the wire.
 export async function fetchRosterForPicker() {
   const data = await fetchResState();
   const roster = data && Array.isArray(data.res_em_roster) ? data.res_em_roster : [];

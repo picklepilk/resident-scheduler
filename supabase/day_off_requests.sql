@@ -51,6 +51,14 @@ create trigger profiles_resident_id_immutable
   before update on profiles
   for each row execute function public.enforce_resident_id_immutable();
 
+-- The immutability trigger above only protects a resident_id AFTER it's first set — it does
+-- nothing to stop two different accounts from both claiming the SAME resident_id on their
+-- (independent) first link, since ResidentPicker's roster list has no identity verification
+-- beyond "authenticated, in-domain user." Without this constraint, whoever links second would
+-- silently share read/write access to the first claimant's requests. This index makes that a
+-- hard database-level conflict instead.
+create unique index profiles_resident_id_unique on profiles(resident_id) where resident_id is not null;
+
 create table day_off_requests (
   id            uuid primary key default gen_random_uuid(),
   resident_id   text not null,
