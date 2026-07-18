@@ -132,11 +132,13 @@ create table profiles (
 );
 alter table profiles enable row level security;
 
--- Every user (resident or chief) may read and create only their own profile row.
+-- Every user (resident or chief) may read and create only their own profile row. The insert
+-- policy pins role to 'resident' (like the update policy below) — without this, a resident could
+-- self-insert a profile row with role='chief' before one exists, self-promoting to admin.
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
 create policy "profiles_insert_own" on profiles for insert
-  with check (auth.uid() = id);
+  with check (auth.uid() = id and role = 'resident');
 -- A resident may set their own resident_id (the one-time "which resident are you" pick) but can
 -- never grant themselves the 'chief' role through the app — role stays 'resident' on any
 -- self-update. The chief's own row is flipped to role='chief' manually via the Supabase table
@@ -159,13 +161,24 @@ create table day_off_requests (
 alter table day_off_requests enable row level security;
 
 -- A resident may see and create only rows tagged with their own resident_id (looked up from
--- their own profile row, which profiles_select_own already lets them read).
+-- their own profile row, which profiles_select_own already lets them read). The insert policy
+-- also pins status/decided_*/decision_note to their unset defaults — without this, a resident
+-- could insert a request already marked 'approved' with a fabricated decided_by, bypassing the
+-- chief's decision entirely.
 create policy "requests_select_own" on day_off_requests for select
   using (resident_id = (select resident_id from profiles where id = auth.uid()));
 create policy "requests_insert_own" on day_off_requests for insert
-  with check (resident_id = (select resident_id from profiles where id = auth.uid()));
--- A resident may only ever flip their own still-pending request to 'cancelled' (withdrawal) —
--- never touch status/decision_note/decided_* in any other way.
+  with check (
+    resident_id = (select resident_id from profiles where id = auth.uid())
+    and status = 'pending'
+    and decision_note is null
+    and decided_at is null
+    and decided_by is null
+  );
+-- A resident may only ever flip their own still-pending request to 'cancelled' (withdrawal).
+-- WITH CHECK alone can only pin the new value of individual columns (status='cancelled') — it
+-- cannot express "no other column changed," so a resident could otherwise rewrite decision_note/
+-- decided_*/dates/reason in the same update. The trigger below closes that gap.
 create policy "requests_cancel_own" on day_off_requests for update
   using (
     resident_id = (select resident_id from profiles where id = auth.uid())
@@ -178,6 +191,40 @@ create policy "requests_chief_select_all" on day_off_requests for select
   using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
 create policy "requests_chief_update_all" on day_off_requests for update
   using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
+
+-- Guards requests_cancel_own above: when a resident's update transitions pending -> cancelled,
+-- every column except status must stay unchanged. Uses IS DISTINCT FROM (not =/!=) because a
+-- pending request's decided_at/decided_by/decision_note/reason are normally NULL, and plain SQL
+-- equality against NULL evaluates to NULL (neither true nor false) rather than a usable boolean —
+-- with plain =/!=, a resident could smuggle a fabricated decided_by into the same cancel-update
+-- undetected, since `NULL = NULL` never trips the guard. Does not affect the chief's approve/deny
+-- path (that transitions to 'approved'/'denied', never 'cancelled', so this condition never fires
+-- for it — verified: requests_chief_update_all's own USING clause is what authorizes that path,
+-- and this trigger only inspects OLD/NEW status, not which policy allowed the write).
+create or replace function public.enforce_cancel_only_status()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.status = 'cancelled' and old.status = 'pending' then
+    if new.resident_id is distinct from old.resident_id
+       or new.dates is distinct from old.dates
+       or new.reason is distinct from old.reason
+       or new.decision_note is distinct from old.decision_note
+       or new.submitted_at is distinct from old.submitted_at
+       or new.decided_at is distinct from old.decided_at
+       or new.decided_by is distinct from old.decided_by
+    then
+      raise exception 'Cancelling a request may only change status';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger day_off_requests_cancel_guard
+  before update on day_off_requests
+  for each row execute function public.enforce_cancel_only_status();
 ```
 
 - [ ] **Step 2: Verify**
@@ -201,7 +248,7 @@ A client-side-only domain check (email ends with `@youruh.edu`) is trivial to by
 - Create: `supabase/auth_hook_domain_restriction.sql`
 
 **Interfaces:**
-- Produces: a Postgres function `public.restrict_signup_domain()` wired as a Supabase "Before User Created" Auth Hook. No JS interface — this is a server-side gate, invisible to every later task.
+- Produces: a Postgres function `public.restrict_signup_domain(event jsonb)` wired as a Supabase "Before User Created" Auth Hook. No JS interface — this is a server-side gate, invisible to every later task.
 
 - [ ] **Step 1: Write the hook function**
 
@@ -219,7 +266,12 @@ Create `supabase/auth_hook_domain_restriction.sql`:
 -- IMPORTANT: replace 'youruh.edu' below with the actual institutional domain — this must match
 -- VITE_ALLOWED_EMAIL_DOMAIN exactly, or legitimate signups will be rejected.
 
-create or replace function public.restrict_signup_domain()
+-- Supabase's Postgres Auth Hook contract invokes this with a single `event jsonb` argument — the
+-- function body reads `event->'user'->>'email'` below, so the parameter must be declared or every
+-- invocation errors before the domain check ever runs (a silent full bypass or a signup outage,
+-- depending on how the hook runtime handles the exception — either way, unacceptable for the
+-- app's sole signup security gate).
+create or replace function public.restrict_signup_domain(event jsonb)
 returns jsonb
 language plpgsql
 as $$
@@ -237,6 +289,13 @@ begin
   return jsonb_build_object();
 end;
 $$;
+
+-- Supabase's documented pattern for Postgres-function Auth Hooks: only the auth system itself
+-- should be able to invoke this — otherwise it's also reachable as an arbitrary PostgREST RPC
+-- endpoint (/rest/v1/rpc/restrict_signup_domain) by any anon/authenticated caller. Not a bypass of
+-- the domain check itself (calling it directly doesn't create a user), but unnecessary surface.
+revoke execute on function public.restrict_signup_domain(jsonb) from public, anon, authenticated;
+grant execute on function public.restrict_signup_domain(jsonb) to supabase_auth_admin;
 ```
 
 - [ ] **Step 2: Wire the hook and verify**
@@ -267,7 +326,7 @@ git commit -m "Enforce email-domain signup restriction server-side via Auth Hook
 
 **Interfaces:**
 - Consumes: an array of block-like objects `{ id, name, startDate, endDate }` (matches the shape already used for `block` and each `blocksHistory[]` entry in `ResidentScheduler.jsx`).
-- Produces: `findBlockForDate(dateStr, blocks)` → the matching block object or `null`; `weeksUntil(fromDateStr, toDateStr)` → number of whole weeks between two ISO date strings; `fetchBlocksForLookup()` → `Promise<{ id, name, startDate, endDate }[]>`, read-only, no auth required. All consumed by Task 7 (request form) and Task 8 (request list).
+- Produces: `findBlockForDate(dateStr, blocks)` → the matching block object or `null`; `weeksUntil(fromDateStr, toDateStr)` → number of whole weeks between two ISO date strings; `fetchResState()` → `Promise<object|null>`, the shared read-only fetch of the `res_state` row's `data` blob (the single place the URL/anon-key-reading and error handling live — Task 6's `fetchRosterForPicker` reuses this instead of duplicating it); `fetchBlocksForLookup()` → `Promise<{ id, name, startDate, endDate }[]>`, built on top of `fetchResState()`. All consumed by Task 6 (roster picker), Task 7 (request form), and Task 8 (request list).
 
 - [ ] **Step 1: Write the pure date/block helpers**
 
@@ -294,31 +353,38 @@ export function weeksUntil(fromDateStr, toDateStr) {
 const RES_STATE_URL_KEY = '__SUPABASE_URL__';
 const RES_STATE_ANON_KEY = '__SUPABASE_ANON__';
 
-// Read-only fetch of the shared res_state row's block data — no Supabase Auth session needed,
-// since that table's RLS policy is intentionally wide-open (public_read_write). Returns [] on any
-// failure (unconfigured, network error, empty row) rather than throwing, since this only powers
-// an informational cutoff warning and block-grouping label — never a hard gate.
-export async function fetchBlocksForLookup() {
+// Shared read-only fetch of the shared res_state row's `data` blob — the single place the
+// URL/anon-key-reading and error handling live for every read this resident-facing app needs
+// (Task 6's fetchRosterForPicker reuses this instead of duplicating it). No Supabase Auth session
+// needed, since that table's RLS policy is intentionally wide-open (public_read_write). Returns
+// null on any failure (unconfigured, network error, empty row) rather than throwing, since every
+// caller only uses this for informational display (cutoff warning, block-grouping label, name
+// picker) — never a hard gate.
+export async function fetchResState() {
   const url = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_URL_KEY]) || '';
   const anon = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_ANON_KEY]) || '';
-  if (!url || url.startsWith('%') || !anon || anon.startsWith('%')) return [];
+  if (!url || url.startsWith('%') || !anon || anon.startsWith('%')) return null;
   try {
     const res = await fetch(`${url}/rest/v1/res_state?id=eq.main&select=data`, {
       headers: { apikey: anon, Authorization: `Bearer ${anon}` },
     });
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const rows = await res.json();
-    const data = rows && rows[0] && rows[0].data;
-    if (!data) return [];
-    const current = data.res_current_block;
-    const history = Array.isArray(data.res_blocks_history) ? data.res_blocks_history : [];
-    const all = [...history, ...(current ? [current] : [])];
-    return all
-      .filter(b => b && b.startDate && b.endDate)
-      .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
+    return rows && rows[0] && rows[0].data ? rows[0].data : null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+export async function fetchBlocksForLookup() {
+  const data = await fetchResState();
+  if (!data) return [];
+  const current = data.res_current_block;
+  const history = Array.isArray(data.res_blocks_history) ? data.res_blocks_history : [];
+  const all = [...history, ...(current ? [current] : [])];
+  return all
+    .filter(b => b && b.startDate && b.endDate)
+    .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
 }
 ```
 
@@ -355,7 +421,7 @@ git commit -m "Add pure block-lookup helpers for the resident-requests feature"
 
 **Interfaces:**
 - Consumes: `supabase`, `AUTH_ENABLED`, `ALLOWED_EMAIL_DOMAIN` from `src/supabaseClient.js` (Task 1).
-- Produces: `<ResidentRequestsApp/>` — the mounted root at `/requests`, which internally tracks `session` (Supabase auth session or `null`) and renders `<LoginScreen/>` when there's no session. Later tasks (6–8) render inside this shell once a session exists.
+- Produces: `<ResidentRequestsApp/>` — the mounted root at `/requests`, which internally tracks `session` (Supabase auth session or `null`) and renders `<LoginScreen/>` when there's no session. Later tasks (6–8) render inside this shell once a session exists. `<LoginScreen embedded title subtitle/>` (all optional props, defaults: `embedded=false`, `title='Day-Off Requests'`, `subtitle=null`) is also reused directly by Task 9's chief-facing tab — the `embedded` prop swaps the full-page centered layout for a plain inline block so the same component drops into a tab panel without a second copy of the magic-link-send logic.
 
 - [ ] **Step 1: Route by pathname in main.jsx**
 
@@ -397,7 +463,15 @@ import { useState } from 'react';
 import { Mail, CheckCircle2 } from 'lucide-react';
 import { supabase, AUTH_ENABLED, ALLOWED_EMAIL_DOMAIN } from '../supabaseClient';
 
-export default function LoginScreen() {
+// embedded=true drops the full-page centered layout in favor of a plain inline block, so this
+// same component can be reused inside a tab panel (Task 9's chief-facing Requests tab) without a
+// second copy of the magic-link-send form/logic.
+function PageWrapper({ embedded, children }) {
+  if (embedded) return <div className="max-w-sm">{children}</div>;
+  return <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">{children}</div>;
+}
+
+export default function LoginScreen({ embedded = false, title = 'Day-Off Requests', subtitle }) {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
@@ -405,11 +479,11 @@ export default function LoginScreen() {
 
   if (!AUTH_ENABLED) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <PageWrapper embedded={embedded}>
         <p className="text-sm text-gray-500 max-w-sm text-center">
-          Day-off requests aren't configured yet. Ask the chief resident to finish setup.
+          Day-off requests aren't configured yet. {embedded ? 'Set VITE_ALLOWED_EMAIL_DOMAIN.' : 'Ask the chief resident to finish setup.'}
         </p>
-      </div>
+      </PageWrapper>
     );
   }
 
@@ -430,21 +504,21 @@ export default function LoginScreen() {
 
   if (sent) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <PageWrapper embedded={embedded}>
         <div className="text-center max-w-sm">
           <CheckCircle2 className="mx-auto text-primary mb-3" size={32} />
           <p className="font-display text-lg font-semibold text-gray-800 mb-1">Check your email</p>
           <p className="text-sm text-gray-500">We sent a sign-in link to {email}.</p>
         </div>
-      </div>
+      </PageWrapper>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-      <form onSubmit={submit} className="bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm">
-        <p className="font-display text-lg font-semibold text-gray-800 mb-1">Day-Off Requests</p>
-        <p className="text-sm text-gray-500 mb-4">Sign in with your @{ALLOWED_EMAIL_DOMAIN} email.</p>
+    <PageWrapper embedded={embedded}>
+      <form onSubmit={submit} className={embedded ? '' : 'bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm'}>
+        <p className="font-display text-lg font-semibold text-gray-800 mb-1">{title}</p>
+        <p className="text-sm text-gray-500 mb-4">{subtitle || `Sign in with your @${ALLOWED_EMAIL_DOMAIN} email.`}</p>
         <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
         <div className="relative mb-3">
           <Mail size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -457,7 +531,7 @@ export default function LoginScreen() {
           {busy ? 'Sending…' : 'Send sign-in link'}
         </button>
       </form>
-    </div>
+    </PageWrapper>
   );
 }
 ```
@@ -514,28 +588,16 @@ git commit -m "Add /requests route with magic-link login shell"
 
 - [ ] **Step 1: Add a roster-reading helper**
 
-Modify `src/residentRequests/blockLookup.js`, adding a second exported function alongside `fetchBlocksForLookup` (same file, since both read the same `res_state` row — avoids fetching it twice):
+Modify `src/residentRequests/blockLookup.js`, adding a second exported function alongside `fetchBlocksForLookup`, built on Task 4's shared `fetchResState()` (same `res_state` row, same read-once-per-call pattern — no separate URL/anon-key-reading logic duplicated here):
 
 ```js
 // Read-only roster fetch, same res_state row as fetchBlocksForLookup — returns only the fields
 // needed to let a resident identify themselves (never exposes shift/schedule data).
 export async function fetchRosterForPicker() {
-  const url = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_URL_KEY]) || '';
-  const anon = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_ANON_KEY]) || '';
-  if (!url || url.startsWith('%') || !anon || anon.startsWith('%')) return [];
-  try {
-    const res = await fetch(`${url}/rest/v1/res_state?id=eq.main&select=data`, {
-      headers: { apikey: anon, Authorization: `Bearer ${anon}` },
-    });
-    if (!res.ok) return [];
-    const rows = await res.json();
-    const data = rows && rows[0] && rows[0].data;
-    const roster = data && Array.isArray(data.res_em_roster) ? data.res_em_roster : [];
-    return roster.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName }))
-      .sort((a, b) => a.lastName.localeCompare(b.lastName));
-  } catch {
-    return [];
-  }
+  const data = await fetchResState();
+  const roster = data && Array.isArray(data.res_em_roster) ? data.res_em_roster : [];
+  return roster.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName }))
+    .sort((a, b) => a.lastName.localeCompare(b.lastName));
 }
 ```
 
@@ -878,7 +940,7 @@ git commit -m "Add resident's own request list with cancel action"
 - Modify: `src/ResidentScheduler.jsx`
 
 **Interfaces:**
-- Consumes: `supabase`, `AUTH_ENABLED` (Task 1).
+- Consumes: `supabase`, `AUTH_ENABLED` (Task 1); `<LoginScreen embedded title subtitle/>` (Task 5) — reused as-is rather than duplicating the magic-link-send form.
 - Produces: `<RequestsTab/>` mounted at `tab === 'requests'`; internally tracks its own `session`/`role` (independent of the resident app — this is a different login surface in the chief's own browser).
 
 - [ ] **Step 1: Write the tab's login/role gate**
@@ -887,14 +949,12 @@ Create `src/RequestsTab.jsx`:
 
 ```jsx
 import { useEffect, useState } from 'react';
-import { supabase, AUTH_ENABLED, ALLOWED_EMAIL_DOMAIN } from './supabaseClient';
+import { supabase, AUTH_ENABLED } from './supabaseClient';
+import LoginScreen from './residentRequests/LoginScreen';
 
 export default function RequestsTab({ emRoster, setEmRoster }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
-  const [email, setEmail] = useState('');
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!AUTH_ENABLED) { setSession(null); return; }
@@ -917,29 +977,11 @@ export default function RequestsTab({ emRoster, setEmRoster }) {
     return <p className="text-sm text-gray-400 p-4">Day-off requests aren't configured yet — set VITE_ALLOWED_EMAIL_DOMAIN.</p>;
   }
 
-  async function sendLink(e) {
-    e.preventDefault();
-    setError('');
-    const { error: sendError } = await supabase.auth.signInWithOtp({ email: email.trim().toLowerCase() });
-    if (sendError) { setError(sendError.message); return; }
-    setSent(true);
-  }
-
   if (session === undefined) return null;
   if (!session) {
     return (
-      <div className="p-4 max-w-sm">
-        {sent ? (
-          <p className="text-sm text-gray-600">Check your email for a sign-in link.</p>
-        ) : (
-          <form onSubmit={sendLink}>
-            <p className="text-sm text-gray-600 mb-2">Sign in to review day-off requests.</p>
-            <input type="email" required value={email} onChange={e => setEmail(e.target.value)}
-              className="input-field w-full mb-2" placeholder={`you@${ALLOWED_EMAIL_DOMAIN}`} />
-            {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
-            <button type="submit" className="bg-primary text-white text-sm font-medium rounded-md px-4 py-2">Send sign-in link</button>
-          </form>
-        )}
+      <div className="p-4">
+        <LoginScreen embedded title="Chief Sign-In" subtitle="Sign in to review day-off requests." />
       </div>
     );
   }
