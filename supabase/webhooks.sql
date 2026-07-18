@@ -1,0 +1,12 @@
+-- Database Webhooks aren't declarable via plain SQL in Supabase — wire this up once in the
+-- dashboard: Database → Webhooks → Create a new hook
+--   Name: notify-day-off-request
+--   Table: day_off_requests
+--   Events: Insert, Update
+--   Type: Supabase Edge Function
+--   Edge Function: notify-request
+--
+-- Before creating the hook, deploy the function and set its secrets (see the comment header in
+-- supabase/functions/notify-request/index.ts) — SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are
+-- already available to every Edge Function automatically; only RESEND_API_KEY and CHIEF_EMAIL
+-- need to be set by hand.
