@@ -38,6 +38,9 @@
     --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
   }
 
+  /* Dark-mode token overrides live under @media screen so print/PDF always renders
+     the light palette regardless of the viewer's theme (documented invariant). */
+  @media screen {
   .dark {
     --background: 213 45% 9%;           /* Night Watch */
     --foreground: 210 30% 94%;
@@ -63,9 +66,11 @@
     --navy: 213 50% 12%;
     --controlled: 262 85% 70%;
   }
+  }
 }
 
 @layer utilities {
+ @media screen {
   .dark .bg-white { background-color: #101827; }
   .dark .bg-gray-50 { background-color: #0b1220; }
   .dark .bg-gray-100 { background-color: #1e293b; }
@@ -163,6 +168,7 @@
   .dark .divide-y > :not([hidden]) ~ :not([hidden]) { border-color: #293548; }
   .dark .bg-gray-300 { background-color: #475569; }
   .dark .shadow-sm, .dark .shadow-md, .dark .shadow-2xl { --tw-shadow-color: rgba(0, 0, 0, 0.6); }
+ }
 }
 
 @layer base {
@@ -218,16 +224,19 @@ body {
    The root app div carries `bg-gray-100 ... dark` on the SAME element (not
    `dark` on an ancestor wrapping a separately-classed child), so descendant
    rules like `.dark .bg-gray-100` never match it — only its descendants.
-   This own-element rule covers that case. */
-.dark {
-  color-scheme: dark;
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-}
-.dark input:not([type="checkbox"]):not([type="radio"]),
-.dark select,
-.dark textarea {
-  background-color: #334155;
-  color: #f1f5f9;
-  border-color: #475569;
+   This own-element rule covers that case.
+   Under @media screen (like every other dark rule) so print/PDF stays light. */
+@media screen {
+  .dark {
+    color-scheme: dark;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+  .dark input:not([type="checkbox"]):not([type="radio"]),
+  .dark select,
+  .dark textarea {
+    background-color: #334155;
+    color: #f1f5f9;
+    border-color: #475569;
+  }
 }

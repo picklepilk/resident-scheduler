@@ -1704,6 +1704,9 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   // Depends only on the block's own date range, not the resident — computed once and reused by
   // both the streak-run walk and the circadian night-run walk below (each per-resident).
   const blockDates = getBlockDates(block.startDate, block.endDate);
+  // Also resident-independent (depends only on the block's date range) — compute once, not once
+  // per resident inside the weekend-off check below.
+  const blockWeekends = getBlockWeekends(blockDates);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
@@ -1762,7 +1765,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
     // least one Sat+Sun pair with no shifts either day.
     if (appSettings.enforceWeekendOff !== false && isSchedulable(resident)) {
-      const weekends = getBlockWeekends(blockDates);
+      const weekends = blockWeekends;
       if (weekends.length && !weekends.some(([sat, sun]) => !rs[sat] && !rs[sun]))
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: 'No full weekend (Sat+Sun) off this block', level: 'warn' });
@@ -2230,8 +2233,9 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // entirely upstream, in getEligibleShifts). The trauma-nights-over-days preference (30) and
   // Peds/EM mix nudge (25) sit just below jeopardy avoidance; the "don't strand a short night
   // run" penalty (25) and FM-1 peds-fill-in discount (15) are minor tie-breaking preferences.
-  // The trauma-night PGY/weekday preference (12) and its yearly-balance term (-2/night worked)
-  // are minor tie-breaks, same tier as the FM-1 discount. Math.random() only breaks exact ties.
+  // The trauma-night PGY/weekday preference (12) and its yearly-balance term (-2/night worked,
+  // count clamped at 5 so it can't exceed -10 and stays below the 12 tier) are minor tie-breaks,
+  // same tier as the FM-1 discount. Math.random() only breaks exact ties.
   function score(r, shift, ds, seniorFilled) {
     const t = target[r.id];
     const deficit = (t - assigned[r.id]) / t;
@@ -2280,7 +2284,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // pairing), and mildly favor whichever senior has worked fewer trauma nights this academic
     // year so the load balances over time rather than per block.
     const traumaNightDowPref = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) && traumaNightPgyPrefersDow(r.pgy, parseDate(ds).getDay()) ? 1 : 0;
-    const traumaNightBalance = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) ? (traumaNightYearly[r.id] || 0) : 0;
+    // Clamp the yearly count so this stays a genuine minor tie-break: traumaNightYearly accumulates
+    // across every published block in the AY, so unclamped it grows without bound and (at -2/night)
+    // would eventually swamp the +12 dow-preference tier and even rival the 20/25 structural tiers,
+    // steering a resident off TRAUMA-N purely on accrued load. Capped at 5 → term stays within -10.
+    const traumaNightBalance = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) ? Math.min(traumaNightYearly[r.id] || 0, 5) : 0;
     // PGY-2/3 not already on a dedicated peds rotation should still pick up a few peds shifts a
     // block to fill gaps (chief feedback) — nudge decays to 0 once they reach generalPedsTarget.
     const generalPedsNudge = shift.area === 'PED' && isGeneralPedsCandidate(r, traumaBlocks) && pedsCount[r.id] < generalPedsTarget ? 1 : 0;
@@ -5763,7 +5771,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules);
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
-                        const isGR=isWed&&res.category==='EM_HOME'&&elig.length===0;
+                        // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
+                        // them. Don't gate on elig.length===0 — GR Wednesday now only strips DAY
+                        // shifts (dayTypeRestrictions noDay), so eves/nights stay eligible and the
+                        // cell is no longer empty; the old ===0 check silently dropped this cue.
+                        const isGR=isWed&&res.category==='EM_HOME';
                         const shift=sid?SHIFT_MAP[sid]:null;
                         let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-purple-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
