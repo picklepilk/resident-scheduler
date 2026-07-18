@@ -7,7 +7,7 @@ import {
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
-  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
+  CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon, Inbox,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -18,6 +18,7 @@ import { jsPDF } from 'jspdf';
 // own applyPlugin(jsPDF) call, which patches doc.autoTable(...) on as an instance method — use
 // that method form everywhere below, never the bare `autoTable(doc, opts)` function form.
 import 'jspdf-autotable';
+import RequestsTab from './RequestsTab';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -6911,6 +6912,7 @@ const TABS = [
   { id: 'schedule',   label: 'Schedule',      icon: Calendar },
   { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle },
+  { id: 'requests',   label: 'Requests',      icon: Inbox },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
@@ -7399,6 +7401,7 @@ export default function ResidentScheduler() {
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
