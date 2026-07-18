@@ -58,17 +58,30 @@ to CSV, with JSON backup/restore in the Settings tab.
   the whole `LS_BACKUP_KEYS`-shaped document as a single `jsonb` blob — unlike a per-record table,
   nothing here needs independent archiving at the row level, so one row is the right shape (see
   the section's own comment for the exact schema/RLS policy, and for the note that this policy is
-  intentionally wide-open, same posture em-scheduler already accepts). A debounced (1.5s)
-  `useEffect` upserts on any of the nine tracked values changing, gated by `dbReady` so it never
-  fires before the mount-time load-and-overlay effect (`sbLoadState`) finishes applying whatever
-  the cloud already had — each key is applied individually there, not a blanket overwrite, so an
-  older cloud row missing a since-added key never wipes a newer local field back to its default.
+  intentionally wide-open, same posture em-scheduler already accepts). The payload, the overlay,
+  and the baseline snapshot are all derived from `LS_BACKUP_KEYS` via a single `syncBindings`
+  map (`key → [value, setter]`) in the root — a new `res_*` key added to `LS_BACKUP_KEYS` flows
+  through sync automatically; wiring it into `syncBindings` is the only extra step, and forgetting
+  throws rather than silently not syncing. A debounced (1.5s) `useEffect` upserts, but only when
+  the current values differ (by reference) from `cloudBaselineRef` (what the cloud is known to
+  hold) — so the mount `dbReady` flip doesn't re-upload the just-loaded document, and a load that
+  returned nothing (empty cloud) seeds the row on first write. **`dbReady` gates all cloud writes
+  and stays FALSE if the mount-time `sbLoadState` fails** — critical: a device that never
+  successfully read the cloud must not later overwrite it with un-merged local state (that would
+  silently destroy another device's newer data); the pill shows "Sync error," local editing still
+  works, and a reload retries cleanly. The mount overlay applies each key individually with a
+  `!= null` guard (so a missing OR explicitly-null cloud key never wipes/nulls a local field).
   Conflict handling is last-write-wins/full-document-overwrite — no merge, no version check, same
   accepted tradeoff as em-scheduler (one coordinator, multiple devices, used sequentially not
-  concurrently). `SettingsTab`'s `clearAll()`/`importData()` both explicitly push to
-  (`sbDeleteState`) or from (`sbSaveState`) the cloud **before** their `window.location.reload()`
-  — without that, the reload's own mount-time overlay would silently restore the cloud's
-  still-stale copy over what the button/import just did locally.
+  concurrently). `sbFetch` bounds every request with a 15s `AbortController` timeout so a hung
+  network surfaces as an error rather than freezing the UI (notably the import/clear awaits).
+  `SettingsTab`'s `clearAll()`/`importData()` **gate the local wipe/write + reload on the cloud
+  op (`sbDeleteState`/`sbSaveState`) succeeding first** — if the cloud op fails, nothing changes
+  locally and an error toast asks the user to retry, because committing locally then reloading
+  would let the mount overlay revert it from the still-stale/still-intact row; both also set the
+  module-level `syncSuspended` flag so the root's debounced auto-save can't race a stale write
+  onto the row mid-operation, and `importData` pushes only `LS_BACKUP_KEYS` keys (never
+  `res_dark_mode`) into the shared document.
 
 ## Running / building / deploying
 ```bash

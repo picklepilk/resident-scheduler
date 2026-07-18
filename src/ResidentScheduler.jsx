@@ -6094,18 +6094,36 @@ const SUPABASE_URL     = isUnresolvedToken(SUPABASE_URL_RAW)  ? '' : SUPABASE_UR
 const SUPABASE_ANON    = isUnresolvedToken(SUPABASE_ANON_RAW) ? '' : SUPABASE_ANON_RAW;
 const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
 
+// When true, the root's debounced cloud-save is suppressed — set by SettingsTab's import/clear
+// while they own the cloud row, so a due auto-save timer can't race in and re-POST stale state
+// over the delete/import mid-operation (both reload the page on success, which resets this).
+let syncSuspended = false;
+
 const sbFetch = async (path, opts = {}) => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-    headers: {
-      'apikey': SUPABASE_ANON,
-      'Authorization': `Bearer ${SUPABASE_ANON}`,
-      'Content-Type': 'application/json',
-      'Prefer': opts.prefer || 'return=representation',
-      ...opts.headers,
-    },
-    method: opts.method || 'GET',
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  // Bound every request so a stalled (not failed — hung) network can't block indefinitely: the
+  // mount load, the debounced save, and especially import/clear (which await before reloading)
+  // all surface a timeout as a normal error instead of hanging the UI forever.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': `Bearer ${SUPABASE_ANON}`,
+        'Content-Type': 'application/json',
+        'Prefer': opts.prefer || 'return=representation',
+        ...opts.headers,
+      },
+      method: opts.method || 'GET',
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (e) {
+    throw new Error(controller.signal.aborted ? `Supabase ${opts.method || 'GET'} ${path}: timed out` : e.message);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const msg = await res.text().catch(() => res.statusText);
     throw new Error(`Supabase ${opts.method || 'GET'} ${path}: ${msg}`);
@@ -6133,8 +6151,8 @@ const sbLoadState = async () => {
   return rows && rows[0] ? rows[0] : null;
 };
 
-// Best-effort delete of the shared cloud row — used by SettingsTab's clearAll() so "Clear All
-// Data" isn't silently undone by the next mount's cloud overlay restoring the erased document.
+// Delete the shared cloud row — SettingsTab's clearAll() gates the local wipe + reload on this
+// succeeding, so the next mount's overlay can't restore the erased document from a still-intact row.
 const sbDeleteState = async () => {
   if (!SUPABASE_ENABLED) return;
   await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}`, { method: 'DELETE', prefer: 'return=minimal' });
@@ -6185,16 +6203,29 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       try {
         const parsed = JSON.parse(reader.result);
         const d = parsed.data || parsed;
-        let n = 0;
+        // Build a clean, sync-safe object from LS_BACKUP_KEYS only — this excludes res_dark_mode
+        // and any other stray keys in the file from ever reaching the shared cloud document.
+        const clean = {};
         for (const k of LS_BACKUP_KEYS) {
-          if (d[k] !== undefined && d[k] !== null) { localStorage.setItem(k, JSON.stringify(d[k])); n++; }
+          if (d[k] !== undefined && d[k] !== null) clean[k] = d[k];
         }
-        if (n === 0) { showToast('No recognizable data found in that file', 'red'); return; }
-        // Push the imported data to the cloud BEFORE reloading — otherwise the reload's mount-
-        // time overlay (see SUPABASE SYNC) fetches the still-stale pre-import cloud row and
-        // silently overwrites the import that was just written to localStorage. Best-effort: a
-        // network failure here shouldn't block the local import from taking effect.
-        if (SUPABASE_ENABLED) { try { await sbSaveState(d); } catch { /* local import still succeeds */ } }
+        if (Object.keys(clean).length === 0) { showToast('No recognizable data found in that file', 'red'); return; }
+        if (SUPABASE_ENABLED) {
+          // Cloud is the gate: push FIRST, and only commit locally + reload if it succeeds. If we
+          // wrote localStorage first and the push failed, the reload's overlay would fetch the
+          // still-stale cloud row and silently revert the import. syncSuspended blocks the root's
+          // debounced auto-save from racing a stale write onto the row during our push.
+          syncSuspended = true;
+          showToast('Syncing import to the cloud…', 'amber');
+          try {
+            await sbSaveState(clean);
+          } catch (err) {
+            syncSuspended = false;
+            showToast('Import could not sync to the cloud — nothing changed. Try again when online.', 'red');
+            return;
+          }
+        }
+        for (const k of LS_BACKUP_KEYS) { if (clean[k] !== undefined) localStorage.setItem(k, JSON.stringify(clean[k])); }
         window.location.reload();
       } catch {
         showToast('Could not read backup file — is it a valid export?', 'red');
@@ -6205,11 +6236,20 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   async function clearAll() {
+    if (SUPABASE_ENABLED) {
+      // Delete the cloud row FIRST, and only wipe localStorage + reload if it succeeds — otherwise
+      // the reload's overlay would fetch the still-intact row and restore everything. syncSuspended
+      // blocks the root's debounced auto-save from re-creating the row during our delete.
+      syncSuspended = true;
+      try {
+        await sbDeleteState();
+      } catch (err) {
+        syncSuspended = false;
+        showToast('Could not clear cloud data — nothing changed. Try again when online.', 'red');
+        return;
+      }
+    }
     for (const k of LS_BACKUP_KEYS) localStorage.removeItem(k);
-    // Delete the cloud row too, BEFORE reloading — otherwise the reload's mount-time overlay
-    // fetches the still-intact cloud row and silently restores everything this just erased.
-    // Best-effort: a network failure here shouldn't block the local clear from taking effect.
-    if (SUPABASE_ENABLED) { try { await sbDeleteState(); } catch { /* local clear still succeeds */ } }
     window.location.reload();
   }
 
@@ -6754,38 +6794,62 @@ export default function ResidentScheduler() {
   // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
   const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
 
-  // Cross-device cloud sync (see the SUPABASE SYNC section) — dbReady gates the debounced
-  // cloud-save effect below so it never fires before the mount-time load-and-overlay finishes
-  // (an autosave firing first could push stale local defaults up before this device has even
-  // seen another device's saved data). dbStatus/dbError feed AutosaveIndicator's cloud states.
+  // Cross-device cloud sync (see the SUPABASE SYNC section). dbStatus/dbError feed
+  // AutosaveIndicator's cloud states. dbReady gates the debounced cloud-save effect so it never
+  // writes before the mount-time load-and-overlay has decided what the cloud already holds.
   const [dbReady, setDbReady] = useState(false);
   const [dbStatus, setDbStatus] = useState('idle'); // 'idle' | 'loading' | 'saving' | 'error'
   const [dbError, setDbError] = useState(null);
   const saveTimerRef = useRef(null);
+  // The nine synced values that the cloud row is currently known to hold (by reference). null
+  // until the first sync decision: `null` means "push local up" (empty cloud → seed it), a value
+  // array means "already matches the cloud" (just loaded it → don't re-upload). Updated after
+  // every successful save. Single source of the key list is LS_BACKUP_KEYS via `syncBindings`.
+  const cloudBaselineRef = useRef(null);
+
+  // One place mapping each synced key → [current value, setter]. The cloud payload, the overlay,
+  // and the baseline snapshot all derive from LS_BACKUP_KEYS through this — so a new res_* key
+  // added to LS_BACKUP_KEYS (per CLAUDE.md) flows through sync automatically; forgetting to wire
+  // it here throws an obvious error rather than silently not syncing.
+  const syncBindings = {
+    res_em_roster:             [emRoster, setEmRoster],
+    res_current_block:         [block, setBlock],
+    res_blocks_history:        [blocksHistory, setBlocksHistory],
+    res_eligibility_overrides: [eligOverrides, setEligOverrides],
+    res_ay_data:               [ayData, setAyData],
+    res_app_settings:          [appSettings, setAppSettings],
+    res_day_rules:             [dayRules, setDayRules],
+    res_coverage:              [coverage, setCoverage],
+    res_tab_order:             [tabOrder, setTabOrder],
+  };
 
   // On mount: each useLocalStorage's lazy initializer has already loaded its localStorage value
   // synchronously (instant, no network) before this runs. If cloud sync is configured, overlay
   // with the cloud copy — it may be newer (e.g. edited on another device). Each key is applied
-  // individually (not a blanket overwrite) so a cloud row saved by an older app version, missing
-  // a key since added to LS_BACKUP_KEYS, never wipes a newer local-only field back to its default.
+  // individually (skipping null/undefined) so a cloud row saved by an older app version, missing
+  // (or explicitly nulling) a key, never wipes a newer local field back to its default or to null.
   useEffect(() => {
     if (!SUPABASE_ENABLED) { setDbReady(true); return; }
     setDbStatus('loading');
     sbLoadState().then(row => {
-      if (row && row.data) applyRemoteState(row.data);
+      if (row && row.data) {
+        const d = row.data;
+        LS_BACKUP_KEYS.forEach(k => { if (d[k] != null && syncBindings[k]) syncBindings[k][1](d[k]); });
+        // Baseline = the document now in sync with the cloud (applied value where present, else
+        // the local value we left untouched) — so the save effect below won't re-upload what we
+        // just downloaded on every page open.
+        cloudBaselineRef.current = LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0]));
+      }
+      // row == null (empty cloud): leave cloudBaselineRef null so the save effect seeds the cloud
+      // once with this device's existing local data.
       setDbReady(true); setDbStatus('idle');
-    }).catch(e => { setDbError(e.message); setDbStatus('error'); setDbReady(true); });
-    function applyRemoteState(d) {
-      if (d.res_em_roster !== undefined)             setEmRoster(d.res_em_roster);
-      if (d.res_current_block !== undefined)         setBlock(d.res_current_block);
-      if (d.res_blocks_history !== undefined)        setBlocksHistory(d.res_blocks_history);
-      if (d.res_eligibility_overrides !== undefined) setEligOverrides(d.res_eligibility_overrides);
-      if (d.res_ay_data !== undefined)               setAyData(d.res_ay_data);
-      if (d.res_app_settings !== undefined)          setAppSettings(d.res_app_settings);
-      if (d.res_day_rules !== undefined)             setDayRules(d.res_day_rules);
-      if (d.res_coverage !== undefined)              setCoverage(d.res_coverage);
-      if (d.res_tab_order !== undefined)             setTabOrder(d.res_tab_order);
-    }
+    }).catch(e => {
+      // Load failed → do NOT set dbReady. Leaving it false keeps the debounced save disabled, so
+      // this device can't overwrite the cloud with local state it never successfully read/merged
+      // (that would silently destroy another device's newer data). Local editing still works;
+      // the pill shows "Sync error"; a reload retries the load cleanly.
+      setDbError(e.message); setDbStatus('error');
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -6814,21 +6878,24 @@ export default function ResidentScheduler() {
   }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder]);
 
   // Debounced cloud sync — a SEPARATE effect from the pill-timer one above, not folded together:
-  // that effect's prevSaveDepsRef reference-diffing exists specifically to dodge a StrictMode
-  // hazard around a boolean skip-guard (see its comment); this is a plain setTimeout/clearTimeout
-  // debounce keyed directly off the dependency array, which is inherently StrictMode-safe
-  // (double-invoke schedules, clears via cleanup, reschedules once — no duplicate network call).
-  // A 1.5s network debounce is also a different concern from the 600ms UI-pill timer above.
+  // that effect's prevSaveDepsRef reference-diffing dodges a StrictMode hazard around a boolean
+  // skip-guard (see its comment); this is a plain setTimeout/clearTimeout debounce keyed off the
+  // dependency array, inherently StrictMode-safe. The 1.5s network debounce is also a different
+  // concern from the 600ms UI-pill timer. Guarded against re-uploading the just-loaded document:
+  // it only writes when the current values differ from cloudBaselineRef (what the cloud already
+  // holds), so the dbReady false→true flip on mount doesn't trigger a redundant save.
   useEffect(() => {
     if (!dbReady || !SUPABASE_ENABLED) return;
+    const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+    const base = cloudBaselineRef.current;
+    if (base && current.every((v, i) => v === base[i])) return; // already matches the cloud row
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      if (syncSuspended) return; // import/clear owns the row right now — don't race them
       setDbStatus('saving');
-      sbSaveState({
-        res_em_roster: emRoster, res_current_block: block, res_blocks_history: blocksHistory,
-        res_eligibility_overrides: eligOverrides, res_ay_data: ayData, res_app_settings: appSettings,
-        res_day_rules: dayRules, res_coverage: coverage, res_tab_order: tabOrder,
-      }).then(() => setDbStatus('idle'))
+      const payload = {};
+      LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+      sbSaveState(payload).then(() => { cloudBaselineRef.current = current; setDbStatus('idle'); })
         .catch(e => { setDbError(e.message); setDbStatus('error'); });
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
