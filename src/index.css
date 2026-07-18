@@ -214,9 +214,15 @@ body {
    classes) don't pick up the utility-class dark remap above — without this,
    date/text inputs render illegibly (native white bg + dark text) in dark
    mode. `color-scheme: dark` also switches native date-picker/spinner glyphs
-   to their light-on-dark variant. */
+   to their light-on-dark variant.
+   The root app div carries `bg-gray-100 ... dark` on the SAME element (not
+   `dark` on an ancestor wrapping a separately-classed child), so descendant
+   rules like `.dark .bg-gray-100` never match it — only its descendants.
+   This own-element rule covers that case. */
 .dark {
   color-scheme: dark;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
 }
 .dark input:not([type="checkbox"]):not([type="radio"]),
 .dark select,
