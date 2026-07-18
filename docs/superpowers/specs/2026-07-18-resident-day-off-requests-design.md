@@ -170,6 +170,24 @@ exercising the actual Supabase project:
   succeeds.
 - Trigger both notification emails and confirm delivery.
 
+## Known limitations (accepted, not implementation bugs)
+
+Found during the final whole-branch review and consciously accepted rather than fixed, since
+closing them would require changes well beyond this feature's scope:
+
+- **"Residents never see the schedule" is a UI convention, not a data-layer security boundary.**
+  `/requests` reads the same wide-open-RLS `res_state` row the chief's cloud sync already uses
+  (see `ResidentScheduler.jsx`'s "SUPABASE SYNC" section) to power its block-date lookups — the
+  *entire* generated schedule crosses the wire to the resident's browser before the app narrows
+  what it renders down to just block dates/roster names. Separately, and more directly: the main
+  `/` route (the full schedule editor) has no authentication at all — a resident with the
+  `/requests` link can simply navigate to `/` and see or edit everything. Neither is new: the app
+  has been zero-auth and wide-open-RLS by design since before this feature (an explicit prior
+  tradeoff, not an oversight). This feature doesn't make that worse, but it also doesn't deliver a
+  real privacy guarantee — only a UI one. Closing this for real would mean serving `/requests` a
+  narrow, RLS-scoped view or Edge Function instead of the shared blob, and gating `/` itself with
+  real authentication — a substantial follow-up project, not a patch to this one.
+
 ## Open follow-ups (not part of this spec)
 
 - Verify the existing cloud sync is actually deployed/live (Netlify env vars, Supabase table
