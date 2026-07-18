@@ -14,7 +14,9 @@ create table profiles (
 );
 alter table profiles enable row level security;
 
--- Every user (resident or chief) may read and create only their own profile row.
+-- Every user (resident or chief) may read and create only their own profile row. The insert
+-- policy pins role to 'resident' (like the update policy below) — without this, a resident could
+-- self-insert a profile row with role='chief' before one exists, self-promoting to admin.
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
 create policy "profiles_insert_own" on profiles for insert
@@ -41,13 +43,24 @@ create table day_off_requests (
 alter table day_off_requests enable row level security;
 
 -- A resident may see and create only rows tagged with their own resident_id (looked up from
--- their own profile row, which profiles_select_own already lets them read).
+-- their own profile row, which profiles_select_own already lets them read). The insert policy
+-- also pins status/decided_*/decision_note to their unset defaults — without this, a resident
+-- could insert a request already marked 'approved' with a fabricated decided_by, bypassing the
+-- chief's decision entirely.
 create policy "requests_select_own" on day_off_requests for select
   using (resident_id = (select resident_id from profiles where id = auth.uid()));
 create policy "requests_insert_own" on day_off_requests for insert
-  with check (resident_id = (select resident_id from profiles where id = auth.uid()) and status = 'pending' and decided_at is null and decided_by is null);
--- A resident may only ever flip their own still-pending request to 'cancelled' (withdrawal) —
--- never touch status/decision_note/decided_* in any other way.
+  with check (
+    resident_id = (select resident_id from profiles where id = auth.uid())
+    and status = 'pending'
+    and decision_note is null
+    and decided_at is null
+    and decided_by is null
+  );
+-- A resident may only ever flip their own still-pending request to 'cancelled' (withdrawal).
+-- WITH CHECK alone can only pin the new value of individual columns (status='cancelled') — it
+-- cannot express "no other column changed," so a resident could otherwise rewrite decision_note/
+-- decided_*/dates/reason in the same update. The trigger below closes that gap.
 create policy "requests_cancel_own" on day_off_requests for update
   using (
     resident_id = (select resident_id from profiles where id = auth.uid())
@@ -55,50 +68,42 @@ create policy "requests_cancel_own" on day_off_requests for update
   )
   with check (status = 'cancelled');
 
--- Trigger function to enforce that residents can only modify the status column when cancelling.
+-- The chief (role='chief' on their own profile row) may read and decide on every request.
+create policy "requests_chief_select_all" on day_off_requests for select
+  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
+create policy "requests_chief_update_all" on day_off_requests for update
+  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
+
+-- Guards requests_cancel_own above: when a resident's update transitions pending -> cancelled,
+-- every column except status must stay unchanged. Uses IS DISTINCT FROM (not =/!=) because a
+-- pending request's decided_at/decided_by/decision_note/reason are normally NULL, and plain SQL
+-- equality against NULL evaluates to NULL (neither true nor false) rather than a usable boolean —
+-- with plain =/!=, a resident could smuggle a fabricated decided_by into the same cancel-update
+-- undetected, since `NULL = NULL` never trips the guard. Does not affect the chief's approve/deny
+-- path (that transitions to 'approved'/'denied', never 'cancelled', so this condition never fires
+-- for it — verified: requests_chief_update_all's own USING clause is what authorizes that path,
+-- and this trigger only inspects OLD/NEW status, not which policy allowed the write).
 create or replace function public.enforce_cancel_only_status()
 returns trigger
 language plpgsql
 as $$
 begin
-  if new.resident_id != old.resident_id
-    or new.dates != old.dates
-    or new.reason != old.reason
-    or new.status != old.status
-    or new.decision_note != old.decision_note
-    or new.submitted_at != old.submitted_at
-    or new.decided_at != old.decided_at
-    or new.decided_by != old.decided_by
-    or new.id != old.id
-  then
-    if not (
-      new.resident_id = old.resident_id
-      and new.dates = old.dates
-      and new.reason = old.reason
-      and new.decision_note = old.decision_note
-      and new.submitted_at = old.submitted_at
-      and new.decided_at = old.decided_at
-      and new.decided_by = old.decided_by
-      and new.id = old.id
-      and new.status != old.status
-    )
+  if new.status = 'cancelled' and old.status = 'pending' then
+    if new.resident_id is distinct from old.resident_id
+       or new.dates is distinct from old.dates
+       or new.reason is distinct from old.reason
+       or new.decision_note is distinct from old.decision_note
+       or new.submitted_at is distinct from old.submitted_at
+       or new.decided_at is distinct from old.decided_at
+       or new.decided_by is distinct from old.decided_by
     then
-      raise exception 'Residents may only change the status field when updating their own requests';
+      raise exception 'Cancelling a request may only change status';
     end if;
   end if;
   return new;
 end;
 $$;
 
--- Trigger to call the enforce_cancel_only_status function for resident updates.
 create trigger day_off_requests_cancel_guard
-before update on day_off_requests
-for each row
-when (exists (select 1 from profiles where id = auth.uid() and role = 'resident'))
-execute function public.enforce_cancel_only_status();
-
--- The chief (role='chief' on their own profile row) may read and decide on every request.
-create policy "requests_chief_select_all" on day_off_requests for select
-  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
-create policy "requests_chief_update_all" on day_off_requests for update
-  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
+  before update on day_off_requests
+  for each row execute function public.enforce_cancel_only_status();
