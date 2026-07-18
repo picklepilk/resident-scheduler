@@ -18,7 +18,7 @@ alter table profiles enable row level security;
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
 create policy "profiles_insert_own" on profiles for insert
-  with check (auth.uid() = id);
+  with check (auth.uid() = id and role = 'resident');
 -- A resident may set their own resident_id (the one-time "which resident are you" pick) but can
 -- never grant themselves the 'chief' role through the app — role stays 'resident' on any
 -- self-update. The chief's own row is flipped to role='chief' manually via the Supabase table
@@ -45,7 +45,7 @@ alter table day_off_requests enable row level security;
 create policy "requests_select_own" on day_off_requests for select
   using (resident_id = (select resident_id from profiles where id = auth.uid()));
 create policy "requests_insert_own" on day_off_requests for insert
-  with check (resident_id = (select resident_id from profiles where id = auth.uid()));
+  with check (resident_id = (select resident_id from profiles where id = auth.uid()) and status = 'pending' and decided_at is null and decided_by is null);
 -- A resident may only ever flip their own still-pending request to 'cancelled' (withdrawal) —
 -- never touch status/decision_note/decided_* in any other way.
 create policy "requests_cancel_own" on day_off_requests for update
@@ -54,6 +54,48 @@ create policy "requests_cancel_own" on day_off_requests for update
     and status = 'pending'
   )
   with check (status = 'cancelled');
+
+-- Trigger function to enforce that residents can only modify the status column when cancelling.
+create or replace function public.enforce_cancel_only_status()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.resident_id != old.resident_id
+    or new.dates != old.dates
+    or new.reason != old.reason
+    or new.status != old.status
+    or new.decision_note != old.decision_note
+    or new.submitted_at != old.submitted_at
+    or new.decided_at != old.decided_at
+    or new.decided_by != old.decided_by
+    or new.id != old.id
+  then
+    if not (
+      new.resident_id = old.resident_id
+      and new.dates = old.dates
+      and new.reason = old.reason
+      and new.decision_note = old.decision_note
+      and new.submitted_at = old.submitted_at
+      and new.decided_at = old.decided_at
+      and new.decided_by = old.decided_by
+      and new.id = old.id
+      and new.status != old.status
+    )
+    then
+      raise exception 'Residents may only change the status field when updating their own requests';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+-- Trigger to call the enforce_cancel_only_status function for resident updates.
+create trigger day_off_requests_cancel_guard
+before update on day_off_requests
+for each row
+when (exists (select 1 from profiles where id = auth.uid() and role = 'resident'))
+execute function public.enforce_cancel_only_status();
 
 -- The chief (role='chief' on their own profile row) may read and decide on every request.
 create policy "requests_chief_select_all" on day_off_requests for select
