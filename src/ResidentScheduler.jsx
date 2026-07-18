@@ -1249,6 +1249,13 @@ function getGeneralPedsTarget(appSettings = {}) { return appSettings.generalPeds
 function isGeneralPedsCandidate(resident, traumaBlocks) {
   return isTraumaCapSubject(resident) && !isPedsEmMix(resident) && !isTraumaPedsSplitResident(resident, traumaBlocks);
 }
+// EM interns: Home or BAMC PGY-1. Named predicate so the no-two-interns rule's generator score
+// term and validateAll warning define "intern" identically (used at three call sites).
+function isEmIntern(resident) { return (resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') && resident.pgy === 1; }
+// Soft ceiling on FM-1 peds shifts — peds is fill-in PRN only, not the emphasis (chief feedback):
+// ~1/3 of their shift target. Centralized so the generator's score() discouragement and
+// validateAll's warning can't drift on the divisor. Null target → no ceiling.
+function getFm1PedsCap(target) { return target != null ? Math.ceil(target / 3) : null; }
 // EM Home and EM BAMC residents default to the 'EM' rotation when no blockType is on file —
 // this matches how EM Home residents already default (see the roster creation sites) and fixes
 // EM_BAMC residents added via the Off-Service tab, which never assigns them a blockType at all.
@@ -1697,6 +1704,31 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   return eligible;
 }
 
+// Group residents' assignments by (date, shift-id) — considering only residents matching rowFilter
+// and shifts matching shiftFilter — and push one issue per resident wherever more than one lands on
+// the same (date, shift). Shared by the trauma single-resident rule and the no-two-interns rule so
+// the grouping/reporting scaffold can't drift between them. `message(e, entries, names)` builds the
+// per-resident text.
+function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, shiftFilter, message, level }) {
+  const byDateShift = {};
+  for (const resident of allResidents) {
+    if (rowFilter && !rowFilter(resident)) continue;
+    const rs = schedule[resident.id] || {};
+    for (const [ds, sid] of Object.entries(rs)) {
+      if (!sid || (shiftFilter && !shiftFilter(sid))) continue;
+      (byDateShift[`${ds}__${sid}`] ||= []).push({ resident, ds, sid });
+    }
+  }
+  for (const entries of Object.values(byDateShift)) {
+    if (entries.length <= 1) continue;
+    const names = entries.map(e => `${e.resident.firstName} ${e.resident.lastName}`).join(', ');
+    for (const e of entries) {
+      issues.push({ residentId: e.resident.id, name: `${e.resident.firstName} ${e.resident.lastName}`,
+        dateStr: e.ds, shiftId: e.sid, message: message(e, entries, names), level });
+    }
+  }
+}
+
 function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = []) {
   const issues = [];
   const sd = block.specialDays || {};
@@ -1765,8 +1797,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
     // least one Sat+Sun pair with no shifts either day.
     if (appSettings.enforceWeekendOff !== false && isSchedulable(resident)) {
-      const weekends = blockWeekends;
-      if (weekends.length && !weekends.some(([sat, sun]) => !rs[sat] && !rs[sun]))
+      if (blockWeekends.length && !blockWeekends.some(([sat, sun]) => !rs[sat] && !rs[sun]))
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: 'No full weekend (Sat+Sun) off this block', level: 'warn' });
     }
@@ -1788,8 +1819,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     // ceiling; chief feedback: use them to fill gaps, don't let peds become their emphasis).
     if (resident.category === 'FM' && resident.pgy === 1) {
       const pedsCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
-      const fm1Target = getShiftTarget(resident, appSettings);
-      const fm1Cap = fm1Target != null ? Math.ceil(fm1Target / 3) : null;
+      const fm1Cap = getFm1PedsCap(getShiftTarget(resident, appSettings));
       if (fm1Cap != null && pedsCount > fm1Cap)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: `FM-1 peds shifts: ${pedsCount} — peds is meant to be fill-in PRN, not the emphasis (soft ceiling ~${fm1Cap})`, level: 'warn' });
@@ -2017,44 +2047,19 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 
   // Trauma shifts are single-resident by nature (physically one trauma bay) — this deliberately
   // ignores the coverage setting, which only the generator/UI use to decide how many to auto-fill.
-  const traumaByDateShift = {};
-  for (const resident of allResidents) {
-    const rs = schedule[resident.id] || {};
-    for (const [ds, sid] of Object.entries(rs)) {
-      if (sid !== 'TRAUMA-D' && sid !== 'TRAUMA-N') continue;
-      const k = `${ds}__${sid}`;
-      (traumaByDateShift[k] ||= []).push({ resident, ds, sid });
-    }
-  }
-  for (const entries of Object.values(traumaByDateShift)) {
-    if (entries.length <= 1) continue;
-    const names = entries.map(e => `${e.resident.firstName} ${e.resident.lastName}`).join(', ');
-    for (const e of entries) {
-      issues.push({ residentId: e.resident.id, name: `${e.resident.firstName} ${e.resident.lastName}`, dateStr: e.ds, shiftId: e.sid,
-        message: `Two residents on ${e.sid} — trauma shifts are single-resident (${names})`, level: 'error' });
-    }
-  }
+  pushSharedShiftViolations(issues, allResidents, schedule, {
+    shiftFilter: sid => sid === 'TRAUMA-D' || sid === 'TRAUMA-N',
+    message: (e, entries, names) => `Two residents on ${e.sid} — trauma shifts are single-resident (${names})`,
+    level: 'error',
+  });
 
   // No two EM interns (Home or BAMC PGY-1) on the same shift/team (soft — flagged for review,
   // not blocked; a hard block would leave a min-coverage slot empty when only interns remain).
-  const internsByDateShift = {};
-  for (const resident of allResidents) {
-    if (!((resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') && resident.pgy === 1)) continue;
-    const rs = schedule[resident.id] || {};
-    for (const [ds, sid] of Object.entries(rs)) {
-      if (!sid) continue;
-      const k = `${ds}__${sid}`;
-      (internsByDateShift[k] ||= []).push({ resident, ds, sid });
-    }
-  }
-  for (const entries of Object.values(internsByDateShift)) {
-    if (entries.length <= 1) continue;
-    const names = entries.map(e => `${e.resident.firstName} ${e.resident.lastName}`).join(', ');
-    for (const e of entries) {
-      issues.push({ residentId: e.resident.id, name: `${e.resident.firstName} ${e.resident.lastName}`, dateStr: e.ds, shiftId: e.sid,
-        message: `${entries.length} interns on ${e.sid} (${names}) — avoid pairing two interns on the same shift`, level: 'warn' });
-    }
-  }
+  pushSharedShiftViolations(issues, allResidents, schedule, {
+    rowFilter: isEmIntern,
+    message: (e, entries, names) => `${entries.length} interns on ${e.sid} (${names}) — avoid pairing two interns on the same shift`,
+    level: 'warn',
+  });
 
   return issues;
 }
@@ -2242,6 +2247,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
     const streak = streakBefore(r.id, ds);
     const jeo = jeoPolicy === 'warn' && (r.jeopardyDates || []).includes(ds) ? 1 : 0;
+    const dsDate = parseDate(ds); const dow = dsDate.getDay(); // parsed once — reused by the dow/adjacent-day terms below
     // PGY-2/3 should aim for trauma NIGHTS, using days only if necessary
     const traumaDaySenior = shift.id === 'TRAUMA-D' && r.category === 'EM_HOME' && r.pgy >= 2 ? 1 : 0;
     // Peds/EM PGY-2s should hit at least 10 peds shifts before other rotations sap the slot
@@ -2250,11 +2256,12 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // ~1/3-of-target ceiling, discourage further peds more strongly (chief feedback: don't let
     // them end up primarily peds). validateAll separately warns if this ceiling is exceeded.
     const fm1OnPeds = shift.area === 'PED' && r.category === 'FM' && r.pgy === 1 ? 1 : 0;
-    const fm1OverPedsCap = fm1OnPeds && t != null && pedsCount[r.id] >= Math.ceil(t / 3) ? 1 : 0;
+    const fm1Cap = getFm1PedsCap(t);
+    const fm1OverPedsCap = fm1OnPeds && fm1Cap != null && pedsCount[r.id] >= fm1Cap ? 1 : 0;
     // BAMC interns: prefer Flex/POD/Peds day shifts, especially Wednesday (chief feedback) —
     // the weakest of the new soft nudges, purely a tie-breaker.
     const bamcFlexPodPedsDay = r.category === 'EM_BAMC' && shift.type === 'day' && ['FLEX','POD','PED'].includes(shift.area) ? 1 : 0;
-    const bamcWedBonus = bamcFlexPodPedsDay && parseDate(ds).getDay() === 3 ? 1 : 0;
+    const bamcWedBonus = bamcFlexPodPedsDay && dow === 3 ? 1 : 0;
     // Circadian night clustering: strongly prefer extending an existing night run over starting
     // an isolated one; avoid starting a run that can't reach the 4-night minimum; avoid placing
     // a non-night shift that would strand an existing short (1-3) night run mid-stretch.
@@ -2283,7 +2290,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // any PGY-2/3 on any of the four nights — this only breaks ties toward the preferred
     // pairing), and mildly favor whichever senior has worked fewer trauma nights this academic
     // year so the load balances over time rather than per block.
-    const traumaNightDowPref = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) && traumaNightPgyPrefersDow(r.pgy, parseDate(ds).getDay()) ? 1 : 0;
+    const traumaNightDowPref = shift.id === 'TRAUMA-N' && isTraumaCapSubject(r) && traumaNightPgyPrefersDow(r.pgy, dow) ? 1 : 0;
     // Clamp the yearly count so this stays a genuine minor tie-break: traumaNightYearly accumulates
     // across every published block in the AY, so unclamped it grows without bound and (at -2/night)
     // would eventually swamp the +12 dow-preference tier and even rival the 20/25 structural tiers,
@@ -2296,8 +2303,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // discourage placing this class again the day right before/after another peds assignment
     // from the same class level.
     const pedsClassRepeat = shift.area === 'PED' && (
-      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(parseDate(ds), -1))) ||
-      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(parseDate(ds), 1)))
+      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(dsDate, -1))) ||
+      pedsClassOnDate(r.category, r.pgy, toDateStr(addDays(dsDate, 1)))
     ) ? 1 : 0;
     // One full weekend off: avoid spending a resident's last remaining free weekend when another
     // candidate has one to spare.
@@ -2305,10 +2312,8 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // No two EM interns (Home or BAMC PGY-1) on the same shift/team — strongly discouraged but
     // still fallback-allowed (candidatePool doesn't exclude on this; leaving the slot unfilled
     // would be worse than pairing two interns).
-    const isEmIntern = (r.category === 'EM_HOME' || r.category === 'EM_BAMC') && r.pgy === 1;
-    const secondIntern = isEmIntern && allResidents.some(other =>
-      other.id !== r.id && (other.category === 'EM_HOME' || other.category === 'EM_BAMC') &&
-      other.pgy === 1 && schedule[other.id][ds] === shift.id) ? 1 : 0;
+    const secondIntern = isEmIntern(r) && allResidents.some(other =>
+      other.id !== r.id && isEmIntern(other) && schedule[other.id][ds] === shift.id) ? 1 : 0;
     return 100 * deficit + 40 * nightCluster - 20 * mixShare - 15 * Math.max(0, streak - 3) - 50 * jeo
       - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap
       + 12 * traumaNightDowPref - 2 * traumaNightBalance + 10 * generalPedsNudge - 10 * pedsClassRepeat
