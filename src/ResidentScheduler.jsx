@@ -8,7 +8,7 @@ import {
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
-  MessageSquare, Bug, Zap, Lightbulb, Lock,
+  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -19,6 +19,8 @@ import { jsPDF } from 'jspdf';
 // own applyPlugin(jsPDF) call, which patches doc.autoTable(...) on as an instance method — use
 // that method form everywhere below, never the bare `autoTable(doc, opts)` function form.
 import 'jspdf-autotable';
+import RequestsTab from './RequestsTab';
+import { supabase, AUTH_ENABLED } from './supabaseClient';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -5427,7 +5429,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
@@ -5774,6 +5776,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
                         const isJeopardy=(res.jeopardyDates||[]).includes(ds);
                         const isJeoBlocked=isJeopardy&&jeoBlock;
+                        const isPendingRequest = pendingByResident.get(res.id)?.has(ds) || false;
                         const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules);
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
@@ -5808,6 +5811,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                               </div>
                             )}
                             {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
+                            {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
                           </div>
                         );
                       })}
@@ -7171,6 +7175,7 @@ const TABS = [
   { id: 'schedule',   label: 'Schedule',      icon: Calendar },
   { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle },
+  { id: 'requests',   label: 'Requests',      icon: Inbox },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
   { id: 'feedback',   label: 'Feedback',      icon: MessageSquare },
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
@@ -7198,7 +7203,7 @@ function reorderIds(order, fromId, toId) {
 }
 
 // Sidebar nav — a separate component so drag-hover state doesn't re-render the active tab's content.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled }) {
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
   // The 'feedback' tab only ever renders when cloud sync is configured (it has nothing to
@@ -7217,6 +7222,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
         {orderedTabs.map(t=>{
           const Icon=t.icon; const active=tab===t.id;
           const isValidation = t.id==='validation';
+          const isRequests = t.id === 'requests';
           const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
           const iconColor = active?'text-white':'text-gray-400';
           return (
@@ -7247,6 +7253,11 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
               )}
               {isValidation && clean && (
                 <CheckCircle size={13} className={active?'text-white':'text-green-500'}/>
+              )}
+              {isRequests && pendingRequestCount > 0 && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
+                  {pendingRequestCount}
+                </span>
               )}
             </button>
           );
@@ -7310,6 +7321,37 @@ export default function ResidentScheduler() {
   const [dbStatus, setDbStatus] = useState('idle'); // 'idle' | 'loading' | 'saving' | 'error'
   const [dbError, setDbError] = useState(null);
   const saveTimerRef = useRef(null);
+
+  // Pending resident day-off requests, for the Schedule-grid marker + sidebar badge. Gated on the
+  // chief having an active Supabase auth session (RLS blocks the anonymous select otherwise) — no
+  // session means this silently resolves to an empty list rather than erroring.
+  const [pendingRequests, setPendingRequests] = useState([]); // [{resident_id, dates}], chief-session-gated
+
+  // Exposed (not just effect-local) so Task 10's approve/deny can call it directly after a
+  // decision — without this, the sidebar badge and grid marker would only refresh on the next
+  // mount/auth-state-change, staying visibly stale immediately after the chief acts.
+  const refreshPendingRequests = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setPendingRequests([]); return; }
+    const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
+    setPendingRequests(data || []);
+  }, []);
+
+  useEffect(() => {
+    if (!AUTH_ENABLED) return;
+    refreshPendingRequests();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => refreshPendingRequests());
+    return () => sub.subscription.unsubscribe();
+  }, [refreshPendingRequests]);
+
+  const pendingByResident = useMemo(() => {
+    const m = new Map();
+    for (const req of pendingRequests) {
+      if (!m.has(req.resident_id)) m.set(req.resident_id, new Set());
+      req.dates.forEach(d => m.get(req.resident_id).add(d));
+    }
+    return m;
+  }, [pendingRequests]);
   // The nine synced values that the cloud row is currently known to hold (by reference). null
   // until the first sync decision: `null` means "push local up" (empty cloud → seed it), a value
   // array means "already matches the cloud" (just loaded it → don't re-upload). Updated after
@@ -7643,7 +7685,8 @@ export default function ResidentScheduler() {
         {/* Vertical sidebar */}
         <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
           issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
-          offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}/>
+          offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}
+          pendingRequestCount={pendingRequests.length}/>
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-6 min-w-0">
@@ -7662,9 +7705,10 @@ export default function ResidentScheduler() {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} onRequestsChanged={refreshPendingRequests}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

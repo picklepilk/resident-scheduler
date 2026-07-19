@@ -11,6 +11,7 @@ import '@fontsource/jetbrains-mono/600.css';
 import '@fontsource/jetbrains-mono/700.css';
 import './index.css';
 import ResidentScheduler, { submitFeedback, SUPABASE_ENABLED } from './ResidentScheduler';
+import ResidentRequestsApp from './residentRequests/ResidentRequestsApp';
 
 // ─── CRASH AUTO-CAPTURE ─────────────────────────────────────────────────────
 // Installed once here (main.jsx runs exactly once per page load). No-ops entirely when
@@ -55,8 +56,10 @@ window.addEventListener('unhandledrejection', (e) => {
   reportCrash(message, stack);
 });
 
+const isRequestsRoute = window.location.pathname.replace(/\/+$/, '') === '/requests';
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <ResidentScheduler />
+    {isRequestsRoute ? <ResidentRequestsApp /> : <ResidentScheduler />}
   </React.StrictMode>
 );
