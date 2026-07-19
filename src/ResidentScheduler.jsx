@@ -8,7 +8,7 @@ import {
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
-  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox,
+  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -7680,6 +7680,12 @@ export default function ResidentScheduler() {
               className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
+            {AUTH_ENABLED && (
+              <button onClick={()=>supabase.auth.signOut()} title="Sign out"
+                className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                <LogOut size={16}/>
+              </button>
+            )}
             {block.startDate && (
               <>
                 <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"

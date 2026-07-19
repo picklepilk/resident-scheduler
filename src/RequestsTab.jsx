@@ -155,11 +155,12 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
   );
 }
 
-// Lets an existing admin grant/revoke admin access for other signed-in users, so the FIRST admin
-// (bootstrapped once via manual SQL, see day_off_requests.sql) never needs a second manual SQL
-// edit to add more — every admin after that is promoted here instead. Relies on the
-// profiles_admin_select_all / profiles_admin_update_role RLS policies (admin-only; a resident
-// session sees/changes nothing here even if this component somehow rendered for one).
+// Lets an existing admin approve pending accounts (as resident or admin) and grant/revoke admin
+// access for everyone else, so the FIRST admin (bootstrapped once via manual SQL, see
+// day_off_requests.sql) never needs a second manual SQL edit to add more — every account after
+// that is approved/promoted here instead. Relies on the profiles_admin_select_all /
+// profiles_admin_update_role RLS policies (admin-only; a resident/pending session sees/changes
+// nothing here even if this component somehow rendered for one).
 function AdminManagement({ session, emRoster }) {
   const [profiles, setProfiles] = useState([]);
   const [busyId, setBusyId] = useState(null);
@@ -179,8 +180,7 @@ function AdminManagement({ session, emRoster }) {
     return r ? formatResidentName(r) : residentId;
   }
 
-  async function toggleRole(profile) {
-    const newRole = profile.role === 'admin' ? 'resident' : 'admin';
+  async function setRole(profile, newRole) {
     setBusyId(profile.id);
     const { error: updateError } = await supabase.from('profiles').update({ role: newRole }).eq('id', profile.id);
     setBusyId(null);
@@ -189,19 +189,50 @@ function AdminManagement({ session, emRoster }) {
     loadProfiles();
   }
 
+  const pending = profiles.filter(p => p.role === 'pending');
+  const approved = profiles.filter(p => p.role !== 'pending');
+
   return (
     <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
       <p className="font-display text-sm font-semibold text-gray-800 mb-2">Admin access</p>
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
+      {pending.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Pending approval ({pending.length})</p>
+          <div className="space-y-1">
+            {pending.map(p => (
+              <div key={p.id} className="flex items-center justify-between text-xs bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                <p className="text-gray-800">{p.email}</p>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => setRole(p, 'resident')}
+                    disabled={busyId === p.id}
+                    className="text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 disabled:opacity-40"
+                  >
+                    {busyId === p.id ? 'Saving…' : 'Approve'}
+                  </button>
+                  <button
+                    onClick={() => setRole(p, 'admin')}
+                    disabled={busyId === p.id}
+                    className="text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 disabled:opacity-40"
+                  >
+                    Approve as admin
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="space-y-1">
-        {profiles.map(p => (
+        {approved.map(p => (
           <div key={p.id} className="flex items-center justify-between text-xs bg-white border border-gray-200 rounded-md px-3 py-2">
             <div>
               <p className="text-gray-800">{p.email} {p.id === session.user.id && <span className="text-gray-400">(you)</span>}</p>
               <p className="text-gray-400">{p.role} · {residentLabel(p.resident_id)}</p>
             </div>
             <button
-              onClick={() => toggleRole(p)}
+              onClick={() => setRole(p, p.role === 'admin' ? 'resident' : 'admin')}
               disabled={p.id === session.user.id || busyId === p.id}
               className="text-xs font-medium rounded-md px-3 py-1.5 border border-gray-300 disabled:opacity-40"
             >

@@ -8,28 +8,32 @@
 create table profiles (
   id          uuid primary key references auth.users(id) on delete cascade,
   email       text not null,
-  role        text not null default 'resident' check (role in ('resident','admin')),
+  role        text not null default 'pending' check (role in ('pending','resident','admin')),
   resident_id text,
   created_at  timestamptz not null default now()
 );
 alter table profiles enable row level security;
 
--- Every user (resident or admin) may read and create only their own profile row. The insert
--- policy pins role to 'resident' (like the update policy below) — without this, a resident could
--- self-insert a profile row with role='admin' before one exists, self-promoting to admin.
+-- Every user (pending, resident, or admin) may read and create only their own profile row. The
+-- insert policy pins role to 'pending' (the default) — without this, a self-registered user
+-- could insert a profile row with role='resident' or role='admin' before one exists, bypassing
+-- admin approval entirely. A brand-new signup gets ZERO app access until an admin explicitly
+-- approves them as 'resident' or 'admin' from the in-app admin-management list.
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
 create policy "profiles_insert_own" on profiles for insert
-  with check (auth.uid() = id and role = 'resident');
--- A resident may set their own resident_id (the one-time "which resident are you" pick) but can
--- never grant themselves the 'admin' role through the app — role stays 'resident' on any
--- self-update. Bootstrapping the FIRST admin still requires a one-time manual SQL edit (flip your
--- own row to role='admin' via the Supabase table editor after first login) — unavoidable, since
--- nothing exists yet to grant it. Every subsequent admin is promoted through the in-app
+  with check (auth.uid() = id and role = 'pending');
+-- A resident may set their own resident_id (the one-time "which resident are you" pick) once
+-- already approved, but can never change their own role through the app at all — see the
+-- enforce_profile_role_change_rules trigger below, which blocks any self-update from touching
+-- role regardless of payload (a stricter, simpler invariant than pinning to one specific value).
+-- Bootstrapping the FIRST admin still requires a one-time manual SQL edit (flip your own row to
+-- role='admin' via the Supabase table editor after first login) — unavoidable, since nothing
+-- exists yet to grant it. Every account after that is approved/promoted through the in-app
 -- admin-management UI (profiles_admin_update_role below), not another manual edit.
 create policy "profiles_update_own" on profiles for update
   using (auth.uid() = id)
-  with check (auth.uid() = id and role = 'resident');
+  with check (auth.uid() = id);
 
 -- SECURITY DEFINER helper so RLS policies can check "is the caller an admin" without a naive
 -- self-referential subquery on profiles (a policy on profiles whose USING clause queries profiles
@@ -54,25 +58,33 @@ grant execute on function public.is_admin() to authenticated;
 create policy "profiles_admin_select_all" on profiles for select
   using (is_admin());
 
--- Lets an admin UPDATE a DIFFERENT user's row (to promote/revoke admin access). Deliberately
--- scoped to id <> auth.uid() so it never applies to a self-update — self-updates stay governed
--- exclusively by profiles_update_own above. Column-level scoping (role only, nothing else) isn't
--- expressible in WITH CHECK — that's enforced by the enforce_admin_role_only_update trigger below.
+-- Lets an admin UPDATE a DIFFERENT user's row (to approve a pending account as resident/admin, or
+-- to promote/revoke admin access later). Deliberately scoped to id <> auth.uid() so it never
+-- applies to a self-update — self-updates stay governed exclusively by profiles_update_own above.
+-- Column-level scoping (role only, nothing else) isn't expressible in WITH CHECK — that's
+-- enforced by the enforce_profile_role_change_rules trigger below.
 create policy "profiles_admin_update_role" on profiles for update
   using (is_admin() and id <> auth.uid())
   with check (is_admin() and id <> auth.uid());
 
--- Guards profiles_admin_update_role above: when a caller updates a DIFFERENT user's profile row
--- (old.id is distinct from auth.uid() — the only way to reach this branch, since
--- profiles_update_own requires auth.uid() = id), only the role column may change. Without this,
--- profiles_admin_update_role's broad WITH CHECK would let an admin rewrite another user's email or
--- resident_id in the same call that changes their role.
-create or replace function public.enforce_admin_role_only_update()
+-- Guards role changes on profiles in both directions, in one place:
+--  - Self-update (auth.uid() = old.id, i.e. NOT reached via profiles_admin_update_role above,
+--    since that policy excludes id = auth.uid()): role may never change at all, regardless of
+--    payload — nobody can promote OR demote themselves through the app.
+--  - Cross-account update (the only way to reach this branch — via profiles_admin_update_role):
+--    role is the ONLY column allowed to change. Without this, that policy's broad WITH CHECK
+--    would let an admin rewrite another user's email or resident_id in the same call that
+--    changes their role.
+create or replace function public.enforce_profile_role_change_rules()
 returns trigger
 language plpgsql
 as $$
 begin
-  if old.id is distinct from auth.uid() then
+  if auth.uid() = old.id then
+    if new.role is distinct from old.role then
+      raise exception 'You cannot change your own role';
+    end if;
+  else
     if new.email is distinct from old.email
        or new.resident_id is distinct from old.resident_id
        or new.created_at is distinct from old.created_at
@@ -85,9 +97,9 @@ begin
 end;
 $$;
 
-create trigger profiles_admin_role_only_update_guard
+create trigger profiles_role_change_guard
   before update on profiles
-  for each row execute function public.enforce_admin_role_only_update();
+  for each row execute function public.enforce_profile_role_change_rules();
 
 -- Every request table below (requests_select_own/insert_own/cancel_own) authorizes a resident
 -- purely by matching their profile's resident_id — so an UPDATE that re-links resident_id to a
