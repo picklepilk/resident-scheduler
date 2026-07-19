@@ -7323,24 +7323,24 @@ export default function ResidentScheduler() {
   const saveTimerRef = useRef(null);
 
   // Pending resident day-off requests, for the Schedule-grid marker + sidebar badge. Gated on the
-  // chief having an active Supabase auth session (RLS blocks the anonymous select otherwise) — no
+  // admin having an active Supabase auth session (RLS blocks the anonymous select otherwise) — no
   // session means this silently resolves to an empty list rather than erroring.
-  const [pendingRequests, setPendingRequests] = useState([]); // [{resident_id, dates}], chief-session-gated
+  const [pendingRequests, setPendingRequests] = useState([]); // [{resident_id, dates}], admin-session-gated
 
   // Exposed (not just effect-local) so Task 10's approve/deny can call it directly after a
   // decision — without this, the sidebar badge and grid marker would only refresh on the next
-  // mount/auth-state-change, staying visibly stale immediately after the chief acts.
+  // mount/auth-state-change, staying visibly stale immediately after the admin acts.
   //
-  // Gated on role === 'chief', not just "has a session": RLS's requests_select_own policy means a
+  // Gated on role === 'admin', not just "has a session": RLS's requests_select_own policy means a
   // signed-in resident's own session can also successfully select from day_off_requests — scoped
   // to just their own rows. Without the role check, a resident who'd ever signed into /requests in
-  // the same browser would see this chief-only badge/marker showing their own pending-request
-  // count, mislabeled as the chief's queue.
+  // the same browser would see this admin-only badge/marker showing their own pending-request
+  // count, mislabeled as the admin's queue.
   const refreshPendingRequests = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { setPendingRequests([]); return; }
     const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
-    if (profile?.role !== 'chief') { setPendingRequests([]); return; }
+    if (profile?.role !== 'admin') { setPendingRequests([]); return; }
     const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
     setPendingRequests(data || []);
   }, []);

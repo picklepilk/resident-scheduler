@@ -8,26 +8,86 @@
 create table profiles (
   id          uuid primary key references auth.users(id) on delete cascade,
   email       text not null,
-  role        text not null default 'resident' check (role in ('resident','chief')),
+  role        text not null default 'resident' check (role in ('resident','admin')),
   resident_id text,
   created_at  timestamptz not null default now()
 );
 alter table profiles enable row level security;
 
--- Every user (resident or chief) may read and create only their own profile row. The insert
+-- Every user (resident or admin) may read and create only their own profile row. The insert
 -- policy pins role to 'resident' (like the update policy below) — without this, a resident could
--- self-insert a profile row with role='chief' before one exists, self-promoting to admin.
+-- self-insert a profile row with role='admin' before one exists, self-promoting to admin.
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
 create policy "profiles_insert_own" on profiles for insert
   with check (auth.uid() = id and role = 'resident');
 -- A resident may set their own resident_id (the one-time "which resident are you" pick) but can
--- never grant themselves the 'chief' role through the app — role stays 'resident' on any
--- self-update. The chief's own row is flipped to role='chief' manually via the Supabase table
--- editor after their first login (one-time bootstrap, not a feature to build).
+-- never grant themselves the 'admin' role through the app — role stays 'resident' on any
+-- self-update. Bootstrapping the FIRST admin still requires a one-time manual SQL edit (flip your
+-- own row to role='admin' via the Supabase table editor after first login) — unavoidable, since
+-- nothing exists yet to grant it. Every subsequent admin is promoted through the in-app
+-- admin-management UI (profiles_admin_update_role below), not another manual edit.
 create policy "profiles_update_own" on profiles for update
   using (auth.uid() = id)
   with check (auth.uid() = id and role = 'resident');
+
+-- SECURITY DEFINER helper so RLS policies can check "is the caller an admin" without a naive
+-- self-referential subquery on profiles (a policy on profiles whose USING clause queries profiles
+-- again is a well-known Postgres/Supabase footgun — "infinite recursion detected in policy for
+-- relation profiles" — since the inner query is itself subject to profiles' own RLS). A SECURITY
+-- DEFINER function bypasses RLS for just this internal lookup, sidestepping it.
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select exists (select 1 from profiles where id = auth.uid() and role = 'admin');
+$$;
+grant execute on function public.is_admin() to authenticated;
+
+-- Lets an admin SELECT every profiles row (needed for the in-app admin-management list: who has
+-- signed up, what's their role, are they linked to a resident). ORs with profiles_select_own
+-- above: for a non-admin caller is_admin() is false, so this contributes nothing and
+-- profiles_select_own alone still governs (own row only) — residents get no new visibility.
+create policy "profiles_admin_select_all" on profiles for select
+  using (is_admin());
+
+-- Lets an admin UPDATE a DIFFERENT user's row (to promote/revoke admin access). Deliberately
+-- scoped to id <> auth.uid() so it never applies to a self-update — self-updates stay governed
+-- exclusively by profiles_update_own above. Column-level scoping (role only, nothing else) isn't
+-- expressible in WITH CHECK — that's enforced by the enforce_admin_role_only_update trigger below.
+create policy "profiles_admin_update_role" on profiles for update
+  using (is_admin() and id <> auth.uid())
+  with check (is_admin() and id <> auth.uid());
+
+-- Guards profiles_admin_update_role above: when a caller updates a DIFFERENT user's profile row
+-- (old.id is distinct from auth.uid() — the only way to reach this branch, since
+-- profiles_update_own requires auth.uid() = id), only the role column may change. Without this,
+-- profiles_admin_update_role's broad WITH CHECK would let an admin rewrite another user's email or
+-- resident_id in the same call that changes their role.
+create or replace function public.enforce_admin_role_only_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.id is distinct from auth.uid() then
+    if new.email is distinct from old.email
+       or new.resident_id is distinct from old.resident_id
+       or new.created_at is distinct from old.created_at
+       or new.id is distinct from old.id
+    then
+      raise exception 'Admins may only change the role column on another user''s profile';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger profiles_admin_role_only_update_guard
+  before update on profiles
+  for each row execute function public.enforce_admin_role_only_update();
 
 -- Every request table below (requests_select_own/insert_own/cancel_own) authorizes a resident
 -- purely by matching their profile's resident_id — so an UPDATE that re-links resident_id to a
@@ -98,20 +158,20 @@ create policy "requests_cancel_own" on day_off_requests for update
   )
   with check (status = 'cancelled');
 
--- The chief (role='chief' on their own profile row) may read and decide on every request.
-create policy "requests_chief_select_all" on day_off_requests for select
-  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
-create policy "requests_chief_update_all" on day_off_requests for update
-  using (exists (select 1 from profiles where id = auth.uid() and role = 'chief'));
+-- An admin (role='admin' on their own profile row) may read and decide on every request.
+create policy "requests_admin_select_all" on day_off_requests for select
+  using (is_admin());
+create policy "requests_admin_update_all" on day_off_requests for update
+  using (is_admin());
 
 -- Guards requests_cancel_own above: when a resident's update transitions pending -> cancelled,
 -- every column except status must stay unchanged. Uses IS DISTINCT FROM (not =/!=) because a
 -- pending request's decided_at/decided_by/decision_note/reason are normally NULL, and plain SQL
 -- equality against NULL evaluates to NULL (neither true nor false) rather than a usable boolean —
 -- with plain =/!=, a resident could smuggle a fabricated decided_by into the same cancel-update
--- undetected, since `NULL = NULL` never trips the guard. Does not affect the chief's approve/deny
+-- undetected, since `NULL = NULL` never trips the guard. Does not affect the admin's approve/deny
 -- path (that transitions to 'approved'/'denied', never 'cancelled', so this condition never fires
--- for it — verified: requests_chief_update_all's own USING clause is what authorizes that path,
+-- for it — verified: requests_admin_update_all's own USING clause is what authorizes that path,
 -- and this trigger only inspects OLD/NEW status, not which policy allowed the write).
 create or replace function public.enforce_cancel_only_status()
 returns trigger

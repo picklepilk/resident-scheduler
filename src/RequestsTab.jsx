@@ -18,9 +18,10 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
     if (!session) return;
     supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => setRole(data ? data.role : null));
-    // A first-time chief login has no profile row yet — create one (defaults to role='resident';
-    // an admin flips it to 'chief' by hand in the Supabase table editor, same one-time bootstrap
-    // documented in the day_off_requests.sql schema comment).
+    // A first-time admin login has no profile row yet — create one (defaults to role='resident';
+    // the FIRST admin flips their own row to 'admin' by hand via the Supabase table editor —
+    // one-time bootstrap, documented in the day_off_requests.sql schema comment — every admin
+    // after that is promoted from within this tab by an existing admin, see AdminManagement below).
     supabase.from('profiles').upsert({ id: session.user.id, email: session.user.email }, { onConflict: 'id', ignoreDuplicates: true }).then(() => {});
   }, [session]);
 
@@ -32,16 +33,21 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
   if (!session) {
     return (
       <div className="p-4">
-        <LoginScreen embedded title="Chief Sign-In" subtitle="Sign in to review day-off requests." />
+        <LoginScreen embedded title="Admin Sign-In" subtitle="Sign in to review day-off requests." />
       </div>
     );
   }
   if (role === undefined) return null;
-  if (role !== 'chief') {
-    return <p className="text-sm text-gray-400 p-4">Your account isn't set up for chief access yet. Contact the app admin.</p>;
+  if (role !== 'admin') {
+    return <p className="text-sm text-gray-400 p-4">Your account isn't set up for admin access yet. Contact an existing admin to request access.</p>;
   }
 
-  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} />;
+  return (
+    <>
+      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} />
+      <AdminManagement session={session} emRoster={emRoster} />
+    </>
+  );
 }
 
 // Block label for a request: matched off its EARLIEST date (dates aren't submitted in sorted
@@ -57,7 +63,7 @@ function blockLabelFor(req, blocks) {
 
 // Groups requests by block label (design spec: "List of pending requests grouped by
 // resident/block") — chronological by block startDate, "Not yet scheduled" last, residents sorted
-// by name within each group so the chief can scan who's asking for what block at a glance.
+// by name within each group so the admin can scan who's asking for what block at a glance.
 function groupByBlock(requests, blocks) {
   const byLabel = new Map();
   for (const req of requests) {
@@ -144,6 +150,65 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
             <p key={req.id} className="text-xs text-gray-400">{residentName(req.resident_id)} · {req.dates.join(', ')} · {req.status}</p>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Lets an existing admin grant/revoke admin access for other signed-in users, so the FIRST admin
+// (bootstrapped once via manual SQL, see day_off_requests.sql) never needs a second manual SQL
+// edit to add more — every admin after that is promoted here instead. Relies on the
+// profiles_admin_select_all / profiles_admin_update_role RLS policies (admin-only; a resident
+// session sees/changes nothing here even if this component somehow rendered for one).
+function AdminManagement({ session, emRoster }) {
+  const [profiles, setProfiles] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function loadProfiles() {
+    const { data, error: loadError } = await supabase.from('profiles').select('id, email, role, resident_id').order('email');
+    if (loadError) { setError(loadError.message); return; }
+    setError(null);
+    setProfiles(data || []);
+  }
+  useEffect(() => { loadProfiles(); }, []);
+
+  function residentLabel(residentId) {
+    if (!residentId) return 'Not linked';
+    const r = emRoster.find(x => x.id === residentId);
+    return r ? formatResidentName(r) : residentId;
+  }
+
+  async function toggleRole(profile) {
+    const newRole = profile.role === 'admin' ? 'resident' : 'admin';
+    setBusyId(profile.id);
+    const { error: updateError } = await supabase.from('profiles').update({ role: newRole }).eq('id', profile.id);
+    setBusyId(null);
+    if (updateError) { setError(updateError.message); return; }
+    setError(null);
+    loadProfiles();
+  }
+
+  return (
+    <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+      <p className="font-display text-sm font-semibold text-gray-800 mb-2">Admin access</p>
+      {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
+      <div className="space-y-1">
+        {profiles.map(p => (
+          <div key={p.id} className="flex items-center justify-between text-xs bg-white border border-gray-200 rounded-md px-3 py-2">
+            <div>
+              <p className="text-gray-800">{p.email} {p.id === session.user.id && <span className="text-gray-400">(you)</span>}</p>
+              <p className="text-gray-400">{p.role} · {residentLabel(p.resident_id)}</p>
+            </div>
+            <button
+              onClick={() => toggleRole(p)}
+              disabled={p.id === session.user.id || busyId === p.id}
+              className="text-xs font-medium rounded-md px-3 py-1.5 border border-gray-300 disabled:opacity-40"
+            >
+              {busyId === p.id ? 'Saving…' : p.role === 'admin' ? 'Revoke admin' : 'Make admin'}
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
