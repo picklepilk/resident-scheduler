@@ -105,8 +105,19 @@ create trigger profiles_admin_role_only_update_guard
 
 commit;
 
+-- 6. Bootstrap YOUR OWN account straight to 'admin' — you go directly from 'resident' (or no row
+--    yet) to 'admin', never through 'chief' at any point. This is the one irreducible manual step
+--    (see day_off_requests.sql's profiles_update_own comment: an RLS-blocked self-promotion is by
+--    design) — everyone after you is promoted from the in-app "Admin access" list instead.
+--
+--    Sign in at least once first (so your profiles row exists), then EDIT THE EMAIL BELOW to your
+--    real @uthscsa.edu address and run just this one statement (left as a placeholder rather than
+--    committed with a real address, since this file lives in a public repo):
+--
+-- update profiles set role = 'admin' where email = 'YOUR_EMAIL@uthscsa.edu';
+
 -- Post-migration sanity check (run separately, read-only):
 --   select role, count(*) from profiles group by role;
---   -- expect zero 'chief' rows, at least one 'admin' row.
+--   -- expect zero 'chief' rows, at least one 'admin' row (yours, once step 6 above is run).
 --   select forcerowsecurity from pg_class where relname = 'profiles';
 --   -- expect false, or is_admin()'s SECURITY DEFINER lookup could itself get RLS-filtered.
