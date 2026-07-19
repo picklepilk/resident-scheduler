@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
+import { findBlockForDate, formatResidentName } from './residentRequests/blockLookup';
 
-export default function RequestsTab({ emRoster, setEmRoster, onRequestsChanged }) {
+export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
 
@@ -40,10 +41,40 @@ export default function RequestsTab({ emRoster, setEmRoster, onRequestsChanged }
     return <p className="text-sm text-gray-400 p-4">Your account isn't set up for chief access yet. Contact the app admin.</p>;
   }
 
-  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} session={session} onRequestsChanged={onRequestsChanged} />;
+  return <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} />;
 }
 
-function ApprovalQueue({ emRoster, setEmRoster, session, onRequestsChanged }) {
+// Block label for a request: matched off its EARLIEST date (dates aren't submitted in sorted
+// order — RequestForm lets a resident add date fields in any order), so a multi-date request that
+// spans two blocks lands under the block its earliest date falls into, deterministically — not
+// whichever date happened to be first in the array.
+function blockLabelFor(req, blocks) {
+  if (!req.dates.length) return 'Not yet scheduled';
+  const earliest = [...req.dates].sort()[0];
+  const block = findBlockForDate(earliest, blocks);
+  return block ? block.name : 'Not yet scheduled';
+}
+
+// Groups requests by block label (design spec: "List of pending requests grouped by
+// resident/block") — chronological by block startDate, "Not yet scheduled" last, residents sorted
+// by name within each group so the chief can scan who's asking for what block at a glance.
+function groupByBlock(requests, blocks) {
+  const byLabel = new Map();
+  for (const req of requests) {
+    const label = blockLabelFor(req, blocks);
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label).push(req);
+  }
+  const order = [...blocks].sort((a, b) => a.startDate.localeCompare(b.startDate)).map(b => b.name);
+  const labels = [...byLabel.keys()].sort((a, b) => {
+    if (a === 'Not yet scheduled') return 1;
+    if (b === 'Not yet scheduled') return -1;
+    return order.indexOf(a) - order.indexOf(b);
+  });
+  return labels.map(label => ({ label, requests: byLabel.get(label) }));
+}
+
+function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
 
@@ -55,7 +86,7 @@ function ApprovalQueue({ emRoster, setEmRoster, session, onRequestsChanged }) {
 
   function residentName(residentId) {
     const r = emRoster.find(x => x.id === residentId);
-    return r ? `${r.lastName}, ${r.firstName}` : residentId;
+    return r ? formatResidentName(r) : residentId;
   }
 
   async function decide(req, status) {
@@ -74,24 +105,33 @@ function ApprovalQueue({ emRoster, setEmRoster, session, onRequestsChanged }) {
 
   const pending = requests.filter(r => r.status === 'pending');
   const decided = requests.filter(r => r.status !== 'pending');
+  const pendingGroups = groupByBlock(pending, blocks)
+    .map(g => ({ ...g, requests: [...g.requests].sort((a, b) => residentName(a.resident_id).localeCompare(residentName(b.resident_id))) }));
 
   return (
     <div className="p-4 space-y-4 max-w-2xl">
       <div>
         <p className="font-display text-sm font-semibold text-gray-800 mb-2">Pending ({pending.length})</p>
         {pending.length === 0 && <p className="text-sm text-gray-400">Nothing pending.</p>}
-        <div className="space-y-2">
-          {pending.map(req => (
-            <div key={req.id} className="bg-white border border-gray-200 rounded-lg p-3">
-              <p className="text-sm font-medium text-gray-800">{residentName(req.resident_id)}</p>
-              <p className="text-xs text-gray-500">{req.dates.join(', ')}</p>
-              {req.reason && <p className="text-xs text-gray-500 mt-1">"{req.reason}"</p>}
-              <input type="text" placeholder="Optional note back to resident" value={noteDraft[req.id] || ''}
-                onChange={e => setNoteDraft(prev => ({ ...prev, [req.id]: e.target.value }))}
-                className="input-field w-full mt-2 text-xs" />
-              <div className="flex gap-2 mt-2">
-                <button onClick={() => decide(req, 'approved')} className="bg-green-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Approve</button>
-                <button onClick={() => decide(req, 'denied')} className="bg-red-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Deny</button>
+        <div className="space-y-4">
+          {pendingGroups.map(group => (
+            <div key={group.label}>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">{group.label}</p>
+              <div className="space-y-2">
+                {group.requests.map(req => (
+                  <div key={req.id} className="bg-white border border-gray-200 rounded-lg p-3">
+                    <p className="text-sm font-medium text-gray-800">{residentName(req.resident_id)}</p>
+                    <p className="text-xs text-gray-500">{req.dates.join(', ')}</p>
+                    {req.reason && <p className="text-xs text-gray-500 mt-1">"{req.reason}"</p>}
+                    <input type="text" placeholder="Optional note back to resident" value={noteDraft[req.id] || ''}
+                      onChange={e => setNoteDraft(prev => ({ ...prev, [req.id]: e.target.value }))}
+                      className="input-field w-full mt-2 text-xs" />
+                    <div className="flex gap-2 mt-2">
+                      <button onClick={() => decide(req, 'approved')} className="bg-green-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Approve</button>
+                      <button onClick={() => decide(req, 'denied')} className="bg-red-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Deny</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}

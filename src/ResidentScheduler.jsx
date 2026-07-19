@@ -7041,7 +7041,7 @@ const FEEDBACK_STATUS_OPTIONS = ['new', 'reviewed', 'resolved'];
 const FEEDBACK_TYPE_BADGE = {
   bug:   'bg-red-100 text-red-700',
   crash: 'bg-orange-100 text-orange-700',
-  idea:  'bg-emerald-100 text-emerald-700',
+  idea:  'bg-green-100 text-green-700',
 };
 
 async function fetchFeedbackAdmin(password) {
@@ -7330,9 +7330,17 @@ export default function ResidentScheduler() {
   // Exposed (not just effect-local) so Task 10's approve/deny can call it directly after a
   // decision — without this, the sidebar badge and grid marker would only refresh on the next
   // mount/auth-state-change, staying visibly stale immediately after the chief acts.
+  //
+  // Gated on role === 'chief', not just "has a session": RLS's requests_select_own policy means a
+  // signed-in resident's own session can also successfully select from day_off_requests — scoped
+  // to just their own rows. Without the role check, a resident who'd ever signed into /requests in
+  // the same browser would see this chief-only badge/marker showing their own pending-request
+  // count, mislabeled as the chief's queue.
   const refreshPendingRequests = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { setPendingRequests([]); return; }
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
+    if (profile?.role !== 'chief') { setPendingRequests([]); return; }
     const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
     setPendingRequests(data || []);
   }, []);
@@ -7352,6 +7360,18 @@ export default function ResidentScheduler() {
     }
     return m;
   }, [pendingRequests]);
+
+  // Same {id,name,startDate,endDate} shape blockLookup.js's fetchBlocksForLookup produces for the
+  // resident-facing app — this is the chief-side equivalent, read directly from local state instead
+  // of a res_state fetch, since RequestsTab already renders inside this component tree. Lets
+  // RequestsTab's ApprovalQueue group pending requests by scheduling block (design spec: "List of
+  // pending requests grouped by resident/block").
+  const requestBlocks = useMemo(() => {
+    const all = [...blocksHistory, block];
+    return all
+      .filter(b => b && b.startDate && b.endDate)
+      .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
+  }, [blocksHistory, block]);
   // The nine synced values that the cloud row is currently known to hold (by reference). null
   // until the first sync decision: `null` means "push local up" (empty cloud → seed it), a value
   // array means "already matches the cloud" (just loaded it → don't re-upload). Updated after
@@ -7708,7 +7728,7 @@ export default function ResidentScheduler() {
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} onRequestsChanged={refreshPendingRequests}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

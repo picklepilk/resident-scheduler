@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 // %VITE_...% HTML token substitution leaves the literal unresolved token string in place (not an
 // empty string) when the env var isn't defined for a build, which would otherwise make every
 // check below falsely truthy.
-const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
+export const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
 const readGlobal = key => {
   const raw = (typeof globalThis !== 'undefined' && globalThis[key]) || '';
   return isUnresolvedToken(raw) ? '' : raw;

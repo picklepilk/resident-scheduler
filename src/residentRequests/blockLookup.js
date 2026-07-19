@@ -2,10 +2,20 @@
 // reading those blocks read-only from the shared res_state cloud row (same wide-open-RLS row the
 // main app's cloud sync already uses — see ResidentScheduler.jsx's SUPABASE SYNC section). This
 // file intentionally does NOT import from ResidentScheduler.jsx — the resident-facing app is a
-// separate surface with no access to that file's local component state.
+// separate surface with no access to that file's local component state. It does import the small
+// isUnresolvedToken guard from supabaseClient.js, since that's this app's own auth surface, not
+// ResidentScheduler.jsx.
+
+import { isUnresolvedToken } from '../supabaseClient';
 
 export function findBlockForDate(dateStr, blocks) {
   return blocks.find(b => b.startDate && b.endDate && dateStr >= b.startDate && dateStr <= b.endDate) || null;
+}
+
+// "LastName, FirstName" — shared so the picker (ResidentPicker) and the chief queue (RequestsTab)
+// can't drift on how a resident's name is displayed.
+export function formatResidentName(resident) {
+  return resident ? `${resident.lastName}, ${resident.firstName}` : '';
 }
 
 // Whole weeks between two ISO date strings (toDateStr expected to be on/after fromDateStr).
@@ -38,16 +48,23 @@ const RES_STATE_ANON_KEY = '__SUPABASE_ANON__';
 export async function fetchResState() {
   const url = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_URL_KEY]) || '';
   const anon = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_ANON_KEY]) || '';
-  if (!url || url.startsWith('%') || !anon || anon.startsWith('%')) return null;
+  if (!url || isUnresolvedToken(url) || !anon || isUnresolvedToken(anon)) return null;
+  // Same 15s bound as ResidentScheduler.jsx's sbFetch, for the same reason: a stalled (not
+  // failed) network shouldn't hang this form/list forever with no recovery.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const res = await fetch(`${url}/rest/v1/res_state?id=eq.main&select=data`, {
       headers: { apikey: anon, Authorization: `Bearer ${anon}` },
+      signal: controller.signal,
     });
     if (!res.ok) return null;
     const rows = await res.json();
     return rows && rows[0] && rows[0].data ? rows[0].data : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
