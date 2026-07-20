@@ -5,8 +5,12 @@
 --   Events: Insert, Update
 --   Type: Supabase Edge Function
 --   Edge Function: notify-request
+--   HTTP Headers: add one — key x-webhook-secret, value the SAME string you set as the
+--     function's WEBHOOK_SECRET below. Without this header the function rejects the request
+--     with 401 (see index.ts) — it's what stops anyone who finds the function's public URL from
+--     forging a payload and getting it emailed to a real resident/chief.
 --
 -- Before creating the hook, deploy the function and set its secrets (see the comment header in
 -- supabase/functions/notify-request/index.ts) — SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are
--- already available to every Edge Function automatically; only RESEND_API_KEY and CHIEF_EMAIL
--- need to be set by hand.
+-- already available to every Edge Function automatically; RESEND_API_KEY, CHIEF_EMAIL, and
+-- WEBHOOK_SECRET need to be set by hand.

@@ -521,7 +521,7 @@ const RULE_NOTES = {
     tbdItems: ['Confirm eligible shift list with rotation director'],
   },
   ANES_1: {
-    specialNotes: ['1st Friday of each calendar month (social hour): never schedulable. Enforced.', 'Ultrasound days: off (email Gardner annually for dates).'],
+    specialNotes: ['1st Friday of each calendar month (social hour): never schedulable. Enforced.', 'Ultrasound days: off (email the ultrasound coordinator annually for dates).'],
   },
   PSYCH_1: {
     specialNotes: ['Monday: no night shifts. Tuesday: no day shifts (evening/night OK). Wednesday: day-only.'],
@@ -1543,14 +1543,30 @@ function getShiftTarget(resident, appSettings = {}) {
 // rotationSpecific=true means the chief explicitly configured this rotation,
 // so built-in rotation shift-type filters (e.g. PGY-1 no-trauma-off-trauma-blocks)
 // are skipped — the override IS the rule. Day-of-week rules always still apply.
+// PED-N/PED-S may never become eligible for any category/PGY other than their one legitimate
+// owner (FM_3 for PED-N, EM_HOME_2 for PED-S — see BASE_ELIGIBILITY above) via a chief-saved
+// override — a Shift Matrix override wholesale-replaces a key's eligibility list, and the
+// EM_HOME_2-specific overrideImmune shiftGates that further restrict PED-S never even get
+// evaluated for a resident whose own category/PGY has no such gates defined (see CLAUDE.md: "no
+// other category/PGY may ever be eligible ... including via a Shift Matrix rotation override").
+// The owner's own overrides (category-level or rotation-specific) are left untouched, since
+// keeping PED-S in EM_HOME_2's own customized list is the intended use of the feature.
+const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': 'FM_3', 'PED-S': 'EM_HOME_2' };
+function stripPedGuardedShifts(list, key) {
+  return list.filter(id => {
+    const owner = PED_GUARD_LEGITIMATE_OWNER[id];
+    return !owner || key === owner;
+  });
+}
+
 function getEffectiveEligibility(resident, eligOverrides = {}) {
   const key = `${resident.category}_${resident.pgy}`;
   const isEM = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
   if (isEM && resident.blockType) {
     const rotKey = `${key}__${resident.blockType}`;
-    if (eligOverrides[rotKey]) return { list: [...eligOverrides[rotKey]], rotationSpecific: true };
+    if (eligOverrides[rotKey]) return { list: stripPedGuardedShifts(eligOverrides[rotKey], key), rotationSpecific: true };
   }
-  if (eligOverrides[key]) return { list: [...eligOverrides[key]], rotationSpecific: false };
+  if (eligOverrides[key]) return { list: stripPedGuardedShifts(eligOverrides[key], key), rotationSpecific: false };
   return { list: [...(BASE_ELIGIBILITY[key] || [])], rotationSpecific: false };
 }
 
@@ -2959,7 +2975,7 @@ function AvailabilityRangesEditor({ ranges = [], onUpdate }) {
         {ranges.length === 0
           ? <span className="text-xs text-gray-300 italic">None set</span>
           : ranges.map((rg, i) => (
-            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-100 text-cyan-700 border border-cyan-200">
+            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200">
               {formatDisplayDate(rg.start)} → {formatDisplayDate(rg.end)}
               <button onClick={() => onUpdate(ranges.filter((_, idx) => idx !== i))} className="hover:opacity-60 transition-opacity">
                 <X size={10}/>
@@ -3227,7 +3243,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
           />
           <SpecialDaysList
             label="Anesthesia US Days"
-            hint="Anesthesia resident off these days (email Gardner annually for dates)"
+            hint="Anesthesia resident off these days (email the ultrasound coordinator annually for dates)"
             dates={sd.anesDays || []}
             onUpdate={d => updSD('anesDays', d)}
             chipClass="bg-purple-100 text-purple-700 border border-purple-200"
@@ -7044,8 +7060,20 @@ const FEEDBACK_TYPE_BADGE = {
   idea:  'bg-green-100 text-green-700',
 };
 
+// Same 15s bound as sbFetch (SUPABASE SYNC section) — without it a hung feedback-admin
+// Function response would spin the admin UI forever with no recovery short of a reload.
+async function fetchWithTimeout(url, opts) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchFeedbackAdmin(password) {
-  const res = await fetch('/api/feedback-admin/', { headers: { 'x-feedback-password': password } });
+  const res = await fetchWithTimeout('/api/feedback-admin/', { headers: { 'x-feedback-password': password } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Request failed (${res.status})`);
@@ -7054,7 +7082,7 @@ async function fetchFeedbackAdmin(password) {
 }
 
 async function updateFeedbackStatus(password, id, status) {
-  const res = await fetch('/api/feedback-admin/', {
+  const res = await fetchWithTimeout('/api/feedback-admin/', {
     method: 'PATCH',
     headers: { 'x-feedback-password': password, 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, status }),
@@ -7405,7 +7433,7 @@ export default function ResidentScheduler() {
     sbLoadState().then(row => {
       if (row && row.data) {
         const d = row.data;
-        LS_BACKUP_KEYS.forEach(k => { if (d[k] != null && syncBindings[k]) syncBindings[k][1](d[k]); });
+        LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
         // Baseline = the document now in sync with the cloud (applied value where present, else
         // the local value we left untouched) — so the save effect below won't re-upload what we
         // just downloaded on every page open.

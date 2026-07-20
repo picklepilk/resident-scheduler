@@ -6,8 +6,8 @@
 -- After running this script, finish the wiring in the Supabase dashboard: Authentication → Hooks
 -- → "Before User Created" → select the Postgres function `public.restrict_signup_domain`.
 --
--- IMPORTANT: replace 'youruh.edu' below with the actual institutional domain — this must match
--- VITE_ALLOWED_EMAIL_DOMAIN exactly, or legitimate signups will be rejected.
+-- IMPORTANT: the domain below is already set to uthscsa.edu, matching VITE_ALLOWED_EMAIL_DOMAIN
+-- in .env — if that ever changes, update it here too or legitimate signups will be rejected.
 
 -- Supabase's Postgres Auth Hook contract invokes this with a single `event jsonb` argument — the
 -- function body reads `event->'user'->>'email'` below, so the parameter must be declared or every
@@ -21,11 +21,11 @@ as $$
 declare
   user_email text := (event->'user'->>'email');
 begin
-  if user_email is null or right(lower(user_email), length('@youruh.edu')) <> '@youruh.edu' then
+  if user_email is null or right(lower(user_email), length('@uthscsa.edu')) <> '@uthscsa.edu' then
     return jsonb_build_object(
       'error', jsonb_build_object(
         'http_code', 403,
-        'message', 'Sign-up is restricted to youruh.edu email addresses.'
+        'message', 'Sign-up is restricted to uthscsa.edu email addresses.'
       )
     );
   end if;

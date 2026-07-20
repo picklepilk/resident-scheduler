@@ -28,8 +28,21 @@ export const handler = async (event) => {
     'Content-Type': 'application/json',
   };
 
+  // Same 15s bound as ResidentScheduler.jsx's sbFetch, for the same reason: a stalled (not
+  // failed) Supabase response would otherwise hang until Netlify's own platform timeout kills
+  // the function, with no controlled error response to the client.
+  const withTimeout = async (url, opts) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      return await fetch(url, { ...opts, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   if (event.httpMethod === 'GET') {
-    const res = await fetch(
+    const res = await withTimeout(
       `${SUPABASE_URL}/rest/v1/feedback?app_name=eq.${APP_NAME}&select=*&order=created_at.desc`,
       { headers: sbHeaders }
     );
@@ -52,7 +65,7 @@ export const handler = async (event) => {
     if (!id || !['new', 'reviewed', 'resolved'].includes(status)) {
       return { statusCode: 400, body: JSON.stringify({ error: 'id and a valid status (new|reviewed|resolved) are required' }) };
     }
-    const res = await fetch(
+    const res = await withTimeout(
       `${SUPABASE_URL}/rest/v1/feedback?id=eq.${id}&app_name=eq.${APP_NAME}`,
       {
         method: 'PATCH',

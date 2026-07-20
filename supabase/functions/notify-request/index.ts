@@ -1,13 +1,23 @@
 // Deploy with: supabase functions deploy notify-request
-// Then set the secret once: supabase secrets set RESEND_API_KEY=re_xxx CHIEF_EMAIL=chief@youruh.edu
+// Then set the secrets once: supabase secrets set RESEND_API_KEY=re_xxx CHIEF_EMAIL=chief@youruh.edu WEBHOOK_SECRET=<random string>
+// (generate WEBHOOK_SECRET yourself, e.g. `openssl rand -hex 32` — it's never sent to the
+// browser, only shared between the Database Webhook config and this function.)
 //
 // Receives a Supabase Database Webhook payload (see webhooks.sql) on day_off_requests INSERT and
 // UPDATE, and emails the relevant person via Resend. Fails soft — a Resend error is logged, not
 // thrown, so a flaky email provider never blocks the underlying database write that triggered it
 // (the webhook fires after the write commits).
+//
+// The function URL is otherwise public (Supabase Edge Functions have no built-in caller
+// verification), so anyone who discovers it could POST a forged payload and get it emailed —
+// with attacker-controlled dates/reason/decision_note — to a real resident or the chief, using
+// this project's own Resend account. WEBHOOK_SECRET closes that: the Database Webhook is
+// configured (see webhooks.sql) to send it as a custom header, and this function rejects any
+// request that doesn't present it, before touching Resend or the service-role key.
 
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!;
 const CHIEF_EMAIL = Deno.env.get('CHIEF_EMAIL')!;
+const WEBHOOK_SECRET = Deno.env.get('WEBHOOK_SECRET')!;
 const FROM_EMAIL = 'requests@resend.dev'; // replace with a verified sending domain once set up in Resend
 
 async function sendEmail(to: string, subject: string, text: string) {
@@ -23,6 +33,9 @@ async function sendEmail(to: string, subject: string, text: string) {
 }
 
 Deno.serve(async (req) => {
+  if (req.headers.get('x-webhook-secret') !== WEBHOOK_SECRET) {
+    return new Response('unauthorized', { status: 401 });
+  }
   const payload = await req.json();
   const { type, table, record, old_record } = payload;
   if (table !== 'day_off_requests') return new Response('ignored', { status: 200 });

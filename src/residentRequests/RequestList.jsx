@@ -13,6 +13,7 @@ const STATUS_STYLE = {
 export default function RequestList({ residentId, refreshKey }) {
   const [requests, setRequests] = useState([]);
   const [blocks, setBlocks] = useState([]);
+  const [error, setError] = useState(null);
 
   async function load() {
     const [{ data }, blockData] = await Promise.all([
@@ -26,7 +27,11 @@ export default function RequestList({ residentId, refreshKey }) {
   useEffect(() => { load(); }, [residentId, refreshKey]);
 
   async function cancel(id) {
-    await supabase.from('day_off_requests').update({ status: 'cancelled' }).eq('id', id);
+    // Check the write's own error — an RLS denial, expired session, or network blip must not
+    // leave the UI showing "cancelled" while the database write itself never took effect.
+    const { error: updateError } = await supabase.from('day_off_requests').update({ status: 'cancelled' }).eq('id', id);
+    if (updateError) { setError(updateError.message); return; }
+    setError(null);
     load();
   }
 
@@ -62,6 +67,7 @@ export default function RequestList({ residentId, refreshKey }) {
 
   return (
     <div className="space-y-4">
+      {error && <p className="text-xs text-red-600">{error}</p>}
       {labels.map(label => (
         <div key={label}>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">{label}</p>

@@ -83,6 +83,7 @@ function groupByBlock(requests, blocks) {
 function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
+  const [error, setError] = useState(null);
 
   async function loadRequests() {
     const { data } = await supabase.from('day_off_requests').select('*').order('submitted_at', { ascending: true });
@@ -97,9 +98,14 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
 
   async function decide(req, status) {
     const note = noteDraft[req.id] || null;
-    await supabase.from('day_off_requests').update({
+    // Check the write's own error rather than assuming success — an RLS denial, expired session,
+    // or network blip must not update local approvedDatesOff/UI state while the database write
+    // itself never took effect (that desync is exactly what the code review flagged).
+    const { error: updateError } = await supabase.from('day_off_requests').update({
       status, decision_note: note, decided_at: new Date().toISOString(), decided_by: session.user.id,
     }).eq('id', req.id);
+    if (updateError) { setError(updateError.message); return; }
+    setError(null);
     if (status === 'approved') {
       setEmRoster(prev => prev.map(r => r.id === req.resident_id
         ? { ...r, approvedDatesOff: Array.from(new Set([...(r.approvedDatesOff || []), ...req.dates])).sort() }
@@ -118,6 +124,7 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
     <div className="p-4 space-y-4 max-w-2xl">
       <div>
         <p className="font-display text-sm font-semibold text-gray-800 mb-2">Pending ({pending.length})</p>
+        {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
         {pending.length === 0 && <p className="text-sm text-gray-400">Nothing pending.</p>}
         <div className="space-y-4">
           {pendingGroups.map(group => (

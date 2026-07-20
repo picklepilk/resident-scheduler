@@ -209,3 +209,30 @@ $$;
 create trigger day_off_requests_cancel_guard
   before update on day_off_requests
   for each row execute function public.enforce_cancel_only_status();
+
+-- requests_admin_update_all above authorizes an admin to update ANY row, but its USING/implicit
+-- WITH CHECK only verify the CALLER is an admin — RLS can't express "only these columns changed"
+-- at the policy level, so without this trigger an admin update could also rewrite resident_id
+-- (impersonation), dates, reason, or submitted_at in the same call that approves/denies a
+-- request. Applies to every update regardless of which policy authorized it (resident cancel
+-- never touches these columns either, so it's a no-op there) — the only columns any legitimate
+-- UPDATE path ever needs to change are status/decision_note/decided_at/decided_by.
+create or replace function public.enforce_request_identity_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.resident_id is distinct from old.resident_id
+     or new.dates is distinct from old.dates
+     or new.reason is distinct from old.reason
+     or new.submitted_at is distinct from old.submitted_at
+  then
+    raise exception 'resident_id, dates, reason, and submitted_at cannot be changed after a request is created';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger day_off_requests_identity_guard
+  before update on day_off_requests
+  for each row execute function public.enforce_request_identity_immutable();
