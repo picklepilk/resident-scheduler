@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase, AUTH_ENABLED } from '../supabaseClient';
+import { supabase, AUTH_ENABLED, ROLE } from '../supabaseClient';
 import LoginScreen from './LoginScreen';
 import ResidentPicker from './ResidentPicker';
 import RequestForm from './RequestForm';
@@ -19,15 +19,43 @@ export default function ResidentRequestsApp() {
 
   useEffect(() => {
     if (!session) return;
-    supabase.from('profiles').select('resident_id').eq('id', session.user.id).maybeSingle()
-      .then(({ data }) => setProfile(data));
+    let cancelled = false;
+    (async () => {
+      // Sequential upsert-then-read, same reasoning as AppGate: firing both at once lets the
+      // SELECT win against an empty table and mis-render a brand-new account.
+      await supabase
+        .from('profiles')
+        .upsert({ id: session.user.id, email: session.user.email }, { onConflict: 'id', ignoreDuplicates: true });
+      const { data } = await supabase
+        .from('profiles').select('role, resident_id').eq('id', session.user.id).maybeSingle();
+      if (!cancelled) setProfile(data);
+    })();
+    return () => { cancelled = true; };
   }, [session]);
 
   if (session === undefined) return null; // brief flash before the session check resolves
   if (!session) return <LoginScreen />;
   if (profile === undefined) return null; // brief flash before the profile fetch resolves
-  if (!profile || !profile.resident_id) {
-    return <ResidentPicker session={session} onLinked={residentId => setProfile({ resident_id: residentId })} />;
+
+  // This route previously read only resident_id and never role, which made it a full bypass of
+  // the approval requirement: a brand-new pending account could open /requests, claim any
+  // not-yet-registered roster resident via the picker below, and submit requests under that
+  // identity. RLS now denies that regardless (migrate_block_pending_account_access.sql) — without
+  // this branch the UI would just fail confusingly instead of explaining why.
+  if (!profile || profile.role === ROLE.PENDING) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="text-center max-w-sm">
+          <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">Almost there</p>
+          <p className="text-sm text-gray-500">Your account is waiting on admin approval. You'll be able to submit requests once an admin approves you.</p>
+          <button onClick={() => supabase.auth.signOut()} className="text-xs text-gray-400 hover:text-gray-600 mt-4">Sign out</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!profile.resident_id) {
+    return <ResidentPicker session={session} onLinked={residentId => setProfile(prev => ({ ...prev, resident_id: residentId }))} />;
   }
 
   return (

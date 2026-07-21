@@ -22,3 +22,16 @@ export const AUTH_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON && ALLOWED_EMA
 export const supabase = AUTH_ENABLED
   ? createClient(SUPABASE_URL, SUPABASE_ANON)
   : null;
+
+// The three profiles.role values, mirroring the CHECK constraint in supabase/day_off_requests.sql.
+// Shared so the four files that branch on role (AppGate, RequestsTab, ResidentRequestsApp,
+// ResidentScheduler) can't drift on a bare string — a typo'd 'Admin' would silently fail closed
+// on the client while RLS still allowed the request, which reads as a baffling UI bug.
+// PENDING is the default for every new signup and means NO access: an admin must approve and
+// designate resident-vs-admin first. Enforced in RLS, not just here (see
+// migrate_block_pending_account_access.sql) — these constants are for legibility, not security.
+export const ROLE = {
+  PENDING: 'pending',
+  RESIDENT: 'resident',
+  ADMIN: 'admin',
+};

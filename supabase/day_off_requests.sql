@@ -21,19 +21,102 @@ alter table profiles enable row level security;
 -- approves them as 'resident' or 'admin' from the in-app admin-management list.
 create policy "profiles_select_own" on profiles for select
   using (auth.uid() = id);
+-- The role='pending' pin here works with the allowlist promotion below: a BEFORE INSERT trigger
+-- may raise the row to 'admin' before this check runs (verified: BEFORE triggers fire first, so
+-- the check sees the promoted value), which is why the 'admin' branch exists. That branch is
+-- gated on the same allowlist test, so self-registering straight to admin remains impossible.
 create policy "profiles_insert_own" on profiles for insert
-  with check (auth.uid() = id and role = 'pending');
+  with check (
+    auth.uid() = id
+    and (
+      role = 'pending'
+      or (role = 'admin' and public.current_user_is_allowlisted_admin())
+    )
+  );
 -- A resident may set their own resident_id (the one-time "which resident are you" pick) once
 -- already approved, but can never change their own role through the app at all — see the
 -- enforce_profile_role_change_rules trigger below, which blocks any self-update from touching
 -- role regardless of payload (a stricter, simpler invariant than pinning to one specific value).
+--
+-- `role <> 'pending'` in USING is load-bearing, not cosmetic: without it an unapproved account can
+-- claim a resident_id through ResidentPicker and then submit requests as that resident (every
+-- day_off_requests policy authorizes on resident_id). Since it can pick any roster resident who
+-- hasn't registered yet, that is impersonation of a colleague. Confirmed exploitable before this
+-- clause existed — see migrate_block_pending_account_access.sql.
+--
 -- Bootstrapping the FIRST admin still requires a one-time manual SQL edit (flip your own row to
 -- role='admin' via the Supabase table editor after first login) — unavoidable, since nothing
 -- exists yet to grant it. Every account after that is approved/promoted through the in-app
--- admin-management UI (profiles_admin_update_role below), not another manual edit.
+-- admin-management UI (profiles_admin_update_role below), or skips the queue via the allowlist.
 create policy "profiles_update_own" on profiles for update
-  using (auth.uid() = id)
+  using (auth.uid() = id and role <> 'pending')
   with check (auth.uid() = id);
+
+-- ── Pre-authorization allowlist ────────────────────────────────────────────────────────────────
+-- A listed email lands in role='admin' on first login instead of 'pending', so a known incoming
+-- admin doesn't need a second person present to approve them. Everyone else is unaffected.
+--
+-- ADDRESSES ARE DATA AND LIVE ONLY IN THE DATABASE — never in this file. This repo is public; see
+-- CLAUDE.md's "Data model & conventions". Populate with:
+--   insert into admin_email_allowlist (email, note) values ('someone@example.edu', 'why');
+--
+-- RLS on with NO policies is deliberate: that makes the table unreachable from anon/authenticated
+-- sessions entirely. Only postgres/service_role (which bypass RLS) can read or write it. Without
+-- that, any signed-in user could enumerate — or insert into — the list of automatic admins.
+create table admin_email_allowlist (
+  email    text primary key,
+  note     text,
+  added_at timestamptz not null default now()
+);
+alter table admin_email_allowlist enable row level security;
+
+-- Zero-argument on purpose. A version taking a caller-supplied email would be an enumeration
+-- oracle — any authenticated user could probe whether an address is pre-authorized. This form can
+-- only answer "am *I* on the list," which the caller already knows.
+create or replace function public.current_user_is_allowlisted_admin()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from admin_email_allowlist
+    where email = lower(nullif(auth.jwt() ->> 'email', ''))
+  );
+$$;
+revoke execute on function public.current_user_is_allowlisted_admin() from public, anon;
+grant execute on function public.current_user_is_allowlisted_admin() to authenticated;
+
+-- Promotes an allowlisted signup, and pins the stored email to the JWT's.
+--
+-- The pin matters: AppGate.jsx's first-login upsert sends `email` in its payload, so it is
+-- client-controlled. Keying the allowlist check off new.email would let anyone insert a profile
+-- claiming an allowlisted address and inherit its admin grant. auth.jwt() is signed by Supabase
+-- and cannot be forged. Guarded on a non-null JWT email so postgres/service_role writes (SQL
+-- editor, CLI, backfills) still work — those have no JWT and must not have their email nulled.
+create or replace function public.apply_admin_allowlist()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  jwt_email text := lower(nullif(auth.jwt() ->> 'email', ''));
+begin
+  if jwt_email is not null then
+    new.email := jwt_email;
+    if exists (select 1 from admin_email_allowlist where email = jwt_email) then
+      new.role := 'admin';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger profiles_admin_allowlist_promote
+  before insert on profiles
+  for each row execute function public.apply_admin_allowlist();
 
 -- SECURITY DEFINER helper so RLS policies can check "is the caller an admin" without a naive
 -- self-referential subquery on profiles (a policy on profiles whose USING clause queries profiles
@@ -149,11 +232,20 @@ alter table day_off_requests enable row level security;
 -- also pins status/decided_*/decision_note to their unset defaults — without this, a resident
 -- could insert a request already marked 'approved' with a fabricated decided_by, bypassing the
 -- chief's decision entirely.
+-- `role <> 'pending'` folded into each subquery is what makes admin approval actually binding: a
+-- pending caller yields no row, so `resident_id = NULL` evaluates to NULL — neither true nor
+-- false — and the policy denies. Without it, approval was enforced only by the client, on one
+-- route, and an unapproved account could submit requests under a claimed identity.
+--
+-- NOTE: `status = 'pending'` below is day_off_requests.status (a request awaiting a decision), NOT
+-- profiles.role = 'pending' (an account awaiting approval). Same word, unrelated state machines.
 create policy "requests_select_own" on day_off_requests for select
-  using (resident_id = (select resident_id from profiles where id = auth.uid()));
+  using (
+    resident_id = (select resident_id from profiles where id = auth.uid() and role <> 'pending')
+  );
 create policy "requests_insert_own" on day_off_requests for insert
   with check (
-    resident_id = (select resident_id from profiles where id = auth.uid())
+    resident_id = (select resident_id from profiles where id = auth.uid() and role <> 'pending')
     and status = 'pending'
     and decision_note is null
     and decided_at is null
@@ -165,7 +257,7 @@ create policy "requests_insert_own" on day_off_requests for insert
 -- decided_*/dates/reason in the same update. The trigger below closes that gap.
 create policy "requests_cancel_own" on day_off_requests for update
   using (
-    resident_id = (select resident_id from profiles where id = auth.uid())
+    resident_id = (select resident_id from profiles where id = auth.uid() and role <> 'pending')
     and status = 'pending'
   )
   with check (status = 'cancelled');

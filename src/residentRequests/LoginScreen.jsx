@@ -46,7 +46,7 @@ export default function LoginScreen({ embedded = false, title = 'Day-Off Request
       <PageWrapper embedded={embedded}>
         <div className="text-center max-w-sm">
           <CheckCircle2 className="mx-auto text-primary mb-3" size={32} />
-          <p className="font-display text-lg font-semibold text-gray-800 mb-1">Check your email</p>
+          <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">Check your email</p>
           <p className="text-sm text-gray-500">We sent a sign-in link to {email}.</p>
         </div>
       </PageWrapper>
@@ -56,7 +56,7 @@ export default function LoginScreen({ embedded = false, title = 'Day-Off Request
   return (
     <PageWrapper embedded={embedded}>
       <form onSubmit={submit} className={embedded ? '' : 'bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm'}>
-        <p className="font-display text-lg font-semibold text-gray-800 mb-1">{title}</p>
+        <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">{title}</p>
         <p className="text-sm text-gray-500 mb-4">{subtitle || `Sign in with your @${ALLOWED_EMAIL_DOMAIN} email.`}</p>
         <label className="block text-xs font-medium text-gray-700 mb-1">Email</label>
         <div className="relative mb-3">

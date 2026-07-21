@@ -46,7 +46,7 @@ export default function RequestForm({ residentId, onSubmitted }) {
 
   return (
     <form onSubmit={submit} className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-      <p className="font-display text-sm font-semibold text-gray-800 mb-3">Request a day off</p>
+      <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-3">Request a day off</p>
       {dates.map((d, i) => (
         <div key={i} className="flex items-center gap-2 mb-2">
           <input type="date" value={d} onChange={e => updateDate(i, e.target.value)} className="input-field" />

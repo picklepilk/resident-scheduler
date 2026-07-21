@@ -20,7 +20,7 @@ import { jsPDF } from 'jspdf';
 // that method form everywhere below, never the bare `autoTable(doc, opts)` function form.
 import 'jspdf-autotable';
 import RequestsTab from './RequestsTab';
-import { supabase, AUTH_ENABLED } from './supabaseClient';
+import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -7368,7 +7368,7 @@ export default function ResidentScheduler() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { setPendingRequests([]); return; }
     const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
-    if (profile?.role !== 'admin') { setPendingRequests([]); return; }
+    if (profile?.role !== ROLE.ADMIN) { setPendingRequests([]); return; }
     const { data } = await supabase.from('day_off_requests').select('resident_id, dates').eq('status', 'pending');
     setPendingRequests(data || []);
   }, []);
@@ -7709,7 +7709,7 @@ export default function ResidentScheduler() {
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
             {AUTH_ENABLED && (
-              <button onClick={()=>supabase.auth.signOut()} title="Sign out"
+              <button onClick={()=>supabase.auth.signOut()} title="Sign out" aria-label="Sign out"
                 className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
                 <LogOut size={16}/>
               </button>

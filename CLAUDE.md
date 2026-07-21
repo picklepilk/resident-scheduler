@@ -94,10 +94,12 @@ to CSV, with JSON backup/restore in the Settings tab.
 
 ## Auth, roles & the day-off request feature
 Everything below is gated on `AUTH_ENABLED` (`src/supabaseClient.js`) — `VITE_SUPABASE_URL` +
-`VITE_SUPABASE_ANON_KEY` + `VITE_ALLOWED_EMAIL_DOMAIN` all set. **Unset any one of them and the
-app falls back to exactly its pre-auth behavior: no login, straight into the scheduler.** That
-fallback is deliberate (local/dev use, and it matches how `SUPABASE_ENABLED` degrades) — don't
-"fix" it into a hard failure.
+`VITE_SUPABASE_ANON_KEY` + `VITE_ALLOWED_EMAIL_DOMAIN` all set. With any of them missing the
+behavior **depends on build mode**: a dev build (`import.meta.env.DEV`) falls through to the
+scheduler unauthenticated, so local work needs no Supabase project; a **production build fails
+closed** and renders `AuthMisconfigured` instead. Keep that asymmetry — the dev fallthrough is
+deliberate convenience, but letting it apply to a production build means one missing env var
+silently ships a fully open app to the internet.
 
 - **The whole app is behind login** (`src/AppGate.jsx`, rendered by `main.jsx` for every route
   except `/requests`). It resolves session → `profiles.role` → one of three branches: `admin`
@@ -142,7 +144,15 @@ fallback is deliberate (local/dev use, and it matches how `SUPABASE_ENABLED` deg
   causes "infinite recursion detected in policy" — that's why the helper exists, don't inline it).
   Column-level scoping isn't expressible in `WITH CHECK`, so four BEFORE triggers do that work:
   `enforce_cancel_only_status`, `enforce_request_identity_immutable`,
-  `enforce_resident_id_immutable`, `enforce_profile_role_change_rules`.
+  `enforce_resident_id_immutable`, `enforce_profile_role_change_rules`. A fifth,
+  `apply_admin_allowlist`, promotes rather than guards (see the allowlist bullet above).
+- **`role = 'pending'` must be enforced in RLS, never only in the client.** Every resident-facing
+  policy folds `role <> 'pending'` into its `profiles` subquery, and `profiles_update_own` requires
+  it in `USING`. This was a real, confirmed hole: for a while `pending` was checked only by
+  `AppGate`'s client branch and only on `/`, so an unapproved account could open `/requests`, claim
+  any roster resident who hadn't registered yet, and submit requests as them — impersonation, not
+  just self-service. If you add a table residents touch, gate it the same way
+  (`migrate_block_pending_account_access.sql` is the reference).
 - **`supabase/*.sql` are run-by-hand, in order, and are not migration-tool-managed.**
   `day_off_requests.sql` is the fresh-install baseline (kept current, so a new project needs only
   it); the `migrate_*.sql` files are one-time deltas for the already-provisioned production DB, and

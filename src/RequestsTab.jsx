@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
-import { supabase, AUTH_ENABLED } from './supabaseClient';
+import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 import { findBlockForDate, formatResidentName } from './residentRequests/blockLookup';
 
+// Admin-only tab inside the main scheduler. AppGate has already established the viewer is an
+// admin before this ever mounts, so the session/role checks below are defence in depth rather
+// than the primary gate — kept deliberately, since this component is exported and a future caller
+// might mount it somewhere less protected. The profile-row upsert that used to live here is gone:
+// AppGate now owns first-login row creation, and doing it in both places raced.
 export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
@@ -18,11 +23,6 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
     if (!session) return;
     supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => setRole(data ? data.role : null));
-    // A first-time admin login has no profile row yet — create one (defaults to role='resident';
-    // the FIRST admin flips their own row to 'admin' by hand via the Supabase table editor —
-    // one-time bootstrap, documented in the day_off_requests.sql schema comment — every admin
-    // after that is promoted from within this tab by an existing admin, see AdminManagement below).
-    supabase.from('profiles').upsert({ id: session.user.id, email: session.user.email }, { onConflict: 'id', ignoreDuplicates: true }).then(() => {});
   }, [session]);
 
   if (!AUTH_ENABLED) {
@@ -38,7 +38,7 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
     );
   }
   if (role === undefined) return null;
-  if (role !== 'admin') {
+  if (role !== ROLE.ADMIN) {
     return <p className="text-sm text-gray-400 p-4">Your account isn't set up for admin access yet. Contact an existing admin to request access.</p>;
   }
 
@@ -123,7 +123,7 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
   return (
     <div className="p-4 space-y-4 max-w-2xl">
       <div>
-        <p className="font-display text-sm font-semibold text-gray-800 mb-2">Pending ({pending.length})</p>
+        <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Pending ({pending.length})</p>
         {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
         {pending.length === 0 && <p className="text-sm text-gray-400">Nothing pending.</p>}
         <div className="space-y-4">
@@ -151,7 +151,7 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
         </div>
       </div>
       <div>
-        <p className="font-display text-sm font-semibold text-gray-800 mb-2">Decided</p>
+        <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Decided</p>
         <div className="space-y-1">
           {decided.map(req => (
             <p key={req.id} className="text-xs text-gray-400">{residentName(req.resident_id)} · {req.dates.join(', ')} · {req.status}</p>
@@ -196,12 +196,12 @@ function AdminManagement({ session, emRoster }) {
     loadProfiles();
   }
 
-  const pending = profiles.filter(p => p.role === 'pending');
-  const approved = profiles.filter(p => p.role !== 'pending');
+  const pending = profiles.filter(p => p.role === ROLE.PENDING);
+  const approved = profiles.filter(p => p.role !== ROLE.PENDING);
 
   return (
     <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
-      <p className="font-display text-sm font-semibold text-gray-800 mb-2">Admin access</p>
+      <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Admin access</p>
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
       {pending.length > 0 && (
         <div className="mb-4">
@@ -212,14 +212,14 @@ function AdminManagement({ session, emRoster }) {
                 <p className="text-gray-800">{p.email}</p>
                 <div className="flex gap-1.5">
                   <button
-                    onClick={() => setRole(p, 'resident')}
+                    onClick={() => setRole(p, ROLE.RESIDENT)}
                     disabled={busyId === p.id}
                     className="text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 disabled:opacity-40"
                   >
                     {busyId === p.id ? 'Saving…' : 'Approve'}
                   </button>
                   <button
-                    onClick={() => setRole(p, 'admin')}
+                    onClick={() => setRole(p, ROLE.ADMIN)}
                     disabled={busyId === p.id}
                     className="text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 disabled:opacity-40"
                   >
@@ -239,11 +239,11 @@ function AdminManagement({ session, emRoster }) {
               <p className="text-gray-400">{p.role} · {residentLabel(p.resident_id)}</p>
             </div>
             <button
-              onClick={() => setRole(p, p.role === 'admin' ? 'resident' : 'admin')}
+              onClick={() => setRole(p, p.role === ROLE.ADMIN ? ROLE.RESIDENT : ROLE.ADMIN)}
               disabled={p.id === session.user.id || busyId === p.id}
               className="text-xs font-medium rounded-md px-3 py-1.5 border border-gray-300 disabled:opacity-40"
             >
-              {busyId === p.id ? 'Saving…' : p.role === 'admin' ? 'Revoke admin' : 'Make admin'}
+              {busyId === p.id ? 'Saving…' : p.role === ROLE.ADMIN ? 'Revoke admin' : 'Make admin'}
             </button>
           </div>
         ))}

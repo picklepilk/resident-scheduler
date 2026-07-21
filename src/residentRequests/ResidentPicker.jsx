@@ -27,7 +27,7 @@ export default function ResidentPicker({ session, onLinked }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm">
-        <p className="font-display text-lg font-semibold text-gray-800 mb-1">Which resident are you?</p>
+        <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">Which resident are you?</p>
         <p className="text-sm text-gray-500 mb-4">One-time setup — this links your login to your profile.</p>
         <select value={selected} onChange={e => setSelected(e.target.value)} className="input-field w-full mb-3">
           <option value="">Select your name…</option>
