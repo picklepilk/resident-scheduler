@@ -14,5 +14,8 @@ __pycache__/
 # Supabase CLI local link state (contains project ref)
 supabase/.temp/
 
-# Exported conversation transcripts (contain emails / session detail)
+# Exported conversation transcripts (contain emails, keys, full session detail).
+# `/export` names files `YYYY-MM-DD-HHMMSS-<conversation-title>.txt`, so match the date prefix —
+# an earlier attempt matched `*-resume.txt` and missed every export whose title wasn't "resume".
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
 *-resume.txt
