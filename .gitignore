@@ -6,3 +6,13 @@ dist/
 *.log
 __pycache__/
 *.pyc
+
+# Local Claude Code config + worktrees (machine-specific, not for a public repo)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Supabase CLI local link state (contains project ref)
+supabase/.temp/
+
+# Exported conversation transcripts (contain emails / session detail)
+*-resume.txt
