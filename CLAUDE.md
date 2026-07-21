@@ -17,9 +17,16 @@ to CSV, with JSON backup/restore in the Settings tab.
   registry package — the registry build is frozen at 0.18.5 with unpatched prototype-pollution/ReDoS
   CVEs that SheetJS only fixes in CDN-published builds. Keep installing/upgrading this dependency via
   a pinned CDN tarball URL, never `npm install xlsx`.
-- **Almost all app logic lives in one file: `src/ResidentScheduler.jsx` (~6,840 lines).**
-  `src/` contains only that file plus `main.jsx` (10-line wrapper, no `App.jsx`) and `index.css` —
-  expect to spend nearly all edits inside `ResidentScheduler.jsx`.
+- **Almost all *scheduling* logic lives in one file: `src/ResidentScheduler.jsx` (~7,860 lines)** —
+  expect to spend nearly all scheduling edits there. The rest of `src/` is the auth + day-off-request
+  surface, which is deliberately kept out of that file (see "Auth, roles & the day-off request
+  feature" below): `main.jsx` (route split — `/requests` → `ResidentRequestsApp`, everything else →
+  `AppGate`), `AppGate.jsx` (whole-app login/role gate), `supabaseClient.js` (`AUTH_ENABLED`, the
+  shared client), `RequestsTab.jsx` (admin-facing approval queue + admin management), and
+  `residentRequests/` (`LoginScreen`, `ResidentPicker`, `RequestForm`, `RequestList`,
+  `ResidentRequestsApp`, `blockLookup.js`). **Nothing under `residentRequests/` imports from
+  `ResidentScheduler.jsx`** — it's a separate surface that fetches its own data from the shared
+  `res_state` row; keep it that way.
 - Shift catalog is defined as data at the top of `ResidentScheduler.jsx`: `SHIFTS` (id, label, area,
   hours, type: day/eve/night/**swing**, chip color) and `SHIFT_TIMING` (exact start hour + duration
   per shift id, used for rest-period validation across midnight). `SHIFT_MAP`/`SHIFT_AREAS`/
@@ -84,6 +91,70 @@ to CSV, with JSON backup/restore in the Settings tab.
   `res_dark_mode`) into the shared document.
 
 - **User feedback** (`// ─── FEEDBACK ───` section, after the Supabase sync helpers; `// ─── FEEDBACK WIDGET ───`/`// ─── FEEDBACK ADMIN TAB ───` sections near `MAIN APP`): a floating bug/crash/idea widget (hidden when `SUPABASE_ENABLED` is false) posts to a separate `feedback` table in the same shared Supabase project via `submitFeedback()` — insert-only for the anon key (no `SELECT`/`UPDATE`/`DELETE` RLS policy for anon, unlike `res_state`'s wide-open posture). Every row carries `app_name: 'resident-scheduler'` since the table is shared with `em-scheduler`. `main.jsx` installs a `window.onerror`/`unhandledrejection` listener that auto-submits `type: 'crash'` reports through the same helper, deduped per session via `sessionStorage` and capped at 5/session. The only way to *read* feedback is the password-gated "Feedback" sidebar tab (also hidden when `SUPABASE_ENABLED` is false), which calls `netlify/functions/feedback-admin.js` — a server-only Netlify Function using the `SUPABASE_SERVICE_ROLE_KEY` env var to bypass RLS, gated by an `x-feedback-password` header checked against `FEEDBACK_ADMIN_PASSWORD`. Both of those are server-only Netlify environment variables (set in the Netlify dashboard for this site) — never `VITE_`-prefixed, never routed through the `%VITE_*%` HTML-token mechanism `index.html` uses for the client-exposed Supabase URL/anon key. See `.env.example` for the full list and `docs/superpowers/specs/2026-07-18-user-feedback-design.md` for the original design.
+
+## Auth, roles & the day-off request feature
+Everything below is gated on `AUTH_ENABLED` (`src/supabaseClient.js`) — `VITE_SUPABASE_URL` +
+`VITE_SUPABASE_ANON_KEY` + `VITE_ALLOWED_EMAIL_DOMAIN` all set. **Unset any one of them and the
+app falls back to exactly its pre-auth behavior: no login, straight into the scheduler.** That
+fallback is deliberate (local/dev use, and it matches how `SUPABASE_ENABLED` degrades) — don't
+"fix" it into a hard failure.
+
+- **The whole app is behind login** (`src/AppGate.jsx`, rendered by `main.jsx` for every route
+  except `/requests`). It resolves session → `profiles.role` → one of three branches: `admin`
+  gets the full `ResidentScheduler`; `resident` gets only `RequestForm` + `RequestList` (the same
+  components the standalone `/requests` route uses, which is why they carry no `min-h-screen`
+  assumptions); `pending` gets a waiting screen and nothing else. `ResidentScheduler.jsx` itself
+  has **no** auth logic beyond the header sign-out button and `refreshPendingRequests`'s
+  `role !== 'admin'` badge gate — the gate lives entirely outside it, so that file's ~37 top-level
+  hooks are untouched by auth state.
+- **Three roles, not two** (`profiles.role`, CHECK-constrained): `pending` → `resident` → `admin`.
+  `pending` is the default for every new signup and means *zero* access. There is no separate
+  "chief" role — the chief resident is just an admin (renamed wholesale in
+  `migrate_chief_to_admin.sql`; if you find a stray `'chief'` string in SQL or JSX it's a leftover
+  and should be `'admin'`).
+- **Self-promotion is impossible by construction.** `profiles_insert_own` pins new rows to
+  `pending`; `enforce_profile_role_change_rules` (BEFORE UPDATE) blocks *any* self-role-change and
+  restricts cross-account updates to the `role` column only. Admins approve/promote others from
+  the `AdminManagement` section of `src/RequestsTab.jsx`. Bootstrapping the very first admin still
+  needs one manual `update profiles set role='admin'` — unavoidable, nothing exists yet to grant it.
+- **Pre-authorization allowlist** (`migrate_admin_email_allowlist.sql`): an address in
+  `admin_email_allowlist` lands in `admin` on first login instead of `pending`, so a known
+  incoming admin doesn't need someone else present to approve them. **The addresses are DATA and
+  live only in the database — never in this repo, which is public.** The committed migration
+  carries the mechanism and a placeholder example; if you need to know who's on the list, query
+  the table. Two non-obvious constraints, both load-bearing: the promotion keys off
+  `auth.jwt()->>'email'` and **never** `new.email` (AppGate's upsert sends `email` in its payload,
+  so it's client-controlled — keying off it would let anyone claim an allowlisted address), and
+  the membership check is a *zero-argument* function so it can't be used as an email-enumeration
+  oracle. The table has RLS on with **no policies at all**, deliberately: that makes it
+  unreachable from any signed-in session. Also note the allowlist only affects a row's **first**
+  creation — removing an address never demotes an existing admin.
+- **Domain restriction is enforced server-side**, not just in `LoginScreen`'s client check:
+  `auth_hook_domain_restriction.sql` defines `restrict_signup_domain(event jsonb)`, wired in the
+  dashboard under Authentication → Hooks → "Before User Created". The SQL alone does nothing until
+  that dashboard wiring exists — it was unwired (and therefore unenforced) for a while, so verify
+  rather than assume. The domain is hardcoded in that function and must match
+  `VITE_ALLOWED_EMAIL_DOMAIN` exactly. Test it with a real API call, not just by reading the code:
+  `POST {url}/auth/v1/otp` with an out-of-domain address should return 403.
+- **RLS is the actual security boundary; the UI gates are convenience.** Residents are scoped by
+  `resident_id` matched against their own profile row; admins get blanket access via the
+  `is_admin()` SECURITY DEFINER helper (a plain subquery on `profiles` inside a `profiles` policy
+  causes "infinite recursion detected in policy" — that's why the helper exists, don't inline it).
+  Column-level scoping isn't expressible in `WITH CHECK`, so four BEFORE triggers do that work:
+  `enforce_cancel_only_status`, `enforce_request_identity_immutable`,
+  `enforce_resident_id_immutable`, `enforce_profile_role_change_rules`.
+- **`supabase/*.sql` are run-by-hand, in order, and are not migration-tool-managed.**
+  `day_off_requests.sql` is the fresh-install baseline (kept current, so a new project needs only
+  it); the `migrate_*.sql` files are one-time deltas for the already-provisioned production DB, and
+  re-running the baseline does **not** apply them. When you change the schema, update the baseline
+  *and* add a companion `migrate_*.sql` — same pattern as `LEGACY_DAY_RULE_DEFAULTS` elsewhere in
+  this file. Apply with `npx supabase db query --linked -f <file>` (the CLI isn't on PATH; `npx`
+  it). **`--linked` follows `supabase/.temp/`, which is independent of whatever project the
+  dashboard has selected** — a migration has already been run against the wrong sibling project
+  once by having the dashboard on `EMS Inventory`.
+- One known gap, accepted: `blockLookup.js` reads the whole shared `res_state` blob (including the
+  full schedule) to the resident's browser before narrowing it. "Residents never see the schedule"
+  is UI-enforced only. See that file's own header comment.
 
 ## Running / building / deploying
 ```bash
@@ -243,7 +314,11 @@ names below rather than trusting offsets.
   Anyway" philosophy), `VALIDATION TAB` (violations list plus the Generation Report — now also
   shows `report.seniorGaps`/`report.restCompromises`; its post-night-day/eve-day pairwise check
   also delegates to `checkCircadianViolations` rather than re-deriving the same rule),
-  `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`.
+  `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`. The
+  **Requests** tab is the one tab whose component lives outside this file (`src/RequestsTab.jsx`) —
+  it does its own session/role check rather than trusting the caller, so it stays correct even
+  though `AppGate` has already established the viewer is an admin. Unlike `feedback`, it is *not*
+  filtered out of `TABS` when unconfigured; it renders its own "not configured" message instead.
 - **Pre-generation readiness gate** (`checkGenerateReadiness`, near the Journal Club helpers):
   before Generate Schedule runs, warns — with a "Generate Anyway" override — if the block's manual
   dates look incomplete: `getMissingSpecialDayLists` flags any special-day list
@@ -393,7 +468,13 @@ names below rather than trusting offsets.
 - This repo is **public** — never hardcode real resident names/rosters into source (this happened
   once; use the Import Roster feature on the EM Residents / Off-Service tabs, or Import Master Matrix
   on the Home tab, instead — both read pasted/uploaded data into `localStorage` only, never into
-  committed code).
+  committed code). The same rule covers **email addresses**: `admin_email_allowlist` rows and the
+  chief-bootstrap `update profiles ...` are typed straight into the SQL editor as data, and the
+  committed `supabase/*.sql` files carry only placeholders (`someone@example.edu`,
+  `YOUR_EMAIL@uthscsa.edu`). The institutional *domain* in `auth_hook_domain_restriction.sql` is
+  the one exception — it's necessarily in the function body and is already public in the app's own
+  sign-in copy. `.gitignore` also covers the `*-resume.txt` session transcripts, which contain
+  addresses; don't remove those entries.
 - This is a sibling project to `em-scheduler` (same author, same domain — EM scheduling). If a bug
   or pattern here looks familiar, check `../em-scheduler/CLAUDE.md` for prior hard-won fixes
   (scheduling rules, export patterns, attending-matching) before re-deriving them.
