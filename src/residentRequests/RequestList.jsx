@@ -10,7 +10,10 @@ const STATUS_STYLE = {
   cancelled: 'bg-gray-100 text-gray-500',
 };
 
-export default function RequestList({ residentId, refreshKey }) {
+// readOnly hides the withdraw control. Used by the admin "view as" preview, where the point is to
+// see exactly what a resident sees without acting for them. This is UX, not a security boundary —
+// an admin session can already update any request via requests_admin_update_all.
+export default function RequestList({ residentId, refreshKey, readOnly = false }) {
   const [requests, setRequests] = useState([]);
   const [blocks, setBlocks] = useState([]);
   const [error, setError] = useState(null);
@@ -82,8 +85,11 @@ export default function RequestList({ residentId, refreshKey }) {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${STATUS_STYLE[req.status]}`}>{req.status}</span>
-                    {req.status === 'pending' && (
-                      <button onClick={() => cancel(req.id)} title="Withdraw request" className="text-gray-300 hover:text-red-500">
+                    {req.status === 'pending' && !readOnly && (
+                      // p-2 gives a ~36px hit area around the 14px glyph — the bare icon was well
+                      // under any reasonable touch target on a phone.
+                      <button onClick={() => cancel(req.id)} title="Withdraw request" aria-label="Withdraw request"
+                        className="p-2 -m-1 text-gray-300 hover:text-red-500">
                         <X size={14} />
                       </button>
                     )}

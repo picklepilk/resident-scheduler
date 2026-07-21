@@ -190,9 +190,15 @@ body {
   z-index: 10;
 }
 
-/* Reusable form field */
+/* Reusable form field.
+   text-base (16px) below sm, text-sm (14px) from sm up: iOS Safari auto-zooms the page whenever a
+   focused input's font-size is under 16px, so every tap on a date/email/password field was
+   jerking the viewport. The 14px desktop size is preserved above the breakpoint.
+   NOTE: this rule sits outside any @layer, so it lands after @tailwind utilities in the cascade
+   and its own padding beats a same-specificity padding utility applied to the same element.
+   That is why LoginScreen positions no icon inside these inputs — see its Field component. */
 .input-field {
-  @apply w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent bg-white;
+  @apply w-full px-3 py-2 text-base sm:text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent bg-white;
 }
 
 /* Scrollbar styling */

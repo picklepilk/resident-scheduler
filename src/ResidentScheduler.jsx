@@ -8,7 +8,7 @@ import {
   Home, Archive, Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
-  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut,
+  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut, Menu,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -7231,7 +7231,11 @@ function reorderIds(order, fromId, toId) {
 }
 
 // Sidebar nav — a separate component so drag-hover state doesn't re-render the active tab's content.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount }) {
+// `mobileOpen`/`onNavigate` drive the below-`md` drawer behaviour. At `md:` and up the aside is a
+// plain static column exactly as before — the drawer classes are all breakpoint-scoped, so desktop
+// layout is untouched. Below `md` the 208px column would otherwise leave ~119px of usable content
+// width on a 375px phone.
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount, mobileOpen, onNavigate }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
   // The 'feedback' tab only ever renders when cloud sync is configured (it has nothing to
@@ -7245,7 +7249,10 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
 
   return (
-    <aside className="w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto no-print">
+    <aside className={`w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto no-print
+      fixed inset-y-0 left-0 z-40 shadow-xl transition-transform duration-200
+      md:static md:z-auto md:shadow-none md:translate-x-0
+      ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <nav className="flex flex-col gap-0.5 px-2">
         {orderedTabs.map(t=>{
           const Icon=t.icon; const active=tab===t.id;
@@ -7254,7 +7261,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
           const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
           const iconColor = active?'text-white':'text-gray-400';
           return (
-            <button key={t.id} onClick={()=>setTab(t.id)}
+            <button key={t.id} onClick={()=>{setTab(t.id); onNavigate?.();}}
               onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
               onDragLeave={(e)=>{if(e.currentTarget.contains(e.relatedTarget))return; setDragOverTabId(p=>p===t.id?null:p);}}
               onDrop={(e)=>{e.preventDefault(); setTabOrder(reorderIds(orderedTabs.map(x=>x.id), dragTabId, t.id)); resetDrag();}}
@@ -7320,8 +7327,12 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   );
 }
 
-export default function ResidentScheduler() {
+// `viewer` ({email, userId, role}) is supplied by AppGate, which has already resolved the session
+// and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
+// session at all, and the header simply omits the identity chip in that case.
+export default function ResidentScheduler({ viewer } = {}) {
   const [tab, setTab] = useState('home');
+  const [navOpen, setNavOpen] = useState(false); // below-md sidebar drawer; ignored at md+
   const [toast, setToast] = useState(null);
   const [switchPending, setSwitchPending] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
@@ -7691,6 +7702,10 @@ export default function ResidentScheduler() {
       <header className="bg-white border-b border-gray-200 shrink-0 no-print">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
+            <button onClick={()=>setNavOpen(o=>!o)} title="Menu" aria-label="Toggle navigation"
+              className="md:hidden p-2 -ml-1 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors flex-none">
+              <Menu size={18}/>
+            </button>
             <div className="w-8 h-8 rounded-md bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white flex-none">
               <CalendarDays size={18}/>
             </div>
@@ -7702,7 +7717,13 @@ export default function ResidentScheduler() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-none">
-            <span className="text-xs text-gray-400">{allResidents.length} residents</span>
+            <span className="hidden lg:inline text-xs text-gray-400">{allResidents.length} residents</span>
+            {viewer?.email && (
+              <span title={`Signed in as ${viewer.email}`}
+                className="hidden sm:inline max-w-[12rem] truncate text-xs text-gray-500 bg-gray-100 rounded-full px-2.5 py-1">
+                {viewer.email}
+              </span>
+            )}
             <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
@@ -7714,8 +7735,10 @@ export default function ResidentScheduler() {
                 <LogOut size={16}/>
               </button>
             )}
+            {/* Exports are a desktop workflow (CSV into QGenda, printable PDF) — hidden on phones
+                so the essential controls above survive at 375px rather than overflowing. */}
             {block.startDate && (
-              <>
+              <div className="hidden md:flex items-center gap-2">
                 <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
                   <Download size={12}/> Grid CSV
@@ -7728,7 +7751,7 @@ export default function ResidentScheduler() {
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
                   <Download size={12}/> PDF
                 </button>
-              </>
+              </div>
             )}
           </div>
         </div>
@@ -7736,14 +7759,22 @@ export default function ResidentScheduler() {
 
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Backdrop for the below-md sidebar drawer. md:hidden so it can never intercept clicks
+            on desktop, where the sidebar is a static column and nothing overlays the content. */}
+        {navOpen && (
+          <div onClick={()=>setNavOpen(false)} aria-hidden="true"
+            className="md:hidden fixed inset-0 bg-black/40 z-30 no-print"/>
+        )}
+
         {/* Vertical sidebar */}
         <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
           issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
           offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}
-          pendingRequestCount={pendingRequests.length}/>
+          pendingRequestCount={pendingRequests.length}
+          mobileOpen={navOpen} onNavigate={()=>setNavOpen(false)}/>
 
         {/* Main content */}
-        <main className="flex-1 overflow-y-auto p-6 min-w-0">
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
           {tab==='home' && (
             <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} setEmRoster={setEmRoster}
               blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}

@@ -48,10 +48,13 @@ export default function RequestForm({ residentId, onSubmitted }) {
     <form onSubmit={submit} className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
       <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-3">Request a day off</p>
       {dates.map((d, i) => (
+        // min-w-0 on the input lets the native date control shrink instead of forcing the row
+        // wider than a 375px screen; the Remove button is shrink-0 with a real tap area.
         <div key={i} className="flex items-center gap-2 mb-2">
-          <input type="date" value={d} onChange={e => updateDate(i, e.target.value)} className="input-field" />
+          <input type="date" value={d} onChange={e => updateDate(i, e.target.value)} className="input-field min-w-0 flex-1" />
           {dates.length > 1 && (
-            <button type="button" onClick={() => removeDateField(i)} className="text-xs text-gray-400 hover:text-red-500">Remove</button>
+            <button type="button" onClick={() => removeDateField(i)}
+              className="shrink-0 px-2 py-2 text-xs text-gray-400 hover:text-red-500">Remove</button>
           )}
         </div>
       ))}

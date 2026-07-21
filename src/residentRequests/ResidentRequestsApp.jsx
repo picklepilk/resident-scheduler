@@ -54,6 +54,25 @@ export default function ResidentRequestsApp() {
     );
   }
 
+  // Admins must not be offered the "which resident are you?" picker. Linking is IRREVERSIBLE —
+  // enforce_resident_id_immutable blocks any later change once resident_id is non-null — so an
+  // admin who opened /requests out of curiosity could permanently bind their account to a roster
+  // resident with one mis-tap. Admins belong in the main app; send them there.
+  if (profile.role === ROLE.ADMIN) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="text-center max-w-sm">
+          <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">Admin account</p>
+          <p className="text-sm text-gray-500">
+            This page is for residents submitting their own requests. Open the main app to review
+            and decide on requests.
+          </p>
+          <a href="/" className="inline-block text-xs text-primary font-medium mt-4">Go to the scheduler</a>
+        </div>
+      </div>
+    );
+  }
+
   if (!profile.resident_id) {
     return <ResidentPicker session={session} onLinked={residentId => setProfile(prev => ({ ...prev, resident_id: residentId }))} />;
   }

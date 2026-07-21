@@ -145,8 +145,12 @@ export default function AppGate() {
 
   if (profile === undefined) return null;
 
-  // Admin gets the untouched scheduler, which applies `.dark` on its own root div.
-  if (profile?.role === ROLE.ADMIN) return <ResidentScheduler />;
+  // Admin gets the scheduler, which applies `.dark` on its own root div. `viewer` is passed rather
+  // than re-fetched: AppGate already resolved the session and profile above, and the app otherwise
+  // performs the same identity lookup in three separate places.
+  if (profile?.role === ROLE.ADMIN) {
+    return <ResidentScheduler viewer={{ email: session.user.email, userId: session.user.id, role: profile.role }} />;
+  }
 
   // No row yet (upsert in flight/failed) is treated as pending — fail closed, never open.
   if (!profile || profile.role === ROLE.PENDING) return <ThemedShell><PendingApproval /></ThemedShell>;

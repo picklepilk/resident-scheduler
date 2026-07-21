@@ -268,6 +268,21 @@ create policy "requests_admin_select_all" on day_off_requests for select
 create policy "requests_admin_update_all" on day_off_requests for update
   using (is_admin());
 
+-- An admin may also FILE a request on behalf of a resident (phoned in, handed over on paper).
+-- requests_insert_own can't cover this: it requires the new row's resident_id to equal the
+-- CALLER's own, and an admin's profiles.resident_id is normally NULL. Same un-decided-row guards
+-- as that policy, authorized on is_admin() instead. Not impersonation — the admin stays signed in
+-- as themselves; the row simply isn't distinguishable from a self-filed one (no created_by column,
+-- an accepted tradeoff at this scale).
+create policy "requests_admin_insert_all" on day_off_requests for insert
+  with check (
+    is_admin()
+    and status = 'pending'
+    and decision_note is null
+    and decided_at is null
+    and decided_by is null
+  );
+
 -- Guards requests_cancel_own above: when a resident's update transitions pending -> cancelled,
 -- every column except status must stay unchanged. Uses IS DISTINCT FROM (not =/!=) because a
 -- pending request's decided_at/decided_by/decision_note/reason are normally NULL, and plain SQL

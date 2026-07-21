@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
+import RequestForm from './residentRequests/RequestForm';
+import RequestList from './residentRequests/RequestList';
 import { findBlockForDate, formatResidentName } from './residentRequests/blockLookup';
 
 // Admin-only tab inside the main scheduler. AppGate has already established the viewer is an
@@ -45,8 +47,77 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
   return (
     <>
       <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} />
+      <ViewAsPanel emRoster={emRoster} onRequestsChanged={onRequestsChanged} />
       <AdminManagement session={session} emRoster={emRoster} />
     </>
+  );
+}
+
+// Lets an admin see exactly what a given resident sees, and file a request on their behalf (a
+// resident phones one in, or hands over a paper form).
+//
+// The preview is READ-ONLY by design: it reuses the resident's own RequestList with `readOnly`, so
+// the admin observes rather than acts as them. Filing on behalf is a separate, explicit action in
+// this admin panel — the admin stays signed in as themselves, which keeps the action attributable
+// in a way impersonation would not.
+//
+// Reads work because requests_admin_select_all grants an admin SELECT on every request; filing
+// works because of requests_admin_insert_all (migrate_admin_request_on_behalf.sql). Without that
+// policy the insert is denied, since requests_insert_own requires the row's resident_id to match
+// the caller's own and an admin's is normally NULL.
+function ViewAsPanel({ emRoster, onRequestsChanged }) {
+  const [linked, setLinked] = useState([]);   // profiles that actually have a resident_id
+  const [selected, setSelected] = useState('');
+  const [filing, setFiling] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    supabase.from('profiles').select('resident_id').not('resident_id', 'is', null)
+      .then(({ data }) => setLinked((data || []).map(r => r.resident_id)));
+  }, []);
+
+  // Only residents someone has actually linked an account to — previewing a roster entry with no
+  // account would always render an empty list and read as a bug.
+  const options = emRoster
+    .filter(r => linked.includes(r.id))
+    .sort((a, b) => formatResidentName(a).localeCompare(formatResidentName(b)));
+
+  const selectedResident = emRoster.find(r => r.id === selected);
+
+  return (
+    <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+      <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">View as resident</p>
+      <select value={selected} onChange={e => { setSelected(e.target.value); setFiling(false); }}
+        className="input-field w-full mb-3">
+        <option value="">Select a resident…</option>
+        {options.map(r => <option key={r.id} value={r.id}>{formatResidentName(r)}</option>)}
+      </select>
+      {options.length === 0 && (
+        <p className="text-xs text-gray-400">No residents have linked an account yet.</p>
+      )}
+
+      {selected && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+            <p className="text-xs text-amber-700">
+              Viewing as <span className="font-medium">{formatResidentName(selectedResident)}</span> — read-only.
+            </p>
+            <button onClick={() => setFiling(f => !f)}
+              className="text-xs font-medium rounded-md px-2.5 py-1 border border-amber-300 bg-white">
+              {filing ? 'Close' : 'Request a day off for them'}
+            </button>
+          </div>
+
+          {filing && (
+            <div className="mb-3">
+              <RequestForm residentId={selected} onSubmitted={() => { setFiling(false); setRefreshKey(k => k + 1); onRequestsChanged?.(); }} />
+            </div>
+          )}
+
+          <RequestList residentId={selected} refreshKey={refreshKey} readOnly />
+        </>
+      )}
+    </div>
   );
 }
 
