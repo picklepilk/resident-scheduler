@@ -22,6 +22,43 @@ function ThemedShell({ children }) {
   return <div className={dark ? 'dark' : ''}>{children}</div>;
 }
 
+// Shown after a password-reset link is opened. Supabase signs the user IN to deliver the
+// recovery, firing PASSWORD_RECOVERY — so without intercepting it here the app would simply drop
+// them into the scheduler and they'd never get to choose the new password they asked for.
+function SetNewPassword({ onDone }) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(e) {
+    e.preventDefault();
+    setError('');
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    setBusy(true);
+    const { error: err } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    onDone();
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <form onSubmit={submit} className="bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm">
+        <p className="font-display text-2xl font-semibold uppercase tracking-wide text-gray-800 mb-1">Choose a password</p>
+        <p className="text-sm text-gray-500 mb-4">Set a new password for your account.</p>
+        <label className="block text-xs font-medium text-gray-700 mb-1">New password</label>
+        <input type="password" required value={password} onChange={e => setPassword(e.target.value)}
+          autoComplete="new-password" placeholder="At least 8 characters" className="input-field w-full mb-3" />
+        {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+        <button type="submit" disabled={busy}
+          className="w-full bg-primary text-white text-sm font-medium rounded-md py-2 disabled:opacity-50">
+          {busy ? 'Saving…' : 'Save password'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function PendingApproval() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
@@ -63,11 +100,15 @@ export default function AppGate() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
   const [profile, setProfile] = useState(undefined); // undefined = not fetched, null = no row yet
   const [refreshKey, setRefreshKey] = useState(0);
+  const [recovering, setRecovering] = useState(false); // opened a password-reset link
 
   useEffect(() => {
     if (!AUTH_ENABLED) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => setSession(newSession));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
+      setSession(newSession);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -96,7 +137,12 @@ export default function AppGate() {
     return import.meta.env.DEV ? <ResidentScheduler /> : <ThemedShell><AuthMisconfigured /></ThemedShell>;
   }
   if (session === undefined) return null;
-  if (!session) return <ThemedShell><LoginScreen title="Sign In" /></ThemedShell>;
+  if (!session) return <ThemedShell><LoginScreen /></ThemedShell>;
+
+  // Must come before the role branches: a recovery session is a real session, so otherwise the
+  // user lands in the app and the password they were resetting never gets set.
+  if (recovering) return <ThemedShell><SetNewPassword onDone={() => setRecovering(false)} /></ThemedShell>;
+
   if (profile === undefined) return null;
 
   // Admin gets the untouched scheduler, which applies `.dark` on its own root div.
