@@ -217,6 +217,15 @@ body {
   tr { page-break-inside: avoid; page-break-after: auto; }
 }
 
+/* Inverse of .no-print — content that exists only to be printed (e.g. the Requests-portal QR
+   card's instruction line), invisible on screen. Paired with .no-print on this same card's own
+   on-screen-only controls (Copy/Print buttons) rather than the other way around, so the QR
+   image + URL stay a single element shown in both contexts. */
+.print-only { display: none; }
+@media print {
+  .print-only { display: block; }
+}
+
 @media screen {
   .dark .schedule-scroll::-webkit-scrollbar-track { background: #1e293b; }
   .dark .schedule-scroll::-webkit-scrollbar-thumb { background: #475569; }

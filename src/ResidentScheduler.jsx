@@ -5,7 +5,7 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import {
   Plus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
-  Home, Archive, Save, ChevronRight, Check, Table2, Activity,
+  Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut, Menu,
@@ -145,24 +145,34 @@ const EM_HOME_BLOCK_TYPES_BY_PGY = {
 
 // Base eligibility — most permissive per category+PGY.
 // Block-type & day-of-week restrictions are applied on top in getEligibleShifts.
-// PED-N (peds overnight) is FM-3-exclusive program-wide — no other category/PGY may work it,
-// even via a rotation/matrix override (see getEligibleShifts' half-block/FM-3 handling).
+// PED-N (peds overnight): Mon/Tue/Wed stays FM-3-exclusive program-wide — no other category/PGY
+// may work it those three days, even via a rotation/matrix override (see getEligibleShifts'
+// half-block/FM-3 handling). Thu/Sun (0,4,5,6) is additionally open to all three EM Home PGYs
+// (chief-directed, AY26/27), confined to that window by each EM_HOME key's own overrideImmune
+// ped_n_em_window shiftGate below — coverage stays min:0/max:1 either way ("ideally filled, other
+// shifts take priority"), and a PGY-1 EM Home candidate is soft-deprioritized on it in the
+// generator's score() unless they've already done a Peds/Trauma-mix rotation this AY (see
+// hasPriorPedsTrauma).
 const BASE_ELIGIBILITY = {
-  // EM Home PGY-1: all areas; TRAUMA-D only (no TRAUMA-N); Trauma further gated by block type
-  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
-  // EM Home PGY-2/3: all shifts including TRAUMA-N. PED-S (Peds Swing) is further gated to only
-  // EM_TOX/EM_EMS rotations, Mon/Tue/Thu/Fri, via the ped_s_* shiftGates below — nobody else is
-  // ever eligible for it, same invariant class as PED-N being FM-3-exclusive.
-  EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
-  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+  // EM Home PGY-1: all areas; TRAUMA-D only (no TRAUMA-N); Trauma further gated by block type.
+  // PED-N included per the Thu-Sun EM Home window above (ped_n_em_window gate confines it).
+  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+  // EM Home PGY-2/3: all shifts including TRAUMA-N and (Thu-Sun) PED-N. PED-S (Peds Swing) is
+  // further gated to only EM_TOX/EM_EMS rotations, Mon/Tue/Thu/Fri, via the ped_s_* shiftGates
+  // below — nobody else is ever eligible for it, same single-owner invariant PED-N used to be
+  // (PED-N's owner set is now {FM_3, EM_HOME_1/2/3} — see PED_GUARD_LEGITIMATE_OWNER).
+  EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
   // BAMC: no Trauma
   EM_BAMC_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N'],
-  // Peds: PED day/eve only (PED-N is FM-3-exclusive)
+  // Peds: PED day/eve only — PED-N stays out of reach for this category on every day of the week,
+  // Thu-Sun EM Home opening included (Peds residents never gained PED-N eligibility at all).
   PEDS_1:     ['PED-D','PED-E'],
   PEDS_3:     ['PED-D','PED-E'],
-  // FM-1: POD default + PED-D/E as fill-in PRN (no PED nights — FM-3-exclusive)
+  // FM-1: POD default + PED-D/E as fill-in PRN (no PED nights — PED-N stays out of reach here too)
   FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E'],
-  // FM-3: PED Night only, Mon/Tue/Wed — the only category/PGY eligible for PED-N
+  // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
+  // PED-N those three days; EM Home additionally covers Thu-Sun (see BASE_ELIGIBILITY comment above).
   FM_3:       ['PED-N'],
   // IM: POD + FLEX, no Peds/MT/Trauma
   IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N'],
@@ -186,12 +196,18 @@ const BASE_ELIGIBILITY = {
 //   shiftGates: [{id, shiftIds:string[]|'ALL', blockTypeFilter:{mode:'only'|'except', ids?:string[], ref?:'TRAUMA_BLOCKS'}|null,
 //                 allowedDays?:number[], nightExcludedDays?:number[], outsideAction:'stripShiftIds'|'blockEntireDay', overrideImmune:boolean,
 //                 scope?:'generator'}]  — scope:'generator' hides the gate from the manual picker (auto-fill only), same idiom as dayTypeRestrictions[].scope
-//   specialDayRules: [{listKey:'codeBlueDays'|'advocacyDays'|'procDays'|'anesDays', offset:'sameDay'|'dayBefore'|'sameDayAndDayBefore'}]
+//   specialDayRules: [{listKey:'codeBlueDays'|'procDays'|'anesDays', offset:'sameDay'|'dayBefore'|'sameDayAndDayBefore'}]
+//   (advocacyDays removed AY26/27 — Peds now uses fullBlockDays:[3] instead; see PEDS_1/PEDS_3 and
+//   LEGACY_DAY_RULE_DEFAULTS for the pre-change shape)
 //   residentFlagOverrides: [{flag:string, fullBlockDays:number[]}]  — replaces dayTypeRestrictions when resident[flag] is true
 const DEFAULT_DAY_RULES = {
   EM_HOME_1: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
+    // Wellness Wednesday — the 1st Wednesday on/after the block's own start date is a day/eve
+    // off for EM Home PGY-1 (night starting that Wednesday still allowed). Block-relative, not
+    // calendar-month-relative — see nthWeekdayOnOrAfter/computedDayRules handling.
+    computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }],
     shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
         blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -203,11 +219,19 @@ const DEFAULT_DAY_RULES = {
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+      // PED-N (Peds Night) Thu/Sun window: EM Home gained PED-N in BASE_ELIGIBILITY (AY26/27
+      // chief-directed change) but only Thu-Sun (0,4,5,6) — Mon/Tue/Wed stay FM-3-exclusive.
+      // overrideImmune so a matrix override can't leak an EM Home resident onto PED-N outside
+      // this window; FM-3's own eligibility/rules are untouched by this EM_HOME-scoped gate.
+      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
   EM_HOME_2: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
+    // Wellness Wednesday — 2nd Wednesday on/after the block's start date, PGY-2.
+    computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }],
     shiftGates: [
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'],
         blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -228,7 +252,8 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true,
         activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
       // PED-S (Peds Swing): only EM/TOX or EM/EMS, and only on its own Mon/Tue/Thu/Fri window —
-      // nobody else, ever (same invariant class as PED-N). The weekday pairing above already
+      // nobody else, ever (single-owner guard, same class PED-N used to be before it gained a
+      // second owner set — see PED_GUARD_LEGITIMATE_OWNER). The weekday pairing above already
       // confines each rotation to its own two days, so PED-S naturally follows the swap.
       { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'],
         blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
@@ -239,16 +264,24 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+      // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
+      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
   EM_HOME_3: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
+    // Wellness Wednesday — 3rd Wednesday on/after the block's start date, PGY-3.
+    computedDayRules: [{ type: 'wellnessWednesday', ordinal: 3 }],
     shiftGates: [
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null,
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+      // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
+      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
   EM_BAMC_1: {
@@ -265,15 +298,20 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ],
   },
-  PEDS_1: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
-  PEDS_3: { specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] },
+  // Peds residents don't work Wednesdays at all (chief-directed, AY26/27) — replaces the old
+  // "night before an advocacy day" mechanic entirely (see LEGACY_DAY_RULE_DEFAULTS for the old
+  // shape); the advocacyDays special-day list itself is gone from SPECIAL_DAY_META.
+  PEDS_1: { fullBlockDays: [3] },
+  PEDS_3: { fullBlockDays: [3] },
   FM_1: {
     fullBlockDays: [3,4],
     dayTypeRestrictions: [{ days: [2], mode: 'noNight' }],
   },
   FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3] },
   IM_2: {
-    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    // Chief-directed AY26/27 tightening: no Tuesday evening/night (day-only Tue) and no Wednesday
+    // morning/evening (night-only Wed — Wednesday overnight still OK). Was Wed-day-only alone.
+    dayTypeRestrictions: [{ days: [2], mode: 'onlyDay' }, { days: [3], mode: 'onlyNight' }],
     specialDayRules: [{ listKey: 'codeBlueDays', offset: 'sameDayAndDayBefore' }],
     residentFlagOverrides: [{ flag: 'isCCUNights', fullBlockDays: [2,3] }],
   },
@@ -322,13 +360,21 @@ const BLOCK_TARGETS = {
 // every shift to its minimum first (a hard requirement — below-min surfaces as an unfilled
 // slot and a Validation warning), then optionally tops up toward the maximum only for residents
 // still under their own shift-count target. min:0 means the generator never auto-staffs that
-// shift (e.g. PED-N, which depends on an FM-3 being available). Chief edits are stored as a
+// shift (e.g. PED-N, which depends on an FM-3 Mon/Tue/Wed or an EM Home resident Thu/Sun being
+// available and willing — coverage stays min:0 either way, chief-directed "best-effort" shift).
+// Chief edits are stored as a
 // sparse override object in localStorage (res_coverage) and merged over these defaults — same
-// idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week; PED-S is the one shift
-// that varies by day of week at all, handled separately via SHIFT_DOW (see Chunk 3/PED-S).
+// idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (one narrow exception:
+// POD's Mon/Tue max bump, DOW_COVERAGE_MAX_OVERRIDE below); PED-S is the one shift whose very
+// EXISTENCE varies by day of week, handled separately via SHIFT_DOW (see Chunk 3/PED-S).
 const DEFAULT_COVERAGE_MINMAX = {
-  'POD-D': { min: 2, max: 3 }, 'POD-E': { min: 2, max: 3 }, 'POD-N': { min: 2, max: 3 },
-  'PED-D': { min: 1, max: 1 }, 'PED-E': { min: 1, max: 1 }, 'PED-N': { min: 0, max: 1 }, 'PED-S': { min: 1, max: 1 },
+  // Baseline min 2/max 2 every day; POD is chief-directed "no priority for a 3rd resident" outside
+  // Mon/Tue (see DOW_COVERAGE_MAX_OVERRIDE) — a staffed POD shift also requires an EM PGY-3 with
+  // no fallback exception except the block's own PGY-3 Wellness Wednesday (see
+  // podWellnessSubstituteAllowed/SENIOR_COMPOSITION.POD).
+  'POD-D': { min: 2, max: 2 }, 'POD-E': { min: 2, max: 2 }, 'POD-N': { min: 2, max: 2 },
+  // PED-S: "no priority" per chief — best-effort fill only (min:0), same treatment as PED-N.
+  'PED-D': { min: 1, max: 1 }, 'PED-E': { min: 1, max: 1 }, 'PED-N': { min: 0, max: 1 }, 'PED-S': { min: 0, max: 1 },
   'FLEX-D': { min: 2, max: 3 }, 'FLEX-E': { min: 2, max: 3 }, 'FLEX-N': { min: 2, max: 3 },
   'MT-D': { min: 1, max: 1 }, 'MT-E': { min: 1, max: 1 }, 'MT-N': { min: 1, max: 1 },
   'TRAUMA-D': { min: 1, max: 1 }, 'TRAUMA-N': { min: 1, max: 1 },
@@ -336,6 +382,12 @@ const DEFAULT_COVERAGE_MINMAX = {
 const DEFAULT_COVERAGE = Object.fromEntries(
   SHIFTS.map(s => [s.id, DEFAULT_COVERAGE_MINMAX[s.id] ?? { min: 1, max: 1 }])
 );
+// The one narrow day-of-week exception to "coverage min/max don't vary by day of week" (see the
+// comment above DEFAULT_COVERAGE_MINMAX): POD's max rises to 3 on Mon/Tue only (chief-directed,
+// AY26/27) — every other day of the week (and every other shift) stays at the plain base max.
+// Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param; the
+// Rules-tab coverage editor itself stays min/max-only (see its one-line caption near the POD row).
+const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1: 3, 2: 3 }, 'POD-N': { 1: 3, 2: 3 } };
 // Normalizes a possibly-untrusted coverage entry (old single-number shape from a pre-update
 // backup, a hand-edited value, or the current {min,max} shape) into {min,max}. Read-time
 // normalization means old backups and existing localStorage restore correctly with no migration.
@@ -347,8 +399,17 @@ function normalizeCoverageEntry(v) {
   }
   return null;
 }
-function getCoverageFor(shiftId, coverage = {}) {
-  return normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
+// dow is optional (0-6, Sunday-first) — when provided and DOW_COVERAGE_MAX_OVERRIDE has an entry
+// for this shiftId+dow, the max is raised to that override (never lowered below the base max, so
+// a chief who's already customized a higher max via the Rules tab editor is never clipped back
+// down by this narrow exception). min is never touched by dow.
+function getCoverageFor(shiftId, coverage = {}, dow) {
+  const base = normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
+  if (dow != null) {
+    const override = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
+    if (override != null && override > base.max) return { min: base.min, max: override };
+  }
+  return base;
 }
 
 // Per-date coverage counts vs configured min/max, computed from the FULL schedule (never
@@ -363,7 +424,7 @@ function computeCoverageByDate(dates, sched, coverage, allResidents) {
     const belowMin = [], aboveMax = [];
     for (const s of SHIFTS) {
       if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
-      const cov = getCoverageFor(s.id, coverage);
+      const cov = getCoverageFor(s.id, coverage, dow);
       const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
       perShift[s.id] = { count, min: cov.min, max: cov.max };
       minTotal += cov.min;
@@ -374,6 +435,16 @@ function computeCoverageByDate(dates, sched, coverage, allResidents) {
     m[ds] = { perShift, filled, minTotal, belowMin, aboveMax };
   }
   return m;
+}
+
+// Shifts that carried any coverage requirement OR any actual assignment across the given dates —
+// shared by the Schedule grid's coverage-footer expansion (ScheduleGrid) and the Dashboard year-
+// calendar drill-down (DashboardTab) so both agree on which shift rows are worth showing.
+function getActiveCoverageShifts(dates, coverageByDate) {
+  return SHIFTS.filter(s => dates.some(ds => {
+    const info = coverageByDate[ds]?.perShift[s.id];
+    return info && (info.min > 0 || info.count > 0);
+  }));
 }
 
 // ─── Legacy defaults (pre rules-correction passes) ─────────────────────────
@@ -392,11 +463,30 @@ const LEGACY_DAY_RULE_DEFAULTS = {
   // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
   // (Ratna rules pass) corrected this to day-shifts-only, since residents CAN work Wednesday
   // evenings/nights as long as it doesn't conflict with Grand Rounds itself.
-  EM_HOME_1: [{ fullBlockDays: [3], shiftGates: [
-    { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
-    { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
-    { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
-  ] }],
+  EM_HOME_1: [
+    { fullBlockDays: [3], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+    ] },
+    // Pre-Wellness-Wednesday shape (dayTypeRestrictions:[noDay Wed] + trauma/US-EM/MT-intern
+    // gates, no computedDayRules yet) — the live default immediately before Wellness Wednesdays
+    // (1st Wed of block, PGY-1) were added.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+    // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
+    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+  ],
   EM_HOME_2: [
     { fullBlockDays: [3], shiftGates: [
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
@@ -424,6 +514,33 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-Wellness-Wednesday shape (dayTypeRestrictions:[noDay Wed] + full Aug-2026/PED-S gate
+    // set, no computedDayRules yet) — the live default immediately before Wellness Wednesdays
+    // (2nd Wed of block, PGY-2) were added.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_ems_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'], blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null, allowedDays: [1,2,4,5], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+    // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
+    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }], shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_ems_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'], blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null, allowedDays: [1,2,4,5], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
   EM_HOME_3: [
     { fullBlockDays: [3] },
@@ -432,16 +549,51 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-Wellness-Wednesday shape (dayTypeRestrictions:[noDay Wed] + trauma D/N windows, no
+    // computedDayRules yet) — the live default immediately before Wellness Wednesdays (3rd Wed
+    // of block, PGY-3) were added.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], shiftGates: [
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+    // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
+    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 3 }], shiftGates: [
+      { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
+  // Pre-Wednesday-off shape (the "night before an advocacy day" mechanic, driven by a chief-edited
+  // advocacyDays date list on the Dashboard) — replaced wholesale by a hard Wednesday fullBlockDays
+  // (AY26/27 chief-directed change); the advocacyDays list itself is gone from SPECIAL_DAY_META.
+  PEDS_1: [{ specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] }],
+  PEDS_3: [{ specialDayRules: [{ listKey: 'advocacyDays', offset: 'dayBefore' }] }],
+  // Pre-AY26/27-tightening shape (Wednesday day-shift-only, no Tuesday restriction at all) — the
+  // live default immediately before IM residents also lost Tuesday eve/night and Wednesday
+  // morning/eve (Wednesday overnight still allowed).
+  IM_2: [{ dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }] }],
 };
 const LEGACY_ELIGIBILITY_DEFAULTS = {
-  EM_HOME_1: [['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D']],
+  EM_HOME_1: [
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+    // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
+    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+  ],
   EM_HOME_2: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-PED-S shape (had TRAUMA-N but no PED-S) — the live default immediately before this pass.
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+    // Pre-PED-N-Thu-Sun shape (had PED-S, no PED-N) — the live default immediately before EM Home
+    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
   ],
-  EM_HOME_3: [['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N']],
+  EM_HOME_3: [
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+    // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
+    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+  ],
   EM_BAMC_1: [['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N']],
   PEDS_1: [['PED-D','PED-E','PED-N']],
   PEDS_3: [['PED-D','PED-E','PED-N']],
@@ -473,7 +625,7 @@ function deepEqualNormalized(a, b) { return JSON.stringify(normalizeForCompare(a
 // themselves are enforced AND described entirely from DEFAULT_DAY_RULES/dayRules — see
 // describeDayRules()/describeShiftGates() in the Scheduling Rules tab, so they can't drift from
 // what's actually enforced the way static text could.
-const SEVEN_DAY_RULE_NOTE = 'Max 7 consecutive work days — Grand Rounds counts as a work day (EM Home: Wednesday; BAMC: Thursday), even without an assigned shift. Enforced by the generator and Validation.';
+const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — Grand Rounds day (EM Home: Wednesday; BAMC: Thursday) counts as a day OFF for this rule when no shift is assigned that day. Enforced by the generator and Validation.';
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
@@ -481,6 +633,14 @@ const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into on
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3); every staffed POD shift needs an EM PGY-3 (fallback PGY-2). Extra slots skew toward EM PGY-1/off-service. Enforced by the generator; Validation warns if a staffed group is missing its senior.';
 const JC_RULE_NOTE = 'Journal Club: first Tuesday of the month, 18:00-21:00 (any shift overlapping that window counts as "worked," including PED Swing and Trauma Night). Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each month (set per-resident on the resident\'s profile); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
+// Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
+// CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
+// Academic Chief carries the extra Tuesday restriction below.
+const CHIEF_ROLE_NOTE = 'A PGY-3 EM Home resident may hold one of three distinct chief roles for the year — Academic, Admin, or Scheduling Chief (set on the EM Residents tab) — each worth a 16-shift target. The Academic Chief additionally gets no evening/night shifts on Tuesdays (hard — enforced by the generator and Validation).';
+// PED-N Thu/Sun EM Home window (AY26/27 chief-directed change) — Mon/Tue/Wed stays FM-3-exclusive
+// (unchanged). Coverage min stays 0 (best-effort, never required); PGY-1 candidates are
+// soft-deprioritized in the generator unless they've already done a Peds/Trauma-mix rotation this AY.
+const PED_N_EM_HOME_NOTE = 'Peds Night (PED-N): FM-3-exclusive Mon/Tue/Wed (unchanged); Thu/Sun open to all EM Home PGYs (enforced via the ped_n_em_window rule). Coverage stays min 0/max 1 either way — "ideally filled, other shifts take priority," not required. PGY-1 candidates are soft-deprioritized on it (generator only) unless already on/past a Peds/Trauma-mix rotation this academic year.';
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -489,7 +649,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE],
+    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -499,7 +659,7 @@ const RULE_NOTES = {
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue including the PED Swing shift; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
       { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue including the PED Swing shift. Enforced.' },
     ],
-    specialNotes: ['Trauma: aim for 1–2 shifts/block, nights preferred (Fri/Sat/Sun/Mon window) — days (Tue/Thu/Sat/Sun window) only if necessary. Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE],
+    specialNotes: ['Trauma: aim for 1–2 shifts/block, nights preferred (Fri/Sat/Sun/Mon window) — days (Tue/Thu/Sat/Sun window) only if necessary. Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -507,7 +667,7 @@ const RULE_NOTES = {
       { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
       { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
     ],
-    specialNotes: ['Trauma: same 1–2/block, nights-preferred rule as PGY-2. Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE],
+    specialNotes: ['Trauma: same 1–2/block, nights-preferred rule as PGY-2. Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
@@ -521,18 +681,16 @@ const RULE_NOTES = {
     ],
   },
   PEDS_1: {
-    specialNotes: ['Night before advocacy days: off.', 'Peds Night (PED-N) is FM-3-exclusive program-wide — not eligible for Peds residents.', 'Peds residents self-cover; app displays schedule only.'],
-    tbdItems: ['Advocacy day list — chief provides each block'],
+    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night (PED-N) is FM-3 (Mon/Tue/Wed) and EM Home (Thu–Sun) only, program-wide — never eligible for Peds residents on any day.', 'Peds residents self-cover; app displays schedule only.'],
   },
   PEDS_3: {
-    specialNotes: ['Night before advocacy days: off.', 'Peds Night (PED-N) is FM-3-exclusive program-wide — not eligible for Peds residents.', 'Self-cover arrangement.'],
-    tbdItems: ['Advocacy day list — chief provides each block'],
+    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night (PED-N) is FM-3 (Mon/Tue/Wed) and EM Home (Thu–Sun) only, program-wide — never eligible for Peds residents on any day.', 'Self-cover arrangement.'],
   },
   FM_1: {
     specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no Peds nights, no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.'],
   },
   FM_3: {
-    specialNotes: ['FM-3 ONLY works Peds nights (PED-N), Mon/Tue/Wed — the only category/PGY eligible for that shift program-wide. Gaps on other days, or any day with no FM-3 on the block, are expected.'],
+    specialNotes: ['FM-3 ONLY works Peds nights (PED-N), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home may optionally cover PED-N Thu–Sun, min coverage 0, PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
   },
   IM_2: {
     specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab.'],
@@ -558,6 +716,7 @@ const DOW_MODE_LABEL = { onlyDay: 'day shifts only', noNight: 'no night shifts',
 // Renders the current dayRules config for a row as the same {label, rule, type} shape the tab
 // used to get from static RULES_DATA.dayRules — generated live, so it can never drift.
 const COMPUTED_RULE_LABEL = { firstFridayOfMonth: '1st Friday of each calendar month' };
+const ORDINAL_WORD = { 1: '1st', 2: '2nd', 3: '3rd' };
 
 function describeDayRules(dr) {
   const out = [];
@@ -565,7 +724,13 @@ function describeDayRules(dr) {
   if (dr.onlyDaysEnabled) out.push({ label: 'All other days', rule: `No shifts — only schedulable ${(dr.onlyDays||[]).map(d=>DOW[d]).join('/')}`, type: 'block' });
   for (const r of dr.dayTypeRestrictions || []) out.push({ label: r.days.map(d=>DOW[d]).join('/'), rule: `${DOW_MODE_LABEL[r.mode] || r.mode}${r.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}`, type: 'restrict' });
   for (const f of dr.residentFlagOverrides || []) out.push({ label: `${f.fullBlockDays.map(d=>DOW[d]).join('/')} (when ${f.flag})`, rule: 'No shifts', type: 'block' });
-  for (const c of dr.computedDayRules || []) out.push({ label: COMPUTED_RULE_LABEL[c.type] || c.type, rule: 'No shifts', type: 'block' });
+  for (const c of dr.computedDayRules || []) {
+    if (c.type === 'wellnessWednesday') {
+      out.push({ label: `${ORDINAL_WORD[c.ordinal] || `${c.ordinal}th`} Wed of block`, rule: 'No day/eve shifts (night OK) — Wellness Wednesday', type: 'restrict' });
+    } else {
+      out.push({ label: COMPUTED_RULE_LABEL[c.type] || c.type, rule: 'No shifts', type: 'block' });
+    }
+  }
   return out;
 }
 
@@ -1410,20 +1575,20 @@ function isSchedulable(resident) {
   return true;
 }
 
-// ─── 7-consecutive-work-day rule ───────────────────────────────────────────
-// A resident's Grand Rounds day counts as a work day toward the streak even if they aren't
-// otherwise assigned a shift that day (EM Home = Wednesday, BAMC = Thursday).
+// ─── 6-consecutive-work-day rule (ACGME 1-in-7) ────────────────────────────
+// grWorkDow still identifies a resident's Grand Rounds weekday (EM Home = Wednesday,
+// BAMC = Thursday) — used by GR-lecture validation and the post-night GR rest-gap check
+// elsewhere in this file. It is NOT used by isStreakWorkDay below: a Grand Rounds day with
+// no shift assigned counts as a day OFF for streak purposes, not a work day.
 function grWorkDow(resident) {
   if (resident.category === 'EM_HOME') return 3;
   if (resident.category === 'EM_BAMC') return 4;
   return null;
 }
 function isStreakWorkDay(rs, resident, ds) {
-  if (rs && rs[ds]) return true;
-  const g = grWorkDow(resident);
-  return g != null && parseDate(ds).getDay() === g;
+  return !!(rs && rs[ds]);
 }
-const MAX_CONSECUTIVE_WORK_DAYS = 7;
+const MAX_CONSECUTIVE_WORK_DAYS = 6;
 // Length of the consecutive work-day run containing dateStr, assuming dateStr itself is worked.
 // Walks both directions from dateStr; capped at 60 days each way as a sanity bound.
 function runLengthIfWorked(rs, resident, dateStr) {
@@ -1456,16 +1621,46 @@ function isTraumaPedsSplitResident(resident, traumaBlocks) {
 // see the two-pass loop below) can never eat the trauma half's budget.
 const TRAUMA_PEDS_SPLIT = { trauma: 8, peds: 11 };
 
+// PED-N Thu/Sun EM-Home deprioritization support (see BASE_ELIGIBILITY/score()): true if resident
+// has already done — or is currently on — a Peds/Trauma-mix rotation (TRAUMA_BLOCKS: PEDS_TRAUMA/
+// TRAUMA_PEDS) this academic year, so a PGY-1 with real Peds exposure isn't penalized on PED-N
+// same as a PGY-1 with none. Checks the CURRENT block's own rotation first (resident.blockType is
+// already denormalized from block.emBlockAssignments by the caller — see allResidents in the root
+// component), then every blocksHistory snapshot (published or not — an in-progress/unpublished
+// block this AY still counts as "already done it") whose own startDate is strictly before this
+// block's startDate and whose academicYear matches. Defensive against untrusted/partial snapshot
+// shapes, same idiom as countPublishedJC/countPublishedTraumaNights.
+function hasPriorPedsTrauma(resident, blocksHistory, block, traumaBlocks = TRAUMA_BLOCKS) {
+  if (traumaBlocks.includes(resident.blockType)) return true;
+  if (!block?.startDate) return false;
+  return (blocksHistory || []).some(snap => {
+    const snapAy = snap?.academicYear || snap?.data?.academicYear;
+    const snapStart = snap?.startDate || snap?.data?.startDate;
+    if (snapAy !== block.academicYear || !snapStart || snapStart >= block.startDate) return false;
+    const bt = snap?.data?.emBlockAssignments?.[resident.id]?.blockType;
+    return !!bt && traumaBlocks.includes(bt);
+  });
+}
+
 // ─── Peds/EM mix (PGY-2 PEDS_EM rotation) ──────────────────────────────────
 // Target 19 total shifts; aim for 10 peds shifts (min), up to 12 max, rest elsewhere.
 function isPedsEmMix(resident) { return resident.category === 'EM_HOME' && resident.pgy === 2 && resident.blockType === 'PEDS_EM'; }
 const PEDS_EM_MIX = { min: 10, max: 12 };
 
 // ─── FLEX/POD seniority composition ────────────────────────────────────────
-// Every staffed FLEX shift should include at least one EM-Home PGY-2 (falling back to PGY-3 if
-// none is available); every staffed POD shift should include at least one EM-Home PGY-3 (falling
-// back to PGY-2). Additional slots on either shift should preferentially go to EM-Home PGY-1s
-// and off-service residents rather than a second senior.
+// FLEX: every staffed shift should include at least one EM-Home PGY-2 (falling back to PGY-3 if
+// none is available) — this fallback stays a genuine soft rule, validateAll only ever warns.
+// POD (AY26/27 chief-directed change): every staffed shift REQUIRES an EM-Home PGY-3, no
+// exceptions, except the block's own PGY-3 Wellness Wednesday (see podWellnessSubstituteAllowed)
+// when a PGY-2 substituting for the missing PGY-3 is explicitly allowed — validateAll escalates
+// a staffed POD shift with no PGY-3 to a hard ERROR on every other day (FLEX keeps its soft
+// warning, untouched). Additional slots on either shift should preferentially go to EM-Home
+// PGY-1s (POD's 2nd slot especially — see score()'s podPgy1SecondSlot term) and off-service
+// residents rather than a second senior. `comp.fallback` still names POD's PGY-2 as "the"
+// fallback PGY for isSeniorFor/hasSenior's senior-class membership check (used by the generator's
+// candidate-pool restriction and score()'s seniorAdj term) — the wellness-Wednesday-only
+// restriction on when that fallback may actually satisfy the requirement lives in fillDayPass's
+// POD-specific branch and validateAll, not here.
 const SENIOR_COMPOSITION = { FLEX: { primary: 2, fallback: 3 }, POD: { primary: 3, fallback: 2 } };
 function isSeniorFor(area, resident) {
   const comp = SENIOR_COMPOSITION[area];
@@ -1507,6 +1702,27 @@ function getFirstFridaysInBlock(startStr, endStr) {
     month.setMonth(month.getMonth() + 1);
   }
   return result;
+}
+
+// ─── Wellness Wednesdays ────────────────────────────────────────────────────
+// Block-relative (not calendar-month-relative, unlike firstFridayOfMonth above): the Nth
+// occurrence of a weekday on/after a start date. Used for EM Home's Wellness Wednesdays (1st/
+// 2nd/3rd Wednesday on/after the block's own startDate, per PGY) — see DEFAULT_DAY_RULES'
+// computedDayRules{type:'wellnessWednesday', ordinal} and its handling in getEligibleShifts.
+function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
+  if (!startStr) return null;
+  const start = parseDate(startStr);
+  const delta = (weekday - start.getDay() + 7) % 7;
+  return toDateStr(addDays(start, delta + (ordinal - 1) * 7));
+}
+
+// POD's hard PGY-3 requirement (see SENIOR_COMPOSITION.POD) has exactly one exception: the
+// block's own PGY-3 Wellness Wednesday (3rd Wednesday on/after the block's start date — see
+// DEFAULT_DAY_RULES.EM_HOME_3's computedDayRules), when PGY-3s are off day/eve program-wide and a
+// PGY-2 substituting for the missing PGY-3 is explicitly allowed. Reuses nthWeekdayOnOrAfter
+// (ordinal 3, Wednesday) rather than reimplementing the same block-relative date math.
+function podWellnessSubstituteAllowed(ds, blockStart) {
+  return ds === nthWeekdayOnOrAfter(blockStart, 3, 3);
 }
 
 // ─── Journal Club ───────────────────────────────────────────────────────────
@@ -1574,9 +1790,12 @@ function countCurrentBlockJC(residentId, block, schedule) {
 // ─── Generate-readiness checks ─────────────────────────────────────────────
 // Hoisted from RulesTab's inline special-day list (Rules tab's "Special-Day Rules" section) so
 // the Rules tab and the pre-generate readiness gate share the same labels.
+// advocacyDays removed (AY26/27): Peds residents now get a hard Wednesday fullBlockDays instead
+// of a "night before an advocacy day" special-day rule — see DEFAULT_DAY_RULES.PEDS_1/PEDS_3.
+// Old block.specialDays.advocacyDays data is left alone in already-saved snapshots (harmless,
+// simply unread from here on) — never deleted or migrated.
 const SPECIAL_DAY_META = [
   { key: 'codeBlueDays', label: 'Code Blue days' },
-  { key: 'advocacyDays', label: 'Advocacy days' },
   { key: 'procDays', label: 'Procedure days' },
   { key: 'anesDays', label: 'Anesthesia days' },
 ];
@@ -1655,18 +1874,37 @@ const DEFAULT_APP_SETTINGS = {
   enforceRest: true,          // rest-period rule (shift length = required hours off)
   emTraumaCap: 2,             // warn when an EM Home PGY-2/3 exceeds this many trauma shifts/block
   defaultBlockLength: 28,     // days — auto-fills end date when start date is set
-  maxSavedBlocks: 24,         // history depth on the Home tab
+  maxSavedBlocks: 24,         // history depth on the Dashboard's Block Calendar
   targetOverrides: {},        // { [CATEGORY_PGY]: number, CHIEF: number } — overrides SHIFT_TARGETS/BLOCK_TARGETS
   rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
   generalPedsMonthlyTarget: 2, // soft nudge: PGY-2/3 not on a dedicated peds rotation aim for this many peds shifts/block
   enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
 };
 
+// Chief-role designation (roster-level, `resident.chiefRole` on emRoster — see CLAUDE.md "Chief
+// roles"): a PGY-3 EM Home resident can hold one of three distinct chief roles for their year.
+// All three carry the same 16-shift target; only 'academic' carries the extra Tuesday
+// scheduling restriction (see getEligibleShifts/validateAll below).
+const CHIEF_ROLES = {
+  academic:   { label: 'Academic Chief',   badge: 'A'  },
+  admin:      { label: 'Admin Chief',      badge: 'Ad' },
+  scheduling: { label: 'Scheduling Chief', badge: 'S'  },
+};
+// Backward-compat read: before the three-role split, "chief" was a single per-block boolean at
+// `block.emBlockAssignments[id].isChief` (still denormalized onto resident objects as
+// `resident.isChief` — see allResidents in the root component). A resident with that legacy flag
+// still set but no `chiefRole` assigned yet is treated as equivalent to 'scheduling' for
+// target-calculation (and badge-display) purposes ONLY — this is a read-time fallback, never a
+// migration; it does not write `chiefRole` anywhere.
+function effectiveChiefRole(resident) {
+  return resident.chiefRole || (resident.isChief ? 'scheduling' : null);
+}
+
 // Effective shift target for a resident, honoring Settings overrides, then rotation-specific
 // BLOCK_TARGETS (EM Home only), then the category-level SHIFT_TARGETS baseline.
 function getShiftTarget(resident, appSettings = {}) {
   const o = appSettings.targetOverrides || {};
-  if (resident.isChief) return o.CHIEF ?? 16;
+  if (effectiveChiefRole(resident)) return o.CHIEF ?? 16;
   const key = `${resident.category}_${resident.pgy}`;
   if (o[key] != null) return o[key];
   if (resident.category === 'EM_HOME' && resident.blockType) {
@@ -1683,19 +1921,25 @@ function getShiftTarget(resident, appSettings = {}) {
 // rotationSpecific=true means the chief explicitly configured this rotation,
 // so built-in rotation shift-type filters (e.g. PGY-1 no-trauma-off-trauma-blocks)
 // are skipped — the override IS the rule. Day-of-week rules always still apply.
-// PED-N/PED-S may never become eligible for any category/PGY other than their one legitimate
-// owner (FM_3 for PED-N, EM_HOME_2 for PED-S — see BASE_ELIGIBILITY above) via a chief-saved
-// override — a Shift Matrix override wholesale-replaces a key's eligibility list, and the
-// EM_HOME_2-specific overrideImmune shiftGates that further restrict PED-S never even get
+// PED-N/PED-S may never become eligible for any category/PGY other than their legitimate
+// owner(s) (FM_3 + EM_HOME_1/2/3 for PED-N, EM_HOME_2 only for PED-S — see BASE_ELIGIBILITY
+// above) via a chief-saved override — a Shift Matrix override wholesale-replaces a key's
+// eligibility list, and the owner-specific overrideImmune shiftGates that further restrict each
+// shift (ped_n_em_window's Thu/Sun window, ped_s_*'s rotation/day window) never even get
 // evaluated for a resident whose own category/PGY has no such gates defined (see CLAUDE.md: "no
 // other category/PGY may ever be eligible ... including via a Shift Matrix rotation override").
-// The owner's own overrides (category-level or rotation-specific) are left untouched, since
-// keeping PED-S in EM_HOME_2's own customized list is the intended use of the feature.
-const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': 'FM_3', 'PED-S': 'EM_HOME_2' };
+// An owner's own overrides (category-level or rotation-specific) are left untouched, since
+// keeping PED-N/PED-S in an owner's own customized list is the intended use of the feature.
+// PED_GUARD_LEGITIMATE_OWNER values may be a single key (PED-S) or an array of keys (PED-N, which
+// has multiple legitimate owners since EM Home gained Thu/Sun PED-N eligibility, AY26/27) —
+// stripPedGuardedShifts checks membership either way, so EM_BAMC_1 (never a PED-N owner, despite
+// once having it in a stale LEGACY_ELIGIBILITY_DEFAULTS snapshot) stays excluded.
+const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': ['FM_3', 'EM_HOME_1', 'EM_HOME_2', 'EM_HOME_3'], 'PED-S': 'EM_HOME_2' };
 function stripPedGuardedShifts(list, key) {
   return list.filter(id => {
     const owner = PED_GUARD_LEGITIMATE_OWNER[id];
-    return !owner || key === owner;
+    if (!owner) return true;
+    return Array.isArray(owner) ? owner.includes(key) : owner === key;
   });
 }
 
@@ -1770,6 +2014,9 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
   if ((resident.approvedDatesOff || []).includes(dateStr)) return [];
+  // Vacation — distinct from approvedDatesOff (chief-tracked vacation dates, e.g. from the
+  // vacation-xlsx importer) but the same hard-block mechanism/severity.
+  if ((resident.vacationDates || []).includes(dateStr)) return [];
   // Off-service availability (full block / date ranges / specific days) — see isAvailableOnDate
   if (!isAvailableOnDate(resident, dateStr)) return [];
   // Jeopardy call — blocks scheduling only when policy is 'block' (see Settings)
@@ -1785,6 +2032,15 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides);
   let eligible = list;
 
+  // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
+  // per-resident assignment, not a category/PGY default): no evening/night shifts on Tuesdays.
+  // Only the 'academic' role carries this restriction — the legacy isChief→'scheduling' fallback
+  // never applies here, since the Tuesday rule is new and shouldn't retroactively apply to
+  // already-saved blocks whose chiefRole hasn't been explicitly set to 'academic'.
+  if (resident.chiefRole === 'academic' && dow === 2) {
+    eligible = eligible.filter(s => !['eve', 'night'].includes(SHIFT_MAP[s]?.type));
+  }
+
   // Chief-editable day/block rules (Scheduling Rules tab) — see DEFAULT_DAY_RULES for shapes.
   const dr = getEffectiveDayRules(key, dayRules);
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
@@ -1796,6 +2052,12 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   // 1b. Computed-date rules — dates derived from the calendar itself, no manual list needed
   for (const c of dr.computedDayRules || []) {
     if (c.type === 'firstFridayOfMonth' && dow === 5 && date.getDate() <= 7) return [];
+    // Wellness Wednesday — block-relative (needs ctx.blockStart), strips day+eve only; a night
+    // shift starting that Wednesday is still allowed. No-ops if blockStart wasn't threaded
+    // through by the caller (nthWeekdayOnOrAfter returns null).
+    if (c.type === 'wellnessWednesday' && dow === 3 && dateStr === nthWeekdayOnOrAfter(ctx.blockStart, 3, c.ordinal)) {
+      eligible = eligible.filter(s => !['day', 'eve'].includes(SHIFT_MAP[s]?.type));
+    }
   }
 
   // 2. Shift/rotation gates — subset-of-shifts or block-type day windows
@@ -1830,7 +2092,7 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
     }
   }
 
-  // 4. Special-day-list rules (Code Blue / advocacy / procedure / anesthesia dates)
+  // 4. Special-day-list rules (Code Blue / procedure / anesthesia dates)
   for (const s of dr.specialDayRules || []) {
     const listArr = specialDays[s.listKey] || [];
     if ((s.offset === 'sameDay' || s.offset === 'sameDayAndDayBefore') && listArr.includes(dateStr)) return [];
@@ -1909,6 +2171,12 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           message: 'Shift scheduled on an approved day off', level: 'error' });
         continue;
       }
+      // Vacation — same severity as approved day off, distinct wording
+      if ((resident.vacationDates || []).includes(ds)) {
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
+          message: 'Shift scheduled while resident is on vacation this date', level: 'error' });
+        continue;
+      }
       // Jeopardy call date
       if (jeopardyPolicy !== 'off' && (resident.jeopardyDates || []).includes(ds)) {
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
@@ -1922,7 +2190,13 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
         let msg = 'Shift not eligible for this resident on this day';
-        if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
+        const wwRule = resident.category === 'EM_HOME' && dow === 3 && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
+          ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
+              .find(c => c.type === 'wellnessWednesday' && ds === nthWeekdayOnOrAfter(block.startDate, 3, c.ordinal))
+          : null;
+        if (wwRule) msg = `Wellness Wednesday (${ORDINAL_WORD[wwRule.ordinal] || `${wwRule.ordinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
+        else if (resident.chiefRole === 'academic' && dow === 2 && ['eve', 'night'].includes(SHIFT_MAP[sid]?.type)) msg = 'Academic Chief — no Tuesday evening/night shifts';
+        else if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
         else if (!SHIFT_MAP[sid]) msg = 'Unknown shift type';
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg, level: 'error' });
       }
@@ -2037,7 +2311,8 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: 'error' });
     }
 
-    // 7-consecutive-work-day rule — GR days count as work days (see isStreakWorkDay)
+    // 6-consecutive-work-day rule (ACGME 1-in-7) — a Grand Rounds day with no shift assigned
+    // is a day off, not a work day (see isStreakWorkDay)
     if (isSchedulable(resident)) {
       let runStart = null, runHasShift = false;
       const flushRun = (runEnd) => {
@@ -2045,7 +2320,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
         const len = blockDayIndex(runStart, runEnd) + 1;
         if (len > MAX_CONSECUTIVE_WORK_DAYS && runHasShift)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${len} consecutive work days (${formatDisplayDate(runStart)}–${formatDisplayDate(runEnd)}) — max ${MAX_CONSECUTIVE_WORK_DAYS} (GR days count)`,
+            message: `${len} consecutive work days (${formatDisplayDate(runStart)}–${formatDisplayDate(runEnd)}) — max ${MAX_CONSECUTIVE_WORK_DAYS}`,
             level: 'error' });
         runStart = null; runHasShift = false;
       };
@@ -2165,9 +2440,10 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     }
   }
   for (const ds of blockDates) {
+    const dsDow = parseDate(ds).getDay();
     for (const shift of SHIFTS) {
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(parseDate(ds).getDay())) continue;
-      const cov = getCoverageFor(shift.id, coverage);
+      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
+      const cov = getCoverageFor(shift.id, coverage, dsDow);
       const count = countsByDateShift[`${ds}__${shift.id}`] || 0;
       if (cov.min > 0 && count < cov.min)
         issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
@@ -2178,8 +2454,11 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
     }
   }
 
-  // FLEX/POD seniority composition: a staffed group missing its required senior (PGY-2 for
-  // FLEX, PGY-3 for POD, either falling back to the other) is flagged for manual review.
+  // FLEX/POD seniority composition. FLEX keeps its original soft "missing senior" warning
+  // (PGY-2 primary, PGY-3 fallback, either satisfies it — unchanged). POD is a hard requirement
+  // instead (AY26/27 chief-directed change): a staffed POD shift needs an EM PGY-3, no fallback
+  // exception — except the block's own PGY-3 Wellness Wednesday (see podWellnessSubstituteAllowed),
+  // when a PGY-2 substituting for the missing PGY-3 is explicitly allowed and raises no issue.
   const seniorShiftsByArea = Object.fromEntries(
     Object.keys(SENIOR_COMPOSITION).map(area => [area, SHIFTS.filter(s => s.area === area)]));
   for (const ds of blockDates) {
@@ -2187,6 +2466,16 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       for (const shift of seniorShiftsByArea[area]) {
         const assignedHere = allResidents.filter(r => (schedule[r.id] || {})[ds] === shift.id);
         if (!assignedHere.length) continue;
+        if (area === 'POD') {
+          const hasPgy3 = assignedHere.some(r => r.category === 'EM_HOME' && r.pgy === 3);
+          if (hasPgy3) continue;
+          const wellnessSubstituteOk = podWellnessSubstituteAllowed(ds, block.startDate)
+            && assignedHere.some(r => isSeniorFor('POD', r));
+          if (wellnessSubstituteOk) continue;
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
+            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-3 — none assigned (only exception is the block's own PGY-3 Wellness Wednesday)`, level: 'error' });
+          continue;
+        }
         if (!assignedHere.some(r => isSeniorFor(area, r)))
           issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
             message: `${shift.label} (${formatDisplayDate(ds)}) has no EM PGY-${comp.primary} (or PGY-${comp.fallback} fallback) assigned`, level: 'warn' });
@@ -2249,6 +2538,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
   // trauma-night load between PGY-2/3 across the year (see traumaNightPgyPrefersDow in score()).
   const traumaNightYearly = {};
+  // Whether this resident has already done (or is currently on) a Peds/Trauma-mix rotation this
+  // AY — used only to lift the PED-N PGY-1 deprioritization in score() (see hasPriorPedsTrauma).
+  // Precomputed once per resident (depends only on resident.blockType/blocksHistory/block, none of
+  // which change mid-generation) rather than re-scanning blocksHistory on every score() call.
+  const priorPedsTrauma = {};
   let keptManual = 0;
   for (const r of allResidents) {
     target[r.id] = getShiftTarget(r, appSettings);
@@ -2259,6 +2553,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     nightCount[r.id] = 0;
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
     traumaNightYearly[r.id] = isTraumaCapSubject(r) ? countPublishedTraumaNights(r.id, block.academicYear, blocksHistory, block.id) : 0;
+    priorPedsTrauma[r.id] = hasPriorPedsTrauma(r, blocksHistory, block, traumaBlocks);
     // Cross-block JC count (published blocks this AY) plus what's already kept in this block —
     // seeded once; kept assignments in `schedule[r.id]` are counted below via countCurrentBlockJC
     // rather than double-walking the loop, since that helper already knows how to find first
@@ -2379,7 +2674,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       pool = pool.filter(r => !(isPedsEmMix(r) && pedsCount[r.id] >= PEDS_EM_MIX.max));
       if (!pool.length) return { candidates: [], restFallback: [], reason: 'pedsMixCapped' };
     }
-    // Hard 7-consecutive-work-day rule — GR days count as work days (see isStreakWorkDay)
+    // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — GR day with no shift is a day off (see isStreakWorkDay)
     pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds) <= MAX_CONSECUTIVE_WORK_DAYS);
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
@@ -2399,7 +2694,10 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // run" penalty (25) and FM-1 peds-fill-in discount (15) are minor tie-breaking preferences.
   // The trauma-night PGY/weekday preference (12) and its yearly-balance term (-2/night worked,
   // count clamped at 5 so it can't exceed -10 and stays below the 12 tier) are minor tie-breaks,
-  // same tier as the FM-1 discount. Math.random() only breaks exact ties.
+  // same tier as the FM-1 discount. The PED-N PGY-1 deprioritization (-25, same tier as the
+  // "don't strand a short night run"/FM-1-peds-cap penalties) is likewise a soft nudge, not a
+  // block — candidatePool never excludes an EM Home PGY-1 from PED-N, this only makes a PGY-2/3
+  // or FM-3 candidate win the slot when one is also available. Math.random() only breaks exact ties.
   function score(r, shift, ds, seniorFilled) {
     const t = target[r.id];
     const deficit = (t - assigned[r.id]) / t;
@@ -2417,6 +2715,10 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const fm1OnPeds = shift.area === 'PED' && r.category === 'FM' && r.pgy === 1 ? 1 : 0;
     const fm1Cap = getFm1PedsCap(t);
     const fm1OverPedsCap = fm1OnPeds && fm1Cap != null && pedsCount[r.id] >= fm1Cap ? 1 : 0;
+    // PED-N Thu/Sun EM-Home opening (chief-directed, AY26/27): soft-deprioritize an EM Home PGY-1
+    // candidate — not blocked, just less likely to be picked over a PGY-2/3 or FM-3 — unless
+    // they've already done a Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma/BASE_ELIGIBILITY).
+    const pedNPgy1Deprioritize = shift.id === 'PED-N' && r.category === 'EM_HOME' && r.pgy === 1 && !priorPedsTrauma[r.id] ? 1 : 0;
     // BAMC interns: prefer Flex/POD/Peds day shifts, especially Wednesday (chief feedback) —
     // the weakest of the new soft nudges, purely a tie-breaker.
     const bamcFlexPodPedsDay = r.category === 'EM_BAMC' && shift.type === 'day' && ['FLEX','POD','PED'].includes(shift.area) ? 1 : 0;
@@ -2442,6 +2744,10 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (!seniorFilled && r.category === 'EM_HOME' && r.pgy === comp.primary) seniorAdj = 1;
       else if (seniorFilled && isSeniorFor(shift.area, r)) seniorAdj = -0.6; // -12 at the 20-point scale below
     }
+    // POD's 2nd/3rd slot preferentially goes to an EM Home/BAMC PGY-1 (soft, AY26/27 chief-
+    // directed) — only once the PGY-3 requirement is already met by someone else in this slot
+    // (seniorFilled), so this never competes with getting a senior placed in the first place.
+    const podPgy1SecondSlot = shift.area === 'POD' && seniorFilled && isEmIntern(r) ? 1 : 0;
     // Mildly steer away from a resident's 3rd (final allowed) journal club this AY, once they're
     // already at 2 — candidatePool already hard-blocks a 4th.
     const jcNearCap = r.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(shift.id) && jcCount[r.id] === 2 ? 1 : 0;
@@ -2473,11 +2779,16 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     // would be worse than pairing two interns).
     const secondIntern = isEmIntern(r) && allResidents.some(other =>
       other.id !== r.id && isEmIntern(other) && schedule[other.id][ds] === shift.id) ? 1 : 0;
+    // Tox residents' Mon/Tue window (em_tox_window/em_tox_window_aug26 shiftGates) already confines
+    // WHEN they can work; this just nudges WHICH shift they land on within that window toward Peds
+    // Evening specifically (chief: "ideally only evening peds") — soft preference only, doesn't
+    // touch eligibility, so they remain free to fill whatever else the gates already allow.
+    const toxPedsEvePref = shift.id === 'PED-E' && r.blockType === 'EM_TOX' ? 1 : 0;
     return 100 * deficit + 40 * nightCluster - 20 * mixShare - 15 * Math.max(0, streak - 3) - 50 * jeo
       - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap
       + 12 * traumaNightDowPref - 2 * traumaNightBalance + 10 * generalPedsNudge - 10 * pedsClassRepeat
-      - 18 * weekendOffRisk - 35 * secondIntern - 20 * fm1OverPedsCap
-      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + Math.random();
+      - 18 * weekendOffRisk - 35 * secondIntern - 20 * fm1OverPedsCap - 25 * pedNPgy1Deprioritize
+      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + 15 * podPgy1SecondSlot + 8 * toxPedsEvePref + Math.random();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -2490,10 +2801,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   function fillDayPass(ds, includeShift, phase) {
     streakCache = {};
     const slots = [];
+    const dsDow = parseDate(ds).getDay();
     for (const shift of SHIFTS.filter(includeShift)) {
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(parseDate(ds).getDay())) continue;
+      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
-      const cov = getCoverageFor(shift.id, coverage);
+      const cov = getCoverageFor(shift.id, coverage, dsDow);
       if (phase === 'min') {
         // Count manual assignments that exceed configured coverage too, or totalSlots can end up
         // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
@@ -2672,7 +2984,12 @@ function summarizeGenerationReport(report, appSettings = {}) {
     // and that subset is a strict subset of the block's weekdays — i.e. a day-of-week rule.
     const noElig = slots.filter(s => s.reason === 'noEligible');
     const gapDows = [...new Set(noElig.map(s => dow(s.dateStr)))].sort();
-    // PED-N is FM-3-exclusive — every gap is expected whenever no FM-3 is on this block at all.
+    // PED-N: Mon/Tue/Wed (1,2,3) stays FM-3-exclusive — a noEligible gap on those days is always
+    // expected when no FM-3 is on the block, same as before this shift opened up. Thu-Sun (0,4,5,6)
+    // is now also open to EM Home (AY26/27), so a noEligible gap there means nobody at all — no
+    // FM-3 (structurally impossible Thu-Sun anyway) AND no EM Home resident eligible that day
+    // either — genuinely rarer, but still expected/non-issue given coverage stays min:0
+    // ("ideally filled, other shifts take priority", not a requirement).
     const isPedNExpected = shiftId === 'PED-N' && noElig.length > 0 && noElig.length === slots.length;
     const structural = isPedNExpected || (noElig.length > 0 && noElig.length === slots.length && gapDows.length < 7 &&
       noElig.every(s => gapDows.includes(dow(s.dateStr))));
@@ -2680,8 +2997,11 @@ function summarizeGenerationReport(report, appSettings = {}) {
     const recs = [];
     const label = SHIFT_MAP[shiftId]?.label || shiftId;
     if (reasonCounts.noEligible) {
+      const pedNMonWedOnly = isPedNExpected && gapDows.every(d => [1,2,3].includes(d));
       recs.push(isPedNExpected
-        ? `${label} is an FM-3-only shift (Mon/Tue/Wed) — gaps are expected when no FM-3 is on this block, or on Thu–Sun even when one is. Leave open or assign an FM-3 manually Mon–Wed.`
+        ? (pedNMonWedOnly
+            ? `${label} is FM-3-exclusive Mon/Tue/Wed — these gaps are expected whenever no FM-3 is on this block. Leave open or assign an FM-3 manually.`
+            : `${label} is FM-3-exclusive Mon/Tue/Wed and optional EM Home coverage Thu–Sun (coverage min stays 0 — "ideally filled, other shifts take priority," not required). These gaps have no FM-3 eligible Mon/Tue/Wed, or no FM-3/EM Home resident eligible Thu–Sun. Leave open or assign manually.`)
         : structural
         ? `${label} had no eligible residents on ${gapDows.map(d=>DOW_NAMES[d]).join('/')} — a day-of-week rule blocks everyone (e.g. Trauma window, GR Wednesday, BAMC Thursday). If that's expected, no action needed; otherwise edit the rule on this tab.`
         : `No resident in this block is eligible for ${label} on those days — check the Shift Matrix and each resident's rotation (EM Residents tab).`);
@@ -2692,7 +3012,7 @@ function summarizeGenerationReport(report, appSettings = {}) {
     if (reasonCounts.selfCoverOnly) recs.push(`Only self-scheduling residents (no shift target, e.g. Peds) are eligible for ${label} — assign them manually in the grid, or set ${label} coverage to 0.`);
     if (reasonCounts.traumaCapped) recs.push(`Eligible EM PGY-2/3s hit the trauma cap (${getTraumaCap(appSettings)}/block) — raise the cap in Settings or cover with a trauma-block PGY-1.`);
     if (reasonCounts.pedsMixCapped) recs.push(`Peds/EM residents have hit their ${PEDS_EM_MIX.max}-peds-shift cap — cover ${label} with other peds-eligible residents.`);
-    if (reasonCounts.streakBlocked) recs.push(`All eligible residents would have exceeded ${MAX_CONSECUTIVE_WORK_DAYS} consecutive work days (GR counts as a work day) — rearrange days off nearby, or Generate again.`);
+    if (reasonCounts.streakBlocked) recs.push(`All eligible residents would have exceeded ${MAX_CONSECUTIVE_WORK_DAYS} consecutive work days — rearrange days off nearby, or Generate again.`);
     if (reasonCounts.halfTargetMet) recs.push(`Trauma/Peds rotators had already completed their ${TRAUMA_PEDS_SPLIT.trauma}-trauma/${TRAUMA_PEDS_SPLIT.peds}-peds half targets — remaining ${label} slots need another eligible resident, assigned manually.`);
     if (reasonCounts.circadianBlocked) recs.push(`All eligible residents were blocked by a hard circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
     if (reasonCounts.nightCapped) recs.push(`Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block cap — spread nights across more residents, or cover ${label} manually.`);
@@ -2856,6 +3176,7 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
       const sid = rs[ds] || null;
       const notes = [];
       if ((r.approvedDatesOff||[]).includes(ds)) notes.push('OFF');
+      if ((r.vacationDates||[]).includes(ds)) notes.push('VAC');
       if ((r.jeopardyDates||[]).includes(ds)) notes.push('Jeopardy');
       if ((r.jcPresentDates||[]).includes(ds)) notes.push('JC presenting');
       if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
@@ -3095,11 +3416,11 @@ function SectionCard({ title, subtitle, children, action }) {
 // Collapsible variant of SectionCard — same styling, toggleable body, default open.
 // `action` (e.g. Save/New buttons) sits in the header and won't trigger the toggle.
 // Collapsible header button shared by CollapsibleCard and any custom multi-section card
-// (e.g. HomeTab's Current Block) that needs the same toggle but a body CollapsibleCard's
+// (e.g. DashboardTab's Current Block) that needs the same toggle but a body CollapsibleCard's
 // single padded div can't express.
 function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
-  // A real <button> here would make any button inside `action` (e.g. HomeTab's Save Block/New
-  // Block) an invalid nested <button>, which React flags as a hydration error — role="button" +
+  // A real <button> here would make any button inside `action` (e.g. DashboardTab's Save Block/
+  // New Block) an invalid nested <button>, which React flags as a hydration error — role="button" +
   // keyboard handling keeps this toggle accessible without nesting interactive elements.
   return (
     <div role="button" tabIndex={0} onClick={onToggle}
@@ -3295,14 +3616,261 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
             })}
             {emHome.length === 0 && <span className="text-xs text-gray-400 italic">No EM Home residents on this roster.</span>}
           </div>
-          <p className="text-[10px] text-gray-400 mt-1.5">Only Published saved blocks (Home tab) plus the current block count toward this cap.</p>
+          <p className="text-[10px] text-gray-400 mt-1.5">Only Published saved blocks (Dashboard tab) plus the current block count toward this cap.</p>
         </div>
       </div>
     </CollapsibleCard>
   );
 }
 
-function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, coverage, blocksHistory }) {
+// ─── YEAR CALENDAR (Dashboard) ─────────────────────────────────────────────
+// July→July block calendar with global (day-strip) and granular (per-shift heatmap) coverage
+// visualization. Read-only over blocksHistory + the live block — never mutates a snapshot;
+// "Open Block"/"Publish" delegate entirely to the already-existing loadBlock/toggleBlockPublished
+// handlers (unsaved-work guard, hydrate, tab switch, published flag all live there already).
+
+// Same red/amber/green precedence the Schedule grid's coverage footer uses (belowMin > aboveMax
+// > ok), plus a 4th "gray" state for a day with nothing scheduled at all yet — so a block that
+// hasn't been generated reads as "not started" rather than a wall of false-alarm red.
+function coverageDayStatus(cov) {
+  if (!cov) return 'gray';
+  if (cov.filled === 0 && cov.minTotal > 0) return 'gray';
+  if (cov.belowMin.length) return 'red';
+  if (cov.aboveMax.length) return 'amber';
+  return 'green';
+}
+// Per-shift-cell version of the same 3(+1)-state read, mirroring the coverage footer's per-shift
+// expansion row (`info.count<info.min` / `>info.max`) but adding the same "gray = nothing to show"
+// case (no requirement AND nothing assigned) instead of that row's plain neutral gray-400 text.
+function shiftCellStatus(info) {
+  if (!info) return 'gray';
+  if (info.count === 0 && info.min === 0) return 'gray';
+  if (info.count < info.min) return 'red';
+  if (info.count > info.max) return 'amber';
+  return 'green';
+}
+const COVERAGE_DOT_CLASS = { red: 'bg-destructive', amber: 'bg-amber-500', green: 'bg-green-500', gray: 'bg-muted' };
+const COVERAGE_CELL_CLASS = {
+  red: 'bg-red-50 text-red-600 font-semibold', amber: 'bg-amber-50 text-amber-600 font-semibold',
+  green: 'bg-green-50 text-green-700', gray: 'text-muted-foreground/60',
+};
+
+// One row of the year calendar — a saved blocksHistory snapshot, OR the live block (either
+// standing in for a saved snapshot it also matches, with coverage always computed from the LIVE
+// schedule rather than that snapshot's own stale copy, or as an extra "unsaved" row when the live
+// block hasn't been saved at all). Owns its own coverage memo so switching AY/expanding one row
+// never recomputes another row's numbers.
+function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule }) {
+  const { snap, isLive, unsaved } = row;
+  // Keyed on the row's own schedule object identity (stable for a saved snapshot until
+  // blocksHistory itself changes; equal to the live block.schedule reference for the live row) —
+  // this recomputes exactly when that one block's own data changes, never on an unrelated re-render.
+  const dates = useMemo(() => getBlockDates(row.startDate, row.endDate), [row.startDate, row.endDate]);
+  // computeCoverageByDate only ever reads `r.id` off the resident list it's given (see its
+  // definition) — so rather than the LIVE roster (which can disagree with an older snapshot's
+  // own residents, over- or under-counting fills for anyone added/removed since), build the
+  // resident list straight from the snapshot's own schedule keys. Correct for every snapshot,
+  // not just the live block.
+  const residentsForCoverage = useMemo(() => Object.keys(row.schedule).map(id => ({ id })), [row.schedule]);
+  const coverageByDate = useMemo(
+    () => computeCoverageByDate(dates, row.schedule, coverage || {}, residentsForCoverage),
+    [dates, row.schedule, coverage, residentsForCoverage]
+  );
+  // Saved, non-live rows show the snapshot's OWN stored counts (same fields HomeTab's Saved
+  // Blocks list already displays) rather than a second, differently-scoped recomputation — the
+  // live row has no stored count to show, so it falls back to a live count in that case only.
+  const liveShiftCount = dates.reduce((s, ds) => s + (coverageByDate[ds]?.filled || 0), 0);
+  const shiftCount = isLive ? liveShiftCount : (snap.shiftCount ?? liveShiftCount);
+  const residentCount = isLive ? allResidents.length : (snap.residentCount ?? residentsForCoverage.length);
+  const activeShifts = useMemo(() => getActiveCoverageShifts(dates, coverageByDate), [dates, coverageByDate]);
+  const nameById = useMemo(() => {
+    const m = {}; for (const r of allResidents) m[r.id] = `${r.lastName}, ${r.firstName}`; return m;
+  }, [allResidents]);
+
+  return (
+    <div className={`border border-border rounded-xl overflow-hidden bg-card ${isLive ? 'ring-2 ring-inset ring-primary' : ''}`}>
+      <div role="button" tabIndex={0} onClick={() => onToggleExpand(row.key)}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpand(row.key); } }}
+        className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent transition-colors">
+        <ChevronDown size={14} className={`text-muted-foreground shrink-0 transition-transform ${expanded ? 'rotate-180' : '-rotate-90'}`}/>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-medium text-sm text-foreground truncate">{snap.name || 'Unnamed Block'}</span>
+            {snap.published && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700 shrink-0">Published</span>
+            )}
+            {isLive && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-primary/10 text-primary shrink-0">
+                {unsaved ? 'Unsaved · Current' : 'Currently Open'}
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {prettyDate(row.startDate)} → {prettyDate(row.endDate)} · {shiftCount} shift{shiftCount !== 1 ? 's' : ''} · {residentCount} resident{residentCount !== 1 ? 's' : ''}
+          </div>
+        </div>
+        <div className="flex gap-px shrink-0" onClick={e => e.stopPropagation()}>
+          {dates.map(ds => {
+            const cov = coverageByDate[ds];
+            const status = coverageDayStatus(cov);
+            return (
+              <div key={ds} title={`${formatDisplayDate(ds)}: ${cov?.filled ?? 0}/${cov?.minTotal ?? 0} filled`}
+                className={`w-2 h-5 rounded-[1px] ${COVERAGE_DOT_CLASS[status]}`}/>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+          {!unsaved && (
+            <button onClick={() => onTogglePublished(snap.id)}
+              title="Published blocks count toward each resident's 3-journal-club-per-year cap"
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${snap.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-card border-border text-muted-foreground hover:border-green-300'}`}>
+              {snap.published ? 'Published' : 'Publish'}
+            </button>
+          )}
+          {!isLive && <Button variant="secondary" size="sm" onClick={() => onOpenBlock(snap)}>Open Block</Button>}
+          {unsaved && <Button variant="secondary" size="sm" onClick={onGoToSchedule}>Go to Schedule</Button>}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border p-3 overflow-x-auto no-print">
+          {activeShifts.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic px-1">No coverage requirements or assignments recorded for this block.</p>
+          ) : (
+            <div className="min-w-max">
+              <div className="flex text-[10px] text-muted-foreground mb-1">
+                <div style={{ width: 110 }} className="shrink-0"/>
+                {dates.map(ds => (
+                  <div key={ds} style={{ width: 26 }} className="shrink-0 text-center">{parseDate(ds).getDate()}</div>
+                ))}
+              </div>
+              {activeShifts.map(s => (
+                <div key={s.id} className="flex items-center">
+                  <div style={{ width: 110 }} className="shrink-0 pr-2">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                  </div>
+                  {dates.map(ds => {
+                    const info = coverageByDate[ds]?.perShift[s.id];
+                    const status = shiftCellStatus(info);
+                    const who = info && info.count > 0
+                      ? Object.keys(row.schedule).filter(rid => row.schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
+                      : '';
+                    return (
+                      <div key={ds} style={{ width: 26, height: 22 }}
+                        title={info ? `${formatDisplayDate(ds)} ${s.id}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : ''}
+                        className={`shrink-0 flex items-center justify-center text-[9px] font-mono tabular-nums border-r border-b border-border/40 ${COVERAGE_CELL_CLASS[status]}`}>
+                        {info ? info.count : ''}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// AY selector + July→July timeline of every blocksHistory snapshot for that AY (plus the live
+// block, always computed from its own live schedule). Purely a navigation/visualization layer —
+// "Open Block"/"Publish" delegate to loadBlock/toggleBlockPublished, which already own every bit
+// of the actual state transition (unsaved-work guard, hydrate, tab switch, published flag).
+function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, loadBlock, toggleBlockPublished, setTab, ayData, updateAyData }) {
+  const ayOptions = useMemo(() => {
+    const set = new Set(blocksHistory.map(b => b.academicYear || 'Unknown'));
+    if (block.academicYear) set.add(block.academicYear);
+    return [...set].sort((a, b) => b.localeCompare(a));
+  }, [blocksHistory, block.academicYear]);
+
+  const [selectedAy, setSelectedAy] = useState(() =>
+    (block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || '')
+  );
+  // ayOptions itself never changes after mount for a given DashboardTab lifetime in practice
+  // (blocksHistory/academicYear are localStorage-backed, already loaded by first render) — this
+  // guard only covers the edge case of the selected AY's last block being deleted elsewhere.
+  useEffect(() => {
+    if (selectedAy && !ayOptions.includes(selectedAy)) {
+      setSelectedAy((block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || ''));
+    }
+  }, [ayOptions, selectedAy, block.academicYear]);
+
+  const [expandedKey, setExpandedKey] = useState(null);
+
+  const snapsForAy = useMemo(() =>
+    blocksHistory.filter(b => (b.academicYear || 'Unknown') === selectedAy)
+      .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || '')),
+    [blocksHistory, selectedAy]);
+
+  const liveMatchesAy = block.academicYear === selectedAy && !!block.startDate;
+  const liveMatchesSnapshot = liveMatchesAy && snapsForAy.some(s => s.id === block.id);
+
+  const rows = useMemo(() => {
+    const list = snapsForAy.map(snap => {
+      const isLive = liveMatchesAy && snap.id === block.id;
+      return {
+        key: snap.id, snap, isLive, unsaved: false,
+        schedule: isLive ? (block.schedule || {}) : (snap.data?.schedule || {}),
+        startDate: snap.startDate || snap.data?.startDate, endDate: snap.endDate || snap.data?.endDate,
+      };
+    });
+    if (liveMatchesAy && !liveMatchesSnapshot) {
+      list.push({
+        key: `__live_${block.id}`,
+        snap: { id: block.id, name: block.name, published: false },
+        isLive: true, unsaved: true,
+        schedule: block.schedule || {},
+        startDate: block.startDate, endDate: block.endDate,
+      });
+    }
+    return list.sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+  }, [snapsForAy, liveMatchesAy, liveMatchesSnapshot, block]);
+
+  const ayWindow = ayWindowFor(selectedAy);
+
+  return (
+    <div className="no-print">
+      <SectionCard title="Block Calendar" subtitle={ayWindow ? `${prettyDate(ayWindow.start)} → ${prettyDate(ayWindow.end)}` : 'July→July view of every saved block'}
+        action={ayOptions.length > 0 && (
+          <select value={selectedAy} onChange={e => setSelectedAy(e.target.value)}
+            className="text-sm px-2.5 py-1.5 rounded-lg border border-border bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring">
+            {ayOptions.map(ay => <option key={ay} value={ay}>{ay}</option>)}
+          </select>
+        )}>
+        {/* Per-AY conference & ITE dates — co-located with the AY's own blocks below rather than
+            edited in a separate place (the old Home tab's per-AY folder), so browsing this AY's
+            blocks and editing its conference dates happen in the same spot. */}
+        {selectedAy && (
+          <div className="rounded-lg overflow-hidden border border-primary/20 mb-3">
+            <AYConferenceEditor
+              ay={selectedAy}
+              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
+              onUpdate={conf => updateAyData(selectedAy, conf)}
+            />
+          </div>
+        )}
+        <div className="space-y-2">
+          {rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">No saved blocks for this academic year yet.</p>
+          ) : (
+            rows.map(row => (
+              <BlockCalendarRow key={row.key} row={row} coverage={coverage} allResidents={allResidents}
+                expanded={expandedKey === row.key}
+                onToggleExpand={k => setExpandedKey(p => p === k ? null : k)}
+                onOpenBlock={loadBlock} onTogglePublished={toggleBlockPublished}
+                onGoToSchedule={() => setTab('schedule')}
+              />
+            ))
+          )}
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, setTab,
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
@@ -3310,6 +3878,19 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
   const schedule     = block.schedule || {};
 
   const schedulableCount = allResidents.filter(r => isSchedulable(r)).length;
+
+  // ── Current Block editor state (relocated from the old Home tab) ──
+  const [blockOpen, setBlockOpen] = useState(true);
+  const [showImportMatrix, setShowImportMatrix] = useState(false);
+  // Raw counts for the Current Block card's own header subtitle — distinct from the
+  // coverage-derived "Shifts Filled" stat tile below (see that tile's own comment): this is
+  // every resident + every filled cell on the block regardless of min-coverage targets, exactly
+  // as the old Home tab displayed it.
+  const curShiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
+  const curResCount   = emRoster.length + (block.offServiceResidents || []).length;
+
+  function setBlockField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
+  function onStartDateChange(s) { applyStartDate(updateBlock, appSettings, s); }
 
   // Reuses the same computeCoverageByDate the Schedule tab's coverage footer runs, so the
   // "Shifts Filled" tile can never drift from what the grid shows. shiftCount is derived from
@@ -3332,6 +3913,95 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
 
   return (
     <div className="space-y-5 max-w-5xl">
+
+      {/* July→July block calendar with global (day-strip) + granular (per-shift heatmap)
+          coverage visualization — read-only navigation layer over blocksHistory + the live
+          block, see the "YEAR CALENDAR" section above DashboardTab. */}
+      <BlockCalendarSection block={block} allResidents={allResidents} coverage={coverage}
+        blocksHistory={blocksHistory} loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished}
+        setTab={setTab} ayData={ayData} updateAyData={updateAyData}/>
+
+      {/* Current Block — inline editable form, relocated from the old Home tab (now removed —
+          the Block Calendar above replaced its Saved Blocks list, and AYConferenceEditor moved
+          into that calendar's own AY dropdown). */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden no-print">
+        <CollapsibleHeader
+          title="Current Block"
+          subtitle={curResCount > 0 || curShiftCount > 0
+            ? `${curResCount} resident${curResCount !== 1 ? 's' : ''} · ${curShiftCount} shift${curShiftCount !== 1 ? 's' : ''} assigned`
+            : 'Set dates below to start scheduling'}
+          open={blockOpen} onToggle={() => setBlockOpen(p => !p)}
+          action={<>
+            <button onClick={onSaveBlock}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
+              <Save size={12}/> Save Block
+            </button>
+            <button onClick={onNewBlock}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+              <Plus size={12}/> New Block
+            </button>
+            <button onClick={() => setShowImportMatrix(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+              <Upload size={12}/> Import Master Matrix
+            </button>
+          </>}
+        />
+
+        {blockOpen && <>
+        {/* Block identity + dates grid — always visible, always editable */}
+        <div className="px-5 pt-4 pb-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-500 mb-1">Block Name</label>
+              <input className="input-field" placeholder="e.g. Block 3 — Jun/Jul 2026"
+                value={block.name || ''} onChange={e => setBlockField('name', e.target.value)}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
+              <input className="input-field" placeholder={getAcademicYear()}
+                value={block.academicYear || ''} onChange={e => setBlockField('academicYear', e.target.value)}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Start Date</label>
+              <input type="date" className="input-field"
+                value={block.startDate || ''} onChange={e => onStartDateChange(e.target.value)}/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">End Date</label>
+              <input type="date" className="input-field"
+                value={block.endDate || ''} onChange={e => setBlockField('endDate', e.target.value)}/>
+            </div>
+          </div>
+
+          {/* Days-in-block indicator */}
+          {blockDates.length > 0 && (
+            <p className="text-xs text-gray-400 mt-2">
+              {blockDates.length} days · {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
+            </p>
+          )}
+        </div>
+
+        {/* Go to Schedule */}
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
+          <span className="text-xs text-gray-400">
+            {!block.startDate ? 'Set start date above to begin' : `Ready · ${blockDates.length} day block`}
+          </span>
+          <button onClick={() => setTab('schedule')} disabled={!block.startDate}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg transition-colors">
+            Go to Schedule <ChevronRight size={14}/>
+          </button>
+        </div>
+        </>}
+      </div>
+
+      {showImportMatrix && (
+        <ImportMatrixModal
+          emRoster={emRoster} setEmRoster={setEmRoster}
+          blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
+          appSettings={appSettings} showToast={showToast}
+          onClose={() => setShowImportMatrix(false)}
+        />
+      )}
 
       {/* Stat tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -3395,7 +4065,7 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
           <p className="text-xs text-gray-400 italic">
             {Object.values(ayConf).some(Boolean)
               ? 'All AY conferences fall outside this block period.'
-              : 'No conference dates set for this academic year — add them in the Home tab under the AY folder.'}
+              : 'No conference dates set for this academic year — add them in the Block Calendar above (select this AY, then Conference & ITE Dates).'}
           </p>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -3439,13 +4109,6 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
             chipClass="bg-red-100 text-red-700 border border-red-200"
           />
           <SpecialDaysList
-            label="Peds Advocacy Days"
-            hint="Peds resident off the night before"
-            dates={sd.advocacyDays || []}
-            onUpdate={d => updSD('advocacyDays', d)}
-            chipClass="bg-green-100 text-green-700 border border-green-200"
-          />
-          <SpecialDaysList
             label="BAMC Procedure Days"
             hint="BAMC resident off night before + day of (may work night-of if critical)"
             dates={sd.procDays || []}
@@ -3466,7 +4129,9 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
   );
 }
 
-// ─── HOME TAB ─────────────────────────────────────────────────────────────────
+// ─── MATRIX IMPORT + AY CONFERENCE EDITOR ──────────────────────────────────────
+// (Formerly "Home Tab" — the tab itself is gone; ImportMatrixModal and AYConferenceEditor below
+// are now consumed by DashboardTab / BlockCalendarSection instead.)
 
 // Sheet-name regex matching (/home/i, /off.?service/i) breaks the moment a chief's export uses
 // generic tab names ("Sheet1"/"Sheet2") instead of descriptive ones — falling back to positional
@@ -3557,8 +4222,8 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     const { home, off, newResidents, ayStartYear } = preview;
 
     const mergedRoster = [...emRoster, ...newResidents.map(r => ({
-      id: uuid(), ...r, blockType: 'EM', isCCUNights: false,
-      approvedDatesOff: [], jeopardyDates: [], jcPresentDates: [], grLectureDates: [],
+      id: uuid(), ...r, blockType: 'EM', isCCUNights: false, chiefRole: null,
+      approvedDatesOff: [], jeopardyDates: [], jcPresentDates: [], grLectureDates: [], vacationDates: [],
       availabilityMode: 'full', availableRanges: [], canWorkDates: [],
     }))];
     setEmRoster(mergedRoster);
@@ -3756,208 +4421,6 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-function HomeTab({ block, updateBlock, emRoster, setEmRoster, blocksHistory, setBlocksHistory, ayData, updateAyData, appSettings, onContinue, onLoadBlock, onSaveBlock, onNewBlock, onTogglePublished, showToast }) {
-  const shiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
-  const resCount   = emRoster.length + (block.offServiceResidents || []).length;
-  const daysInBlock = getBlockDates(block.startDate, block.endDate).length;
-  const [blockOpen, setBlockOpen] = useState(true);
-  const [ayOpen, setAyOpen] = useState(true);
-  const [showImportMatrix, setShowImportMatrix] = useState(false);
-
-  // Group history by AY; also include AYs from ayData with no blocks yet
-  const byYear = useMemo(() => {
-    const m = {};
-    for (const b of blocksHistory) { const ay = b.academicYear || 'Unknown'; (m[ay] = m[ay] || []).push(b); }
-    for (const ay of Object.keys(ayData)) { if (!m[ay]) m[ay] = []; }
-    return Object.entries(m).sort(([a],[b]) => b.localeCompare(a));
-  }, [blocksHistory, ayData]);
-
-  const [openYears, setOpenYears] = useState(() => {
-    const i = {};
-    for (const b of blocksHistory) i[b.academicYear || 'Unknown'] = true;
-    for (const ay of Object.keys(ayData)) i[ay] = true;
-    return i;
-  });
-
-  useEffect(() => {
-    if (block.academicYear) setOpenYears(p => ({ ...p, [block.academicYear]: true }));
-  }, [block.academicYear]);
-
-  function toggleYear(y) { setOpenYears(p => ({ ...p, [y]: !p[y] })); }
-
-  function setField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
-
-  function onStartDateChange(s) { applyStartDate(updateBlock, appSettings, s); }
-
-  return (
-    <div className="space-y-5 max-w-3xl">
-
-      {/* Current Block — inline editable form */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <CollapsibleHeader
-          title="Current Block"
-          subtitle={resCount > 0 || shiftCount > 0
-            ? `${resCount} resident${resCount !== 1 ? 's' : ''} · ${shiftCount} shift${shiftCount !== 1 ? 's' : ''} assigned`
-            : 'Set dates below to start scheduling'}
-          open={blockOpen} onToggle={() => setBlockOpen(p => !p)}
-          action={<>
-            <button onClick={onSaveBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-              <Save size={12}/> Save Block
-            </button>
-            <button onClick={onNewBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-              <Plus size={12}/> New Block
-            </button>
-          </>}
-        />
-
-        {blockOpen && <>
-        {/* Block identity + dates grid — always visible, always editable */}
-        <div className="px-5 pt-4 pb-3">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-gray-500 mb-1">Block Name</label>
-              <input className="input-field" placeholder="e.g. Block 3 — Jun/Jul 2026"
-                value={block.name || ''} onChange={e => setField('name', e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
-              <input className="input-field" placeholder={getAcademicYear()}
-                value={block.academicYear || ''} onChange={e => setField('academicYear', e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Start Date</label>
-              <input type="date" className="input-field"
-                value={block.startDate || ''} onChange={e => onStartDateChange(e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">End Date</label>
-              <input type="date" className="input-field"
-                value={block.endDate || ''} onChange={e => setField('endDate', e.target.value)}/>
-            </div>
-          </div>
-
-          {/* Days-in-block indicator */}
-          {daysInBlock > 0 && (
-            <p className="text-xs text-gray-400 mt-2">
-              {daysInBlock} days · {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
-            </p>
-          )}
-        </div>
-
-        {/* Go to Schedule */}
-        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
-          <span className="text-xs text-gray-400">
-            {!block.startDate ? 'Set start date above to begin' : `Ready · ${daysInBlock} day block`}
-          </span>
-          <button onClick={onContinue} disabled={!block.startDate}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg transition-colors">
-            Go to Schedule <ChevronRight size={14}/>
-          </button>
-        </div>
-        </>}
-      </div>
-
-      {/* Saved Blocks — grouped by AY */}
-      <div className="space-y-2">
-        <div className="w-full flex items-center justify-between mb-1 gap-2">
-          <button onClick={() => setAyOpen(p => !p)} className="flex-1 flex items-center justify-between text-left">
-            <h3 className="text-sm font-semibold text-gray-700">Academic Years</h3>
-            <div className="flex items-center gap-2">
-              <p className="text-xs text-gray-400">Conference & ITE dates are set per AY</p>
-              <ChevronDown size={14} className={`text-gray-400 transition-transform ${ayOpen ? 'rotate-180' : ''}`}/>
-            </div>
-          </button>
-          <button onClick={() => setShowImportMatrix(true)}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-600 rounded-lg transition-colors">
-            <Upload size={12}/> Import Master Matrix
-          </button>
-        </div>
-
-        {ayOpen && (byYear.length === 0 ? (
-          <div className="bg-white rounded-xl border border-dashed border-gray-200 py-10 text-center text-sm text-gray-400 italic">
-            No saved blocks yet. Click "Save Block" above to archive the current block.
-          </div>
-        ) : byYear.map(([year, blocks]) => (
-          <div key={year} className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-
-            {/* AY folder header */}
-            <button onClick={() => toggleYear(year)}
-              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left">
-              <div className="flex items-center gap-2.5">
-                <Archive size={14} className="text-gray-500"/>
-                <span className="font-bold text-gray-800 text-sm">{year}</span>
-                <span className="text-xs text-gray-400">{blocks.length} block{blocks.length !== 1 ? 's' : ''}</span>
-                {year === block.academicYear && (
-                  <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-medium">Current</span>
-                )}
-              </div>
-              <ChevronDown size={14} className={`text-gray-400 transition-transform ${openYears[year] ? 'rotate-180' : ''}`}/>
-            </button>
-
-            {openYears[year] && (
-              <div className="bg-white">
-                {/* Conference dates for this AY — inline editable */}
-                <AYConferenceEditor
-                  ay={year}
-                  conf={ayData[year] || { ...DEFAULT_AY_CONF }}
-                  onUpdate={conf => updateAyData(year, conf)}
-                />
-
-                {/* Blocks within this AY */}
-                {blocks.length === 0 ? (
-                  <div className="px-4 py-3 text-xs text-gray-400 italic">No saved blocks for this year yet.</div>
-                ) : (
-                  <div className="divide-y divide-gray-100">
-                    {blocks.map(b => (
-                      <div key={b.id} className="flex items-center justify-between gap-4 px-4 py-2.5">
-                        <div className="min-w-0">
-                          <div className="font-medium text-gray-800 text-sm truncate flex items-center gap-1.5">
-                            {b.name || 'Unnamed'}
-                            {b.published && (
-                              <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium shrink-0">Published</span>
-                            )}
-                          </div>
-                          <div className="text-xs text-gray-400 mt-0.5">
-                            {b.startDate && <>{prettyDate(b.startDate)} → {prettyDate(b.endDate)} · </>}
-                            {b.residentCount} residents · {b.shiftCount} shifts
-                            {b.savedAt && <> · saved {new Date(b.savedAt).toLocaleDateString()}</>}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button onClick={() => onTogglePublished(b.id)}
-                            title="Published blocks count toward each resident's 3-journal-club-per-year cap"
-                            className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${b.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-white border-gray-200 text-gray-500 hover:border-green-300'}`}>
-                            {b.published ? 'Published' : 'Publish'}
-                          </button>
-                          <button onClick={() => onLoadBlock(b)}
-                            className="px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-                            Load
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )))}
-      </div>
-
-      {showImportMatrix && (
-        <ImportMatrixModal
-          emRoster={emRoster} setEmRoster={setEmRoster}
-          blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
-          appSettings={appSettings} showToast={showToast}
-          onClose={() => setShowImportMatrix(false)}
-        />
-      )}
-    </div>
-  );
-}
-
 // ─── RESIDENT FORM (shared by Add + Edit modals) ─────────────────────────────
 
 function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persistentOnly = false, lockCategory = false, lockPgy = false }) {
@@ -3972,6 +4435,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     pgy:              initial?.pgy              ?? availCats[0]?.pgyOptions[0] ?? 1,
     isCCUNights:      initial?.isCCUNights      ?? false,
     approvedDatesOff: initial?.approvedDatesOff ?? [],
+    vacationDates:    initial?.vacationDates    ?? [],
     jeopardyDates:    initial?.jeopardyDates    ?? [],
     jcPresentDates:   initial?.jcPresentDates   ?? [],
     grLectureDates:   initial?.grLectureDates   ?? [],
@@ -3981,6 +4445,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
   });
 
   const [newOffDate, setNewOffDate] = useState('');
+  const [newVacDate, setNewVacDate] = useState('');
   const [newJeoDate, setNewJeoDate] = useState('');
   const [newJcDate, setNewJcDate] = useState('');
   const [newGrDate, setNewGrDate] = useState('');
@@ -4019,6 +4484,14 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
   }
   function removeOffDate(d) { set('approvedDatesOff', form.approvedDatesOff.filter(x => x !== d)); }
 
+  function addVacDate() {
+    const d = newVacDate;
+    if (!d || form.vacationDates.includes(d)) { setNewVacDate(''); return; }
+    set('vacationDates', [...form.vacationDates, d].sort());
+    setNewVacDate('');
+  }
+  function removeVacDate(d) { set('vacationDates', form.vacationDates.filter(x => x !== d)); }
+
   function addJeoDate() {
     const d = newJeoDate;
     if (!d || form.jeopardyDates.includes(d)) { setNewJeoDate(''); return; }
@@ -4052,6 +4525,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
       pgy:              Number(form.pgy),
       isCCUNights:      form.isCCUNights,
       approvedDatesOff: form.approvedDatesOff,
+      vacationDates:    form.vacationDates,
       jeopardyDates:    form.jeopardyDates,
       jcPresentDates:   form.jcPresentDates,
       grLectureDates:   form.grLectureDates,
@@ -4172,6 +4646,35 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
           </div>
         </div>
 
+        {/* Vacation Dates — distinct from Approved Dates Off so the chief can track/label
+            actual vacation separately; same hard-block mechanism under the hood. */}
+        {persistentOnly && (
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Vacation Dates</label>
+            <p className="text-xs text-gray-400 mb-2">Resident is on vacation these dates — blocked in the schedule grid, tracked separately from Approved Dates Off</p>
+            <div className="flex flex-wrap gap-1.5 mb-2 min-h-[22px]">
+              {form.vacationDates.length === 0
+                ? <span className="text-xs text-gray-300 italic">None set</span>
+                : form.vacationDates.map(d => (
+                  <span key={d} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-teal-100 text-teal-700 border border-teal-200">
+                    {formatDisplayDate(d)}
+                    <button type="button" onClick={() => removeVacDate(d)} className="hover:opacity-60"><X size={10}/></button>
+                  </span>
+                ))
+              }
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={newVacDate} onChange={e => setNewVacDate(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addVacDate())}
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-400 bg-white" />
+              <button type="button" onClick={addVacDate} disabled={!newVacDate}
+                className="text-xs px-2.5 py-1 bg-teal-500 hover:bg-teal-600 text-white rounded-lg disabled:opacity-30 transition-colors font-medium">
+                Add
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Jeopardy Call Dates */}
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1">Jeopardy Call Dates</label>
@@ -4282,7 +4785,7 @@ function AddResidentModal({ onClose, onAdd, persistentOnly = false, initialCateg
       lockPgy={lockPgy}
       initial={{ category: startCat, pgy: startPgy }}
       onClose={onClose}
-      onSubmit={data => { onAdd({ id: uuid(), ...data, blockType: 'EM' }); onClose(); }}
+      onSubmit={data => { onAdd({ id: uuid(), chiefRole: null, vacationDates: [], ...data, blockType: 'EM' }); onClose(); }}
     />
   );
 }
@@ -4399,12 +4902,545 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
   );
 }
 
+// ─── VACATION IMPORT (chief's yearly vacation-tracking Excel workbook) ────────
+// Parses a single-sheet workbook with three PGY sections (row col-0 text starting "PGY1"/
+// "PGY2"/"PGY3"), each followed immediately by resident rows: col 1 = name ("Last, First
+// Middle", sometimes with a parenthetical suffix like "(ECFMG)"), then three repeating
+// 13-column groups (Fall / second group / third), each holding Requested/Logged/.../Dates/
+// BLK/Rotation/.../blank — only the "Dates" cell (offset +4 within each group) matters here.
+// A trailing block of policy-note rows has no comma in the name column, which is what tells
+// this parser to stop (same signal parseHomeResidentMatrixGrouped already uses elsewhere).
+const VAC_DATE_RANGE_RE = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*-\s*(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/;
+const VAC_NAME_COL_IDX = 1;
+const VAC_GROUP_WIDTH = 13; // Requested,Logged/NI,Logged/Spreadsheet,Entered in Qgenda,Dates,BLK,Rotation,Notified,Generated,Sent to Resident,Signed,Submitted,blank
+
+// Tolerant "M/D - M/D", "M/D - M/D/YY", "M/D/YY - M/D/YY" range parser (optional 2-digit year
+// on either/both ends). When both ends omit the year, replicates parseDateRangeInAY's own
+// July-cutover inference rather than importing that function directly (it's tightly coupled to
+// the Master Matrix parsers elsewhere in this file); when only one end has an explicit year,
+// the other end's year is inferred from it instead of the AY cutover.
+function parseVacationDateRange(raw, ayStartYear) {
+  const m = VAC_DATE_RANGE_RE.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const sm = Number(m[1]), sd = Number(m[2]), em = Number(m[4]), ed = Number(m[5]);
+  const pad = n => String(n).padStart(2, '0');
+  const full = y => { if (y == null) return null; const n = Number(y); return n < 100 ? 2000 + n : n; };
+  let startYear = full(m[3]), endYear = full(m[6]);
+  if (startYear == null && endYear == null) {
+    if (em < sm) { startYear = sm >= 7 ? ayStartYear : ayStartYear + 1; endYear = startYear + 1; }
+    else { const year = em >= 7 ? ayStartYear : ayStartYear + 1; startYear = year; endYear = year; }
+  } else if (startYear == null) {
+    startYear = em < sm ? endYear - 1 : endYear;
+  } else if (endYear == null) {
+    endYear = em < sm ? startYear + 1 : startYear;
+  }
+  return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
+}
+
+function expandDateRangeInclusive(start, end) {
+  const dates = [];
+  let cur = parseDate(start);
+  const last = parseDate(end);
+  while (cur <= last) { dates.push(toDateStr(cur)); cur = addDays(cur, 1); }
+  return dates;
+}
+
+// Groups the sheet's rows into PGY sections, each a run of "Last, First"-shaped name-column
+// rows immediately following a "PGY\d" marker in column 0 — stops a section (without needing
+// to find the next PGY marker) as soon as a row's name column isn't comma-shaped, which is
+// what naturally excludes the blank divider rows and the trailing policy-note block.
+function findVacationSections(sheetRows) {
+  const sections = [];
+  let current = null;
+  for (let i = 0; i < sheetRows.length; i++) {
+    const row = sheetRows[i] || [];
+    const cell0 = String(row[0] ?? '').trim();
+    const pgyMatch = /^PGY\s*(\d)/i.exec(cell0);
+    if (pgyMatch) { current = { pgy: Number(pgyMatch[1]), headerRow: row, rows: [] }; sections.push(current); continue; }
+    if (!current) continue;
+    const nameCell = String(row[VAC_NAME_COL_IDX] ?? '');
+    if (!nameCell.includes(',')) { current = null; continue; }
+    current.rows.push({ raw: row, nameCell });
+  }
+  return sections;
+}
+
+function vacationGroupDatesColIdx(groupIndex) { return VAC_NAME_COL_IDX + 1 + groupIndex * VAC_GROUP_WIDTH + 4; }
+
+// Reads the Dates cell for each of a row's 3 rotation groups. Trusts the computed column offset
+// only after confirming the header row actually says "Dates" there; otherwise falls back to a
+// full-row regex scan for the groupIndex-th date-range-shaped cell (defensive — the real
+// workbook validates cleanly at the computed offsets, this is a guard against an off-by-one in
+// some other month's export).
+function extractVacationDateCells(row, headerRow) {
+  const cells = [];
+  for (let g = 0; g < 3; g++) {
+    const idx = vacationGroupDatesColIdx(g);
+    let cell = normalizeToken(headerRow[idx]) === 'dates' ? row[idx] : undefined;
+    if (cell === undefined) {
+      const hits = row.filter(v => VAC_DATE_RANGE_RE.test(String(v ?? '').trim()));
+      cell = hits[g];
+    }
+    if (cell != null && String(cell).trim()) cells.push(String(cell).trim());
+  }
+  return cells;
+}
+
+function stripVacationNameSuffix(raw) { return String(raw ?? '').replace(/\s*\([^)]*\)\s*$/, '').trim(); }
+
+function vacTokenSet(str) { return new Set(String(str ?? '').trim().split(/\s+/).map(normalizeToken).filter(Boolean)); }
+function vacTokensIntersect(a, b) { for (const x of a) if (b.has(x)) return true; return false; }
+
+// Tolerant match: last-name TOKEN SETS intersect AND first-name TOKEN SETS intersect — handles
+// "Avila, Anthony Joseph" (file) vs roster "Avila, Anthony" (extra middle name), "Bamback
+// Shrestha, Niva" (file) vs roster "Shrestha, Niva" (extra last-name token), etc. Returns every
+// roster resident that matches — caller treats >1 as ambiguous rather than guessing.
+function matchVacationRoster(firstName, lastName, emRoster) {
+  const lastTokens = vacTokenSet(lastName), firstTokens = vacTokenSet(firstName);
+  return emRoster.filter(r => vacTokensIntersect(lastTokens, vacTokenSet(r.lastName)) && vacTokensIntersect(firstTokens, vacTokenSet(r.firstName)));
+}
+
+// Parses the whole workbook into { matched, unmatched, skipped } — matched/unmatched/skipped
+// mirror the modal's own preview categories 1:1 so the standalone verification script can
+// exercise this exact function shape too.
+function parseVacationWorkbook(sheetRows, ayStartYear, emRoster) {
+  const sections = findVacationSections(sheetRows);
+  const matched = [], unmatched = [], skipped = [];
+  for (const section of sections) {
+    for (const row of section.rows) {
+      const rawName = row.nameCell.trim();
+      const cleaned = stripVacationNameSuffix(rawName);
+      const name = splitName(cleaned);
+      if (!name) { unmatched.push({ rawName, reason: 'Could not parse "Last, First" name' }); continue; }
+
+      const dateCells = extractVacationDateCells(row.raw, section.headerRow);
+      const parsedRanges = [], badCells = [];
+      for (const c of dateCells) { const r = parseVacationDateRange(c, ayStartYear); if (r) parsedRanges.push(r); else badCells.push(c); }
+
+      const isoDates = new Set();
+      for (const r of parsedRanges) for (const d of expandDateRangeInclusive(r.start, r.end)) isoDates.add(d);
+
+      if (badCells.length) { unmatched.push({ rawName, reason: `Unparseable date range(s): ${badCells.join(', ')}` }); continue; }
+      if (isoDates.size === 0) { skipped.push({ rawName }); continue; }
+
+      const candidates = matchVacationRoster(name.firstName, name.lastName, emRoster);
+      if (candidates.length === 0) { unmatched.push({ rawName, reason: 'No roster match' }); continue; }
+      if (candidates.length > 1) {
+        unmatched.push({ rawName, reason: 'Ambiguous — multiple roster matches', candidates: candidates.map(c => `${c.lastName}, ${c.firstName} (PGY-${c.pgy})`) });
+        continue;
+      }
+      matched.push({ residentId: candidates[0].id, rosterName: `${candidates[0].lastName}, ${candidates[0].firstName}`, rawName, dates: [...isoDates].sort() });
+    }
+  }
+  return { matched, unmatched, skipped };
+}
+
+function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast }) {
+  const [fileName, setFileName] = useState('');
+  const [ayStartYear, setAyStartYear] = useState(() => Number(getAcademicYear().slice(2, 4)) + 2000);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  function pickFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setError('');
+    setPreview(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: 'array' });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+        const result = parseVacationWorkbook(rows, ayStartYear, emRoster);
+        if (result.matched.length === 0 && result.unmatched.length === 0) {
+          setError('No PGY sections recognized — expected rows whose first column starts with "PGY1", "PGY2", or "PGY3".');
+          return;
+        }
+        setPreview(result);
+      } catch (err) {
+        setError(`Couldn't read this file — ${err?.message || 'is it a valid .xlsx workbook?'}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  }
+
+  function commit() {
+    if (!preview || !preview.matched.length) return;
+    const byId = new Map(preview.matched.map(m => [m.residentId, m.dates]));
+    setEmRoster(prev => prev.map(r => {
+      const newDates = byId.get(r.id);
+      if (!newDates) return r;
+      const merged = [...new Set([...(r.vacationDates || []), ...newDates])].sort();
+      return { ...r, vacationDates: merged };
+    }));
+    showToast(`Imported vacation dates for ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`, 'green');
+    onClose();
+  }
+
+  return (
+    <Modal title="Import Vacation Dates" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Upload the chief's vacation-tracking workbook (.xlsx) — PGY1/PGY2/PGY3 sections, each resident's
+          name plus up to three logged date ranges. This only ever adds to each matched resident's{' '}
+          <strong>Vacation Dates</strong> — it never touches any other field, and never touches off-service residents.
+        </p>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
+            <Upload size={12}/> Choose .xlsx file
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx" onChange={pickFile} className="hidden"/>
+          {fileName && <span className="text-xs text-gray-500">{fileName}</span>}
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 ml-auto">
+            AY start year
+            <input type="number" value={ayStartYear} onChange={e => setAyStartYear(Number(e.target.value))}
+              className="w-20 text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
+          </label>
+        </div>
+        <p className="text-xs text-gray-400 -mt-2">Only used to infer the year for date ranges that don't spell one out (e.g. "9/14 - 9/20").</p>
+
+        {error && (
+          <div className="flex items-start gap-2 px-3 py-2 text-xs bg-red-50 border border-red-200 rounded-lg text-red-700">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5"/> {error}
+          </div>
+        )}
+
+        {preview && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">Matched</p>
+                <p className="text-gray-500 mt-1">{preview.matched.length} resident{preview.matched.length !== 1 ? 's' : ''}</p>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="font-semibold text-amber-800">Unmatched / ambiguous</p>
+                <p className="text-amber-700 mt-1">{preview.unmatched.length} row{preview.unmatched.length !== 1 ? 's' : ''}</p>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">No dates logged yet</p>
+                <p className="text-gray-500 mt-1">{preview.skipped.length} skipped</p>
+              </div>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-56 overflow-y-auto">
+              {preview.matched.map(m => (
+                <div key={m.residentId} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                  <Check size={12} className="text-green-500 shrink-0"/>
+                  <span className="text-gray-700">{m.rawName}</span>
+                  <span className="text-gray-400">→ {m.rosterName}</span>
+                  <span className="ml-auto text-gray-400" title={m.dates.map(formatDisplayDate).join(', ')}>{m.dates.length} date{m.dates.length !== 1 ? 's' : ''}</span>
+                </div>
+              ))}
+              {preview.matched.length === 0 && (
+                <p className="px-3 py-3 text-xs text-gray-400 text-center">No matched residents.</p>
+              )}
+            </div>
+
+            {preview.unmatched.length > 0 && (
+              <div className="border border-amber-200 rounded-lg divide-y divide-amber-100 max-h-56 overflow-y-auto">
+                {preview.unmatched.map((u,i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-xs bg-amber-50/50">
+                    <AlertTriangle size={12} className="text-amber-500 shrink-0 mt-0.5"/>
+                    <div>
+                      <span className="text-amber-800 font-medium">{u.rawName}</span>
+                      <span className="text-amber-700"> — {u.reason}</span>
+                      {u.candidates && <p className="text-amber-600 mt-0.5">Candidates: {u.candidates.join(' · ')}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400">
+              Committing merges (dedupes + sorts) the parsed dates into each matched resident's Vacation Dates —
+              re-uploading the same file again is safe, already-present dates won't duplicate.
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
+          <button type="button" onClick={commit} disabled={!preview || preview.matched.length === 0}
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            Import {preview ? preview.matched.length : ''} resident{preview?.matched.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── LECTURE / M&M / JOURNAL CLUB IMPORT (paste from the chief's tracking sheet) ──────────────
+// One resident per pasted line: Name, Lecture date, [M&M date], Journal Club date — tab- or
+// comma-separated, 3 columns (Lecture, JC) or 4 (Lecture, M&M, JC), auto-detected per row since
+// PGY-3 rows carry M&M and PGY-1/2 rows don't. M&M "counts as a lecture" per the chief — it
+// merges into the SAME grLectureDates field as Lecture (the Tuesday-evening/night strip in
+// getEligibleShifts and the GR-weekday check in validateAll both key off grLectureDates
+// generically, with no lecture-type distinction, so no rule-engine change is needed). Journal
+// Club dates merge into jcPresentDates. Validation (Wednesday/Thursday GR weekday for Lecture+
+// M&M, first-Tuesday for JC, plus an "predates this AY" sanity check) is advisory only — shown
+// per-date in the preview, never blocks commit.
+const LECTURE_DATE_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
+
+function parseLectureImportDate(raw) {
+  const m = LECTURE_DATE_RE.exec(String(raw ?? '').trim());
+  if (!m) return null;
+  const mo = Number(m[1]), da = Number(m[2]);
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  let yr = Number(m[3]);
+  if (yr < 100) yr += 2000;
+  const pad = n => String(n).padStart(2, '0');
+  return `${yr}-${pad(mo)}-${pad(da)}`;
+}
+
+// Tries a strict first+last token-set match (same shape as matchVacationRoster) under both
+// possible word-order readings of a pasted name — this paste format is "First Last", but a
+// chief could paste "Last First" by habit — then, only if neither strict reading lands a unique
+// hit, falls back to last-name-token-only matching. The fallback tier exists because real names
+// carry nicknames the roster's on-file name doesn't spell out ("Cat" for "Catherine", "Gabe" for
+// "Gabriel", "Katie" for "Kathryn") that a first-name-token-overlap requirement would reject
+// outright even though the last name alone is unique in a roster this size.
+function matchLectureRosterName(rawName, emRoster) {
+  const parts = String(rawName ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return { candidates: [], tier: 'none' };
+  const asFirstLast = { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+  const asLastFirst = { firstName: parts.slice(1).join(' '), lastName: parts[0] };
+
+  const strictA = matchVacationRoster(asFirstLast.firstName, asFirstLast.lastName, emRoster);
+  if (strictA.length === 1) return { candidates: strictA, tier: 'strict' };
+  const strictB = matchVacationRoster(asLastFirst.firstName, asLastFirst.lastName, emRoster);
+  if (strictB.length === 1) return { candidates: strictB, tier: 'strict' };
+
+  const lastTokens = vacTokenSet(asFirstLast.lastName);
+  const lastOnly = emRoster.filter(r => vacTokensIntersect(lastTokens, vacTokenSet(r.lastName)));
+  if (lastOnly.length === 1) return { candidates: lastOnly, tier: 'lastNameOnly' };
+  if (lastOnly.length > 1) return { candidates: lastOnly, tier: 'ambiguous' };
+  if (strictA.length > 1) return { candidates: strictA, tier: 'ambiguous' };
+  return { candidates: [], tier: 'none' };
+}
+
+// Per-date advisory checks, reusing the exact rules ResidentForm/validateAll already apply to
+// grLectureDates/jcPresentDates (grWorkDow, isFirstTuesday) plus one addition: an out-of-AY-range
+// date most often means a plain year typo (e.g. a 2-digit year transcribed one year short), so it
+// gets its own actionable "did you mean <year+1>?" message rather than just failing the DOW check
+// silently. kind is 'lecture' | 'mm' | 'jc'.
+function validateLectureImportDate(dateStr, kind, resident, ayStartYear) {
+  const warnings = [];
+  const ayStart = `${ayStartYear}-07-01`;
+  const ayEnd = `${ayStartYear + 1}-07-01`;
+  if (dateStr < ayStart) {
+    const bumped = `${ayStartYear + 1}${dateStr.slice(4)}`;
+    warnings.push(`Predates the ${ayStartYear}/${String(ayStartYear + 1).slice(2)} academic year (starts ${formatDisplayDate(ayStart)}) — did you mean ${formatDisplayDate(bumped)}?`);
+  } else if (dateStr >= ayEnd) {
+    warnings.push(`Falls after the ${ayStartYear}/${String(ayStartYear + 1).slice(2)} academic year ends`);
+  }
+  if (kind === 'jc') {
+    if (!isFirstTuesday(dateStr)) warnings.push('Journal Club is always the first Tuesday of the month');
+  } else {
+    const expectedDow = grWorkDow(resident);
+    if (expectedDow == null || parseDate(dateStr).getDay() !== expectedDow)
+      warnings.push(`Not a ${DOW[expectedDow] ?? 'Grand Rounds'} — this resident's GR weekday`);
+  }
+  return warnings;
+}
+
+// Parses the whole pasted block into { matched, unmatched } — matched/unmatched mirror the
+// modal's own preview categories 1:1, same convention as parseVacationWorkbook, so the standalone
+// verification script can exercise this exact function shape too.
+function parseLectureImportText(text, emRoster, ayStartYear) {
+  const lines = String(text ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const matched = [], unmatched = [];
+  for (const line of lines) {
+    const delim = line.includes('\t') ? '\t' : ',';
+    const cols = (delim === '\t' ? line.split('\t') : splitCsvLine(line)).map(s => s.trim());
+    while (cols.length && cols[cols.length - 1] === '') cols.pop();
+    if (/^(resident|name)$/i.test(cols[0] || '') && cols.some(c => /lecture|journal|m\s*&\s*m/i.test(c))) continue; // header row
+
+    const rawName = cols[0] || '';
+    if (cols.length < 3) { unmatched.push({ rawName: rawName || line, reason: `Expected Name + at least 2 date columns (Lecture, Journal Club) — got ${cols.length} column${cols.length === 1 ? '' : 's'}` }); continue; }
+
+    const hasMM = cols.length >= 4;
+    const lectureRaw = cols[1], mmRaw = hasMM ? cols[2] : null, jcRaw = hasMM ? cols[3] : cols[2];
+
+    const { candidates, tier } = matchLectureRosterName(rawName, emRoster);
+    if (candidates.length !== 1) {
+      unmatched.push({ rawName, reason: candidates.length === 0 ? 'No roster match' : 'Ambiguous — multiple roster matches',
+        candidates: candidates.map(c => `${c.firstName} ${c.lastName} (PGY-${c.pgy})`) });
+      continue;
+    }
+    const resident = candidates[0];
+
+    const dateEntries = [];
+    for (const [kind, raw] of [['lecture', lectureRaw], ['mm', mmRaw], ['jc', jcRaw]]) {
+      if (raw == null || raw === '') continue;
+      const iso = parseLectureImportDate(raw);
+      if (!iso) { dateEntries.push({ kind, raw, iso: null, warnings: [`Couldn't parse "${raw}" as a date (expected M/D/YY or M/D/YYYY)`] }); continue; }
+      dateEntries.push({ kind, raw, iso, warnings: validateLectureImportDate(iso, kind, resident, ayStartYear) });
+    }
+
+    matched.push({ residentId: resident.id, rosterName: `${resident.firstName} ${resident.lastName}`, rawName, matchTier: tier, dateEntries });
+  }
+  return { matched, unmatched };
+}
+
+function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast }) {
+  const [text, setText] = useState('');
+  const [ayStartYear, setAyStartYear] = useState(() => Number(getAcademicYear().slice(2, 4)) + 2000);
+  const [preview, setPreview] = useState(null);
+
+  function parse() { setPreview(parseLectureImportText(text, emRoster, ayStartYear)); }
+
+  function commit() {
+    if (!preview || !preview.matched.length) return;
+    const byId = new Map();
+    for (const m of preview.matched) {
+      const lec = [], jc = [];
+      for (const e of m.dateEntries) { if (!e.iso) continue; (e.kind === 'jc' ? jc : lec).push(e.iso); }
+      byId.set(m.residentId, { lec, jc });
+    }
+    setEmRoster(prev => prev.map(r => {
+      const add = byId.get(r.id);
+      if (!add) return r;
+      return {
+        ...r,
+        grLectureDates: [...new Set([...(r.grLectureDates || []), ...add.lec])].sort(),
+        jcPresentDates: [...new Set([...(r.jcPresentDates || []), ...add.jc])].sort(),
+      };
+    }));
+    showToast(`Imported lecture/JC dates for ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`, 'green');
+    onClose();
+  }
+
+  const totalWarnings = preview ? preview.matched.reduce((n, m) => n + m.dateEntries.reduce((k, e) => k + e.warnings.length, 0), 0) : 0;
+
+  return (
+    <Modal title="Import Lecture / M&M / Journal Club Dates" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Paste one resident per line: Name, Lecture date, optional M&amp;M date, Journal Club date (tab- or comma-separated;
+          M&amp;M column is auto-detected — include it only for rows that have one). Dates as M/D/YY or M/D/YYYY. Lecture and
+          M&amp;M dates merge into <strong>Grand Rounds Lecture Dates</strong> (M&amp;M counts as a lecture — same day-before
+          eve/night strip applies to both); Journal Club dates merge into <strong>Journal Club Presenting Dates</strong>. Never
+          touches any other field.
+        </p>
+
+        <textarea value={text} onChange={e => { setText(e.target.value); setPreview(null); }} rows={8}
+          placeholder={'Codie Kurka\t9/30/26\t5/19/27\t1/5/27\nCaitlyn Frost\t10/7/26\t5/4/27'}
+          className="w-full text-xs font-mono border border-gray-300 rounded-lg p-2.5 focus:outline-none focus:ring-2 focus:ring-primary"/>
+
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            AY start year
+            <input type="number" value={ayStartYear} onChange={e => setAyStartYear(Number(e.target.value))}
+              className="w-20 text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
+          </label>
+          <button type="button" onClick={parse} disabled={!text.trim()}
+            className="ml-auto px-3.5 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg">
+            Parse
+          </button>
+        </div>
+
+        {preview && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">Matched</p>
+                <p className="text-gray-500 mt-1">
+                  {preview.matched.length} resident{preview.matched.length !== 1 ? 's' : ''}
+                  {totalWarnings > 0 && <span className="text-amber-600"> · {totalWarnings} warning{totalWarnings !== 1 ? 's' : ''}</span>}
+                </p>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="font-semibold text-amber-800">Unmatched / ambiguous</p>
+                <p className="text-amber-700 mt-1">{preview.unmatched.length} row{preview.unmatched.length !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto">
+              {preview.matched.map(m => (
+                <div key={m.residentId} className="px-3 py-1.5 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Check size={12} className="text-green-500 shrink-0"/>
+                    <span className="text-gray-700">{m.rawName}</span>
+                    <span className="text-gray-400">→ {m.rosterName}</span>
+                    {m.matchTier === 'lastNameOnly' && (
+                      <span className="text-amber-500" title="Matched on last name only — first name didn't overlap (nickname?)">(last-name match)</span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-1 ml-5">
+                    {m.dateEntries.map((e, i) => (
+                      <span key={i} title={e.warnings.join('; ') || undefined}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border font-medium ${
+                          !e.iso ? 'bg-red-50 border-red-200 text-red-600'
+                          : e.warnings.length ? 'bg-amber-50 border-amber-200 text-amber-700'
+                          : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                        {e.kind === 'jc' ? 'JC' : e.kind === 'mm' ? 'M&M' : 'Lec'}: {e.iso ? formatDisplayDate(e.iso) : e.raw}
+                        {(e.warnings.length > 0 || !e.iso) && <AlertTriangle size={10}/>}
+                      </span>
+                    ))}
+                  </div>
+                  {m.dateEntries.some(e => e.warnings.length > 0) && (
+                    <ul className="ml-5 mt-0.5 text-amber-600 space-y-0.5">
+                      {m.dateEntries.filter(e => e.warnings.length > 0).map((e, i) => (
+                        <li key={i}>{e.kind === 'jc' ? 'JC' : e.kind === 'mm' ? 'M&M' : 'Lecture'} {e.raw}: {e.warnings.join('; ')}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+              {preview.matched.length === 0 && (
+                <p className="px-3 py-3 text-xs text-gray-400 text-center">No matched residents.</p>
+              )}
+            </div>
+
+            {preview.unmatched.length > 0 && (
+              <div className="border border-amber-200 rounded-lg divide-y divide-amber-100 max-h-56 overflow-y-auto">
+                {preview.unmatched.map((u, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-xs bg-amber-50/50">
+                    <AlertTriangle size={12} className="text-amber-500 shrink-0 mt-0.5"/>
+                    <div>
+                      <span className="text-amber-800 font-medium">{u.rawName}</span>
+                      <span className="text-amber-700"> — {u.reason}</span>
+                      {u.candidates && <p className="text-amber-600 mt-0.5">Candidates: {u.candidates.join(' · ')}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-xs text-gray-400">
+              Warnings are advisory only and never block import — review them, then commit if the chief confirms the date is
+              correct as entered. Committing merges (dedupes + sorts) parsed dates into each matched resident's Grand Rounds
+              Lecture Dates / Journal Club Presenting Dates; re-pasting the same rows again is safe.
+            </p>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
+          <button type="button" onClick={commit} disabled={!preview || preview.matched.length === 0}
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            Import {preview ? preview.matched.length : ''} resident{preview?.matched.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
-function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings }) {
+function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
   const [showImport, setShowImport]   = useState(false);
+  const [showImportVacation, setShowImportVacation] = useState(false);
+  const [showImportLectures, setShowImportLectures] = useState(false);
   const [editResident, setEditResident] = useState(null);
   const [confirmRemove, setConfirmRemove] = useState(null);
   const assign = block.emBlockAssignments || {};
@@ -4460,6 +5496,14 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
             className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
             <Upload size={11}/> Import Roster
           </button>
+          <button onClick={() => setShowImportVacation(true)}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+            <Upload size={11}/> Import Vacation Dates
+          </button>
+          <button onClick={() => setShowImportLectures(true)}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+            <Upload size={11}/> Import Lecture / JC Dates
+          </button>
         </div>
       </div>
 
@@ -4496,6 +5540,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
               const tgt     = target(res);
               const over    = tgt != null && cnt > tgt;
               const cat     = CAT_MAP[res.category];
+              const chiefRole = effectiveChiefRole({ ...res, isChief: !!ba.isChief });
               return (
                 <div key={res.id} className="bg-white border border-gray-200 rounded-xl p-4">
                   <div className="flex items-start gap-3">
@@ -4503,13 +5548,16 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-gray-900 text-sm">{res.firstName} {res.lastName}</span>
                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat?.badge}`}>{cat?.shortLabel} PGY-{res.pgy}</span>
-                        {ba.isChief && <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★</span>}
+                        {chiefRole && <span title={CHIEF_ROLES[chiefRole].label} className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★{CHIEF_ROLES[chiefRole].badge}</span>}
                         {!sched_ok && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{btObj?.atUH ? 'not chief-sched' : 'away'}</span>}
                       </div>
-                      {(res.approvedDatesOff?.length > 0 || res.jeopardyDates?.length > 0) && (
+                      {(res.approvedDatesOff?.length > 0 || res.vacationDates?.length > 0 || res.jeopardyDates?.length > 0) && (
                         <div className="flex flex-wrap gap-1 mt-1">
                           {(res.approvedDatesOff || []).map(d => (
                             <span key={d} className="text-xs px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600 border border-orange-200 font-medium">{formatDisplayDate(d)} off</span>
+                          ))}
+                          {(res.vacationDates || []).map(d => (
+                            <span key={`v${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-600 border border-teal-200 font-medium">{formatDisplayDate(d)} VAC</span>
                           ))}
                           {(res.jeopardyDates || []).map(d => (
                             <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 border border-purple-200 font-medium">J: {formatDisplayDate(d)}</span>
@@ -4544,10 +5592,19 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                       </select>
                     </div>
                     {res.pgy === 3 && (
-                      <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
-                        <input type="checkbox" checked={!!ba.isChief} onChange={e => setBA(res.id, 'isChief', e.target.checked)} className="rounded"/>
-                        Chief (16 shifts)
-                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <label className="text-xs text-gray-500 shrink-0">Chief role:</label>
+                        <select value={res.chiefRole || ''}
+                          onChange={e => setEmRoster(p => p.map(r => r.id === res.id ? { ...r, chiefRole: e.target.value || null } : r))}
+                          title="Roster-level for the whole academic year — not per-block"
+                          className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary">
+                          <option value="">None</option>
+                          <option value="academic">Academic Chief</option>
+                          <option value="admin">Admin Chief</option>
+                          <option value="scheduling">Scheduling Chief</option>
+                        </select>
+                        <span className="text-xs text-gray-400">(16 shifts)</span>
+                      </div>
                     )}
                     {tgt != null && sched_ok && (
                       <div className="flex items-center gap-1.5 ml-auto">
@@ -4593,10 +5650,18 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
         <ImportRosterModal title="Import EM Home Roster" allowedCategoryIds={['EM_HOME']}
           existingNames={emRoster}
           onImport={rows => setEmRoster(p => [...p, ...rows.map(r => ({
-            id: uuid(), ...r, blockType: 'EM', isCCUNights: false, approvedDatesOff: [], jeopardyDates: [],
-            jcPresentDates: [], grLectureDates: [],
+            id: uuid(), ...r, blockType: 'EM', isCCUNights: false, chiefRole: null, approvedDatesOff: [], jeopardyDates: [],
+            jcPresentDates: [], grLectureDates: [], vacationDates: [],
           }))])}
           onClose={() => setShowImport(false)}/>
+      )}
+      {showImportVacation && (
+        <ImportVacationModal emRoster={emRoster} setEmRoster={setEmRoster} showToast={showToast}
+          onClose={() => setShowImportVacation(false)}/>
+      )}
+      {showImportLectures && (
+        <ImportLecturesModal emRoster={emRoster} setEmRoster={setEmRoster} showToast={showToast}
+          onClose={() => setShowImportLectures(false)}/>
       )}
     </div>
   );
@@ -5362,7 +6427,10 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </div>
         <p className="text-xs text-gray-500 mt-2">
           Minimum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).min, 0)}</strong> – maximum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).max, 0)}</strong> resident-shifts per day.
-          The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1 since only FM-3 is ever eligible for it. Trauma day-of-week limits still apply on top.
+          The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1: FM-3 covers Mon/Tue/Wed, EM Home may optionally cover Thu/Sun, and it stays best-effort (not required) either way. Trauma day-of-week limits still apply on top.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
         </p>
       </SectionCard>
 
@@ -5590,7 +6658,13 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // 1. Eligibility check
   if (!eligible.includes(sid)) {
     const dow = parseDate(dateStr).getDay();
-    vs.push({ message: resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day'
+    const wwRule = resident.category === 'EM_HOME' && dow === 3 && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
+      ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
+          .find(c => c.type === 'wellnessWednesday' && dateStr === nthWeekdayOnOrAfter(block.startDate, 3, c.ordinal))
+      : null;
+    vs.push({ message: wwRule
+      ? `Wellness Wednesday (${ORDINAL_WORD[wwRule.ordinal] || `${wwRule.ordinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`
+      : resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day'
       ? 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)'
       : 'Shift not in eligibility matrix for this resident/day combination', level: 'error' });
   }
@@ -5708,12 +6782,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   // Per-date coverage counts vs configured min/max — always computed from the FULL schedule
   // (never catFilter-ed rows), or filtering to one category would show phantom understaffing.
   const coverageByDate = useMemo(()=>computeCoverageByDate(dates, sched, coverage, allResidents),[dates, sched, coverage, allResidents]);
-  const activeCoverageShifts = useMemo(()=>
-    SHIFTS.filter(s => dates.some(ds => {
-      const info = coverageByDate[ds]?.perShift[s.id];
-      return info && (info.min > 0 || info.count > 0);
-    })),
-  [dates, coverageByDate]);
+  const activeCoverageShifts = useMemo(()=>getActiveCoverageShifts(dates, coverageByDate),[dates, coverageByDate]);
 
   const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
   const grouped = useMemo(()=>{
@@ -5753,11 +6822,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     if (!srcRes) return;
 
     const tgtOff = (tgtRes.approvedDatesOff||[]).includes(tgtDs);
+    const tgtVac = (tgtRes.vacationDates||[]).includes(tgtDs);
     const tgtJeoBlocked = jeoBlock && (tgtRes.jeopardyDates||[]).includes(tgtDs);
-    if (tgtOff || tgtJeoBlocked) { showToast('Cannot drop onto an approved day off or a blocked jeopardy date', 'red'); return; }
+    if (tgtOff || tgtVac || tgtJeoBlocked) { showToast('Cannot drop onto an approved day off, a vacation date, or a blocked jeopardy date', 'red'); return; }
     const srcOff = (srcRes.approvedDatesOff||[]).includes(src.ds);
+    const srcVac = (srcRes.vacationDates||[]).includes(src.ds);
     const srcJeoBlocked = jeoBlock && (srcRes.jeopardyDates||[]).includes(src.ds);
-    if (srcOff || srcJeoBlocked) { showToast('Cannot move a shift off an approved day off or a blocked jeopardy date', 'red'); return; }
+    if (srcOff || srcVac || srcJeoBlocked) { showToast('Cannot move a shift off an approved day off, a vacation date, or a blocked jeopardy date', 'red'); return; }
 
     const tgtSid = sched[tgtRes.id]?.[tgtDs] || null;
     const kind = tgtSid ? 'swap' : 'move';
@@ -5893,9 +6964,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       {view==='grid' && (
       <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
         <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">WW</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-teal-100 text-teal-600">VAC</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-600">J</span>
-        <span>= grand rounds · approved off · jeopardy call</span>
+        <span>= grand rounds · wellness Wednesday · approved off · vacation · jeopardy call</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
       </div>
@@ -5998,11 +7071,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                   const cnt=Object.values(sched[res.id]||{}).filter(Boolean).length;
                   const tgt=getShiftTarget(res, appSettings);
                   const over=tgt!=null&&cnt>tgt;
+                  const chiefRole=effectiveChiefRole(res);
                   return (
                     <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
                       <div className={`grid-sticky border-r border-gray-200 flex items-center px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
                         <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{res.isChief?' ★':''}</div>
+                          <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
                             {res.blockType && res.category!=='PEDS' && (
@@ -6016,10 +7090,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         const sid=sched[res.id]?.[ds]||null;
                         const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
                         const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
+                        const isVacation=(res.vacationDates||[]).includes(ds);
                         const isJeopardy=(res.jeopardyDates||[]).includes(ds);
                         const isJeoBlocked=isJeopardy&&jeoBlock;
                         const isPendingRequest = pendingByResident.get(res.id)?.has(ds) || false;
-                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules);
+                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate});
                         const d=parseDate(ds); const dow=d.getDay();
                         const isWed=dow===3; const isWknd=dow===0||dow===6;
                         // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
@@ -6027,10 +7102,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                         // shifts (dayTypeRestrictions noDay), so eves/nights stay eligible and the
                         // cell is no longer empty; the old ===0 check silently dropped this cue.
                         const isGR=isWed&&res.category==='EM_HOME';
+                        // Wellness Wednesday cue: the resident's own PGY-specific ordinal (1st/2nd/3rd
+                        // Wed on/after block start) — a subset of GR Wednesdays, so it always
+                        // coincides with isGR for that one cell. WW takes visual priority over the
+                        // plain GR cue there (more specific: it additionally strips evenings), rather
+                        // than stacking two badges in one cell.
+                        const wwOrdinal = res.category==='EM_HOME'
+                          ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+                          : null;
+                        const isWW = isWed && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(block.startDate, 3, wwOrdinal);
                         const shift=sid?SHIFT_MAP[sid]:null;
-                        let bg=isApprovedOff?'bg-orange-50':isJeoBlocked?'bg-purple-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
+                        let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
                         if(hasV) bg='bg-red-50';
-                        const clickable=(elig.length>0||sid)&&!isApprovedOff;
+                        const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation;
                         const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
                         const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
                         return (
@@ -6039,11 +7123,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                             onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
                             onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
                             onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
-                            title={isApprovedOff?'Approved day off':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
+                            title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
                             className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
                             {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
-                            {isJeoBlocked&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
-                            {isGR&&!sid&&!isApprovedOff&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
+                            {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
+                            {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
+                            {isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-600">WW</span></div>}
+                            {isGR&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
                             {shift && (
                               <div draggable
                                 onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
@@ -6288,6 +7374,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
   const cnt = Object.values(rs).filter(Boolean).length;
   const tgt = getShiftTarget(res, appSettings);
   const over = tgt != null && cnt > tgt;
+  const chiefRole = effectiveChiefRole(res);
   const violCount = Object.entries(violMap)
     .filter(([k]) => k.startsWith(`${res.id}_`))
     .reduce((s,[,v]) => s + v.length, 0);
@@ -6301,13 +7388,14 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
   for (const ds of dates) {
     const sid = rs[ds] || null;
     const isOff = (res.approvedDatesOff||[]).includes(ds);
+    const isVac = (res.vacationDates||[]).includes(ds);
     const isJeo = (res.jeopardyDates||[]).includes(ds);
     const isJC = (res.jcPresentDates||[]).includes(ds);
     const isGR = (res.grLectureDates||[]).includes(ds);
-    if (!sid && !isOff && !isJeo && !isJC && !isGR) continue;
+    if (!sid && !isOff && !isVac && !isJeo && !isJC && !isGR) continue;
     const d = parseDate(ds);
     const ws = toDateStr(addDays(d, -d.getDay()));
-    (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isJeo, isJC, isGR });
+    (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isVac, isJeo, isJC, isGR });
   }
   const weekKeys = Object.keys(weeks).sort();
 
@@ -6315,7 +7403,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
     <div className={`bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm ${!sched_ok?'opacity-50':''}`}>
       <div className="px-3 py-2 border-b border-gray-100 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-gray-800 truncate">{res.lastName}, {res.firstName}{res.isChief?' ★':''}</div>
+          <div className="text-sm font-semibold text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
             {res.blockType && res.category!=='PEDS' && (
@@ -6343,7 +7431,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
                 <span>{formatDisplayDate(ws)} – {formatDisplayDate(toDateStr(addDays(parseDate(ws),6)))}</span>
                 <span className="tabular-nums font-mono">{rows.filter(r=>r.sid).length} shift{rows.filter(r=>r.sid).length!==1?'s':''}</span>
               </div>
-              {rows.map(({ds,sid,isOff,isJeo,isJC,isGR})=>{
+              {rows.map(({ds,sid,isOff,isVac,isJeo,isJC,isGR})=>{
                 const shift = sid ? SHIFT_MAP[sid] : null;
                 const vKey = `${res.id}_${ds}`;
                 const hasV = !!(violMap[vKey]?.length);
@@ -6356,6 +7444,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
                     {shift && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${shift.chip}`}>{sid}</span>}
                     {shift && <span className="text-[10px] text-gray-400">{shift.hours}</span>}
                     {!shift && isOff && <span className="text-[10px] font-bold text-orange-500">OFF</span>}
+                    {!shift && isVac && !isOff && <span className="text-[10px] font-bold text-teal-600">VAC</span>}
                     {!shift && isJeo && <span className="text-[10px] font-bold text-purple-500">J</span>}
                     {isJC && <span className="text-[10px] font-bold px-1 rounded bg-primary/10 text-primary">JC</span>}
                     {isGR && <span className="text-[10px] font-bold px-1 rounded bg-yellow-100 text-yellow-700">GR</span>}
@@ -6776,7 +7865,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     <div className="space-y-5 max-w-2xl">
 
       {/* Block name & dates */}
-      <CollapsibleCard title="Block Name & Dates" subtitle="Also editable on the Home tab.">
+      <CollapsibleCard title="Block Name & Dates" subtitle="Also editable on the Dashboard tab.">
         <div className="space-y-3">
           <div><label className="block text-xs font-medium text-gray-700 mb-1">Block Name</label>
             <input className="input-field" value={block.name||''} onChange={e=>upd('name',e.target.value)} placeholder="e.g. Block 3 — Jun/Jul 2026"/></div>
@@ -6924,7 +8013,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       {/* Pointers */}
       <div className="bg-primary/10 border border-primary/20 rounded-xl px-4 py-3 text-xs text-primary flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0"/>
-        <span>Conference &amp; ITE dates: <strong>Home tab</strong> → AY folder. Special days (Code Blue, advocacy, procedure, US days): <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
+        <span>Conference &amp; ITE dates: <strong>Dashboard</strong> tab → Block Calendar's AY dropdown. Special days (Code Blue, procedure, US days): <strong>Dashboard</strong> tab. Per-rotation shift eligibility: <strong>Shift Matrix</strong> tab.</span>
       </div>
 
       {/* Block reset */}
@@ -6981,11 +8070,10 @@ function GuideSection({ id, title, open, onToggle, goTab, onNavigate, children }
 // Section registry: id, title, optional tab link, keywords for search.
 const GUIDE_SECTIONS = [
   { id: 'quickstart', title: 'Monthly Workflow — Quick Start', keywords: 'workflow steps new block start month save export' },
-  { id: 'home',       title: 'Home — Blocks & Academic Years', goTab: 'home', keywords: 'save load block academic year AY folder conference ITE dates' },
-  { id: 'dashboard',  title: 'Dashboard — Block at a Glance', goTab: 'dashboard', keywords: 'progress conferences code blue advocacy procedure US days first friday anesthesia social checklist' },
+  { id: 'dashboard',  title: 'Dashboard — Blocks, Academic Years & Block at a Glance', goTab: 'dashboard', keywords: 'save load block academic year AY folder conference ITE dates block calendar progress code blue procedure US days first friday anesthesia social checklist' },
   { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit import upload csv paste bulk availability date ranges specific days can-work' },
   { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset PED-N FM-3' },
-  { id: 'generate',   title: 'Generate Schedule — Auto-Fill', goTab: 'rules', keywords: 'generate auto generate coverage fill regenerate clear wand button 7 day streak consecutive trauma cap peds em mix' },
+  { id: 'generate',   title: 'Generate Schedule — Auto-Fill', goTab: 'rules', keywords: 'generate auto generate coverage fill regenerate clear wand button 6 day streak 1 in 7 consecutive trauma cap peds em mix' },
   { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds off jeopardy red ring gray picker rest period filter chips targets generate' },
   { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
   { id: 'rules',      title: 'Violations & Generation Report', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count generation report unfilled recommendations' },
@@ -7054,27 +8142,25 @@ function UserGuideTab({ onNavigate }) {
 
       {show('quickstart') && <GuideSection {...sec('quickstart')}>
         <ol className="list-decimal space-y-1.5 text-sm">
-          <li><strong>Home tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date and academic year auto-fill from it — both stay editable).</li>
-          <li><strong>EM Residents / Off-Service tabs</strong> — set each EM Home resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong> to paste/upload a roster instead of adding one at a time). Enter approved dates off and jeopardy call dates.</li>
-          <li><strong>Dashboard tab</strong> — enter this block's special days (Code Blue, advocacy, procedure, US days) before scheduling — they affect eligibility.</li>
+          <li><strong>Dashboard tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date and academic year auto-fill from it — both stay editable).</li>
+          <li><strong>EM Residents / Off-Service tabs</strong> — set each EM Home resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong> to paste/upload a roster instead of adding one at a time). Enter approved dates off, vacation dates (or use <strong>Import Vacation Dates</strong> to upload the chief's vacation-tracking spreadsheet), and jeopardy call dates.</li>
+          <li><strong>Dashboard tab</strong> — enter this block's special days (Code Blue, procedure, US days) before scheduling — they affect eligibility.</li>
           <li><strong>Scheduling Rules tab</strong> — set daily shift coverage (how many residents each shift needs), then click <strong>Generate Schedule</strong> on the Schedule tab to auto-fill the whole block.</li>
           <li><strong>Schedule tab</strong> — review the generated schedule, or click any cell to assign/adjust a shift manually. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
           <li><strong>Violations tab</strong> — review the Generation Report and any remaining errors/warnings before finalizing.</li>
-          <li><strong>Home tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
+          <li><strong>Dashboard tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
         </ol>
       </GuideSection>}
 
-      {show('home') && <GuideSection {...sec('home')}>
-        <p>The <strong>Current Block</strong> card is your active workspace: name and dates editable inline (collapse it with the header once set up). Special days live on the <strong>Dashboard</strong> tab.</p>
-        <ul className="list-disc space-y-1">
-          <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the AY folder below. Re-saving the same block updates its snapshot.</li>
-          <li><strong>Load</strong> restores a saved block — you'll be prompted to save current work first.</li>
-          <li>Each <strong>AY folder</strong> holds that year's conference &amp; ITE dates (click "Conference &amp; ITE Dates" inside the folder). These apply to every block in that year and surface on the Dashboard when they overlap the block.</li>
-        </ul>
-      </GuideSection>}
-
       {show('dashboard') && <GuideSection {...sec('dashboard')}>
-        <p>Shows block progress, any conferences that fall inside the current block, first Fridays (Anesthesia social), and editable special-day lists. Use it as the pre-scheduling checklist: confirm conferences, Code Blue days, advocacy days, procedure days, and US days are all entered before assigning shifts.</p>
+        <p>The <strong>Block Calendar</strong> at the top shows a July→July view of every saved block for a chosen academic year, each with a color-coded coverage strip — click a block to expand a per-shift heatmap, or "Open block" to switch to it. Pick an AY from the dropdown to browse or edit that year's <strong>Conference &amp; ITE Dates</strong> (shown inline above that AY's blocks) — these apply to every block in the year and surface below when they overlap the current block.</p>
+        <p>Below the calendar, the <strong>Current Block</strong> card is your active workspace: name and dates editable inline (collapse it with the header once set up).</p>
+        <ul className="list-disc space-y-1">
+          <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the Block Calendar above. Re-saving the same block updates its snapshot.</li>
+          <li><strong>Load</strong> (from a Block Calendar row) restores a saved block — you'll be prompted to save current work first.</li>
+          <li><strong>Import Master Matrix</strong> uploads the chief's yearly workbook and turns it into ready-to-load saved blocks — never touches the live block.</li>
+        </ul>
+        <p>Further down: block progress, any conferences that fall inside the current block, first Fridays (Anesthesia social), and editable special-day lists. Use it as the pre-scheduling checklist: confirm conferences, Code Blue days, procedure days, and US days are all entered before assigning shifts.</p>
       </GuideSection>}
 
       {show('residents') && <GuideSection {...sec('residents')}>
@@ -7082,6 +8168,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Their rotation is set per block.</li>
           <li><strong>Off-service residents are per-block</strong> — cleared on New Block/Block Reset, re-entered each month.</li>
           <li><strong>Import Roster</strong> — paste rows from a spreadsheet or upload a CSV (Name, Category, PGY — any Rotation/date columns are ignored) instead of adding residents one at a time. Shows a preview before committing; already-listed names are skipped automatically.</li>
+          <li><strong>Import Vacation Dates</strong> (EM Residents tab) — upload the chief's vacation-tracking .xlsx workbook. Matches names against the EM Home roster (tolerant of extra middle/last names and parenthetical suffixes); ambiguous or unmatched rows are shown separately for manual review rather than guessed. Commit merges parsed dates into each matched resident's Vacation Dates — never touches other fields or off-service residents.</li>
           <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error. Off-service residents can add/remove these directly on their tile, no need to open Edit.</li>
           <li><strong>Jeopardy Call Dates</strong> (purple "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
           <li><strong>Availability</strong> (off-service only) — defaults to available all block; switch to <strong>Date ranges</strong> for a resident who only rotates with you part of the block, or <strong>Specific days only</strong> for a whitelist of exact dates (e.g. Peds residents' self-cover days from Amion). Outside their availability, the resident is unschedulable, same as an approved day off.</li>
@@ -7101,18 +8188,20 @@ function UserGuideTab({ onNavigate }) {
       {show('generate') && <GuideSection {...sec('generate')}>
         <p>Set <strong>Daily Shift Coverage</strong> on the Scheduling Rules tab first — how many residents each shift (POD Day, Trauma Night, etc.) needs per day. Then, on the Schedule tab, click <strong>Generate Schedule</strong> to auto-fill every open slot for the whole block.</p>
         <ul className="list-disc space-y-1">
-          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, the EM PGY-2/3 trauma cap, and the <strong>max 7 consecutive work days</strong> rule (Grand Rounds counts as a work day) — it never assigns a shift a resident couldn't legally work.</li>
+          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, the EM PGY-2/3 trauma cap, and the <strong>max 6 consecutive work days</strong> rule (a Grand Rounds day with no shift assigned counts as a day off) — it never assigns a shift a resident couldn't legally work.</li>
           <li><strong>Trauma Day is filled last</strong>, after every other shift for the whole block, so PGY-1 trauma-day slots don't crowd out other coverage.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
           <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
-          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-only) gaps are marked "Expected" when no FM-3 is on the block.</li>
+          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed; optional EM Home Thu/Sun) gaps are marked "Expected" when no one eligible is on the block those days.</li>
         </ul>
       </GuideSection>}
 
       {show('grid') && <GuideSection {...sec('grid')}>
         <ul className="list-disc space-y-1">
           <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents have no day shifts (evenings/nights are still workable).</li>
+          <li><strong className="text-violet-600">WW</strong> (violet) — Wellness Wednesday; each EM Home PGY's own 1st/2nd/3rd Wednesday on/after the block's start date (PGY-1/2/3 respectively) — no day <em>or</em> evening shifts that day (a night shift starting that Wednesday is still workable). Takes priority over the plain GR cue on that one cell since it's the stricter rule.</li>
           <li><strong className="text-orange-500">OFF</strong> (orange) — approved day off.</li>
+          <li><strong className="text-teal-600">VAC</strong> (teal) — vacation date (tracked separately from approved day off, same hard block).</li>
           <li><strong className="text-purple-600">J</strong> (purple) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
           <li><strong className="text-red-500">Red ring</strong> — rule violation on that assignment.</li>
           <li>Gray cells have no eligible shifts that day (clinic day, weekend call, etc.).</li>
@@ -7139,7 +8228,9 @@ function UserGuideTab({ onNavigate }) {
         <p className="text-xs text-gray-500 pt-1">Special cell markers:</p>
         <div className="flex items-center gap-3 flex-wrap text-[11px] text-gray-600">
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span> Grand Rounds Wed</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-violet-100 text-violet-600">WW</span> Wellness Wed (no day/eve)</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-orange-100 text-orange-600">OFF</span> approved day off</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-teal-100 text-teal-600">VAC</span> vacation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-purple-100 text-purple-700">J</span> jeopardy call</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
@@ -7148,15 +8239,15 @@ function UserGuideTab({ onNavigate }) {
 
       {show('rules') && <GuideSection {...sec('rules')}>
         <p>If you ran <strong>Generate Schedule</strong>, a <strong>Generation Report</strong> appears at the top of the Violations tab: how many coverage slots were filled, which ones weren't and why (no eligible resident, everyone at target, rest-rule conflicts, trauma cap…), with a plain-language recommendation for each — raise a target, lower coverage, check the Shift Matrix, and so on. Gaps that just match a day-of-week rule (Trauma's Tue/Thu/Sat/Sun window, GR Wednesday) are marked "Expected" rather than flagged as problems.</p>
-        <p>Below that, the <strong>Violations list</strong> shows every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps, &gt;7 consecutive work days, two residents on one trauma shift) and warning (review: over target, trauma cap, jeopardy, BAMC Wednesday-night count, Peds/EM mix) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
-        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions (some marked "generator only," meaning the manual picker still allows the shift), rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun for days and Fri/Sat/Sun/Mon for nights), computed-date rules (e.g. Anesthesia's 1st-Friday-of-month), how Code Blue/advocacy/procedure/anesthesia dates affect eligibility, and the <strong>Daily Shift Coverage</strong> grid used by Generate Schedule. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live.</p>
+        <p>Below that, the <strong>Violations list</strong> shows every error (must fix: ineligible shifts, days-off conflicts, rest violations, overlaps, &gt;6 consecutive work days, two residents on one trauma shift) and warning (review: over target, trauma cap, jeopardy, BAMC Wednesday-night count, Peds/EM mix) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
+        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions (some marked "generator only," meaning the manual picker still allows the shift), rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun for days and Fri/Sat/Sun/Mon for nights), computed-date rules (e.g. Anesthesia's 1st-Friday-of-month), how Code Blue/procedure/anesthesia dates affect eligibility, and the <strong>Daily Shift Coverage</strong> grid used by Generate Schedule. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live.</p>
       </GuideSection>}
 
       {show('export') && <GuideSection {...sec('export')}>
         <p>Two CSV buttons live in the header once a block has a start date:</p>
         <ul className="list-disc space-y-1">
           <li><strong>Grid CSV</strong> — the same resident × date matrix shown on the Schedule tab, raw shift codes only. Best for your own visual cross-check, not for importing anywhere.</li>
-          <li><strong>QGenda CSV</strong> — one row per assignment (resident, date, shift, real start/end time, hours) instead of one column per date. This removes the manual date-column transposition step — check it against QGenda's import format before relying on it fully.</li>
+          <li><strong>QGenda CSV</strong> — one row per assignment (resident, date, shift, real start/end time, hours, plus an end date for shifts that cross midnight) instead of one column per date. This removes the manual date-column transposition step — check it against QGenda's import format before relying on it fully.</li>
         </ul>
         <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations), either export will ask you to confirm before downloading.</p>
       </GuideSection>}
@@ -7174,9 +8265,9 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day — a clinic day, day-of-week restriction (e.g. EMS Mon/Tue), GR Wednesday, or a non-schedulable rotation. Check the Shift Matrix and Scheduling Rules tabs to see why.</li>
           <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> in the picker to override — it will be flagged in Violations so you can track it.</li>
           <li><strong>My schedule disappeared on another computer.</strong> Data lives in the browser's localStorage and does <em>not</em> sync between machines. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
-          <li><strong>The CSV export buttons are missing.</strong> They appear in the header only once the current block has a start date set (Home tab).</li>
+          <li><strong>The CSV export buttons are missing.</strong> They appear in the header only once the current block has a start date set (Dashboard tab).</li>
           <li><strong>A resident shows the wrong shifts in the picker.</strong> Check their rotation for this block (EM Residents tab) and any rotation override in the Shift Matrix — dimmed checks inherit, solid checks are overrides.</li>
-          <li><strong>I saved a block by mistake.</strong> Re-saving the same block just updates its snapshot; you can also Load any earlier saved block from its AY folder on the Home tab.</li>
+          <li><strong>I saved a block by mistake.</strong> Re-saving the same block just updates its snapshot; you can also Load any earlier saved block from the Block Calendar on the Dashboard tab.</li>
         </ul>
       </GuideSection>}
     </div>
@@ -7415,7 +8506,6 @@ function FeedbackAdminTab() {
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'home',       label: 'Home',          icon: Home },
   { id: 'dashboard',  label: 'Dashboard',     icon: LayoutDashboard },
   { id: 'em',         label: 'EM Residents',  icon: Stethoscope },
   { id: 'offservice', label: 'Off-Service',   icon: Users },
@@ -7535,7 +8625,9 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-white/50">
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-yellow-300">GR</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-violet-300">WW</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-orange-300">OFF</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-teal-300">VAC</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-purple-300">J</span>
         </div>
       </div>
@@ -7557,7 +8649,11 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
 // and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
 // session at all, and the header simply omits the identity chip in that case.
 export default function ResidentScheduler({ viewer } = {}) {
-  const [tab, setTab] = useState('home');
+  const [tab, setTab] = useState('dashboard');
+  // Defensive fallback: the Home tab was removed and merged into Dashboard. `tab` itself isn't
+  // persisted today, but guard anyway in case a future change (deep link, restored session, etc.)
+  // ever hands this a stale 'home' value.
+  useEffect(() => { if (tab === 'home') setTab('dashboard'); }, [tab]);
   const [navOpen, setNavOpen] = useState(false); // below-md sidebar drawer; ignored at md+
   const [toast, setToast] = useState(null);
   const [switchPending, setSwitchPending] = useState(null);
@@ -7837,7 +8933,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function doNewBlock() {
-    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('home');
+    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('dashboard');
     showToast('New block ready — enter dates below','amber');
   }
 
@@ -7866,9 +8962,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   // QGenda CSV: tidy/long format — one row per assignment, with real shift times, for bulk import.
+  // Start/End/EndDate are derived from SHIFT_TIMING's numeric startH/durationH (the same source
+  // rest-period math uses), not the display `hours` label — handles midnight rollover correctly.
   function buildQGendaCSVRows() {
     const dates=getBlockDates(block.startDate,block.endDate);
-    const header=['Resident','Category','PGY','Rotation','Date','DayOfWeek','ShiftId','ShiftLabel','Area','Start','End','Hours'];
+    const fmtHM = h => { const hh=Math.floor(h)%24, mm=Math.round((h-Math.floor(h))*60); return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`; };
+    const header=['Resident','Category','PGY','Rotation','Date','EndDate','DayOfWeek','ShiftId','ShiftLabel','Area','Start','End','Hours'];
     const rows=[];
     for (const r of allResidents) {
       for (const d of dates) {
@@ -7876,11 +8975,16 @@ export default function ResidentScheduler({ viewer } = {}) {
         if (!sid) continue;
         const s=SHIFT_MAP[sid];
         const t=SHIFT_TIMING[sid];
-        const [startStr,endStr]=(s?.hours||'—').split('–');
+        const startH=t?.startH;
+        const durationH=t?.durationH;
+        const rollsOver = startH!=null && durationH!=null && (startH + durationH) >= 24;
+        const startStr = startH!=null ? fmtHM(startH) : '';
+        const endStr = (startH!=null && durationH!=null) ? fmtHM(startH + durationH) : '';
+        const endDate = rollsOver ? toDateStr(addDays(parseDate(d), 1)) : d;
         rows.push([
           `${r.lastName}, ${r.firstName}`, CAT_MAP[r.category]?.label||r.category, `PGY-${r.pgy}`, r.blockType||'—',
-          prettyDate(d), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
-          startStr||'', endStr||'', t?.durationH ?? '',
+          prettyDate(d), prettyDate(endDate), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
+          startStr, endStr, durationH ?? '',
         ]);
       }
     }
@@ -8026,25 +9130,21 @@ export default function ResidentScheduler({ viewer } = {}) {
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
-          {tab==='home' && (
-            <HomeTab block={block} updateBlock={updateBlock} emRoster={emRoster} setEmRoster={setEmRoster}
-              blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
-              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
-              onTogglePublished={toggleBlockPublished}
-              onContinue={()=>setTab('schedule')} onLoadBlock={loadBlock}
-              onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast}/>
-          )}
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
-              ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}/>
+              ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
+              loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} setTab={setTab}
+              emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
+              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
+              onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast}/>
           )}
-          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
+          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 import RequestForm from './residentRequests/RequestForm';
@@ -10,7 +11,7 @@ import { findBlockForDate, formatResidentName } from './residentRequests/blockLo
 // than the primary gate — kept deliberately, since this component is exported and a future caller
 // might mount it somewhere less protected. The profile-row upsert that used to live here is gone:
 // AppGate now owns first-login row creation, and doing it in both places raced.
-export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged }) {
+export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
   const [profiles, setProfiles] = useState([]);
@@ -70,7 +71,70 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
       <ViewAsPanel emRoster={emRoster} blocks={blocks} profiles={profiles} profilesError={profilesError}
         onRequestsChanged={onRequestsChanged} onFiled={() => setPendingRefreshSignal(s => s + 1)} />
       <AdminManagement session={session} emRoster={emRoster} profiles={profiles} onProfileChanged={loadProfiles} />
+      <RequestPortalCard showToast={showToast} />
     </>
+  );
+}
+
+// Locates the resident-facing request portal for the chief to share — same route main.jsx
+// resolves to `ResidentRequestsApp` (`/requests`, trailing slash tolerated). Pure UI: no new
+// backend capability, doesn't touch the approval flow or notifications (already implemented via
+// the notify-request edge function). Placed last among the tab's sections since it's a
+// share/locate affordance rather than a queue the admin works through daily.
+//
+// Print handling follows this app's existing convention (`no-print` in index.css hides chrome on
+// print) rather than inventing a new one: the card's own on-screen-only controls (heading, Copy/
+// Print buttons, helper text) carry `no-print` so they vanish when printing, while the QR image +
+// URL + a one-line instruction (`print-only`, invisible on screen) are what's left on the page —
+// along with `no-print` added to the three sibling sections above so a chief who hits Print while
+// on this tab doesn't accidentally print pending requests/admin rosters.
+function RequestPortalCard({ showToast }) {
+  const canvasRef = useRef(null);
+  const portalUrl = `${window.location.origin}/requests`;
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    QRCode.toCanvas(canvasRef.current, portalUrl, { width: 180, margin: 1 }, (err) => {
+      if (err) showToast?.('Could not render the QR code', 'red');
+    });
+  }, [portalUrl]);
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(portalUrl);
+      showToast?.('Portal link copied', 'green');
+    } catch {
+      showToast?.('Could not copy — select and copy the link manually', 'red');
+    }
+  }
+
+  return (
+    <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+      <div className="no-print flex items-center justify-between gap-2 mb-2">
+        <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800">Resident request portal</p>
+        <button onClick={() => window.print()}
+          className="text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 bg-white">
+          Print
+        </button>
+      </div>
+      <p className="no-print text-xs text-gray-500 mb-3">
+        Share this link or QR code so residents can find the day-off request portal — post the
+        printed version, text the link, or point them here directly.
+      </p>
+      <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+        <canvas ref={canvasRef} className="border border-gray-200 rounded-md shrink-0" />
+        <div className="min-w-0">
+          <p className="font-mono text-sm text-gray-800 break-all">{portalUrl}</p>
+          <button onClick={copyLink}
+            className="no-print mt-2 text-xs font-medium rounded-md px-2.5 py-1 border border-gray-300 bg-white">
+            Copy link
+          </button>
+          <p className="print-only text-xs text-gray-600 mt-2">
+            Scan this code, or visit the link above, to submit or check a day-off request.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -103,7 +167,7 @@ function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChan
   const selectedResident = emRoster.find(r => r.id === selected);
 
   return (
-    <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+    <div className="no-print p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
       <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">View as resident</p>
       <select value={selected} onChange={e => { setSelected(e.target.value); setFiling(false); }}
         className="input-field w-full mb-3">
@@ -219,7 +283,7 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
     .map(g => ({ ...g, requests: [...g.requests].sort((a, b) => residentName(a.resident_id).localeCompare(residentName(b.resident_id))) }));
 
   return (
-    <div className="p-4 space-y-4 max-w-2xl">
+    <div className="no-print p-4 space-y-4 max-w-2xl">
       <div>
         <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Pending ({pending.length})</p>
         {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
@@ -289,7 +353,7 @@ function AdminManagement({ session, emRoster, profiles, onProfileChanged }) {
   const approved = profiles.filter(p => p.role !== ROLE.PENDING);
 
   return (
-    <div className="p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+    <div className="no-print p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
       <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Admin access</p>
       {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
       {pending.length > 0 && (

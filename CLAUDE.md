@@ -17,7 +17,7 @@ to CSV, JSON backup/restore in Settings tab.
   registry package — registry build frozen at 0.18.5, unpatched prototype-pollution/ReDoS
   CVEs SheetJS only fixes in CDN-published builds. Keep installing/upgrading this dependency via
   pinned CDN tarball URL, never `npm install xlsx`.
-- **Almost all *scheduling* logic lives in one file: `src/ResidentScheduler.jsx` (~7,860 lines)** —
+- **Almost all *scheduling* logic lives in one file: `src/ResidentScheduler.jsx` (~8,300+ lines)** —
   expect nearly all scheduling edits there. Rest of `src/` is auth + day-off-request
   surface, deliberately kept out of that file (see "Auth, roles & the day-off request
   feature" below): `main.jsx` (route split — `/requests` → `ResidentRequestsApp`, everything else →
@@ -207,15 +207,21 @@ names below rather than trusting offsets.
   matched via `CATEGORY_SYNONYMS`, PGY validated against category's `pgyOptions`; Rotation/date
   columns read but ignored) plus `splitCsvLine`/`splitName`/`matchCategory`.
 - `MATRIX IMPORT` (same section, after `parseRosterText`) — parses chief's yearly two-sheet
-  Master Matrix workbook (`ImportMatrixModal`, Home tab): `parseHomeResidentMatrix` reads "Home EM
-  Residents" sheet's 3 PGY sections into per-block EM rotation assignments (via `matchBlockType`,
-  matching rotation labels against `BLOCK_TYPES_EM` same way `matchCategory` matches categories);
-  `parseOffServiceSheet` reads "Off-Service Residents" sheet's Name/Dept/Dates triples (found by
+  Master Matrix workbook (`ImportMatrixModal`, now on the Dashboard tab — see "Dashboard/Home
+  merge" below): `parseHomeResidentMatrix` reads the Home-EM sheet, detected by sheet CONTENT not
+  tab name (`detectHomeAndOffSheetsByContent` — a header row starting "Resident" = home sheet, a
+  literal "Dept" header cell = off-service sheet; real chief exports use generic "Sheet1"/"Sheet2"
+  tab names, so name-regex matching alone silently mis-assigns). Two supported HOME-sheet shapes:
+  (a) legacy `"Resident (EM-Home PGY-N)"` section markers (original format), or (b) — real AY26/27
+  export shape, no PGY markers at all — `parseHomeResidentMatrixGrouped` treats blank-row-separated
+  resident tracks as PGY cohorts, **inferring each track's PGY from which `EM_HOME_BLOCK_TYPES_BY_PGY`
+  tier its rotation ids are exclusive to** (e.g. a track using TRAUMA_PEDS/US_EM/ANES_VAC = PGY-1).
+  `parseOffServiceSheet` reads the off-service sheet's Name/Dept/Dates triples (found by
   scanning for date-range cell, reading its left neighbors, since sheet's column offsets
   drift per month-group — don't switch this to fixed column indices). Two separate date-range parsers
-  handle each sheet's own year-inference quirk: `parseSequentialDateRange` (sheet 1) walks columns in
+  handle each sheet's own year-inference quirk: `parseSequentialDateRange` (home sheet) walks columns in
   row order bumping year cursor on backward month jumps, because sheet has pre-orientation
-  stub column that sits before AY's first July block; `parseDateRangeInAY` (sheet 2) dates each
+  stub column that sits before AY's first July block; `parseDateRangeInAY` (off-service sheet) dates each
   range independently off July cutoff, except same-year range straddling Jun→Jul (right at
   AY's start) uses *later* month's half so it doesn't get misread as AY's May/Jun tail. Don't
   merge these two into one function — solve different problems for structurally different sheets.
@@ -223,6 +229,17 @@ names below rather than trusting offsets.
   name) and `blocksHistory` (one snapshot per parsed block, id `blk_import_${startDate}` so
   re-upload updates in place instead of duplicating) — never touches live/current block, never
   generates schedule.
+- **Two more paste/upload importers live on the EM Residents tab** (not Dashboard): `ImportVacationModal`
+  parses the chief's yearly vacation-dates xlsx (three PGY sections, three repeating 13-column
+  Requested/Dates/BLK/Rotation/… groups per resident row) into each matched resident's
+  `vacationDates[]` — tolerant name matching (strips parenthetical suffixes like "(ECFMG)", matches
+  on last/first NAME-TOKEN-SET intersection, not exact string, so "Avila, Anthony Joseph" matches
+  roster's "Avila, Anthony") and never auto-commits an ambiguous multi-match. `ImportLecturesModal`
+  parses pasted Name/Lecture/[M&M/]JournalClub rows into `grLectureDates` (Lecture **and** M&M dates
+  both merge into this one field — M&M counts as a lecture for rule purposes, no rule-engine
+  change needed since the lecture-day-before strip already keys off `grLectureDates` generically)
+  and `jcPresentDates`; validates Lecture/M&M fall on the resident's `grWorkDow` and JC falls on a
+  first Tuesday, but doesn't hard-block a mismatched date — flags it in the preview instead.
 - ~500–1060 `REST-PERIOD UTILITIES` / circadian engine — `checkRestViolations` (legal-rest-hour
   check only), then **`CIRCADIAN SCHEDULING RULES`**: `NIGHT_RULES` (`minRun`/`idealRun`/`maxRun`
   4-6-6, `postNightDayRestH` 24, `maxPerBlock` 6), `GR_START_HOUR` (08:00, Grand Rounds start used
@@ -262,9 +279,14 @@ names below rather than trusting offsets.
   engine (jeopardy policy, 7-consecutive-work-day rule, trauma double-booking, min/max coverage,
   circadian night-run/turnaround checks, FLEX/POD seniority, Journal Club cap/presenter checks,
   Grand Rounds lecture day-before check — see each feature's section below for specifics).
-  `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked` implement ≤7-consecutive-work-day rule
-  (Grand Rounds counts as work day even with no assigned shift) shared by both; `grWorkDow`
-  also reused to validate resident's `grLectureDates` fall on own GR weekday.
+  `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked` implement the **strict ACGME max-6-consecutive-
+  work-day rule** (`MAX_CONSECUTIVE_WORK_DAYS = 6`) shared by both — **a day counts as worked ONLY
+  if a shift is actually assigned that date** (`isStreakWorkDay` = `!!rs[ds]`, nothing else); Grand
+  Rounds with no shift assigned is now correctly a day OFF for streak purposes (this flipped
+  from the app's original behavior, where GR always counted as work even shift-less — don't
+  reintroduce that). `grWorkDow` (EM_HOME→Wed, EM_BAMC→Thu) is still used to validate
+  `grLectureDates` falls on the resident's own GR weekday, and for the wellness-Wednesday/
+  academic-chief rules below — it just no longer feeds the streak check.
 - `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot ordering per
   day, candidate filtering with named unfilled-reasons — including `halfTargetMet`,
   `circadianBlocked`, `nightCapped`, `jcCapped` — target/type-mix/streak/jeopardy/trauma-nights-
@@ -286,18 +308,31 @@ names below rather than trusting offsets.
   `em-scheduler` app; `StatCard` — Dashboard summary tile, also ported from em-scheduler;
   `AutosaveIndicator` — "Saving…"/"Saved locally" pill, now also cloud-aware
   ("Synced"/"Sync error") when cloud sync configured — see "Cloud sync" above), `SPECIAL DAYS
-  LIST`, `DASHBOARD TAB` (special days now live only here, not
-  Home; opens with `StatCard` row — schedulable residents, shifts filled vs minimum coverage,
-  error/warning counts, days remaining — computed via `computeCoverageByDate` (shared with
-  Schedule tab, see below) and root's consolidated `issues`/`issueCounts` memo, never second
+  LIST`, `DASHBOARD TAB` — now the **landing tab** (default `tab` state, Home tab removed
+  entirely, see "Dashboard/Home merge" below). Opens with `BlockCalendarSection` — a July→July
+  year-timeline (`ayWindowFor`) of every `blocksHistory` snapshot for a selectable AY, each row a
+  28ish-cell coverage strip (green/amber/red/gray per day, via `computeCoverageByDate` reusing the
+  same `getActiveCoverageShifts` helper the Schedule grid's coverage footer uses) with a
+  click-to-expand per-shift×per-date heatmap drill-down; a snapshot's coverage math is built from
+  its OWN `id`-only stub resident list (`computeCoverageByDate` only ever reads `r.id`, never
+  name/category/PGY, so this works correctly even for a since-changed roster), the live block's
+  row always computed from the live `schedule` not a stale snapshot. Clicking "Open Block" calls
+  the existing `loadBlock(snap)` — already handles the unsaved-work guard, hydrate, and
+  `setTab('schedule')`, no new lifecycle logic needed. Below that: the relocated **Current Block**
+  editor (name/AY/start/end via `applyStartDate`, Save/New Block, Import Master Matrix,
+  `AYConferenceEditor` for the calendar's selected AY), then the `StatCard` row — schedulable
+  residents, shifts filled vs minimum coverage, error/warning counts, days remaining — computed via
+  `computeCoverageByDate` and root's consolidated `issues`/`issueCounts` memo, never a second
   `validateAll` pass; also hosts `JournalClubPlanner` — read-only card listing every first Tuesday
   of AY with each PGY-1/2/3 presenter slot from `jcPresentDates`, plus per-resident worked-JC
-  counts vs `JC_MAX_PER_AY`; presenter editing itself stays on resident profile), `HOME TAB`
-  (`ImportMatrixModal` lives just above it — see "Matrix Import" above; Saved Blocks list also
-  has **Publish/Published** toggle per snapshot, wired through root's `toggleBlockPublished`
-  — see "Published blocks" below), `RESIDENT FORM` (shared by Add/Edit modals, plus
-  `ImportRosterModal` for bulk roster import — `jcPresentDates`/`grLectureDates` date-chip editors
-  live here alongside `approvedDatesOff`/`jeopardyDates`), `EM RESIDENTS TAB`, `OFF-SERVICE TAB`
+  counts vs `JC_MAX_PER_AY` (presenter editing itself stays on resident profile), then Special
+  Days (Code Blue/Procedure/Anesthesia only now — **Peds Advocacy Days removed**, see "Data model"
+  below). `RESIDENT FORM` (shared by Add/Edit modals, plus
+  `ImportRosterModal` for bulk roster import — `jcPresentDates`/`grLectureDates`/`vacationDates`
+  date-chip editors live here alongside `approvedDatesOff`/`jeopardyDates`), `EM RESIDENTS TAB`
+  (also hosts the `ImportVacationModal`/`ImportLecturesModal` trigger buttons — see "Matrix
+  Import" above — and each PGY-3 EM_HOME resident's chief-role select, see "Chief roles" below),
+  `OFF-SERVICE TAB`
   (inline per-tile date-off/jeopardy editors), `SHIFT MATRIX TAB` (rotation-aware shift matrix),
   `RULES TAB` ("Scheduling Rules" in UI — day/rotation rules plus Daily Shift Coverage
   editor, now paired min/max inputs per shift, consumed by generator), `SHIFT PICKER MODAL`
@@ -363,6 +398,16 @@ names below rather than trusting offsets.
   hues (`indigo`/`sky`/`emerald`/`yellow`/`orange`/`pink`/`violet`/`teal`/`stone` — see
   `CATEGORIES`). Wrapped in `@media screen` so print/PDF output always stays light regardless of
   viewer's theme. `res_dark_mode` excluded from `LS_BACKUP_KEYS` — see "Persistence" above.
+- **Dashboard/Home merge**: the Home tab is GONE — `TABS` no longer has a `'home'` entry, default
+  landing `tab` is now `'dashboard'` (a one-line `useEffect` redirects any stale persisted
+  `tab==='home'` to `'dashboard'`; `reconcileTabOrder`'s existing unknown-id guard already
+  tolerates a leftover `'home'` in a persisted `res_tab_order` array). Home's old Saved Blocks
+  list was removed outright (no delete-snapshot capability existed on it to preserve — verified
+  by grep before removing, Publish/Load were its only actions, both already on `BlockCalendarSection`)
+  since `BlockCalendarSection` fully replaces it; Home's Current Block editor, Import Master
+  Matrix trigger, and `AYConferenceEditor` all moved onto the Dashboard tab (see the `DASHBOARD
+  TAB` bullet above). If you're looking for "Home tab" in an old comment/doc/design-spec file,
+  read it as "Dashboard tab" now.
 - `MAIN APP` — `TABS` nav array; `reconcileTabOrder`/`reorderIds` (pure helpers behind
   sidebar's drag-to-reorder — reconcile guards against non-array persisted order, reorder
   always lands dragged tab immediately before drop target regardless of drag direction);
@@ -400,11 +445,18 @@ names below rather than trusting offsets.
   Coverage intentionally NOT day-of-week-dependent (chief's call) — `PED-S` one
   shift that only exists on certain weekdays at all, handled via separate `SHIFT_DOW` map, not
   general per-day coverage feature.
-- **PED-N (Peds Night) is FM-3-exclusive program-wide**, **PED-S (Peds Swing) is EM-Home-PGY-2-
-  on-EM/TOX-or-EM/EMS-only program-wide** — no other category/PGY ever eligible for either,
-  including via Shift Matrix rotation override (`overrideImmune: true` gates enforce this for
-  PED-S; PED-N enforced by never appearing in any other category's `BASE_ELIGIBILITY`). Add
-  new eligibility entry, don't add PED-N or PED-S to it.
+- **PED-N (Peds Night): FM-3 all eligible days, EM_HOME_1/2/3 Thu–Sun only** (opened up from
+  FM-3-exclusive — chief wants EM residents able to cover PED-N outside FM-3's Mon/Tue/Wed window,
+  PGY-1 soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`).
+  EM_HOME's Thu–Sun window is a dedicated `overrideImmune` shiftGate (`ped_n_em_window`) per
+  EM_HOME PGY key — Mon/Tue/Wed stays FM-3-only. `PED_GUARD_LEGITIMATE_OWNER['PED-N']` is now an
+  ARRAY (`['FM_3','EM_HOME_1','EM_HOME_2','EM_HOME_3']`, not a bare string) — `stripPedGuardedShifts`
+  checks array-membership; **coverage stays `{min:0,max:1}`** (best-effort fill, not required —
+  chief's own words: "does not HAVE to be someone scheduled"). **PED-S (Peds Swing) is still
+  EM-Home-PGY-2-on-EM/TOX-or-EM/EMS-only program-wide** — no other category/PGY ever eligible,
+  including via Shift Matrix rotation override (`overrideImmune: true`); PED-S coverage is now
+  `{min:0,max:1}` too (chief: "no priority for peds swing shift to be filled"). Add a new
+  eligibility entry, don't add PED-S to it (PED-N's guard is now intentionally multi-owner).
 - **EM_HOME_2's EM/EMS ↔ EM/TOX weekday windows swap on 2026-08-01** (chief-directed change, not
   bug): before that date EM/EMS covers Mon/Tue, EM/TOX covers Thu/Fri; from that date on it's
   reversed. Both variants live in `DEFAULT_DAY_RULES.EM_HOME_2.shiftGates` simultaneously,
@@ -448,11 +500,65 @@ names below rather than trusting offsets.
   shift day before lecture date — hard-stripped from eligibility (generator, manual
   picker both), `validateAll` errors if stale/imported schedule violates it. Validated to fall on
   resident's own GR weekday via `grWorkDow` (Wednesday for EM_HOME, Thursday for EM_BAMC).
-- **FLEX/POD seniority** (`SENIOR_COMPOSITION`): every staffed FLEX shift needs EM PGY-2 (fallback
-  PGY-3); every staffed POD shift needs EM PGY-3 (fallback PGY-2). Generator restricts
-  candidate pool to senior sub-pool while none present for that shift/day, falls back to
-  full pool (recording `report.seniorGaps` entry) only if no senior available at all —
-  staffing junior beats leaving min-coverage slot empty.
+- **FLEX seniority stays soft** (`SENIOR_COMPOSITION.FLEX = {primary:2,fallback:3}`, chief's own
+  call: "keep eligibility, composition only" — no change): every staffed FLEX shift needs EM
+  PGY-2 (fallback PGY-3); generator restricts to the senior sub-pool while none present, falls
+  back to full pool (recording `report.seniorGaps`) only if no senior at all — staffing junior
+  beats leaving min-coverage slot empty. **POD seniority is now HARD** — `SENIOR_COMPOSITION.POD
+  = {primary:3,fallback:2}` still names a fallback, but `validateAll` now raises a hard ERROR
+  (not a soft `seniorGaps` warning) for a staffed POD shift with no PGY-3, UNLESS
+  `podWellnessSubstituteAllowed(ds, blockStart)` is true — i.e. UNLESS `ds` is that resident's
+  own "3rd Wellness Wednesday" (see below), the ONE day a PGY-2 may substitute. POD coverage is
+  `{min:2,max:2}` all week, except Mon/Tue where max rises to 3 (`DOW_COVERAGE_MAX_OVERRIDE`,
+  `getCoverageFor(shiftId, coverage, dow)`'s third `dow` param — the ONLY day-of-week-dependent
+  coverage exception in the app; the Rules-tab coverage EDITOR stays simple/non-dow-aware, just
+  has a caption noting the Mon/Tue bump). `score()` gives a soft +15 bonus to an EM Home/BAMC
+  PGY-1 filling POD's 2nd/3rd slot once a PGY-3 is already present (`podPgy1SecondSlot`).
+- **Wellness Wednesdays** (`computedDayRules: [{type:'wellnessWednesday', ordinal:N}]`,
+  `nthWeekdayOnOrAfter` helper): EM_HOME_1 gets the block's 1st Wednesday off day/eve, EM_HOME_2
+  the 2nd, EM_HOME_3 the 3rd (night shift starting that Wednesday still allowed — only day/eve
+  types stripped). Block-relative (Nth Wednesday on/after `block.startDate`, NOT the calendar
+  month), so `getEligibleShifts`'s `ctx.blockStart` must actually reach every call site — a prior
+  bug had the Schedule grid's own cell-eligibility call omitting `ctx` entirely, silently
+  no-op'ing this and the Peds/Trauma half-split for that one caller; fixed, but if you add a new
+  `getEligibleShifts(...)` call site, always pass `{blockStart: block.startDate, ...}`. Grid marker
+  "WW" (violet) takes visual priority over the "GR" (yellow) marker on a resident's own wellness
+  Wednesday (both would otherwise apply to every EM_HOME Wednesday).
+- **Chief roles** (`resident.chiefRole: null|'academic'|'admin'|'scheduling'`, global roster field
+  on `emRoster`, NOT per-block — replaced the old per-block `emBlockAssignments[id].isChief`
+  checkbox): any of the three roles gives the 16-shift target via `getShiftTarget`
+  (`effectiveChiefRole(resident)` = `chiefRole || (legacy isChief ? 'scheduling' : null)`, a
+  READ-TIME-ONLY backward-compat fallback for old saved blocks — never migrates/writes). Only the
+  `academic` role carries a hard rule: no Tuesday evening/night shifts (`getEligibleShifts`
+  inline check on `resident.chiefRole==='academic'`, deliberately NOT the legacy-fallback version
+  — old saved-block chiefs aren't retroactively Tuesday-restricted). Badge: `★A`/`★Ad`/`★S`.
+- **Peds Wednesdays off, advocacy feature removed**: `PEDS_1`/`PEDS_3` now `fullBlockDays:[3]` —
+  Peds residents simply don't work Wednesdays, full stop. The old mechanic this replaced
+  (`specialDayRules:[{listKey:'advocacyDays',offset:'dayBefore'}]`, a chief-edited date list) is
+  gone from `SPECIAL_DAY_META`/the Dashboard Special Days editor/the readiness gate — **old saved
+  snapshots may still carry a stale `data.specialDays.advocacyDays` array; it's simply never read
+  anymore, don't migrate it, don't resurrect it.** Peds coverage on Wednesdays now comes entirely
+  from EM Home/BAMC — automatic once Peds is excluded via `fullBlockDays`, no extra code needed.
+- **IM/TOX weekday tightening**: `IM_2.dayTypeRestrictions` is now
+  `[{days:[2],mode:'onlyDay'},{days:[3],mode:'onlyNight'}]` — no Tue eve/night, no Wed day/eve
+  (Wed night OK). EM_TOX residents (EM_HOME_2 on the `EM_TOX` rotation, already Mon/Tue-gated
+  post-2026-08-01 via the existing `em_tox_window*` shiftGates) get a soft `+8` score bonus for
+  `PED-E` specifically (chief: "ideally only evening peds") — a preference, not a gate change.
+- **Vacation is now a distinct hard-off concept** (`resident.vacationDates[]`, global roster
+  field) — separate from `approvedDatesOff` (day-off-request-approved) even though both behave
+  identically in `getEligibleShifts`/`validateAll` (early-return empty pool / hard conflict
+  error). Kept distinct so imports/exports/UI can label vacation vs. approved-off differently
+  ("VAC" teal marker vs. "OFF" orange marker, same grid/cards/PDF/legend sites as OFF).
+- **QGenda CSV `Start`/`End` are now derived from `SHIFT_TIMING[sid].startH/durationH`**
+  (numeric source of truth), not by splitting the shift's DISPLAY label string on an en-dash —
+  the old approach broke silently if a label's formatting ever changed and had no
+  midnight-rollover handling. New `EndDate` column added (`= Date` unless
+  `startH + durationH >= 24`, then `Date + 1`) so an overnight shift's end is unambiguous.
+- **Resident Request Portal card** (`src/RequestsTab.jsx`, admin-facing): shows the absolute
+  `/requests` URL, a copy-link button, and a client-side QR code (`qrcode` npm package — small,
+  no network calls, canvas render) sized for a phone camera or a printed page. Print view follows
+  the existing `no-print`/`print-only` convention (index.css) rather than inventing a new one —
+  hitting Print here shows just the QR/URL/instruction, not the approval queue.
 - **Trauma/Peds rotation 8/11 split** (`TRAUMA_PEDS_SPLIT`): combined 19-shift target for
   TRAUMA_PEDS/PEDS_TRAUMA enforced as two separate protected sub-targets (8 trauma-half shifts,
   11 peds-half shifts) via per-resident sub-caps in generator's `candidatePool`, not just
@@ -474,9 +580,10 @@ names below rather than trusting offsets.
   existing snapshot's `published` value before building replacement snapshot, or re-saving
   published block silently un-publishes it.
 - This repo is **public** — never hardcode real resident names/rosters into source (happened
-  once; use Import Roster feature on EM Residents / Off-Service tabs, or Import Master Matrix
-  on Home tab, instead — both read pasted/uploaded data into `localStorage` only, never into
-  committed code). Same rule covers **email addresses**: `admin_email_allowlist` rows and
+  once; use Import Roster feature on EM Residents / Off-Service tabs, or Import Master Matrix /
+  Import Vacation Dates / Import Lecture-JC Dates on the Dashboard/EM Residents tabs, instead —
+  all read pasted/uploaded data into `localStorage` only, never into committed code). Same rule
+  covers **email addresses**: `admin_email_allowlist` rows and
   chief-bootstrap `update profiles ...` typed straight into SQL editor as data, committed
   `supabase/*.sql` files carry only placeholders (`someone@example.edu`,
   `YOUR_EMAIL@uthscsa.edu`). Institutional *domain* in `auth_hook_domain_restriction.sql` is
