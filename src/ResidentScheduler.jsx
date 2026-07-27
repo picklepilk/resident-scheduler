@@ -24,25 +24,44 @@ import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
+// Single source of truth for shift-area color, consumed across three independent rendering
+// contexts that used to be hand-kept in sync separately: solid per-shift-id chips (SHIFTS[].chip,
+// used in the grid), a light-tint label style (ShiftMatrixTab's areaColor, header tints), and raw
+// RGB for jsPDF (PDF_AREA_LIGHT — jsPDF can't consume Tailwind classes). Add/adjust a shift area's
+// color here only; SHIFTS chips, PDF_AREA_LIGHT, and ShiftMatrixTab's areaColor all derive from
+// this map. Declared above SHIFTS (TDZ — SHIFTS reads AREA_COLORS.*.chip.* below).
+const AREA_COLORS = {
+  POD:    { chip: { day: 'bg-blue-600 text-white',   eve: 'bg-blue-400 text-white',   night: 'bg-blue-900 text-white' },
+            tint: 'text-blue-700 bg-blue-50 border-blue-200',     pdfLight: [219, 234, 254] },
+  PED:    { chip: { day: 'bg-green-600 text-white',  eve: 'bg-green-400 text-white',  night: 'bg-green-900 text-white', swing: 'bg-green-700 text-white' },
+            tint: 'text-green-700 bg-green-50 border-green-200',  pdfLight: [209, 250, 229] },
+  FLEX:   { chip: { day: 'bg-purple-600 text-white', eve: 'bg-purple-400 text-white', night: 'bg-purple-900 text-white' },
+            tint: 'text-purple-700 bg-purple-50 border-purple-200', pdfLight: [237, 233, 254] },
+  MT:     { chip: { day: 'bg-amber-600 text-white',  eve: 'bg-amber-400 text-white',  night: 'bg-amber-900 text-white' },
+            tint: 'text-amber-700 bg-amber-50 border-amber-200',  pdfLight: [254, 243, 199] },
+  TRAUMA: { chip: { day: 'bg-red-600 text-white',    night: 'bg-red-900 text-white' },
+            tint: 'text-red-700 bg-red-50 border-red-200',        pdfLight: [254, 226, 226] },
+};
+
 const SHIFTS = [
-  { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: 'bg-blue-600 text-white' },
-  { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: 'bg-blue-400 text-white' },
-  { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: 'bg-blue-900 text-white' },
-  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: 'bg-green-600 text-white' },
-  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: 'bg-green-400 text-white' },
-  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: 'bg-green-900 text-white' },
-  { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: 'bg-purple-600 text-white' },
-  { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: 'bg-purple-400 text-white' },
-  { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: 'bg-purple-900 text-white' },
-  { id: 'MT-D',     label: 'MT Day',       area: 'MT',     hours: '07:00–16:00', type: 'day',   chip: 'bg-amber-600 text-white' },
-  { id: 'MT-E',     label: 'MT Eve',       area: 'MT',     hours: '15:00–00:00', type: 'eve',   chip: 'bg-amber-400 text-white' },
-  { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: 'bg-amber-900 text-white' },
-  { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: 'bg-red-600 text-white' },
-  { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: 'bg-red-900 text-white' },
+  { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
+  { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.POD.chip.eve },
+  { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
+  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
+  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.PED.chip.eve },
+  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
+  { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
+  { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: AREA_COLORS.FLEX.chip.eve },
+  { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
+  { id: 'MT-D',     label: 'MT Day',       area: 'MT',     hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
+  { id: 'MT-E',     label: 'MT Eve',       area: 'MT',     hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.MT.chip.eve },
+  { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
+  { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.TRAUMA.chip.day },
+  { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.TRAUMA.chip.night },
   // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
   // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
   // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
-  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: 'bg-green-700 text-white' },
+  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: AREA_COLORS.PED.chip.swing },
 ];
 const SHIFT_MAP = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
 const SHIFT_AREAS = ['POD', 'PED', 'FLEX', 'MT', 'TRAUMA'];
@@ -73,6 +92,9 @@ const SHIFT_TIMING = {
 // per-day-of-week coverage feature.
 const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5] };
 
+// Residency-category tint/badge — a different axis from shift-area color (AREA_COLORS above):
+// this colors rows/badges by residency category+PGY, not by shift area. Only coincidentally
+// shares some hues with AREA_COLORS; intentionally NOT folded into that map.
 const CATEGORIES = [
   { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-blue-50',    badge: 'bg-blue-700 text-white' },
   { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-white' },
@@ -872,6 +894,119 @@ function findDateHeaderRow(sheetRows, fromIdx, maxLookahead = 5) {
   return -1;
 }
 
+// A rotation id is a reliable PGY signal only if it appears in exactly one PGY's dropdown list
+// (EM_HOME_BLOCK_TYPES_BY_PGY) — ids shared across PGYs (EM, EM_VAC, MICU, NICU...) say nothing.
+function pgyExclusiveRotationIds() {
+  const owner = {};
+  for (const pgy of [1, 2, 3]) {
+    for (const id of EM_HOME_BLOCK_TYPES_BY_PGY[pgy]) {
+      owner[id] = owner[id] === undefined ? pgy : -1;
+    }
+  }
+  return owner;
+}
+
+// Infers a resident group's PGY from which PGY's exclusive rotation ids its cells matched —
+// used when the sheet groups residents into tracks with no PGY label at all (see
+// parseHomeResidentMatrixGrouped). Returns null if no exclusive id was seen (ambiguous).
+function inferGroupPgy(blockTypeIds) {
+  const owner = pgyExclusiveRotationIds();
+  const counts = { 1: 0, 2: 0, 3: 0 };
+  for (const id of blockTypeIds) {
+    const pgy = owner[id];
+    if (pgy && pgy !== -1) counts[pgy]++;
+  }
+  let best = null, bestCount = 0;
+  for (const pgy of [1, 2, 3]) if (counts[pgy] > bestCount) { best = pgy; bestCount = counts[pgy]; }
+  return best;
+}
+
+// Fallback Home-sheet shape: no "Resident (EM-Home PGY-N)" markers — instead residents are
+// grouped into blank-row-separated tracks (optionally preceded by a "Block N" label row and
+// followed by a rotation-abbreviation legend, both ignored — neither has a comma in column 0 so
+// neither is ever mistaken for a resident row), each track opening with its own "Resident" +
+// date-range header row. Since no PGY is given, it's inferred per track via inferGroupPgy — the
+// three tracks in a real 3-year program's export land on PGY-1/2/3 respectively because each
+// year's rotation catalog contains ids exclusive to it (see EM_HOME_BLOCK_TYPES_BY_PGY).
+function parseHomeResidentMatrixGrouped(sheetRows, ayStartYear) {
+  const warnings = [];
+  const residents = [];
+  const groups = [];
+
+  for (let i = 0; i < sheetRows.length; i++) {
+    const cell0 = String((sheetRows[i] || [])[0] || '').trim();
+    if (!/^resident\b/i.test(cell0)) continue;
+    const headerRow = sheetRows[i];
+    const cursor = { year: ayStartYear, lastStartMonth: null };
+    const cols = [];
+    for (let c = 1; c < headerRow.length; c++) {
+      const range = parseSequentialDateRange(headerRow[c], cursor);
+      if (range) cols.push({ colIdx: c, ...range });
+    }
+    if (!cols.length) continue;
+    const rows = [];
+    for (let r = i + 1; r < sheetRows.length; r++) {
+      const row = sheetRows[r] || [];
+      const nameCell = String(row[0] || '');
+      if (!nameCell.includes(',')) break;
+      const name = splitName(nameCell);
+      if (!name) { warnings.push(`Couldn't parse resident name "${nameCell}" (row ${r + 1})`); continue; }
+      rows.push({ ...name, raw: row });
+    }
+    groups.push({ cols, rows, headerRowIdx: i });
+  }
+
+  if (!groups.length) return { residents: [], blocks: [], warnings };
+
+  const canonical = groups[0].cols;
+  for (const g of groups.slice(1)) {
+    const same = g.cols.length === canonical.length &&
+      g.cols.every((c, idx) => c.start === canonical[idx].start && c.end === canonical[idx].end);
+    if (!same) warnings.push(`A resident group's date columns (row ${g.headerRowIdx + 1}) don't match the first group's — using the first group's as canonical`);
+  }
+
+  for (const g of groups) {
+    const ids = new Set();
+    for (const row of g.rows) {
+      for (const col of g.cols) {
+        const raw = row.raw[col.colIdx];
+        if (raw && String(raw).trim()) {
+          const id = matchBlockType(raw);
+          if (id) ids.add(id);
+        }
+      }
+    }
+    const inferred = inferGroupPgy(ids);
+    g.pgy = inferred ?? 1;
+    if (!inferred) warnings.push(`Couldn't determine PGY for the resident group at row ${g.headerRowIdx + 1} from its rotations — assumed PGY-1, verify on EM Residents tab`);
+    residents.push(...g.rows.map(r => ({ firstName: r.firstName, lastName: r.lastName, category: 'EM_HOME', pgy: g.pgy })));
+  }
+
+  const blocks = [];
+  for (const col of canonical) {
+    const assignments = [];
+    let anyRealAssignment = false;
+    for (const g of groups) {
+      const gCol = g.cols.find(c => c.start === col.start && c.end === col.end);
+      if (!gCol) continue;
+      for (const row of g.rows) {
+        const raw = row.raw[gCol.colIdx];
+        if (!raw || !String(raw).trim()) continue;
+        const blockTypeId = matchBlockType(raw);
+        if (blockTypeId) {
+          assignments.push({ firstName: row.firstName, lastName: row.lastName, pgy: g.pgy, blockTypeId });
+          anyRealAssignment = true;
+        } else if (!/orientation|transition/i.test(raw)) {
+          warnings.push(`Unrecognized rotation "${raw}" for ${row.firstName} ${row.lastName} (${col.start}–${col.end}) — left unassigned`);
+        }
+      }
+    }
+    if (anyRealAssignment) blocks.push({ start: col.start, end: col.end, assignments });
+  }
+
+  return { residents, blocks, warnings };
+}
+
 // Parses the "Home EM Residents" sheet into per-block EM-Home rotation assignments.
 // Returns { residents: [{firstName,lastName,category:'EM_HOME',pgy}],
 //           blocks: [{start,end, assignments:[{firstName,lastName,pgy,blockTypeId}]}],
@@ -911,6 +1046,11 @@ function parseHomeResidentMatrix(sheetRows, ayStartYear) {
   }
 
   if (!sections.length) {
+    // Some chief exports drop the "Resident (EM-Home PGY-N)" section markers entirely and
+    // instead group residents into blank-row-separated tracks with no PGY label at all —
+    // fall back to that shape before giving up.
+    const grouped = parseHomeResidentMatrixGrouped(sheetRows, ayStartYear);
+    if (grouped.blocks.length) return grouped;
     warnings.push('No "Resident (EM-Home PGY-N)" sections found — is this the right sheet?');
     return { residents: [], blocks: [], warnings };
   }
@@ -2626,14 +2766,11 @@ function pdfPageFooter(doc, left) {
   doc.text('Page ' + doc.internal.getCurrentPageInfo().pageNumber, W - 12, H - 6, { align: 'right' });
 }
 
-// Raw RGB, since jsPDF can't consume Tailwind classes — the PDF counterpart of the Shift Matrix
-// tab's `areaColor` light-tint map (search this file for that name). Deliberately not merged into
-// one shared constant (different shade families for different rendering contexts), but if you add
-// a new shift area, update both, plus SHIFTS[].chip.
-const PDF_AREA_LIGHT = {
-  POD: [219, 234, 254], PED: [209, 250, 229], FLEX: [237, 233, 254],
-  MT: [254, 243, 199], TRAUMA: [254, 226, 226],
-};
+// Raw RGB, derived from AREA_COLORS (see CONSTANTS section) — the single source of truth for
+// shift-area color. jsPDF can't consume Tailwind classes, so this pulls just the RGB tuples out.
+const PDF_AREA_LIGHT = Object.fromEntries(
+  Object.entries(AREA_COLORS).map(([area, c]) => [area, c.pdfLight])
+);
 
 // Residents × dates matrix — the primary PDF deliverable. Landscape A3 since a ~28-day block's
 // date columns don't fit legibly on letter/A4.
@@ -2770,24 +2907,98 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
+// Button primitive — token-first, replaces the divergent hand-rolled "secondary button" looks
+// scattered across the file (header export buttons, schedule-grid toolbar, save-before-switch
+// modal). Existing call sites are NOT migrated yet (later work) — this just defines the primitive.
+const BUTTON_VARIANTS = {
+  primary:       'bg-primary hover:bg-primary/90 text-primary-foreground',
+  secondary:     'bg-card border border-border text-foreground/80 hover:bg-accent',
+  danger:        'bg-destructive hover:bg-destructive/90 text-destructive-foreground',
+  dangerOutline: 'bg-card border border-border text-foreground/80 hover:bg-accent hover:border-destructive/50 hover:text-destructive',
+  ghost:         'text-muted-foreground hover:bg-accent hover:text-foreground',
+};
+const BUTTON_SIZES = {
+  sm: 'px-2.5 py-1.5 text-xs',
+  md: 'px-3 py-1.5 text-sm',
+};
+function Button({ variant = 'secondary', size = 'md', icon: Icon, children, className = '', ...rest }) {
+  return (
+    <button
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${BUTTON_VARIANTS[variant] || BUTTON_VARIANTS.secondary} ${BUTTON_SIZES[size] || BUTTON_SIZES.md} ${className}`}
+      {...rest}
+    >
+      {Icon && <Icon size={size === 'sm' ? 13 : 14} />}
+      {children}
+    </button>
+  );
+}
+
+// Standardized confirm-overlay primitive — same scrim opacity as Modal (bg-black/50), NOT the
+// black/40 used by the two hand-rolled overlays elsewhere in this file. Not adopted anywhere yet;
+// a later work package migrates those two hand-rolled overlays onto this. Deliberately not built
+// on top of Modal — different anatomy (icon+title header, actions footer vs close-button header).
+const CONFIRM_TONE_ICON = {
+  warn:   'bg-amber-50 text-amber-700',
+  danger: 'bg-destructive/10 text-destructive',
+  info:   'bg-primary/10 text-primary',
+};
+function ConfirmDialog({ icon: Icon, tone = 'warn', title, children, actions }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-card rounded-xl shadow-2xl w-full max-w-md flex flex-col">
+        <div className="flex items-start gap-3 px-5 pt-5 pb-3">
+          {Icon && (
+            <div className={`p-2 rounded-lg shrink-0 ${CONFIRM_TONE_ICON[tone] || CONFIRM_TONE_ICON.warn}`}>
+              <Icon size={18}/>
+            </div>
+          )}
+          <h2 className="text-base font-semibold text-card-foreground pt-1">{title}</h2>
+        </div>
+        <div className="px-5 pb-4 text-sm text-muted-foreground">{children}</div>
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border">
+          {actions}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Header micro-timeline — thin block-progress bar fed by getBlockProgress() (see UTILITIES
+// section). pct is already elapsed/total as a rounded percentage, so the fill's own right edge
+// marks "today" — no separate tick mark needed on top of it.
+function BlockProgressBar({ block }) {
+  const progress = getBlockProgress(block?.startDate, block?.endDate);
+  if (!progress) return null;
+  const pct = Math.max(0, Math.min(100, progress.pct));
+  return (
+    <div className="flex flex-col justify-center gap-1 w-full"
+      title={`Day ${progress.elapsed} of ${progress.total} · ${progress.remaining} remaining`}>
+      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+        <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${pct}%` }}/>
+      </div>
+    </div>
+  );
+}
+
 // Dashboard summary tile — ported from the sibling em-scheduler app.
-function StatCard({ label, value, sub, icon: Icon, tone = "slate", bar = null }) {
+function StatCard({ label, value, sub, icon: Icon, tone = "neutral", bar = null }) {
   const toneBg = {
-    slate: "bg-gray-50 text-gray-700",
-    sky:   "bg-blue-50 text-blue-700",
-    pink:  "bg-purple-50 text-purple-700",
-    amber: "bg-amber-50 text-amber-700",
-    violet:"bg-purple-100 text-purple-800",
-    green: "bg-green-50 text-green-700",
-    red:   "bg-red-50 text-red-700",
-  }[tone];
+    primary: "bg-primary/10 text-primary",
+    success: "bg-green-50 text-green-700",
+    warn:    "bg-amber-50 text-amber-700",
+    danger:  "bg-destructive/10 text-destructive",
+    neutral: "bg-muted text-muted-foreground",
+  }[tone] || "bg-muted text-muted-foreground";
   const barColor = {
-    green: "bg-green-500", amber: "bg-amber-500", red: "bg-red-500",
-    sky: "bg-blue-500", violet: "bg-purple-500", blue: "bg-blue-500", slate: "bg-gray-400",
-  }[bar?.color] || "bg-gray-400";
+    primary: "bg-primary",
+    success: "bg-green-500",
+    warn:    "bg-amber-500",
+    danger:  "bg-destructive",
+    neutral: "bg-muted-foreground",
+  }[bar?.color] || "bg-muted-foreground";
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4 flex items-start gap-3">
-      <div className={`p-2 rounded-md ${toneBg}`}>
+      <div className={`p-2 rounded-lg ${toneBg}`}>
         {Icon && <Icon size={18}/>}
       </div>
       <div className="flex-1 min-w-0">
@@ -2868,11 +3079,11 @@ function SubTabs({ value, onChange, options }) {
 
 function SectionCard({ title, subtitle, children, action }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
+    <div className="bg-card text-card-foreground rounded-xl border border-border shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
-          {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
+          <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-card-foreground">{title}</h3>
+          {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
         </div>
         {action}
       </div>
@@ -2893,14 +3104,14 @@ function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
   return (
     <div role="button" tabIndex={0} onClick={onToggle}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
-      className="w-full px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3 hover:bg-gray-50 transition-colors text-left cursor-pointer">
+      className="w-full px-5 py-4 border-b border-border flex items-start justify-between gap-3 hover:bg-accent transition-colors text-left cursor-pointer">
       <div>
-        <h3 className="font-semibold text-gray-800 text-sm">{title}</h3>
-        {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
+        <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-card-foreground">{title}</h3>
+        {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {action && <span onClick={e => e.stopPropagation()} className="flex items-center gap-2">{action}</span>}
-        <ChevronDown size={14} className={`text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+        <ChevronDown size={14} className={`text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`}/>
       </div>
     </div>
   );
@@ -2909,7 +3120,7 @@ function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
 function CollapsibleCard({ title, subtitle, children, action, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-card text-card-foreground rounded-xl border border-border shadow-sm overflow-hidden">
       <CollapsibleHeader title={title} subtitle={subtitle} action={action} open={open} onToggle={() => setOpen(p => !p)}/>
       {open && <div className="px-5 py-4">{children}</div>}
     </div>
@@ -3120,23 +3331,23 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
                         aaem:'bg-blue-100 text-blue-700 border-blue-200', saem:'bg-purple-100 text-purple-700 border-purple-200' };
 
   return (
-    <div className="space-y-5 max-w-3xl">
+    <div className="space-y-5 max-w-5xl">
 
       {/* Stat tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Schedulable Residents" value={schedulableCount} sub={`of ${allResidents.length} on block`}
-          icon={Users} tone="sky"/>
+          icon={Users} tone="primary"/>
         <StatCard label="Shifts Filled" value={block.startDate ? shiftCount : '—'}
           sub={block.startDate ? `of ${minTotal} min coverage slots` : 'set block dates'}
-          icon={CalendarDays} tone={block.startDate && minTotal > 0 && shiftCount >= minTotal ? 'green' : 'amber'}
-          bar={block.startDate && minTotal > 0 ? { pct: fillPct, color: shiftCount >= minTotal ? 'green' : 'amber' } : null}/>
+          icon={CalendarDays} tone={block.startDate && minTotal > 0 && shiftCount >= minTotal ? 'success' : 'warn'}
+          bar={block.startDate && minTotal > 0 ? { pct: fillPct, color: shiftCount >= minTotal ? 'success' : 'warn' } : null}/>
         <StatCard label="Violations" value={block.startDate ? issueCounts.errors : '—'}
           sub={block.startDate ? `${issueCounts.warns} warning${issueCounts.warns !== 1 ? 's' : ''}` : 'set block dates'}
-          icon={AlertCircle} tone={issueCounts.errors > 0 ? 'red' : 'green'}/>
+          icon={AlertCircle} tone={issueCounts.errors > 0 ? 'danger' : 'success'}/>
         <StatCard label="Days Remaining"
           value={progress ? progress.remaining : '—'}
           sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
-          icon={Activity} tone="slate"/>
+          icon={Activity} tone="neutral"/>
       </div>
 
       {/* Block Overview */}
@@ -3257,6 +3468,27 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
 
 // ─── HOME TAB ─────────────────────────────────────────────────────────────────
 
+// Sheet-name regex matching (/home/i, /off.?service/i) breaks the moment a chief's export uses
+// generic tab names ("Sheet1"/"Sheet2") instead of descriptive ones — falling back to positional
+// guessing then silently assigns the wrong role to each sheet. Detect by content instead: the
+// Home sheet's header row(s) start column 0 with "Resident" (true for both the PGY-section
+// format and the grouped-track fallback, since both open a header row that way); the Off-Service
+// sheet has a literal "Dept" header cell. Used only when name-regex matching fails on both sheets.
+function detectHomeAndOffSheetsByContent(wb) {
+  let homeSheetName, offSheetName;
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+    for (let r = 0; r < Math.min(rows.length, 10) && (!homeSheetName || !offSheetName); r++) {
+      const row = rows[r] || [];
+      if (!homeSheetName && /^resident\b/i.test(String(row[0] ?? '').trim())) homeSheetName = name;
+      for (let c = 0; c < Math.min(row.length, 25); c++) {
+        if (String(row[c] ?? '').trim().toLowerCase() === 'dept') { offSheetName = name; break; }
+      }
+    }
+  }
+  return { homeSheetName, offSheetName };
+}
+
 // Uploads the chief's yearly Master Matrix workbook (.xlsx) and turns it into ready-to-load
 // Saved Blocks — EM Home rotation assignments (parseHomeResidentMatrix) plus off-service
 // rotators bucketed by date overlap (parseOffServiceSheet). Never touches the live/current
@@ -3281,8 +3513,9 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     reader.onload = () => {
       try {
         const wb = XLSX.read(reader.result, { type: 'array' });
-        const homeSheetName = wb.SheetNames.find(n => /home/i.test(n)) || wb.SheetNames[0];
-        const offSheetName  = wb.SheetNames.find(n => /off.?service/i.test(n)) || wb.SheetNames[1] || wb.SheetNames[0];
+        const detected = detectHomeAndOffSheetsByContent(wb);
+        const homeSheetName = wb.SheetNames.find(n => /home/i.test(n)) || detected.homeSheetName || wb.SheetNames[0];
+        const offSheetName  = wb.SheetNames.find(n => /off.?service/i.test(n)) || detected.offSheetName || wb.SheetNames[1] || wb.SheetNames[0];
         const homeRows = XLSX.utils.sheet_to_json(wb.Sheets[homeSheetName], { header: 1, raw: false, defval: '' });
         const offRows  = XLSX.utils.sheet_to_json(wb.Sheets[offSheetName],  { header: 1, raw: false, defval: '' });
 
@@ -3291,7 +3524,7 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         const off  = parseOffServiceSheet(offRows, ayStartYear);
 
         if (!home.blocks.length) {
-          setError('No rotation blocks recognized — check that the "Home EM Residents" sheet matches the expected layout (a "Resident (EM-Home PGY-N)" section per PGY level).');
+          setError('No rotation blocks recognized — check that the Home EM residents sheet matches the expected layout: either a "Resident (EM-Home PGY-N)" section per PGY level, or blank-row-separated resident groups each starting with a "Resident" + date-range header row.');
           return;
         }
 
@@ -4600,12 +4833,9 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
     return ids.map(id => BLOCK_TYPE_MAP[id]).filter(b => b && b.schedulable);
   }
 
-  // Per-area light-tint color, one of three independent per-area color reps in this file (also:
-  // SHIFTS[].chip — solid per-shift-id chip colors, and PDF_AREA_LIGHT in the PDF export section —
-  // raw RGB, since jsPDF can't consume Tailwind classes). Not merged into one shared constant:
-  // each uses a shade tuned for its own context (light-50 web tint here vs a more visible -100-ish
-  // RGB tint for PDF backgrounds) — but if you add a new shift area, update all three.
-  const areaColor = { POD:'text-blue-700 bg-blue-50 border-blue-200', PED:'text-green-700 bg-green-50 border-green-200', FLEX:'text-purple-700 bg-purple-50 border-purple-200', MT:'text-amber-700 bg-amber-50 border-amber-200', TRAUMA:'text-red-700 bg-red-50 border-red-200' };
+  // Per-area light-tint color, derived from AREA_COLORS (see CONSTANTS section) — the single
+  // source of truth for shift-area color, shared with SHIFTS[].chip and PDF_AREA_LIGHT.
+  const areaColor = Object.fromEntries(SHIFT_AREAS.map(a => [a, AREA_COLORS[a].tint]));
 
   function CellButton({ k, s, checked, inherited = false, onToggle }) {
     return (
@@ -5606,25 +5836,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     <div>
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
-        <span className="text-xs text-gray-500">
-          <strong className="text-gray-700">{totalAssigned}</strong> shifts assigned
+        <span className="font-mono text-[11px] text-muted-foreground">
+          <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
         </span>
         <span className="flex items-center gap-2">
-          <button onClick={requestGenerate}
-            title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten."
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-            <Wand2 size={13}/> Generate Schedule
-          </button>
-          <button onClick={()=>setConfirmRegen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
-            <RefreshCw size={12}/> Clear &amp; Regenerate
-          </button>
-          <button onClick={()=>setConfirmClear(true)}
-            title="Empties every assignment without regenerating."
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:border-red-300 hover:text-red-600 rounded-lg transition-colors">
-            <Trash2 size={12}/> Clear
-          </button>
+          <Button variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
+            title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
+            Generate Schedule
+          </Button>
+          <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={()=>setConfirmRegen(true)}>
+            Clear &amp; Regenerate
+          </Button>
+          <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
+            title="Empties every assignment without regenerating.">
+            Clear
+          </Button>
         </span>
       </div>
 
@@ -5680,10 +5907,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <Wand2 size={28} className="mx-auto mb-2 text-primary"/>
           <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
           <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
-          <button onClick={requestGenerate}
-            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-            <Wand2 size={14}/> Generate Schedule
-          </button>
+          <Button variant="primary" icon={Wand2} onClick={requestGenerate}>
+            Generate Schedule
+          </Button>
           <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
         </div>
       )}
@@ -5696,12 +5922,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               regenerating. This cannot be undone.
             </p>
             <div className="flex justify-end gap-2">
-              <button onClick={()=>setConfirmClear(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-              <button onClick={()=>{
+              <Button variant="ghost" onClick={()=>setConfirmClear(false)}>Cancel</Button>
+              <Button variant="danger" onClick={()=>{
                 updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
                 setConfirmClear(false);
                 showToast('Schedule cleared', 'amber');
-              }} className="px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear</button>
+              }}>Clear</Button>
             </div>
           </div>
         </Modal>
@@ -5716,8 +5942,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
             </p>
             <ReadinessWarningPanel issues={regenReadiness}/>
             <div className="flex justify-end gap-2">
-              <button onClick={()=>setConfirmRegen(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-              <button onClick={()=>runGenerate(true)} className="px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear &amp; Regenerate</button>
+              <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
+              <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
             </div>
           </div>
         </Modal>
@@ -5732,8 +5958,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
             </p>
             <ReadinessWarningPanel issues={confirmGenerate}/>
             <div className="flex justify-end gap-2">
-              <button onClick={()=>setConfirmGenerate(null)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
-              <button onClick={()=>runGenerate(false)} className="px-4 py-2 text-sm font-semibold bg-amber-500 hover:bg-amber-600 text-white rounded-lg">Generate Anyway</button>
+              <Button variant="ghost" onClick={()=>setConfirmGenerate(null)}>Cancel</Button>
+              <Button variant="primary" onClick={()=>runGenerate(false)}>Generate Anyway</Button>
             </div>
           </div>
         </Modal>
@@ -5837,20 +6063,24 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               </div>
             ))}
 
-            {/* Daily coverage footer — always the whole-schedule count, never catFilter-ed */}
-            <div className="flex bg-gray-50 border-t-2 border-gray-200">
-              <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center gap-1 px-3 cursor-pointer hover:bg-gray-100"
+            {/* Daily coverage footer — always the whole-schedule count, never catFilter-ed.
+                Legacy light-print surface: kept token-first (auto-adapts in dark mode, always
+                reverts to light for print via the @media screen-scoped dark overrides), but the
+                red/amber/green status classes stay raw Tailwind literals — already remap-sheet
+                covered for dark mode, must not be tokenized (see CLAUDE.md). */}
+            <div className="flex bg-muted/60 border-t-2 border-border">
+              <div className="grid-sticky bg-muted/60 border-r border-border flex items-center gap-1 px-3 cursor-pointer hover:bg-muted"
                 style={{width:NAME_W,minWidth:NAME_W}} onClick={()=>setCovExpanded(p=>!p)}>
-                <ChevronDown size={12} className={`text-gray-400 transition-transform ${covExpanded?'':'-rotate-90'}`}/>
-                <span className="text-xs font-semibold text-gray-500">Coverage</span>
+                <ChevronDown size={12} className={`text-muted-foreground transition-transform ${covExpanded?'':'-rotate-90'}`}/>
+                <span className="font-display uppercase text-[10px] tracking-wide text-muted-foreground">Coverage</span>
               </div>
               {dates.map(ds=>{
                 const cov = coverageByDate[ds];
-                const cls = cov.belowMin.length ? 'bg-red-50 text-red-600' : cov.aboveMax.length ? 'bg-amber-50 text-amber-600' : 'bg-green-50/60 text-green-600';
+                const cls = cov.belowMin.length ? 'bg-red-50 text-red-600 font-semibold' : cov.aboveMax.length ? 'bg-amber-50 text-amber-600' : 'text-green-700';
                 return (
                   <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:28}}
                     title={[...cov.belowMin,...cov.aboveMax].join('; ') || 'Coverage OK'}
-                    className={`flex items-center justify-center border-r border-gray-100 text-[10px] tabular-nums font-mono font-medium ${cls}`}>
+                    className={`flex items-center justify-center border-r border-gray-100 text-[11px] tabular-nums font-mono font-medium ${cls}`}>
                     {cov.filled}/{cov.minTotal}
                   </div>
                 );
@@ -5867,7 +6097,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                   const cls = info.count<info.min ? 'text-red-500 font-semibold' : info.count>info.max ? 'text-amber-500 font-semibold' : 'text-gray-400';
                   return (
                     <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:22}}
-                      className={`flex items-center justify-center border-r border-gray-50 text-[9px] tabular-nums font-mono ${cls}`}>
+                      className={`flex items-center justify-center border-r border-gray-50 text-[10px] tabular-nums font-mono ${cls}`}>
                       {info.count}/{info.min}
                     </div>
                   );
@@ -6149,8 +6379,8 @@ function GenerationReportCard({ report, appSettings }) {
   const structuralCount = structuralGroups.length;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-      <div className="px-4 py-3 border-b border-gray-100 bg-primary/10">
+    <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
+      <div className="px-4 py-3 border-b border-border bg-primary/10">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <span className="text-sm font-semibold text-primary flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
           <span className="text-xs text-primary">{new Date(report.generatedAt).toLocaleString()}</span>
@@ -6263,24 +6493,24 @@ function ValidationTab({ issues, block, appSettings }) {
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
       <div className="flex gap-3 flex-wrap">
-        {errors.length>0 && <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700 font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
+        {errors.length>0 && <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-2.5 text-sm text-destructive font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
         {warns.length>0 && <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-amber-700 font-medium"><AlertTriangle size={15}/>{warns.length} warning{warns.length!==1?'s':''}</div>}
       </div>
       {Object.entries(byRes).map(([id,{name,issues:ri}])=>{
         const hasErr=ri.some(i=>i.level==='error');
         return (
-          <div key={id} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-            <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hasErr?'bg-red-50 border-red-100':'bg-amber-50 border-amber-100'}`}>
-              {hasErr?<AlertCircle size={14} className="text-red-500"/>:<AlertTriangle size={14} className="text-amber-500"/>}
-              <span className={`text-sm font-semibold ${hasErr?'text-red-800':'text-amber-800'}`}>{name}</span>
-              <span className={`ml-auto text-xs ${hasErr?'text-red-400':'text-amber-400'}`}>{ri.length} issue{ri.length!==1?'s':''}</span>
+          <div key={id} className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
+            <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hasErr?'bg-destructive/10 border-destructive/20':'bg-amber-50 border-amber-100'}`}>
+              {hasErr?<AlertCircle size={14} className="text-destructive"/>:<AlertTriangle size={14} className="text-amber-500"/>}
+              <span className={`text-sm font-semibold ${hasErr?'text-destructive':'text-amber-800'}`}>{name}</span>
+              <span className={`ml-auto text-xs ${hasErr?'text-destructive/70':'text-amber-400'}`}>{ri.length} issue{ri.length!==1?'s':''}</span>
             </div>
-            <ul className="divide-y divide-gray-100">
+            <ul className="divide-y divide-border">
               {ri.map((issue,i)=>(
                 <li key={i} className="px-4 py-2.5 flex items-start gap-2">
-                  <span className={`mt-0.5 ${issue.level==='error'?'text-red-400':'text-amber-400'}`}>•</span>
-                  <div className="text-sm text-gray-700">
-                    {issue.dateStr && <span className="font-medium text-gray-400 text-xs mr-1.5">{formatDisplayDate(issue.dateStr)}{issue.shiftId?` · ${issue.shiftId}`:''}</span>}
+                  <span className={`mt-0.5 ${issue.level==='error'?'text-destructive':'text-amber-400'}`}>•</span>
+                  <div className="text-sm text-card-foreground">
+                    {issue.dateStr && <span className="font-medium text-muted-foreground text-xs mr-1.5">{formatDisplayDate(issue.dateStr)}{issue.shiftId?` · ${issue.shiftId}`:''}</span>}
                     {issue.message}
                   </div>
                 </li>
@@ -6684,14 +6914,8 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         ? "Data syncs automatically across your devices. Use these for a manual, offline point-in-time backup — a safety net if cloud sync is ever unavailable."
         : "All data lives in this browser's local storage — it does not sync between devices. Export a backup regularly."}>
         <div className="flex gap-2 flex-wrap">
-          <button onClick={exportData}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-            <Download size={14}/> Export Backup
-          </button>
-          <button onClick={()=>fileRef.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-            <Upload size={14}/> Import Backup
-          </button>
+          <Button variant="primary" size="md" icon={Download} onClick={exportData}>Export Backup</Button>
+          <Button variant="secondary" size="md" icon={Upload} onClick={()=>fileRef.current?.click()}>Import Backup</Button>
           <input ref={fileRef} type="file" accept=".json,application/json" onChange={importData} className="hidden"/>
         </div>
         <p className="text-xs text-gray-400 mt-2">Importing replaces ALL current data (rosters, blocks, matrix, settings) with the backup's contents, then reloads the app.</p>
@@ -6707,14 +6931,12 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       <CollapsibleCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home roster is preserved.">
         {resetConfirm ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-red-600 font-medium">Cannot be undone.</span>
-            <button onClick={()=>{onBlockReset();setResetConfirm(false);}} className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">Confirm</button>
-            <button onClick={()=>setResetConfirm(false)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg">Cancel</button>
+            <span className="text-sm text-destructive font-medium">Cannot be undone.</span>
+            <Button variant="danger" size="sm" onClick={()=>{onBlockReset();setResetConfirm(false);}}>Confirm</Button>
+            <Button variant="secondary" size="sm" onClick={()=>setResetConfirm(false)}>Cancel</Button>
           </div>
         ) : (
-          <button onClick={()=>setResetConfirm(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded-lg font-medium">
-            <RefreshCw size={14}/> New Block
-          </button>
+          <Button variant="danger" size="sm" icon={RefreshCw} onClick={()=>setResetConfirm(true)}>New Block</Button>
         )}
       </CollapsibleCard>
 
@@ -6722,14 +6944,12 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       <CollapsibleCard title="Clear All Data" subtitle="Deletes everything: rosters, all saved blocks, matrix overrides, AY data, and settings.">
         {clearConfirm ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-red-600 font-medium">This erases ALL app data. Export a backup first!</span>
-            <button onClick={clearAll} className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">Erase Everything</button>
-            <button onClick={()=>setClearConfirm(false)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg">Cancel</button>
+            <span className="text-sm text-destructive font-medium">This erases ALL app data. Export a backup first!</span>
+            <Button variant="danger" size="sm" onClick={clearAll}>Erase Everything</Button>
+            <Button variant="secondary" size="sm" onClick={()=>setClearConfirm(false)}>Cancel</Button>
           </div>
         ) : (
-          <button onClick={()=>setClearConfirm(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 border border-red-200 hover:bg-red-50 rounded-lg font-medium">
-            <Trash2 size={14}/> Clear All Data
-          </button>
+          <Button variant="danger" size="sm" icon={Trash2} onClick={()=>setClearConfirm(true)}>Clear All Data</Button>
         )}
       </CollapsibleCard>
     </div>
@@ -7235,7 +7455,7 @@ function reorderIds(order, fromId, toId) {
 // plain static column exactly as before — the drawer classes are all breakpoint-scoped, so desktop
 // layout is untouched. Below `md` the 208px column would otherwise leave ~119px of usable content
 // width on a 375px phone.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount, mobileOpen, onNavigate }) {
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount, mobileOpen, onNavigate, viewer }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
   // The 'feedback' tab only ever renders when cloud sync is configured (it has nothing to
@@ -7249,48 +7469,54 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   function resetDrag() { setDragTabId(null); setDragOverTabId(null); }
 
   return (
-    <aside className={`w-52 shrink-0 bg-white border-r border-gray-200 flex flex-col py-2 overflow-y-auto no-print
+    <aside className={`w-52 shrink-0 bg-navy border-r border-white/10 flex flex-col py-2 overflow-y-auto no-print
       fixed inset-y-0 left-0 z-40 shadow-xl transition-transform duration-200
       md:static md:z-auto md:shadow-none md:translate-x-0
-      ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      ${mobileOpen ? 'translate-x-0 visible' : '-translate-x-full invisible md:visible'}`}>
+      {viewer?.email && (
+        <div className="md:hidden px-4 py-2 mb-1 border-b border-white/10">
+          <p className="text-[11px] text-white/50 truncate" title={`Signed in as ${viewer.email}`}>Signed in as {viewer.email}</p>
+        </div>
+      )}
       <nav className="flex flex-col gap-0.5 px-2">
         {orderedTabs.map(t=>{
           const Icon=t.icon; const active=tab===t.id;
           const isValidation = t.id==='validation';
           const isRequests = t.id === 'requests';
           const dragOver = dragOverTabId===t.id && dragTabId!==t.id;
-          const iconColor = active?'text-white':'text-gray-400';
+          const iconColor = active?'text-white':'text-white/50';
           return (
             <button key={t.id} onClick={()=>{setTab(t.id); onNavigate?.();}}
+              aria-current={active ? 'page' : undefined}
               onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
               onDragLeave={(e)=>{if(e.currentTarget.contains(e.relatedTarget))return; setDragOverTabId(p=>p===t.id?null:p);}}
               onDrop={(e)=>{e.preventDefault(); setTabOrder(reorderIds(orderedTabs.map(x=>x.id), dragTabId, t.id)); resetDrag();}}
-              className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors text-left ${active?'bg-primary text-white':'text-gray-600 hover:bg-gray-100 hover:text-gray-800'} ${dragOver?'ring-2 ring-inset ring-primary':''}`}>
+              className={`group w-full flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors text-left ${active?'bg-primary text-white':'text-white/70 hover:bg-white/10 hover:text-white'} ${dragOver?'ring-2 ring-inset ring-primary':''}`}>
               <span draggable onDragStart={()=>setDragTabId(t.id)} onDragEnd={resetDrag} title="Drag to reorder"
                 className="shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40">
-                <GripVertical size={13} className={iconColor}/>
+                <GripVertical size={13} className="text-white/40"/>
               </span>
               <Icon size={15} className={`shrink-0 ${iconColor}`}/>
               <span className="flex-1">{t.label}</span>
               {isValidation && (issueCounts.errors > 0 || issueCounts.warns > 0) && (
                 <span className="flex items-center gap-1">
                   {issueCounts.errors > 0 && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-red-100 text-red-700'}`}>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-destructive text-destructive-foreground'}`}>
                       {issueCounts.errors}
                     </span>
                   )}
                   {issueCounts.warns > 0 && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-400 text-black/80'}`}>
                       {issueCounts.warns}
                     </span>
                   )}
                 </span>
               )}
               {isValidation && clean && (
-                <CheckCircle size={13} className={active?'text-white':'text-green-500'}/>
+                <CheckCircle size={13} className={active?'text-white':'text-green-400'}/>
               )}
               {isRequests && pendingRequestCount > 0 && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-100 text-amber-700'}`}>
+                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-400 text-black/80'}`}>
                   {pendingRequestCount}
                 </span>
               )}
@@ -7300,27 +7526,27 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
       </nav>
 
       {/* Legend */}
-      <div className="mt-3 px-3 py-3 border-t border-gray-100">
-        <p className="font-display text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Legend</p>
+      <div className="mt-3 px-3 py-3 border-t border-white/10">
+        <p className="font-display text-[10px] font-semibold text-white/50 uppercase tracking-wide mb-1.5">Legend</p>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {SHIFT_AREAS.map(area => (
             <span key={area} className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${SHIFT_MAP[`${area}-D`].chip}`}>{area}</span>
           ))}
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-gray-400">
-          <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
-          <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
-          <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-600">J</span>
+        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-white/50">
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-yellow-300">GR</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-orange-300">OFF</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-purple-300">J</span>
         </div>
       </div>
 
       {/* Sidebar footer */}
-      <div className="mt-auto px-3 py-3 border-t border-gray-100">
-        <div className="text-xs text-gray-400 space-y-0.5">
-          <p className="font-medium text-gray-500">{emResidentCount} EM residents</p>
+      <div className="mt-auto px-3 py-3 border-t border-white/10">
+        <div className="text-xs text-white/60 space-y-0.5">
+          <p className="font-medium text-white/70">{emResidentCount} EM residents</p>
           <p>{offServiceCount} off-service this block</p>
-          {issueCounts.errors > 0 && <p className="text-red-500 font-medium">{issueCounts.errors} error{issueCounts.errors!==1?'s':''}</p>}
-          {issueCounts.warns > 0 && <p className="text-amber-500 font-medium">{issueCounts.warns} warning{issueCounts.warns!==1?'s':''}</p>}
+          {issueCounts.errors > 0 && <p className="text-red-300 font-medium">{issueCounts.errors} error{issueCounts.errors!==1?'s':''}</p>}
+          {issueCounts.warns > 0 && <p className="text-amber-300 font-medium">{issueCounts.warns} warning{issueCounts.warns!==1?'s':''}</p>}
         </div>
       </div>
     </aside>
@@ -7337,6 +7563,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [switchPending, setSwitchPending] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   const [pdfPicker, setPdfPicker] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   const [emRoster, setEmRoster]           = useLocalStorage('res_em_roster', []);
   const [eligOverrides, setEligOverrides] = useLocalStorage('res_eligibility_overrides', {});
@@ -7699,23 +7926,33 @@ export default function ResidentScheduler({ viewer } = {}) {
   return (
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 shrink-0 no-print">
+      <header className="bg-card border-b border-border shrink-0 no-print relative z-50">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
             <button onClick={()=>setNavOpen(o=>!o)} title="Menu" aria-label="Toggle navigation"
-              className="md:hidden p-2 -ml-1 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors flex-none">
+              className="md:hidden p-2 -ml-1 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors flex-none">
               <Menu size={18}/>
             </button>
-            <div className="w-8 h-8 rounded-md bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white flex-none">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white flex-none">
               <CalendarDays size={18}/>
             </div>
             <div className="flex flex-col min-w-0">
               <h1 className="font-display text-base font-semibold uppercase tracking-wide text-gray-900 truncate">EM Residency Scheduler</h1>
-              <p className="text-[11px] text-gray-500 leading-none mt-0.5 truncate">
+              <p className="font-mono tabular-nums text-[11px] text-gray-500 leading-none mt-0.5 truncate">
                 {block.name||'No block name'} · {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
               </p>
             </div>
+            <span title="Draft v0.4 — Neuro/Anes/Psych/Pod matrix needs verification with chief. FM PGY-1 Peds eligibility TBD. Several rules marked ⚠ in Scheduling Rules tab. See User Guide for help; export backups from Settings."
+              className="hidden sm:inline-flex items-center gap-1.5 border border-omaha/40 bg-omaha/10 rounded-full px-2 py-0.5 flex-none">
+              <span className="w-1.5 h-1.5 rounded-full bg-omaha"/>
+              <span className="text-[11px] font-semibold text-foreground/80">DRAFT v0.4</span>
+            </span>
           </div>
+          {block.startDate && (
+            <div className="hidden md:flex flex-1 max-w-xs">
+              <BlockProgressBar block={block}/>
+            </div>
+          )}
           <div className="flex items-center gap-2 flex-none">
             <span className="hidden lg:inline text-xs text-gray-400">{allResidents.length} residents</span>
             {viewer?.email && (
@@ -7726,31 +7963,45 @@ export default function ResidentScheduler({ viewer } = {}) {
             )}
             <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+              className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
             {AUTH_ENABLED && (
               <button onClick={()=>supabase.auth.signOut()} title="Sign out" aria-label="Sign out"
-                className="p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
                 <LogOut size={16}/>
               </button>
             )}
-            {/* Exports are a desktop workflow (CSV into QGenda, printable PDF) — hidden on phones
-                so the essential controls above survive at 375px rather than overflowing. */}
+            {/* Export stays reachable at every width — below sm the text label collapses so only
+                the icon (with its title/aria-label) remains, keeping 375px from overflowing. */}
             {block.startDate && (
-              <div className="hidden md:flex items-center gap-2">
-                <button onClick={()=>requestExport('grid')} title="Resident × date grid — matches the on-screen Schedule tab"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
-                  <Download size={12}/> Grid CSV
-                </button>
-                <button onClick={()=>requestExport('qgenda')} title="One row per shift with real start/end times — for QGenda import"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
-                  <Download size={12}/> QGenda CSV
-                </button>
-                <button onClick={()=>setPdfPicker(true)} title="Printable PDF — matrix or per-resident pages"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-lg transition-colors">
-                  <Download size={12}/> PDF
-                </button>
+              <div className="relative">
+                <Button variant="secondary" size="sm" onClick={()=>setExportMenuOpen(o=>!o)}
+                  title="Export the schedule" aria-haspopup="menu" aria-expanded={exportMenuOpen}>
+                  <Download size={12}/> <span className="hidden sm:inline">Export</span> <ChevronDown size={12}/>
+                </Button>
+                {exportMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={()=>setExportMenuOpen(false)}/>
+                    <div role="menu" className="absolute right-0 top-full mt-1 w-48 bg-popover text-popover-foreground border border-border rounded-lg shadow-lg py-1 z-50">
+                      <button role="menuitem" onClick={()=>{setExportMenuOpen(false); requestExport('grid');}}
+                        title="Resident × date grid — matches the on-screen Schedule tab"
+                        className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
+                        Grid CSV
+                      </button>
+                      <button role="menuitem" onClick={()=>{setExportMenuOpen(false); requestExport('qgenda');}}
+                        title="One row per shift with real start/end times — for QGenda import"
+                        className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
+                        QGenda CSV
+                      </button>
+                      <button role="menuitem" onClick={()=>{setExportMenuOpen(false); setPdfPicker(true);}}
+                        title="Printable PDF — matrix or per-resident pages"
+                        className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
+                        PDF…
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -7770,7 +8021,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         <SidebarNav tab={tab} setTab={setTab} tabOrder={tabOrder} setTabOrder={setTabOrder}
           issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
           offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}
-          pendingRequestCount={pendingRequests.length}
+          pendingRequestCount={pendingRequests.length} viewer={viewer}
           mobileOpen={navOpen} onNavigate={()=>setNavOpen(false)}/>
 
         {/* Main content */}
@@ -7800,68 +8051,46 @@ export default function ResidentScheduler({ viewer } = {}) {
         </main>
       </div>
 
-      {/* Draft note */}
-      <div className="bg-amber-50 border-t border-amber-200 px-4 py-1.5 shrink-0">
-        <div className="flex items-center gap-2 text-xs text-amber-700">
-          <Info size={12} className="shrink-0"/>
-          <span><strong>Draft v0.4</strong> — Neuro/Anes/Psych/Pod matrix needs verification with chief. FM PGY-1 Peds eligibility TBD. Several rules marked ⚠ in Scheduling Rules tab. See User Guide for help; export backups from Settings.</span>
-        </div>
-      </div>
-
       {/* Save-before-switch modal */}
       {switchPending && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center shrink-0"><Archive size={18} className="text-amber-600"/></div>
-              <div>
-                <h2 className="font-semibold text-gray-900">Save current block first?</h2>
-                <p className="text-sm text-gray-600 mt-1">
-                  <span className="font-medium">"{block.name||'Current block'}"</span> has unsaved work.
-                </p>
-              </div>
-            </div>
-            {pendingSnap && (
-              <div className="rounded-lg bg-gray-50 border border-gray-200 px-4 py-3 text-sm text-gray-600">
-                Loading: <span className="font-semibold text-gray-900">{pendingSnap.name}</span>
-                {pendingSnap.startDate && <span className="text-xs text-gray-400 ml-2">{prettyDate(pendingSnap.startDate)} → {prettyDate(pendingSnap.endDate)}</span>}
-              </div>
-            )}
-            <div className="flex gap-2 flex-wrap">
-              <button onClick={()=>setSwitchPending(null)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-              <button onClick={()=>{isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="px-3 py-1.5 text-sm border border-gray-300 hover:bg-gray-50 rounded-lg text-gray-700">
+        <ConfirmDialog icon={Archive} tone="warn" title="Save current block first?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={()=>setSwitchPending(null)}>Cancel</Button>
+              <Button variant="secondary" size="sm" onClick={()=>{isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}}>
                 {isSwitchNew?'Discard & New':'Switch Without Saving'}
-              </button>
-              <button onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}} className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg font-medium">
-                <Save size={13}/> Save &amp; {isSwitchNew?'New':'Switch'}
-              </button>
+              </Button>
+              <Button variant="primary" size="sm" icon={Save} onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}}>
+                Save &amp; {isSwitchNew?'New':'Switch'}
+              </Button>
+            </>
+          }>
+          <p><span className="font-medium text-foreground">"{block.name||'Current block'}"</span> has unsaved work.</p>
+          {pendingSnap && (
+            <div className="rounded-lg bg-muted border border-border px-4 py-3 mt-3">
+              Loading: <span className="font-semibold text-foreground">{pendingSnap.name}</span>
+              {pendingSnap.startDate && <span className="text-xs text-muted-foreground/70 ml-2">{prettyDate(pendingSnap.startDate)} → {prettyDate(pendingSnap.endDate)}</span>}
             </div>
-          </div>
-        </div>
+          )}
+        </ConfirmDialog>
       )}
 
       {/* Pre-export validation gate */}
       {exportConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center shrink-0"><AlertTriangle size={18} className="text-red-600"/></div>
-              <div>
-                <h2 className="font-semibold text-gray-900">Unresolved issues in this schedule</h2>
-                <p className="text-sm text-gray-600 mt-1">
-                  {[
-                    pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
-                    pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
-                  ].filter(Boolean).join(' and ')} — see the Violations tab. Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount())===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 flex-wrap justify-end">
-              <button onClick={()=>setExportConfirm(null)} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-              <button onClick={()=>runExport(exportConfirm)} className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium">Export Anyway</button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog icon={AlertTriangle} tone="danger" title="Unresolved issues in this schedule"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={()=>setExportConfirm(null)}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={()=>runExport(exportConfirm)}>Export Anyway</Button>
+            </>
+          }>
+          <p>
+            {[
+              pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
+              pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
+            ].filter(Boolean).join(' and ')} — see the Violations tab. Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount())===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
+          </p>
+        </ConfirmDialog>
       )}
 
       {pdfPicker && (

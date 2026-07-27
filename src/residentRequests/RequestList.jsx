@@ -10,15 +10,27 @@ const STATUS_STYLE = {
   cancelled: 'bg-gray-100 text-gray-500',
 };
 
-// readOnly hides the withdraw control. Used by the admin "view as" preview, where the point is to
-// see exactly what a resident sees without acting for them. This is UX, not a security boundary —
-// an admin session can already update any request via requests_admin_update_all.
-export default function RequestList({ residentId, refreshKey, readOnly = false }) {
+// Shared by the standalone resident /requests route and the admin's "view as" preview
+// (RequestsTab.jsx's ViewAsPanel). Withdraw is always available here — filing (including on a
+// resident's behalf) and withdrawing a mistaken filing are both explicit, attributable admin
+// actions, same reasoning either way (see the comment above ViewAsPanel in RequestsTab.jsx).
+//
+// `blocks` is optional: when the caller already has the block list in memory (RequestsTab does,
+// via its own `blocks` prop from the app root), pass it in to skip a redundant fetch of the whole
+// shared res_state document. The standalone /requests route has no such data lying around, so it
+// omits the prop and this component self-fetches via fetchBlocksForLookup(), same as before.
+export default function RequestList({ residentId, refreshKey, blocks: blocksProp }) {
   const [requests, setRequests] = useState([]);
-  const [blocks, setBlocks] = useState([]);
+  const [blocks, setBlocks] = useState(blocksProp || []);
   const [error, setError] = useState(null);
 
   async function load() {
+    if (blocksProp) {
+      const { data } = await supabase.from('day_off_requests').select('*').eq('resident_id', residentId).order('submitted_at', { ascending: false });
+      setRequests(data || []);
+      setBlocks(blocksProp);
+      return;
+    }
     const [{ data }, blockData] = await Promise.all([
       supabase.from('day_off_requests').select('*').eq('resident_id', residentId).order('submitted_at', { ascending: false }),
       fetchBlocksForLookup(),
@@ -27,7 +39,7 @@ export default function RequestList({ residentId, refreshKey, readOnly = false }
     setBlocks(blockData);
   }
 
-  useEffect(() => { load(); }, [residentId, refreshKey]);
+  useEffect(() => { load(); }, [residentId, refreshKey, blocksProp]);
 
   async function cancel(id) {
     // Check the write's own error — an RLS denial, expired session, or network blip must not
@@ -85,7 +97,7 @@ export default function RequestList({ residentId, refreshKey, readOnly = false }
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${STATUS_STYLE[req.status]}`}>{req.status}</span>
-                    {req.status === 'pending' && !readOnly && (
+                    {req.status === 'pending' && (
                       // p-2 gives a ~36px hit area around the 14px glyph — the bare icon was well
                       // under any reasonable touch target on a phone.
                       <button onClick={() => cancel(req.id)} title="Withdraw request" aria-label="Withdraw request"

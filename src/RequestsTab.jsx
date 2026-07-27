@@ -13,6 +13,12 @@ import { findBlockForDate, formatResidentName } from './residentRequests/blockLo
 export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
+  const [profiles, setProfiles] = useState([]);
+  const [profilesError, setProfilesError] = useState(null);
+  // Bumped whenever ViewAsPanel files a request on the resident's behalf, so the sibling
+  // ApprovalQueue (which only otherwise reloads on mount or its own decide()) picks up the new
+  // pending request without the admin having to leave and re-enter this tab.
+  const [pendingRefreshSignal, setPendingRefreshSignal] = useState(0);
 
   useEffect(() => {
     if (!AUTH_ENABLED) { setSession(null); return; }
@@ -26,6 +32,20 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
     supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => setRole(data ? data.role : null));
   }, [session]);
+
+  // Single lifted profiles fetch, shared by AdminManagement (full use) and ViewAsPanel (derives
+  // its "who has a linked account" list from it) — previously each fetched its own copy, doubling
+  // the round-trip on every mount and letting the two silently drift.
+  async function loadProfiles() {
+    const { data, error: loadError } = await supabase.from('profiles').select('id, email, role, resident_id').order('email');
+    if (loadError) { setProfilesError(loadError.message); return; }
+    setProfilesError(null);
+    setProfiles(data || []);
+  }
+  useEffect(() => {
+    if (role !== ROLE.ADMIN) return;
+    loadProfiles();
+  }, [role]);
 
   if (!AUTH_ENABLED) {
     return <p className="text-sm text-gray-400 p-4">Day-off requests aren't configured yet — set VITE_ALLOWED_EMAIL_DOMAIN.</p>;
@@ -46,9 +66,10 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
 
   return (
     <>
-      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} />
-      <ViewAsPanel emRoster={emRoster} onRequestsChanged={onRequestsChanged} />
-      <AdminManagement session={session} emRoster={emRoster} />
+      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} refreshSignal={pendingRefreshSignal} />
+      <ViewAsPanel emRoster={emRoster} blocks={blocks} profiles={profiles} profilesError={profilesError}
+        onRequestsChanged={onRequestsChanged} onFiled={() => setPendingRefreshSignal(s => s + 1)} />
+      <AdminManagement session={session} emRoster={emRoster} profiles={profiles} onProfileChanged={loadProfiles} />
     </>
   );
 }
@@ -56,28 +77,25 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
 // Lets an admin see exactly what a given resident sees, and file a request on their behalf (a
 // resident phones one in, or hands over a paper form).
 //
-// The preview is READ-ONLY by design: it reuses the resident's own RequestList with `readOnly`, so
-// the admin observes rather than acts as them. Filing on behalf is a separate, explicit action in
-// this admin panel — the admin stays signed in as themselves, which keeps the action attributable
-// in a way impersonation would not.
+// The preview reuses the resident's own RequestList (now with withdraw enabled — see RequestList's
+// own header comment). Filing on behalf is a separate, explicit action in this admin panel — the
+// admin stays signed in as themselves, which keeps the action attributable in a way impersonation
+// would not; withdrawing a mistaken on-behalf filing is the same kind of attributable action, which
+// is why it's no longer suppressed here.
 //
 // Reads work because requests_admin_select_all grants an admin SELECT on every request; filing
 // works because of requests_admin_insert_all (migrate_admin_request_on_behalf.sql). Without that
 // policy the insert is denied, since requests_insert_own requires the row's resident_id to match
 // the caller's own and an admin's is normally NULL.
-function ViewAsPanel({ emRoster, onRequestsChanged }) {
-  const [linked, setLinked] = useState([]);   // profiles that actually have a resident_id
+function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChanged, onFiled }) {
   const [selected, setSelected] = useState('');
   const [filing, setFiling] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => {
-    supabase.from('profiles').select('resident_id').not('resident_id', 'is', null)
-      .then(({ data }) => setLinked((data || []).map(r => r.resident_id)));
-  }, []);
-
   // Only residents someone has actually linked an account to — previewing a roster entry with no
-  // account would always render an empty list and read as a bug.
+  // account would always render an empty list and read as a bug. Derived straight from the
+  // parent's lifted `profiles` (same fetch AdminManagement uses) rather than a second query.
+  const linked = profiles.filter(p => p.resident_id).map(p => p.resident_id);
   const options = emRoster
     .filter(r => linked.includes(r.id))
     .sort((a, b) => formatResidentName(a).localeCompare(formatResidentName(b)));
@@ -92,7 +110,8 @@ function ViewAsPanel({ emRoster, onRequestsChanged }) {
         <option value="">Select a resident…</option>
         {options.map(r => <option key={r.id} value={r.id}>{formatResidentName(r)}</option>)}
       </select>
-      {options.length === 0 && (
+      {profilesError && <p className="text-xs text-red-600 mb-2">{profilesError}</p>}
+      {!profilesError && options.length === 0 && (
         <p className="text-xs text-gray-400">No residents have linked an account yet.</p>
       )}
 
@@ -100,7 +119,7 @@ function ViewAsPanel({ emRoster, onRequestsChanged }) {
         <>
           <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
             <p className="text-xs text-amber-700">
-              Viewing as <span className="font-medium">{formatResidentName(selectedResident)}</span> — read-only.
+              Viewing as <span className="font-medium">{formatResidentName(selectedResident)}</span>'s request history.
             </p>
             <button onClick={() => setFiling(f => !f)}
               className="text-xs font-medium rounded-md px-2.5 py-1 border border-amber-300 bg-white">
@@ -110,11 +129,16 @@ function ViewAsPanel({ emRoster, onRequestsChanged }) {
 
           {filing && (
             <div className="mb-3">
-              <RequestForm residentId={selected} onSubmitted={() => { setFiling(false); setRefreshKey(k => k + 1); onRequestsChanged?.(); }} />
+              <RequestForm residentId={selected} onSubmitted={() => {
+                setFiling(false);
+                setRefreshKey(k => k + 1);
+                onRequestsChanged?.();
+                onFiled?.();
+              }} />
             </div>
           )}
 
-          <RequestList residentId={selected} refreshKey={refreshKey} readOnly />
+          <RequestList residentId={selected} refreshKey={refreshKey} blocks={blocks} />
         </>
       )}
     </div>
@@ -151,7 +175,7 @@ function groupByBlock(requests, blocks) {
   return labels.map(label => ({ label, requests: byLabel.get(label) }));
 }
 
-function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged }) {
+function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
   const [error, setError] = useState(null);
@@ -160,7 +184,10 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
     const { data } = await supabase.from('day_off_requests').select('*').order('submitted_at', { ascending: true });
     setRequests(data || []);
   }
-  useEffect(() => { loadRequests(); }, []);
+  // Reloads on mount AND whenever the parent bumps refreshSignal — the latter fires after
+  // ViewAsPanel files a request on a resident's behalf, so a newly-filed pending request shows up
+  // here without the admin having to leave and re-enter the tab.
+  useEffect(() => { loadRequests(); }, [refreshSignal]);
 
   function residentName(residentId) {
     const r = emRoster.find(x => x.id === residentId);
@@ -239,18 +266,9 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
 // that is approved/promoted here instead. Relies on the profiles_admin_select_all /
 // profiles_admin_update_role RLS policies (admin-only; a resident/pending session sees/changes
 // nothing here even if this component somehow rendered for one).
-function AdminManagement({ session, emRoster }) {
-  const [profiles, setProfiles] = useState([]);
+function AdminManagement({ session, emRoster, profiles, onProfileChanged }) {
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
-
-  async function loadProfiles() {
-    const { data, error: loadError } = await supabase.from('profiles').select('id, email, role, resident_id').order('email');
-    if (loadError) { setError(loadError.message); return; }
-    setError(null);
-    setProfiles(data || []);
-  }
-  useEffect(() => { loadProfiles(); }, []);
 
   function residentLabel(residentId) {
     if (!residentId) return 'Not linked';
@@ -264,7 +282,7 @@ function AdminManagement({ session, emRoster }) {
     setBusyId(null);
     if (updateError) { setError(updateError.message); return; }
     setError(null);
-    loadProfiles();
+    onProfileChanged?.();
   }
 
   const pending = profiles.filter(p => p.role === ROLE.PENDING);

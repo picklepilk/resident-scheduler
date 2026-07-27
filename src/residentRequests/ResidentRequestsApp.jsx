@@ -54,11 +54,14 @@ export default function ResidentRequestsApp() {
     );
   }
 
-  // Admins must not be offered the "which resident are you?" picker. Linking is IRREVERSIBLE —
-  // enforce_resident_id_immutable blocks any later change once resident_id is non-null — so an
-  // admin who opened /requests out of curiosity could permanently bind their account to a roster
-  // resident with one mis-tap. Admins belong in the main app; send them there.
-  if (profile.role === ROLE.ADMIN) {
+  // Only an UNLINKED admin needs to be blocked here — the sole risk is the "which resident are
+  // you?" picker below. Linking is IRREVERSIBLE — enforce_resident_id_immutable blocks any later
+  // change once resident_id is non-null — so an admin with no resident_id yet who opened /requests
+  // out of curiosity could permanently bind their account to a roster resident with one mis-tap.
+  // An admin whose account is already linked (e.g. a former resident later promoted) has nothing
+  // left to guard against: they skip the picker branch below regardless, so they fall through to
+  // the normal self-service RequestForm/RequestList, same as a resident-role account.
+  if (profile.role === ROLE.ADMIN && !profile.resident_id) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
         <div className="text-center max-w-sm">
