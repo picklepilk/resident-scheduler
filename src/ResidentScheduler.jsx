@@ -8,7 +8,7 @@ import {
   Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
-  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut, Menu,
+  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut, Menu, Globe,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -780,7 +780,9 @@ const NAME_W = 210;
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 
-function toDateStr(d) { return d.toISOString().slice(0, 10); }
+// Guards against Invalid Date (isNaN getTime) — toISOString() throws RangeError on those,
+// which without this guard propagates up through every date-math caller as an unhandled crash.
+function toDateStr(d) { return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10); }
 function parseDate(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -860,6 +862,7 @@ function prettyDate(s) {
 }
 
 function formatDisplayDate(s) {
+  if (!s) return '';
   const d = parseDate(s);
   return `${DOW[d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`;
 }
@@ -1710,7 +1713,7 @@ function getFirstFridaysInBlock(startStr, endStr) {
 // 2nd/3rd Wednesday on/after the block's own startDate, per PGY) — see DEFAULT_DAY_RULES'
 // computedDayRules{type:'wellnessWednesday', ordinal} and its handling in getEligibleShifts.
 function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
-  if (!startStr) return null;
+  if (!startStr || !Number.isFinite(ordinal)) return null;
   const start = parseDate(startStr);
   const delta = (weekday - start.getDay() + 7) % 7;
   return toDateStr(addDays(start, delta + (ordinal - 1) * 7));
@@ -3284,6 +3287,37 @@ function ConfirmDialog({ icon: Icon, tone = 'warn', title, children, actions }) 
   );
 }
 
+// Shared confirm dialog for wiping a block's shift assignments — used by both the Dashboard's
+// Current Block card and ScheduleGrid's toolbar so the two surfaces can't drift on copy/behavior.
+function ClearScheduleConfirm({ blockName, hasSnapshot, onConfirm, onClose }) {
+  return (
+    <ConfirmDialog icon={Trash2} tone="danger" title="Clear all shift assignments?"
+      actions={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" size="sm" icon={Trash2} onClick={onConfirm}>Clear Schedule</Button>
+        </>
+      }>
+      <p>This clears all shift assignments on <strong className="text-foreground">{blockName || 'the current block'}</strong> — including ones you entered manually. Residents, rotations, dates, and days off are kept. This cannot be undone.</p>
+      {hasSnapshot && <p className="mt-2">The saved copy is not changed until you save again.</p>}
+    </ConfirmDialog>
+  );
+}
+
+function ResetBlockConfirm({ onConfirm, onClose }) {
+  return (
+    <ConfirmDialog icon={RefreshCw} tone="danger" title="Reset this block?"
+      actions={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button variant="danger" size="sm" icon={RefreshCw} onClick={onConfirm}>Reset Block</Button>
+        </>
+      }>
+      <p>Clears schedule, off-service residents, rotation assignments, and special days. Keeps name, dates, and academic year. Saved copy untouched until you save again.</p>
+    </ConfirmDialog>
+  );
+}
+
 // Header micro-timeline — thin block-progress bar fed by getBlockProgress() (see UTILITIES
 // section). pct is already elapsed/total as a rounded percentage, so the fill's own right edge
 // marks "today" — no separate tick mark needed on top of it.
@@ -3361,6 +3395,24 @@ function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
       className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-gray-400'}`}>
       {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
       {saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally')}
+    </span>
+  );
+}
+
+// Snapshot state (compared against this block's saved copy on the Dashboard) — distinct from
+// AutosaveIndicator above, which reflects browser/cloud persistence and is always "safe" either way.
+const SAVE_STATE_PILL = {
+  never: { text: 'Not saved yet', className: 'bg-amber-500/10 text-amber-600' },
+  dirty: { text: 'Unsaved changes', className: 'bg-amber-500/10 text-amber-600' },
+  saved: { text: 'Saved', className: 'bg-muted text-muted-foreground' },
+};
+function SaveStatePill({ state }) {
+  const s = SAVE_STATE_PILL[state] || SAVE_STATE_PILL.never;
+  return (
+    <span title="Compared against this block's saved copy on the Dashboard. Autosave (top right) covers your browser/cloud copy either way."
+      className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0 ${s.className}`}>
+      {state === 'dirty' && <span className="w-1.5 h-1.5 rounded-full bg-amber-500"/>}
+      {s.text}
     </span>
   );
 }
@@ -3650,17 +3702,73 @@ function shiftCellStatus(info) {
   return 'green';
 }
 const COVERAGE_DOT_CLASS = { red: 'bg-destructive', amber: 'bg-amber-500', green: 'bg-green-500', gray: 'bg-muted' };
-const COVERAGE_CELL_CLASS = {
-  red: 'bg-red-50 text-red-600 font-semibold', amber: 'bg-amber-50 text-amber-600 font-semibold',
-  green: 'bg-green-50 text-green-700', gray: 'text-muted-foreground/60',
+// Dark-mode-safe tint for the month-grid day cells below — a flat bg-red-50/bg-amber-50 palette
+// (like COVERAGE_DOT_CLASS's sibling used to be) has no `.dark` override.
+const COVERAGE_DAY_BG = {
+  red: 'bg-destructive/10 text-destructive', amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  green: 'bg-green-500/10 text-green-700 dark:text-green-400', gray: 'bg-muted/40 text-muted-foreground',
 };
+const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Sunday-start month-grid calendar for a block calendar row's expanded detail — replaces the old
+// per-shift × per-date heatmap table with an actual calendar (reusing buildWeekRows, the same
+// Sunday-start padding ScheduleCalendarView already relies on). Purely read-only: no click
+// handlers on day cells or dots, since a day-level click sitting next to the row's own "Open
+// Block" button would invite an accidental block switch.
+function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameById }) {
+  const weekRows = useMemo(() => buildWeekRows(dates), [dates]);
+  const firstDate = dates[0];
+
+  return (
+    <div className="border border-border/40 rounded-lg overflow-hidden">
+      <div className="grid grid-cols-7 bg-muted/50 border-b border-border">
+        {DOW.map(d => (
+          <div key={d} className="text-[10px] font-semibold text-muted-foreground uppercase text-center py-1">{d}</div>
+        ))}
+      </div>
+      {weekRows.map((week, wi) => (
+        <div key={wi} className="grid grid-cols-7">
+          {week.map((ds, di) => {
+            if (!ds) return <div key={di} className="min-h-[64px] border-r border-b border-border/40 p-1 bg-muted/30"/>;
+            const cov = coverageByDate[ds];
+            const status = coverageDayStatus(cov);
+            const d = parseDate(ds);
+            const label = (ds === firstDate || d.getDate() === 1)
+              ? `${MONTH_ABBR[d.getMonth()]} ${d.getDate()}` : String(d.getDate());
+            return (
+              <div key={ds} className={`min-h-[64px] border-r border-b border-border/40 p-1 ${COVERAGE_DAY_BG[status]}`}>
+                <div className="flex items-start justify-between gap-1">
+                  <span className="text-[10px] font-medium">{label}</span>
+                  <span className="font-mono tabular-nums text-[10px]">{cov?.filled ?? 0}/{cov?.minTotal ?? 0}</span>
+                </div>
+                <div className="flex flex-wrap gap-0.5 mt-1">
+                  {activeShifts.map(s => {
+                    const info = cov?.perShift[s.id];
+                    const dotStatus = shiftCellStatus(info);
+                    const who = info && info.count > 0
+                      ? Object.keys(schedule).filter(rid => schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
+                      : '';
+                    return (
+                      <span key={s.id} title={info ? `${s.id}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : s.id}
+                        className={`w-2 h-2 rounded-full ${COVERAGE_DOT_CLASS[dotStatus]}`}/>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // One row of the year calendar — a saved blocksHistory snapshot, OR the live block (either
 // standing in for a saved snapshot it also matches, with coverage always computed from the LIVE
 // schedule rather than that snapshot's own stale copy, or as an extra "unsaved" row when the live
 // block hasn't been saved at all). Owns its own coverage memo so switching AY/expanding one row
 // never recomputes another row's numbers.
-function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule }) {
+function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule, onDelete, blockSaveState }) {
   const { snap, isLive, unsaved } = row;
   // Keyed on the row's own schedule object identity (stable for a saved snapshot until
   // blocksHistory itself changes; equal to the live block.schedule reference for the live row) —
@@ -3700,8 +3808,14 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
               <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700 shrink-0">Published</span>
             )}
             {isLive && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-primary/10 text-primary shrink-0">
-                {unsaved ? 'Unsaved · Current' : 'Currently Open'}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${blockSaveState === 'saved' ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
+                {blockSaveState === 'never' ? 'Unsaved · Current' : blockSaveState === 'dirty' ? 'Open · Unsaved changes' : 'Currently Open'}
+              </span>
+            )}
+            {!unsaved && snap.id?.startsWith('blk_import_') && (
+              <span title="Created by Master Matrix import — re-importing updates it in place"
+                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-muted text-muted-foreground shrink-0">
+                Imported
               </span>
             )}
           </div>
@@ -3729,43 +3843,21 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
           )}
           {!isLive && <Button variant="secondary" size="sm" onClick={() => onOpenBlock(snap)}>Open Block</Button>}
           {unsaved && <Button variant="secondary" size="sm" onClick={onGoToSchedule}>Go to Schedule</Button>}
+          {!unsaved && (
+            <button onClick={() => onDelete(snap)} title="Delete this saved block"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
+              <Trash2 size={14}/>
+            </button>
+          )}
         </div>
       </div>
 
       {expanded && (
-        <div className="border-t border-border p-3 overflow-x-auto no-print">
+        <div className="border-t border-border p-3 no-print">
           {activeShifts.length === 0 ? (
             <p className="text-xs text-muted-foreground italic px-1">No coverage requirements or assignments recorded for this block.</p>
           ) : (
-            <div className="min-w-max">
-              <div className="flex text-[10px] text-muted-foreground mb-1">
-                <div style={{ width: 110 }} className="shrink-0"/>
-                {dates.map(ds => (
-                  <div key={ds} style={{ width: 26 }} className="shrink-0 text-center">{parseDate(ds).getDate()}</div>
-                ))}
-              </div>
-              {activeShifts.map(s => (
-                <div key={s.id} className="flex items-center">
-                  <div style={{ width: 110 }} className="shrink-0 pr-2">
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${s.chip}`}>{s.id}</span>
-                  </div>
-                  {dates.map(ds => {
-                    const info = coverageByDate[ds]?.perShift[s.id];
-                    const status = shiftCellStatus(info);
-                    const who = info && info.count > 0
-                      ? Object.keys(row.schedule).filter(rid => row.schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
-                      : '';
-                    return (
-                      <div key={ds} style={{ width: 26, height: 22 }}
-                        title={info ? `${formatDisplayDate(ds)} ${s.id}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : ''}
-                        className={`shrink-0 flex items-center justify-center text-[9px] font-mono tabular-nums border-r border-b border-border/40 ${COVERAGE_CELL_CLASS[status]}`}>
-                        {info ? info.count : ''}
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
+            <BlockMonthGrid dates={dates} coverageByDate={coverageByDate} activeShifts={activeShifts} schedule={row.schedule} nameById={nameById}/>
           )}
         </div>
       )}
@@ -3777,7 +3869,8 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
 // block, always computed from its own live schedule). Purely a navigation/visualization layer —
 // "Open Block"/"Publish" delegate to loadBlock/toggleBlockPublished, which already own every bit
 // of the actual state transition (unsaved-work guard, hydrate, tab switch, published flag).
-function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, loadBlock, toggleBlockPublished, setTab, ayData, updateAyData }) {
+function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, loadBlock, toggleBlockPublished, onDeleteSnapshot, setTab, ayData, updateAyData, blockSaveState }) {
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const ayOptions = useMemo(() => {
     const set = new Set(blocksHistory.map(b => b.academicYear || 'Unknown'));
     if (block.academicYear) set.add(block.academicYear);
@@ -3860,28 +3953,58 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
                 onToggleExpand={k => setExpandedKey(p => p === k ? null : k)}
                 onOpenBlock={loadBlock} onTogglePublished={toggleBlockPublished}
                 onGoToSchedule={() => setTab('schedule')}
+                onDelete={snap => setDeleteConfirm(snap)}
+                blockSaveState={blockSaveState}
               />
             ))
           )}
         </div>
       </SectionCard>
+
+      {deleteConfirm && (
+        <ConfirmDialog icon={Trash2} tone="danger" title="Delete saved block?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+              <Button variant="danger" size="sm" icon={Trash2} onClick={() => { onDeleteSnapshot(deleteConfirm.id); setDeleteConfirm(null); }}>
+                Delete Block
+              </Button>
+            </>
+          }>
+          <div className="rounded-lg bg-muted border border-border px-4 py-3">
+            <div className="font-semibold text-foreground">{deleteConfirm.name || 'Unnamed Block'}</div>
+            <div className="text-xs text-muted-foreground/70 mt-0.5">
+              {prettyDate(deleteConfirm.startDate)} → {prettyDate(deleteConfirm.endDate)}
+              {deleteConfirm.savedAt && <> · saved {new Date(deleteConfirm.savedAt).toLocaleDateString()}</>}
+            </div>
+          </div>
+          <p className="mt-3">This permanently removes the saved copy. Rosters, rules, and other blocks are not affected.</p>
+          {deleteConfirm.id === block.id && (
+            <p className="mt-2">This block is currently open — it stays open and keeps all its data, but will no longer have a saved copy until you save it again.</p>
+          )}
+          {deleteConfirm.published && (
+            <p className="mt-2 text-amber-600">This block is published. Deleting it removes it from journal-club history counts used by validation.</p>
+          )}
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
 
-function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast }) {
+function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
   const sd           = block.specialDays || {};
   const schedule     = block.schedule || {};
 
-  const schedulableCount = allResidents.filter(r => isSchedulable(r)).length;
-
   // ── Current Block editor state (relocated from the old Home tab) ──
   const [blockOpen, setBlockOpen] = useState(true);
   const [showImportMatrix, setShowImportMatrix] = useState(false);
+  const [confirmClearSchedule, setConfirmClearSchedule] = useState(false);
+  const [confirmResetBlock, setConfirmResetBlock] = useState(false);
+  const [confirmDeleteBlock, setConfirmDeleteBlock] = useState(false);
   // Raw counts for the Current Block card's own header subtitle — distinct from the
   // coverage-derived "Shifts Filled" stat tile below (see that tile's own comment): this is
   // every resident + every filled cell on the block regardless of min-coverage targets, exactly
@@ -3919,7 +4042,8 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
           block, see the "YEAR CALENDAR" section above DashboardTab. */}
       <BlockCalendarSection block={block} allResidents={allResidents} coverage={coverage}
         blocksHistory={blocksHistory} loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished}
-        setTab={setTab} ayData={ayData} updateAyData={updateAyData}/>
+        onDeleteSnapshot={deleteBlockSnapshot}
+        setTab={setTab} ayData={ayData} updateAyData={updateAyData} blockSaveState={blockSaveState}/>
 
       {/* Current Block — inline editable form, relocated from the old Home tab (now removed —
           the Block Calendar above replaced its Saved Blocks list, and AYConferenceEditor moved
@@ -3944,6 +4068,16 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
               <Upload size={12}/> Import Master Matrix
             </button>
+            <Button variant="dangerOutline" size="sm" icon={Trash2} disabled={curShiftCount === 0}
+              onClick={() => setConfirmClearSchedule(true)}>
+              Clear Schedule
+            </Button>
+            <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={() => setConfirmResetBlock(true)}>
+              Reset Block
+            </Button>
+            <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={() => setConfirmDeleteBlock(true)}>
+              Delete Block
+            </Button>
           </>}
         />
 
@@ -4001,6 +4135,34 @@ function DashboardTab({ block, updateBlock, allResidents, ayConf, issueCounts, c
           appSettings={appSettings} showToast={showToast}
           onClose={() => setShowImportMatrix(false)}
         />
+      )}
+
+      {confirmClearSchedule && (
+        <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
+          onConfirm={() => {
+            updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
+            setConfirmClearSchedule(false);
+            showToast('Schedule cleared', 'amber');
+          }}
+          onClose={() => setConfirmClearSchedule(false)}/>
+      )}
+
+      {confirmResetBlock && (
+        <ResetBlockConfirm onConfirm={() => { onBlockReset(); setConfirmResetBlock(false); }} onClose={() => setConfirmResetBlock(false)}/>
+      )}
+
+      {confirmDeleteBlock && (
+        <ConfirmDialog icon={Trash2} tone="danger" title="Delete this block?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteBlock(false)}>Cancel</Button>
+              <Button variant="danger" size="sm" icon={Trash2} onClick={() => { deleteCurrentBlock(); setConfirmDeleteBlock(false); }}>
+                Delete Block
+              </Button>
+            </>
+          }>
+          <p>Removes '{block.name || 'Unnamed Block'}' completely — the saved copy on this Dashboard and everything in your current workspace. Roster, rules, and other blocks are not affected. This cannot be undone.</p>
+        </ConfirmDialog>
       )}
 
       {/* Stat tiles */}
@@ -5548,8 +5710,13 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-gray-900 text-sm">{res.firstName} {res.lastName}</span>
                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat?.badge}`}>{cat?.shortLabel} PGY-{res.pgy}</span>
-                        {chiefRole && <span title={CHIEF_ROLES[chiefRole].label} className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★{CHIEF_ROLES[chiefRole].badge}</span>}
-                        {!sched_ok && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{btObj?.atUH ? 'not chief-sched' : 'away'}</span>}
+                        {chiefRole && CHIEF_ROLES[chiefRole] && <span title={CHIEF_ROLES[chiefRole].label} className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">Chief ★{CHIEF_ROLES[chiefRole].badge}</span>}
+                        {!sched_ok && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-muted text-muted-foreground"
+                            title={`On ${btObj?.label || bt} this block — not placed on the EM schedule`}>
+                            Not scheduled this block
+                          </span>
+                        )}
                       </div>
                       {(res.approvedDatesOff?.length > 0 || res.vacationDates?.length > 0 || res.jeopardyDates?.length > 0) && (
                         <div className="flex flex-wrap gap-1 mt-1">
@@ -6749,7 +6916,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
@@ -6765,6 +6932,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   );
   const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
   const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
+  const [showInactive, setShowInactive] = useState({}); // per-category toggle for the not-schedulable divider row
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
@@ -6903,12 +7071,97 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     </div>
   );
 
+  // Shared by the active and (expanded) inactive resident rows within a category group below —
+  // identical row markup either way, non-schedulable residents just get the dimmed `opacity-50`
+  // treatment from `sched_ok`.
+  function renderResidentRow(res) {
+    const cat=CAT_MAP[res.category];
+    const sched_ok=isSchedulable(res);
+    const cnt=Object.values(sched[res.id]||{}).filter(Boolean).length;
+    const tgt=getShiftTarget(res, appSettings);
+    const over=tgt!=null&&cnt>tgt;
+    const chiefRole=effectiveChiefRole(res);
+    return (
+      <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
+        <div className={`grid-sticky border-r border-gray-200 flex items-center px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
+              {res.blockType && res.category!=='PEDS' && (
+                <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
+              )}
+              {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
+            </div>
+          </div>
+        </div>
+        {dates.map(ds=>{
+          const sid=sched[res.id]?.[ds]||null;
+          const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
+          const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
+          const isVacation=(res.vacationDates||[]).includes(ds);
+          const isJeopardy=(res.jeopardyDates||[]).includes(ds);
+          const isJeoBlocked=isJeopardy&&jeoBlock;
+          const isPendingRequest = pendingByResident.get(res.id)?.has(ds) || false;
+          const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate});
+          const d=parseDate(ds); const dow=d.getDay();
+          const isWed=dow===3; const isWknd=dow===0||dow===6;
+          // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
+          // them. Don't gate on elig.length===0 — GR Wednesday now only strips DAY
+          // shifts (dayTypeRestrictions noDay), so eves/nights stay eligible and the
+          // cell is no longer empty; the old ===0 check silently dropped this cue.
+          const isGR=isWed&&res.category==='EM_HOME';
+          // Wellness Wednesday cue: the resident's own PGY-specific ordinal (1st/2nd/3rd
+          // Wed on/after block start) — a subset of GR Wednesdays, so it always
+          // coincides with isGR for that one cell. WW takes visual priority over the
+          // plain GR cue there (more specific: it additionally strips evenings), rather
+          // than stacking two badges in one cell.
+          const wwOrdinal = res.category==='EM_HOME'
+            ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+            : null;
+          const isWW = isWed && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(block.startDate, 3, wwOrdinal);
+          const shift=sid?SHIFT_MAP[sid]:null;
+          let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
+          if(hasV) bg='bg-red-50';
+          const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation;
+          const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
+          const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
+          return (
+            <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
+              onClick={()=>{ if(drag) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
+              onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
+              onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
+              onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
+              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
+              className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
+              {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
+              {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
+              {isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-600">WW</span></div>}
+              {isGR&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
+              {shift && (
+                <div draggable
+                  onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
+                  onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
+                  className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold cursor-grab active:cursor-grabbing ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                  {sid}
+                </div>
+              )}
+              {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
+              {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
-          <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
+          <strong className="text-foreground/80">{schedulableCount}</strong> of {allResidents.length} residents scheduling · <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
         </span>
         <span className="flex items-center gap-2">
@@ -6921,7 +7174,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           </Button>
           <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
             title="Empties every assignment without regenerating.">
-            Clear
+            Clear Schedule
           </Button>
         </span>
       </div>
@@ -6988,22 +7241,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       )}
 
       {confirmClear && (
-        <Modal title="Clear Schedule?" onClose={()=>setConfirmClear(false)}>
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              This clears <strong>all current assignments — including ones you entered manually</strong> — without
-              regenerating. This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmClear(false)}>Cancel</Button>
-              <Button variant="danger" onClick={()=>{
-                updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
-                setConfirmClear(false);
-                showToast('Schedule cleared', 'amber');
-              }}>Clear</Button>
-            </div>
-          </div>
-        </Modal>
+        <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
+          onConfirm={() => {
+            updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
+            setConfirmClear(false);
+            showToast('Schedule cleared', 'amber');
+          }}
+          onClose={() => setConfirmClear(false)}/>
       )}
 
       {confirmRegen && (
@@ -7058,7 +7302,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               })}
             </div>
 
-            {grouped.map(({cat,members})=>(
+            {grouped.map(({cat,members})=>{
+              const active=members.filter(isSchedulable);
+              const inactive=members.filter(r=>!isSchedulable(r));
+              const hiddenAssigned=inactive.filter(r=>Object.values(sched[r.id]||{}).filter(Boolean).length>0).length;
+              const isExpanded=showInactive[cat.id] ?? true;
+              return (
               <div key={cat.id}>
                 <div className={`flex border-b border-gray-100 ${cat.rowBg}`}>
                   <div className="grid-sticky px-3 py-1.5 border-r border-gray-200" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
@@ -7066,88 +7315,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
                   </div>
                   <div style={{flex:1}}/>
                 </div>
-                {members.map(res=>{
-                  const sched_ok=isSchedulable(res);
-                  const cnt=Object.values(sched[res.id]||{}).filter(Boolean).length;
-                  const tgt=getShiftTarget(res, appSettings);
-                  const over=tgt!=null&&cnt>tgt;
-                  const chiefRole=effectiveChiefRole(res);
-                  return (
-                    <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
-                      <div className={`grid-sticky border-r border-gray-200 flex items-center px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
-                            {res.blockType && res.category!=='PEDS' && (
-                              <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
-                            )}
-                            {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
-                          </div>
-                        </div>
-                      </div>
-                      {dates.map(ds=>{
-                        const sid=sched[res.id]?.[ds]||null;
-                        const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
-                        const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
-                        const isVacation=(res.vacationDates||[]).includes(ds);
-                        const isJeopardy=(res.jeopardyDates||[]).includes(ds);
-                        const isJeoBlocked=isJeopardy&&jeoBlock;
-                        const isPendingRequest = pendingByResident.get(res.id)?.has(ds) || false;
-                        const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate});
-                        const d=parseDate(ds); const dow=d.getDay();
-                        const isWed=dow===3; const isWknd=dow===0||dow===6;
-                        // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
-                        // them. Don't gate on elig.length===0 — GR Wednesday now only strips DAY
-                        // shifts (dayTypeRestrictions noDay), so eves/nights stay eligible and the
-                        // cell is no longer empty; the old ===0 check silently dropped this cue.
-                        const isGR=isWed&&res.category==='EM_HOME';
-                        // Wellness Wednesday cue: the resident's own PGY-specific ordinal (1st/2nd/3rd
-                        // Wed on/after block start) — a subset of GR Wednesdays, so it always
-                        // coincides with isGR for that one cell. WW takes visual priority over the
-                        // plain GR cue there (more specific: it additionally strips evenings), rather
-                        // than stacking two badges in one cell.
-                        const wwOrdinal = res.category==='EM_HOME'
-                          ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
-                          : null;
-                        const isWW = isWed && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(block.startDate, 3, wwOrdinal);
-                        const shift=sid?SHIFT_MAP[sid]:null;
-                        let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
-                        if(hasV) bg='bg-red-50';
-                        const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation;
-                        const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
-                        const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
-                        return (
-                          <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
-                            onClick={()=>{ if(drag) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
-                            onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
-                            onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
-                            onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
-                            title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
-                            className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
-                            {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
-                            {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
-                            {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
-                            {isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-600">WW</span></div>}
-                            {isGR&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
-                            {shift && (
-                              <div draggable
-                                onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
-                                onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
-                                className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold cursor-grab active:cursor-grabbing ${shift.chip} ${isDragSource?'opacity-40':''}`}>
-                                {sid}
-                              </div>
-                            )}
-                            {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
-                            {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
+                {active.map(renderResidentRow)}
+                {inactive.length>0 && (
+                  <div className="bg-muted/50 text-xs text-muted-foreground px-2 py-1.5 flex items-center gap-1.5 cursor-pointer"
+                    onClick={()=>setShowInactive(p=>({...p,[cat.id]:!isExpanded}))}>
+                    <ChevronDown size={12} className={isExpanded?'':'-rotate-90'}/>
+                    Not scheduled this block ({inactive.length}) — off rotation
+                    {hiddenAssigned>0 && <span className="text-amber-600 dark:text-amber-400 font-medium">· {hiddenAssigned} shifts</span>}
+                  </div>
+                )}
+                {isExpanded && inactive.map(renderResidentRow)}
               </div>
-            ))}
+              );
+            })}
 
             {/* Daily coverage footer — always the whole-schedule count, never catFilter-ed.
                 Legacy light-print surface: kept token-first (auto-adapts in dark mode, always
@@ -7403,12 +7583,13 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
     <div className={`bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm ${!sched_ok?'opacity-50':''}`}>
       <div className="px-3 py-2 border-b border-gray-100 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
+          <div className="text-sm font-semibold text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
             {res.blockType && res.category!=='PEDS' && (
               <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
             )}
+            {!sched_ok && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">Not scheduled this block</span>}
           </div>
           {cnt > 0 && (
             <div className="text-[10px] text-gray-400 mt-1">
@@ -8017,15 +8198,10 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       </div>
 
       {/* Block reset */}
-      <CollapsibleCard title="Block Reset" subtitle="Clears off-service roster and schedule. EM Home roster is preserved.">
-        {resetConfirm ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-destructive font-medium">Cannot be undone.</span>
-            <Button variant="danger" size="sm" onClick={()=>{onBlockReset();setResetConfirm(false);}}>Confirm</Button>
-            <Button variant="secondary" size="sm" onClick={()=>setResetConfirm(false)}>Cancel</Button>
-          </div>
-        ) : (
-          <Button variant="danger" size="sm" icon={RefreshCw} onClick={()=>setResetConfirm(true)}>New Block</Button>
+      <CollapsibleCard title="Block Reset" subtitle="Clears schedule, off-service residents, rotation assignments, and special days. Keeps name, dates, and academic year.">
+        <Button variant="danger" size="sm" icon={RefreshCw} onClick={()=>setResetConfirm(true)}>Reset Block</Button>
+        {resetConfirm && (
+          <ResetBlockConfirm onConfirm={()=>{onBlockReset();setResetConfirm(false);}} onClose={()=>setResetConfirm(false)}/>
         )}
       </CollapsibleCard>
 
@@ -8507,17 +8683,22 @@ function FeedbackAdminTab() {
 
 const TABS = [
   { id: 'dashboard',  label: 'Dashboard',     icon: LayoutDashboard },
-  { id: 'em',         label: 'EM Residents',  icon: Stethoscope },
-  { id: 'offservice', label: 'Off-Service',   icon: Users },
-  { id: 'matrix',     label: 'Shift Matrix',  icon: Table2 },
-  { id: 'schedule',   label: 'Schedule',      icon: Calendar },
-  { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen },
-  { id: 'validation', label: 'Violations',    icon: AlertTriangle },
+  { id: 'em',         label: 'EM Residents',  icon: Stethoscope, blockScoped: true },
+  { id: 'offservice', label: 'Off-Service',   icon: Users, blockScoped: true },
+  { id: 'matrix',     label: 'Shift Matrix',  icon: Table2, global: true },
+  { id: 'schedule',   label: 'Schedule',      icon: Calendar, blockScoped: true },
+  { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen, global: true },
+  { id: 'validation', label: 'Violations',    icon: AlertTriangle, blockScoped: true },
   { id: 'requests',   label: 'Requests',      icon: Inbox },
-  { id: 'settings',   label: 'Settings',      icon: SettingsIcon },
+  { id: 'settings',   label: 'Settings',      icon: SettingsIcon, global: true },
   { id: 'feedback',   label: 'Feedback',      icon: MessageSquare },
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
+
+// Tabs whose content is scoped to whichever block is currently open — shown BlockContextBar so the
+// chief always knows which block they're editing without a trip back to the Dashboard. Derived from
+// TABS' own blockScoped flag so the two never drift out of sync.
+const BLOCK_SCOPED_TABS = new Set(TABS.filter(t => t.blockScoped).map(t => t.id));
 
 // Saved order (validated — a corrupt/foreign backup import could hand this anything) plus any
 // tabs added since the order was saved (unknown ids), appended at the end.
@@ -8588,6 +8769,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
               </span>
               <Icon size={15} className={`shrink-0 ${iconColor}`}/>
               <span className="flex-1">{t.label}</span>
+              {t.global && <Globe size={11} className="text-white/30 shrink-0" title="Applies to all blocks"/>}
               {isValidation && (issueCounts.errors > 0 || issueCounts.warns > 0) && (
                 <span className="flex items-center gap-1">
                   {issueCounts.errors > 0 && (
@@ -8643,6 +8825,34 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
       </div>
     </aside>
   );
+}
+
+// Slim banner shown above the main content on block-scoped tabs (see BLOCK_SCOPED_TABS) — the
+// chief can jump straight to EM Residents/Schedule/etc. from a deep link or leftover tab state
+// without first passing through the Dashboard, so this is the one place block identity stays
+// visible on every one of those tabs.
+function BlockContextBar({ block, blockSaveState, onSave, onSwitch }) {
+  return (
+    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex items-center gap-3 text-xs no-print">
+      <CalendarDays size={14} className="text-primary shrink-0"/>
+      <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
+      <span className="hidden sm:inline text-muted-foreground">
+        {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
+      </span>
+      <SaveStatePill state={blockSaveState}/>
+      <div className="ml-auto flex items-center gap-2">
+        <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
+        <Button variant="ghost" size="sm" onClick={onSwitch}>Switch block…</Button>
+      </div>
+    </div>
+  );
+}
+
+function buildSnapData(block) {
+  return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
+           schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
+           generationReport:block.generationReport||null,
+           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
 }
 
 // `viewer` ({email, userId, role}) is supplied by AppGate, which has already resolved the session
@@ -8877,6 +9087,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     return [...em,...(block.offServiceResidents||[])];
   },[emRoster,block.emBlockAssignments,block.offServiceResidents]);
 
+  const schedulableCount = useMemo(()=>allResidents.filter(isSchedulable).length,[allResidents]);
+
   // Single validateAll pass shared by the sidebar badge, pendingErrorCount, and the Dashboard
   // stat tiles — running it once per relevant state change instead of once per consumer.
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
@@ -8889,8 +9101,15 @@ export default function ResidentScheduler({ viewer } = {}) {
     restWarns: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
   }),[issues]);
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
+  const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
+  // Dirty flag flips true on any updateBlock() edit, false on save/load/new — avoids a full
+  // deep-equal recompute on every keystroke/drag/cell-assign. Lazy initializer runs the (one-time)
+  // deep-equal exactly once, at mount, so a block left mid-edit across a page reload still starts
+  // in the correct state instead of defaulting to false-positive "Saved".
+  const [blockDirty, setBlockDirty] = useState(() => matchingSnap ? !deepEqualNormalized(buildSnapData(block), matchingSnap.data) : false);
+  const blockSaveState = matchingSnap ? (blockDirty ? 'dirty' : 'saved') : 'never';
 
-  function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
+  function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); setBlockDirty(true); }
 
   function saveBlock() {
     const shiftCount=Object.values(block.schedule||{}).reduce((s,d)=>s+Object.values(d).filter(Boolean).length,0);
@@ -8900,15 +9119,25 @@ export default function ResidentScheduler({ viewer } = {}) {
     const snap={ id:block.id, name:block.name||'Unnamed Block', academicYear:block.academicYear||getAcademicYear(),
       startDate:block.startDate, endDate:block.endDate, savedAt:new Date().toISOString(), published,
       residentCount:emRoster.length+(block.offServiceResidents||[]).length, shiftCount,
-      data:{ emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
-             schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-             generationReport:block.generationReport||null,
-             startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear } };
+      data: buildSnapData(block) };
     setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0, appSettings.maxSavedBlocks ?? 24));
+    setBlockDirty(false);
     showToast(`"${snap.name}" saved`,'green');
   }
   function toggleBlockPublished(id) {
     setBlocksHistory(p=>p.map(b=>b.id===id ? {...b, published: !b.published} : b));
+  }
+
+  function deleteBlockSnapshot(id) {
+    setBlocksHistory(p=>p.filter(b=>b.id!==id));
+    showToast('Saved block deleted','amber');
+  }
+
+  function deleteCurrentBlock() {
+    setBlocksHistory(p=>p.filter(b=>b.id!==block.id));
+    setBlock(makeDefaultBlock());
+    setBlockDirty(false);
+    showToast('Block deleted','amber');
   }
 
   function loadBlock(snap) {
@@ -8923,6 +9152,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
       conferences:d.conferences||{}, generationReport:d.generationReport||null });
+    setBlockDirty(false);
     setSwitchPending(null); setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
@@ -8933,12 +9163,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function doNewBlock() {
-    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('dashboard');
+    setBlock(makeDefaultBlock()); setBlockDirty(false); setSwitchPending(null); setTab('dashboard');
     showToast('New block ready — enter dates below','amber');
   }
 
   function blockReset() {
-    updateBlock(b=>({...makeDefaultBlock(),id:b.id,name:b.name,academicYear:b.academicYear,emBlockAssignments:{}}));
+    updateBlock(b=>({...makeDefaultBlock(),id:b.id,name:b.name,academicYear:b.academicYear,startDate:b.startDate,endDate:b.endDate,emBlockAssignments:{}}));
     showToast('Block reset','amber');
   }
 
@@ -9041,10 +9271,14 @@ export default function ResidentScheduler({ viewer } = {}) {
               <CalendarDays size={18}/>
             </div>
             <div className="flex flex-col min-w-0">
-              <h1 className="font-display text-base font-semibold uppercase tracking-wide text-gray-900 truncate">EM Residency Scheduler</h1>
-              <p className="font-mono tabular-nums text-[11px] text-gray-500 leading-none mt-0.5 truncate">
-                {block.name||'No block name'} · {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
-              </p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-base font-semibold text-foreground truncate">{block.name || 'Untitled block'}</h1>
+                <SaveStatePill state={blockSaveState}/>
+                <span className="hidden lg:inline text-xs text-muted-foreground shrink-0">
+                  {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
+                </span>
+              </div>
             </div>
             <span title="Draft v0.4 — Neuro/Anes/Psych/Pod matrix needs verification with chief. FM PGY-1 Peds eligibility TBD. Several rules marked ⚠ in Scheduling Rules tab. See User Guide for help; export backups from Settings."
               className="hidden sm:inline-flex items-center gap-1.5 border border-omaha/40 bg-omaha/10 rounded-full px-2 py-0.5 flex-none">
@@ -9112,6 +9346,10 @@ export default function ResidentScheduler({ viewer } = {}) {
         </div>
       </header>
 
+      {BLOCK_SCOPED_TABS.has(tab) && (
+        <BlockContextBar block={block} blockSaveState={blockSaveState} onSave={saveBlock} onSwitch={()=>setTab('dashboard')}/>
+      )}
+
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Backdrop for the below-md sidebar drawer. md:hidden so it can never intercept clicks
@@ -9131,17 +9369,18 @@ export default function ResidentScheduler({ viewer } = {}) {
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
           {tab==='dashboard' && (
-            <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents}
+            <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents} schedulableCount={schedulableCount}
               ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
-              loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} setTab={setTab}
+              loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} deleteBlockSnapshot={deleteBlockSnapshot} setTab={setTab}
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
-              onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast}/>
+              onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
+              onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
