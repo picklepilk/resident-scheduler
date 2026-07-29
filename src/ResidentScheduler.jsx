@@ -58,6 +58,21 @@ const SHIFTS = [
   { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
   { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.TRAUMA.chip.day },
   { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.TRAUMA.chip.night },
+  // 12h conference-week pairs (day+night, no evening) — POD/MT/FLEX auto-swap in for any
+  // ACEP/AAEM/SAEM conference-week date (see CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS,
+  // isConferenceCoverageDate), chief-editable via the coverage editor. PED's 12h pair exists too
+  // but is deliberately NOT part of the auto-swap — it stays chief-opt-in, zero coverage by
+  // default (see DEFAULT_COVERAGE_MINMAX). type stays plain 'day'/'night' — never a new type
+  // string — so circadian rules, JC overlap, night-run counting, PDF/CSV export, and
+  // senior-composition rules all apply with zero special-casing (they key off type/area, never id).
+  { id: 'POD-D12',  label: 'POD Day 12h',  area: 'POD',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
+  { id: 'POD-N12',  label: 'POD Night 12h',area: 'POD',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
+  { id: 'MT-D12',   label: 'MT Day 12h',   area: 'MT',   hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
+  { id: 'MT-N12',   label: 'MT Night 12h', area: 'MT',   hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
+  { id: 'FLEX-D12', label: 'FLEX Day 12h', area: 'FLEX', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
+  { id: 'FLEX-N12', label: 'FLEX Night 12h',area:'FLEX', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
+  { id: 'PED-D12',  label: 'PED Day 12h',  area: 'PED',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
+  { id: 'PED-N12',  label: 'PED Night 12h',area: 'PED',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
   // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
   // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
   // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
@@ -84,6 +99,14 @@ const SHIFT_TIMING = {
   'MT-N':     { startH: 23, durationH: 9  },
   'TRAUMA-D': { startH: 6,  durationH: 12 },   // 06:00 – 18:00
   'TRAUMA-N': { startH: 18, durationH: 12 },   // 18:00 – 06:00 (+1 day)
+  'POD-D12':  { startH: 7,  durationH: 12 },
+  'POD-N12':  { startH: 19, durationH: 12 },
+  'MT-D12':   { startH: 7,  durationH: 12 },
+  'MT-N12':   { startH: 19, durationH: 12 },
+  'FLEX-D12': { startH: 6,  durationH: 12 },
+  'FLEX-N12': { startH: 18, durationH: 12 },
+  'PED-D12':  { startH: 7,  durationH: 12 },
+  'PED-N12':  { startH: 19, durationH: 12 },
   'PED-S':    { startH: 11, durationH: 9  },   // 11:00 – 20:00
 };
 
@@ -91,6 +114,12 @@ const SHIFT_TIMING = {
 // otherwise DOW-independent by design — this is a narrow exception for one shift, not a general
 // per-day-of-week coverage feature.
 const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5] };
+
+// Areas whose normal D/E/N shifts auto-suppress in favor of the 12h D12/N12 pair during any
+// ACEP/AAEM/SAEM conference-week date (see isConferenceCoverageDate) — PED's 12h shifts exist
+// too but are deliberately NOT in these arrays, staying chief-opt-in year-round instead.
+const CONF_SUPPRESSED_NORMAL_IDS = ['POD-D','POD-E','POD-N','MT-D','MT-E','MT-N','FLEX-D','FLEX-E','FLEX-N'];
+const CONF_AUTO_SWAP_12H_IDS     = ['POD-D12','POD-N12','MT-D12','MT-N12','FLEX-D12','FLEX-N12'];
 
 // Residency-category tint/badge — a different axis from shift-area color (AREA_COLORS above):
 // this colors rows/badges by residency category+PGY, not by shift area. Only coincidentally
@@ -156,31 +185,33 @@ const EM_HOME_BLOCK_TYPES_BY_PGY = {
 const BASE_ELIGIBILITY = {
   // EM Home PGY-1: all areas; TRAUMA-D only (no TRAUMA-N); Trauma further gated by block type.
   // PED-N included per the Thu-Sun EM Home window above (ped_n_em_window gate confines it).
-  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // EM Home PGY-2/3: all shifts including TRAUMA-N and (Thu-Sun) PED-N. PED-S (Peds Swing) is
   // further gated to only EM_TOX/EM_EMS rotations, Mon/Tue/Thu/Fri, via the ped_s_* shiftGates
   // below — nobody else is ever eligible for it, same single-owner invariant PED-N used to be
   // (PED-N's owner set is now {FM_3, EM_HOME_1/2/3} — see PED_GUARD_LEGITIMATE_OWNER).
-  EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
-  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+  EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // BAMC: no Trauma
-  EM_BAMC_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N'],
+  EM_BAMC_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','POD-D12','POD-N12','PED-D12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // Peds: PED day/eve only — PED-N stays out of reach for this category on every day of the week,
   // Thu-Sun EM Home opening included (Peds residents never gained PED-N eligibility at all).
-  PEDS_1:     ['PED-D','PED-E'],
-  PEDS_3:     ['PED-D','PED-E'],
+  PEDS_1:     ['PED-D','PED-E','PED-D12'],
+  PEDS_3:     ['PED-D','PED-E','PED-D12'],
   // FM-1: POD default + PED-D/E as fill-in PRN (no PED nights — PED-N stays out of reach here too)
-  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E'],
+  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','POD-D12','POD-N12','PED-D12'],
   // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
   // PED-N those three days; EM Home additionally covers Thu-Sun (see BASE_ELIGIBILITY comment above).
-  FM_3:       ['PED-N'],
+  FM_3:       ['PED-N','PED-N12'],
   // IM: POD + FLEX, no Peds/MT/Trauma
-  IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N'],
-  // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D — verify exact matrix with chief
-  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D'],
-  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D'],
-  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D'],
-  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D'],
+  IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
+  // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D — verify exact matrix with chief. FLEX-D is
+  // day-only for these four keys (no FLEX-E) — deliberately no FLEX-12h ids added (chief's
+  // conservative default); no PED ids either since none of these keys have PED eligibility at all.
+  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
+  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
+  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
+  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
 };
 
 // Chief-editable day-of-week / block-type scheduling rules — see the Scheduling Rules tab.
@@ -217,13 +248,13 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
       // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
       // only, so the manual picker can still place one when needed.
-      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null,
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
       // PED-N (Peds Night) Thu/Sun window: EM Home gained PED-N in BASE_ELIGIBILITY (AY26/27
       // chief-directed change) but only Thu-Sun (0,4,5,6) — Mon/Tue/Wed stay FM-3-exclusive.
       // overrideImmune so a matrix override can't leak an EM Home resident onto PED-N outside
       // this window; FM-3's own eligibility/rules are untouched by this EM_HOME-scoped gate.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
         allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
@@ -265,7 +296,7 @@ const DEFAULT_DAY_RULES = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
         allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
@@ -280,7 +311,7 @@ const DEFAULT_DAY_RULES = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N'], blockTypeFilter: null,
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
         allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
   },
@@ -294,7 +325,7 @@ const DEFAULT_DAY_RULES = {
     // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
     // only, so the manual picker can still place one when needed.
     shiftGates: [
-      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null,
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ],
   },
@@ -378,6 +409,20 @@ const DEFAULT_COVERAGE_MINMAX = {
   'FLEX-D': { min: 2, max: 3 }, 'FLEX-E': { min: 2, max: 3 }, 'FLEX-N': { min: 2, max: 3 },
   'MT-D': { min: 1, max: 1 }, 'MT-E': { min: 1, max: 1 }, 'MT-N': { min: 1, max: 1 },
   'TRAUMA-D': { min: 1, max: 1 }, 'TRAUMA-N': { min: 1, max: 1 },
+  // 12h conference-week pairs — POD/MT/FLEX max = the sum of the day+eve (or plain N) shifts
+  // they replace, since the 12h shift absorbs both; min = the D shift's own min (the hard
+  // minimum stays the same headcount, just longer shifts). PED-D12/PED-N12 stay explicit
+  // {min:0,max:0} — deliberately inactive by default, chief opts in via the Rules tab (see
+  // DEFAULT_COVERAGE just below, which falls back to {min:1,max:1} for anything ABSENT from
+  // this map — an explicit zero entry is required to keep these truly opt-in).
+  'POD-D12':  { min: 2, max: 4 },   // POD-D's own min (2); max = POD-D.max + POD-E.max (2+2)
+  'POD-N12':  { min: 2, max: 2 },   // unchanged from POD-N
+  'MT-D12':   { min: 1, max: 2 },   // MT-D's own min (1); max = MT-D.max + MT-E.max (1+1)
+  'MT-N12':   { min: 1, max: 1 },   // unchanged from MT-N
+  'FLEX-D12': { min: 2, max: 6 },   // FLEX-D's own min (2); max = FLEX-D.max + FLEX-E.max (3+3)
+  'FLEX-N12': { min: 2, max: 3 },   // unchanged from FLEX-N
+  'PED-D12':  { min: 0, max: 0 },
+  'PED-N12':  { min: 0, max: 0 },
 };
 const DEFAULT_COVERAGE = Object.fromEntries(
   SHIFTS.map(s => [s.id, DEFAULT_COVERAGE_MINMAX[s.id] ?? { min: 1, max: 1 }])
@@ -403,7 +448,11 @@ function normalizeCoverageEntry(v) {
 // for this shiftId+dow, the max is raised to that override (never lowered below the base max, so
 // a chief who's already customized a higher max via the Rules tab editor is never clipped back
 // down by this narrow exception). min is never touched by dow.
-function getCoverageFor(shiftId, coverage = {}, dow) {
+function getCoverageFor(shiftId, coverage = {}, dow, confActive) {
+  if (confActive != null) {
+    if (CONF_SUPPRESSED_NORMAL_IDS.includes(shiftId)) return confActive ? { min: 0, max: 0 } : getCoverageFor(shiftId, coverage, dow);
+    if (CONF_AUTO_SWAP_12H_IDS.includes(shiftId))     return confActive ? getCoverageFor(shiftId, coverage, dow) : { min: 0, max: 0 };
+  }
   const base = normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
   if (dow != null) {
     const override = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
@@ -415,16 +464,17 @@ function getCoverageFor(shiftId, coverage = {}, dow) {
 // Per-date coverage counts vs configured min/max, computed from the FULL schedule (never
 // category-filtered rows) — shared by the grid's coverage footer (ScheduleGrid) and the
 // Dashboard stat tiles (DashboardTab) so both read the same numbers.
-function computeCoverageByDate(dates, sched, coverage, allResidents) {
+function computeCoverageByDate(dates, sched, coverage, allResidents, ayConf) {
   const m = {};
   for (const ds of dates) {
     const dow = parseDate(ds).getDay();
+    const confActive = ayConf ? isConferenceCoverageDate(ds, ayConf) : false;
     let filled = 0, minTotal = 0;
     const perShift = {};
     const belowMin = [], aboveMax = [];
     for (const s of SHIFTS) {
       if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
-      const cov = getCoverageFor(s.id, coverage, dow);
+      const cov = getCoverageFor(s.id, coverage, dow, confActive);
       const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
       perShift[s.id] = { count, min: cov.min, max: cov.max };
       minTotal += cov.min;
@@ -579,6 +629,9 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
     // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+    // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
+    // before the conference-week 12h shift feature was added.
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
   ],
   EM_HOME_2: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
@@ -587,17 +640,51 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-N-Thu-Sun shape (had PED-S, no PED-N) — the live default immediately before EM Home
     // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+    // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
+    // before the conference-week 12h shift feature was added.
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
   ],
   EM_HOME_3: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
     // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
+    // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
+    // before the conference-week 12h shift feature was added.
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
   ],
-  EM_BAMC_1: [['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N']],
-  PEDS_1: [['PED-D','PED-E','PED-N']],
-  PEDS_3: [['PED-D','PED-E','PED-N']],
-  FM_1: [['POD-D','POD-E','POD-N']],
+  EM_BAMC_1: [
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N'],
+    // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
+    // before the conference-week 12h shift feature was added.
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N'],
+  ],
+  PEDS_1: [
+    ['PED-D','PED-E','PED-N'],
+    // Pre-12h-conference-shift shape (no D12 id) — the live default immediately before the
+    // conference-week 12h shift feature was added.
+    ['PED-D','PED-E'],
+  ],
+  PEDS_3: [
+    ['PED-D','PED-E','PED-N'],
+    // Pre-12h-conference-shift shape (no D12 id) — the live default immediately before the
+    // conference-week 12h shift feature was added.
+    ['PED-D','PED-E'],
+  ],
+  FM_1: [
+    ['POD-D','POD-E','POD-N'],
+    // Pre-12h-conference-shift shape (no D12/N12/PED-D12 ids) — the live default immediately
+    // before the conference-week 12h shift feature was added.
+    ['POD-D','POD-E','POD-N','PED-D','PED-E'],
+  ],
+  // Pre-12h-conference-shift shape — the live default immediately before the conference-week 12h
+  // shift feature was added (see the six entries below).
+  FM_3:    [['PED-N']],
+  IM_2:    [['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N']],
+  NEURO_1: [['POD-D','POD-E','POD-N','FLEX-D']],
+  ANES_1:  [['POD-D','POD-E','POD-N','FLEX-D']],
+  PSYCH_1: [['POD-D','POD-E','POD-N','FLEX-D']],
+  POD_1:   [['POD-D','POD-E','POD-N','FLEX-D']],
 };
 // Row keys whose DEFAULT_DAY_RULES or BASE_ELIGIBILITY changed in this pass — used to flag a
 // chief's genuinely-customized override for review (it was written against an old default).
@@ -1871,6 +1958,15 @@ function getConferencesInBlock(startStr, endStr, ayConf = {}) {
   });
 }
 
+// True iff dateStr (YYYY-MM-DD) falls inclusively within any of the AY's ACEP/AAEM/SAEM ranges.
+// Plain string comparison is safe for YYYY-MM-DD (same idiom as activeWhen.blockStartOnOrAfter/
+// Before elsewhere in this file) — no Date object needed. ITE is deliberately excluded (a single
+// exam day for the whole EM Home roster, not a conference-coverage scenario).
+function isConferenceCoverageDate(dateStr, ayConf = {}) {
+  const inRange = (start, end) => start && dateStr >= start && dateStr <= (end || start);
+  return inRange(ayConf.acepStart, ayConf.acepEnd) || inRange(ayConf.aaemStart, ayConf.aaemEnd) || inRange(ayConf.saemStart, ayConf.saemEnd);
+}
+
 const DEFAULT_AY_CONF = { acepStart:'', acepEnd:'', iteDate:'', aaemStart:'', aaemEnd:'', saemStart:'', saemEnd:'' };
 
 // App-level settings (persisted in res_app_settings)
@@ -2012,9 +2108,13 @@ function gateActiveForBlock(activeWhen, blockStart) {
   return true;
 }
 
-// ctx: { blockStart, forGenerator } — blockStart is the block's start date string (needed for
-// the Peds/Trauma half-block split); forGenerator=true lets generator-only day-type restrictions
-// apply (chief picker still allows those shifts manually — see dayTypeRestrictions[].scope).
+// ctx: { blockStart, forGenerator, ayConf } — blockStart is the block's start date string
+// (needed for the Peds/Trauma half-block split); forGenerator=true lets generator-only day-type
+// restrictions apply (chief picker still allows those shifts manually — see
+// dayTypeRestrictions[].scope); ayConf is the AY's conference-date config (ACEP/AAEM/SAEM ranges)
+// — when present, drives the conference-week POD/MT/FLEX 12h auto-swap (see
+// isConferenceCoverageDate/CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS); omitted at a call
+// site simply means confActive resolves to false, i.e. no swap — safe, zero-regression default.
 function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, ctx = {}) {
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
@@ -2127,6 +2227,15 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
     if (ctx.forGenerator) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'day');
   }
 
+  // 8. Conference-week 12h swap (POD/MT/FLEX) — see CONF_SUPPRESSED_NORMAL_IDS/
+  // CONF_AUTO_SWAP_12H_IDS. No-ops (confActive stays false) when the caller hasn't threaded
+  // ctx.ayConf through yet.
+  const confActive = ctx.ayConf ? isConferenceCoverageDate(dateStr, ctx.ayConf) : false;
+  eligible = eligible.filter(s =>
+    CONF_SUPPRESSED_NORMAL_IDS.includes(s) ? !confActive :
+    CONF_AUTO_SWAP_12H_IDS.includes(s)     ? confActive  : true
+  );
+
   return eligible;
 }
 
@@ -2155,7 +2264,7 @@ function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, 
   }
 }
 
-function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = []) {
+function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = [], ayConf = {}) {
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
@@ -2191,7 +2300,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           level: jeopardyPolicy === 'block' ? 'error' : 'warn' });
         if (jeopardyPolicy === 'block') continue;
       }
-      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate });
+      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf });
       if (!elig.includes(sid)) {
         const dow = parseDate(ds).getDay();
         let msg = 'Shift not eligible for this resident on this day';
@@ -2446,9 +2555,10 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   }
   for (const ds of blockDates) {
     const dsDow = parseDate(ds).getDay();
+    const confActive = isConferenceCoverageDate(ds, ayConf);
     for (const shift of SHIFTS) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
-      const cov = getCoverageFor(shift.id, coverage, dsDow);
+      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
       const count = countsByDateShift[`${ds}__${shift.id}`] || 0;
       if (cov.min > 0 && count < cov.min)
         issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
@@ -2522,7 +2632,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 // eligible resident furthest below target, preferring day/eve/night variety and short streaks.
 // Fill mode never overwrites a non-empty cell — that is the "keep manual assignments" contract.
 // Returns { schedule, report } or null when the block has no dates.
-function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [] }) {
+function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {} }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
@@ -2582,7 +2692,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   const eligCache = {};
   for (const r of allResidents) {
     eligCache[r.id] = {};
-    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true }));
+    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf }));
   }
 
   const report = {
@@ -2807,10 +2917,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     streakCache = {};
     const slots = [];
     const dsDow = parseDate(ds).getDay();
+    const confActive = isConferenceCoverageDate(ds, ayConf);
     for (const shift of SHIFTS.filter(includeShift)) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
-      const cov = getCoverageFor(shift.id, coverage, dsDow);
+      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
       if (phase === 'min') {
         // Count manual assignments that exceed configured coverage too, or totalSlots can end up
         // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
@@ -3797,7 +3908,7 @@ function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameByI
 // schedule rather than that snapshot's own stale copy, or as an extra "unsaved" row when the live
 // block hasn't been saved at all). Owns its own coverage memo so switching AY/expanding one row
 // never recomputes another row's numbers.
-function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule, onDelete, blockSaveState }) {
+function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule, onDelete, blockSaveState, ayConf }) {
   const { snap, isLive, unsaved } = row;
   // Keyed on the row's own schedule object identity (stable for a saved snapshot until
   // blocksHistory itself changes; equal to the live block.schedule reference for the live row) —
@@ -3810,8 +3921,8 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
   // not just the live block.
   const residentsForCoverage = useMemo(() => Object.keys(row.schedule).map(id => ({ id })), [row.schedule]);
   const coverageByDate = useMemo(
-    () => computeCoverageByDate(dates, row.schedule, coverage || {}, residentsForCoverage),
-    [dates, row.schedule, coverage, residentsForCoverage]
+    () => computeCoverageByDate(dates, row.schedule, coverage || {}, residentsForCoverage, ayConf),
+    [dates, row.schedule, coverage, residentsForCoverage, ayConf]
   );
   // Saved, non-live rows show the snapshot's OWN stored counts (same fields HomeTab's Saved
   // Blocks list already displays) rather than a second, differently-scoped recomputation — the
@@ -3950,6 +4061,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
   }, [snapsForAy, liveMatchesAy, liveMatchesSnapshot, block]);
 
   const ayWindow = ayWindowFor(selectedAy);
+  const selectedAyConf = ayData[selectedAy] || { ...DEFAULT_AY_CONF };
 
   return (
     <div className="no-print">
@@ -3984,6 +4096,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
                 onGoToSchedule={() => setTab('schedule')}
                 onDelete={snap => setDeleteConfirm(snap)}
                 blockSaveState={blockSaveState}
+                ayConf={selectedAyConf}
               />
             ))
           )}
@@ -4051,7 +4164,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   // entries for a resident no longer in allResidents while minTotal (via computeCoverageByDate)
   // would not, letting the tile read "complete" while the grid shows real under-coverage.
   const blockDates = useMemo(()=>getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
-  const coverageByDate = useMemo(()=>computeCoverageByDate(blockDates, schedule, coverage||{}, allResidents), [blockDates, schedule, coverage, allResidents]);
+  const coverageByDate = useMemo(()=>computeCoverageByDate(blockDates, schedule, coverage||{}, allResidents, ayConf), [blockDates, schedule, coverage, allResidents, ayConf]);
   const shiftCount = blockDates.reduce((s,ds)=>s+(coverageByDate[ds]?.filled||0), 0);
   const minTotal = blockDates.reduce((s,ds)=>s+(coverageByDate[ds]?.minTotal||0), 0);
   const fillPct = minTotal > 0 ? Math.round((shiftCount/minTotal)*100) : 0;
@@ -6571,54 +6684,60 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               <tr className="text-xs text-gray-500">
                 <th className="text-left font-medium pr-4 pb-2">Area</th>
                 {SHIFT_TYPES.map(t => <th key={t} className="text-center font-medium px-3 pb-2 capitalize">{t === 'eve' ? 'Evening' : t}</th>)}
+                <th className="text-center font-medium px-3 pb-2">Day 12h</th>
+                <th className="text-center font-medium px-3 pb-2">Night 12h</th>
               </tr>
             </thead>
             <tbody>
-              {SHIFT_AREAS.map(area => (
-                <tr key={area}>
-                  <td className="pr-4 py-1"><span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFTS.find(s=>s.area===area).chip}`}>{area}</span></td>
-                  {SHIFT_TYPES.map(t => {
-                    const shift = SHIFTS.find(s => s.area === area && s.type === t);
-                    if (!shift) return <td key={t} className="text-center text-gray-300 px-3">—</td>;
-                    const overridden = coverage[shift.id] != null;
-                    const cov = getCoverageFor(shift.id, coverage);
-                    const maxCap = shift.area === 'TRAUMA' ? 1 : 10; // trauma bay is single-resident — see D7
-                    function update(next) {
-                      setCoverage(p => {
-                        const n = { ...p };
-                        if (next.min === DEFAULT_COVERAGE[shift.id].min && next.max === DEFAULT_COVERAGE[shift.id].max) delete n[shift.id];
-                        else n[shift.id] = next;
-                        return n;
-                      });
-                    }
-                    return (
-                      <td key={t} className="text-center px-3 py-1">
-                        <span className="inline-flex items-center gap-1">
-                          <input type="number" min={0} max={maxCap} title="Minimum"
-                            value={cov.min}
-                            onChange={e => {
-                              const min = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
-                              update({ min, max: Math.max(min, cov.max) });
-                            }}
-                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
-                          <span className="text-gray-300">–</span>
-                          <input type="number" min={0} max={maxCap} title="Maximum"
-                            value={cov.max}
-                            onChange={e => {
-                              const max = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
-                              update({ min: Math.min(cov.min, max), max });
-                            }}
-                            className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
-                          {overridden && (
-                            <button onClick={() => setCoverage(p => { const n = { ...p }; delete n[shift.id]; return n; })}
-                              title="Reset to default" className="text-gray-300 hover:text-primary"><RefreshCw size={11}/></button>
-                          )}
-                        </span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+              {SHIFT_AREAS.map(area => {
+                function renderCoverageCell(key, shift) {
+                  if (!shift) return <td key={key} className="text-center text-gray-300 px-3">—</td>;
+                  const overridden = coverage[shift.id] != null;
+                  const cov = getCoverageFor(shift.id, coverage);
+                  const maxCap = shift.area === 'TRAUMA' ? 1 : 10; // trauma bay is single-resident — see D7
+                  function update(next) {
+                    setCoverage(p => {
+                      const n = { ...p };
+                      if (next.min === DEFAULT_COVERAGE[shift.id].min && next.max === DEFAULT_COVERAGE[shift.id].max) delete n[shift.id];
+                      else n[shift.id] = next;
+                      return n;
+                    });
+                  }
+                  return (
+                    <td key={key} className="text-center px-3 py-1">
+                      <span className="inline-flex items-center gap-1">
+                        <input type="number" min={0} max={maxCap} title="Minimum"
+                          value={cov.min}
+                          onChange={e => {
+                            const min = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
+                            update({ min, max: Math.max(min, cov.max) });
+                          }}
+                          className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
+                        <span className="text-gray-300">–</span>
+                        <input type="number" min={0} max={maxCap} title="Maximum"
+                          value={cov.max}
+                          onChange={e => {
+                            const max = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
+                            update({ min: Math.min(cov.min, max), max });
+                          }}
+                          className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
+                        {overridden && (
+                          <button onClick={() => setCoverage(p => { const n = { ...p }; delete n[shift.id]; return n; })}
+                            title="Reset to default" className="text-gray-300 hover:text-primary"><RefreshCw size={11}/></button>
+                        )}
+                      </span>
+                    </td>
+                  );
+                }
+                return (
+                  <tr key={area}>
+                    <td className="pr-4 py-1"><span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFTS.find(s=>s.area===area).chip}`}>{area}</span></td>
+                    {SHIFT_TYPES.map(t => renderCoverageCell(t, SHIFTS.find(s => s.area === area && s.type === t)))}
+                    {renderCoverageCell('d12', SHIFTS.find(s => s.id === `${area}-D12`))}
+                    {renderCoverageCell('n12', SHIFTS.find(s => s.id === `${area}-N12`))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -6628,6 +6747,9 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </p>
         <p className="text-xs text-gray-500 mt-1">
           POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          12h shifts auto-activate only during ACEP/AAEM/SAEM conference-week dates for POD/MT/FLEX (their normal Day/Eve/Night coverage is suppressed those dates). PED's 12h shifts are opt-in — raise their coverage here any time you need them; PED's normal shifts stay active regardless.
         </p>
       </SectionCard>
 
@@ -6847,10 +6969,10 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // legal rest hours, max-run/eve-day-turnaround circadian checks) from the ranked postNightRest soft
 // rule ('warn'), so the picker and drag-and-drop UIs can visually tell apart a genuine hard block
 // from a chief-configurable preference, both surfaced the same "Assign/Swap/Move Anyway" way.
-function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules) {
+function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf) {
   if (!sid) return [];
   const sd = block.specialDays || {};
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate });
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf });
   const vs = [];
   // 1. Eligibility check
   if (!eligible.includes(sid)) {
@@ -6880,15 +7002,15 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   return vs;
 }
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast }) {
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf }) {
   const [pending, setPending] = useState(null);
   const sd = block.specialDays || {};
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate });
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf });
   const display = formatDisplayDate(dateStr);
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
-  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules);
+  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf);
 
   function confirm() {
     onSelect(pending);
@@ -6946,7 +7068,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState }) {
+function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
@@ -6970,16 +7092,16 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
   const violMap = useMemo(()=>{
     const m={};
-    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory)) {
+    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf)) {
       if (issue.dateStr && issue.residentId) { const k=`${issue.residentId}_${issue.dateStr}`; (m[k]=m[k]||[]).push(issue); }
     }
     return m;
-  },[allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
+  },[allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf]);
 
   const [covExpanded, setCovExpanded] = useState(false);
   // Per-date coverage counts vs configured min/max — always computed from the FULL schedule
   // (never catFilter-ed rows), or filtering to one category would show phantom understaffing.
-  const coverageByDate = useMemo(()=>computeCoverageByDate(dates, sched, coverage, allResidents),[dates, sched, coverage, allResidents]);
+  const coverageByDate = useMemo(()=>computeCoverageByDate(dates, sched, coverage, allResidents, ayConf),[dates, sched, coverage, allResidents, ayConf]);
   const activeCoverageShifts = useMemo(()=>getActiveCoverageShifts(dates, coverageByDate),[dates, coverageByDate]);
 
   const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
@@ -7033,13 +7155,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
-      eligOverrides, appSettings, dayRules
+      eligOverrides, appSettings, dayRules, ayConf
     ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
-          eligOverrides, appSettings, dayRules
+          eligOverrides, appSettings, dayRules, ayConf
         ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
       : [];
 
@@ -7078,7 +7200,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   function runGenerate(clearFirst) {
     setConfirmRegen(false);
     setConfirmGenerate(null);
-    const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory });
+    const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory, ayConf });
     if (!res) { showToast('Set block dates first', 'red'); return; }
     if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
     updateBlock(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
@@ -7133,7 +7255,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           const isJeopardy=(res.jeopardyDates||[]).includes(ds);
           const isJeoBlocked=isJeopardy&&jeoBlock;
           const isPendingRequest = pendingByResident.get(res.id)?.has(ds) || false;
-          const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate});
+          const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate,ayConf});
           const d=parseDate(ds); const dow=d.getDay();
           const isWed=dow===3; const isWknd=dow===0||dow===6;
           // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
@@ -7426,7 +7548,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
           block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
           onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
-          onClose={()=>setPicker(null)} showToast={showToast}/>
+          onClose={()=>setPicker(null)} showToast={showToast} ayConf={ayConf}/>
       )}
     </div>
   );
@@ -9121,7 +9243,7 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   // Single validateAll pass shared by the sidebar badge, pendingErrorCount, and the Dashboard
   // stat tiles — running it once per relevant state change instead of once per consumer.
-  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory]);
+  const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf]);
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
     warns: issues.filter(i=>i.level!=='error').length,
@@ -9418,7 +9540,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
