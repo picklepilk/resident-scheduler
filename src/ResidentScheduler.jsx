@@ -8,7 +8,7 @@ import {
   Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
-  MessageSquare, Bug, Zap, Lightbulb, Lock, Inbox, LogOut, Menu, Globe,
+  MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -21,121 +21,16 @@ import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
+import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor } from './lib/dates.js';
+import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs } from './lib/shifts.js';
+import { getCoverageFor, DEFAULT_COVERAGE, CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS } from './lib/coverage.js';
+import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
-
-// Single source of truth for shift-area color, consumed across three independent rendering
-// contexts that used to be hand-kept in sync separately: solid per-shift-id chips (SHIFTS[].chip,
-// used in the grid), a light-tint label style (ShiftMatrixTab's areaColor, header tints), and raw
-// RGB for jsPDF (PDF_AREA_LIGHT — jsPDF can't consume Tailwind classes). Add/adjust a shift area's
-// color here only; SHIFTS chips, PDF_AREA_LIGHT, and ShiftMatrixTab's areaColor all derive from
-// this map. Declared above SHIFTS (TDZ — SHIFTS reads AREA_COLORS.*.chip.* below).
-const AREA_COLORS = {
-  POD:    { chip: { day: 'bg-blue-600 text-white',   eve: 'bg-blue-400 text-white',   night: 'bg-blue-900 text-white' },
-            tint: 'text-blue-700 bg-blue-50 border-blue-200',     pdfLight: [219, 234, 254] },
-  PED:    { chip: { day: 'bg-green-600 text-white',  eve: 'bg-green-400 text-white',  night: 'bg-green-900 text-white', swing: 'bg-green-700 text-white' },
-            tint: 'text-green-700 bg-green-50 border-green-200',  pdfLight: [209, 250, 229] },
-  FLEX:   { chip: { day: 'bg-purple-600 text-white', eve: 'bg-purple-400 text-white', night: 'bg-purple-900 text-white' },
-            tint: 'text-purple-700 bg-purple-50 border-purple-200', pdfLight: [237, 233, 254] },
-  MT:     { chip: { day: 'bg-amber-600 text-white',  eve: 'bg-amber-400 text-white',  night: 'bg-amber-900 text-white' },
-            tint: 'text-amber-700 bg-amber-50 border-amber-200',  pdfLight: [254, 243, 199] },
-  TRAUMA: { chip: { day: 'bg-red-600 text-white',    night: 'bg-red-900 text-white' },
-            tint: 'text-red-700 bg-red-50 border-red-200',        pdfLight: [254, 226, 226] },
-};
-
-const SHIFTS = [
-  { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
-  { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.POD.chip.eve },
-  { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
-  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
-  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.PED.chip.eve },
-  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
-  { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
-  { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: AREA_COLORS.FLEX.chip.eve },
-  { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
-  { id: 'MT-D',     label: 'MT Day',       area: 'MT',     hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
-  { id: 'MT-E',     label: 'MT Eve',       area: 'MT',     hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.MT.chip.eve },
-  { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
-  { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.TRAUMA.chip.day },
-  { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.TRAUMA.chip.night },
-  // 12h conference-week pairs (day+night, no evening) — POD/MT/FLEX auto-swap in for any
-  // ACEP/AAEM/SAEM conference-week date (see CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS,
-  // isConferenceCoverageDate), chief-editable via the coverage editor. PED's 12h pair exists too
-  // but is deliberately NOT part of the auto-swap — it stays chief-opt-in, zero coverage by
-  // default (see DEFAULT_COVERAGE_MINMAX). type stays plain 'day'/'night' — never a new type
-  // string — so circadian rules, JC overlap, night-run counting, PDF/CSV export, and
-  // senior-composition rules all apply with zero special-casing (they key off type/area, never id).
-  { id: 'POD-D12',  label: 'POD Day 12h',  area: 'POD',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
-  { id: 'POD-N12',  label: 'POD Night 12h',area: 'POD',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
-  { id: 'MT-D12',   label: 'MT Day 12h',   area: 'MT',   hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
-  { id: 'MT-N12',   label: 'MT Night 12h', area: 'MT',   hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
-  { id: 'FLEX-D12', label: 'FLEX Day 12h', area: 'FLEX', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
-  { id: 'FLEX-N12', label: 'FLEX Night 12h',area:'FLEX', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
-  { id: 'PED-D12',  label: 'PED Day 12h',  area: 'PED',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
-  { id: 'PED-N12',  label: 'PED Night 12h',area: 'PED',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
-  // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
-  // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
-  // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
-  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: AREA_COLORS.PED.chip.swing },
-];
-const SHIFT_MAP = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
-const SHIFT_AREAS = ['POD', 'PED', 'FLEX', 'MT', 'TRAUMA'];
-const SHIFT_TYPES = ['day', 'eve', 'night', 'swing'];
-
-// Exact start hour (24h) and duration for each shift — used for rest-period validation.
-// End time = start + duration (may cross midnight into the next calendar day).
-const SHIFT_TIMING = {
-  'POD-D':    { startH: 7,  durationH: 9  },   // 07:00 – 16:00
-  'POD-E':    { startH: 15, durationH: 9  },   // 15:00 – 00:00 (+1 day)
-  'POD-N':    { startH: 23, durationH: 9  },   // 23:00 – 08:00 (+1 day)
-  'PED-D':    { startH: 7,  durationH: 9  },
-  'PED-E':    { startH: 15, durationH: 9  },
-  'PED-N':    { startH: 23, durationH: 9  },
-  'FLEX-D':   { startH: 6,  durationH: 9  },   // 06:00 – 15:00
-  'FLEX-E':   { startH: 14, durationH: 9  },   // 14:00 – 23:00
-  'FLEX-N':   { startH: 22, durationH: 9  },   // 22:00 – 07:00 (+1 day)
-  'MT-D':     { startH: 7,  durationH: 9  },
-  'MT-E':     { startH: 15, durationH: 9  },
-  'MT-N':     { startH: 23, durationH: 9  },
-  'TRAUMA-D': { startH: 6,  durationH: 12 },   // 06:00 – 18:00
-  'TRAUMA-N': { startH: 18, durationH: 12 },   // 18:00 – 06:00 (+1 day)
-  'POD-D12':  { startH: 7,  durationH: 12 },
-  'POD-N12':  { startH: 19, durationH: 12 },
-  'MT-D12':   { startH: 7,  durationH: 12 },
-  'MT-N12':   { startH: 19, durationH: 12 },
-  'FLEX-D12': { startH: 6,  durationH: 12 },
-  'FLEX-N12': { startH: 18, durationH: 12 },
-  'PED-D12':  { startH: 7,  durationH: 12 },
-  'PED-N12':  { startH: 19, durationH: 12 },
-  'PED-S':    { startH: 11, durationH: 9  },   // 11:00 – 20:00
-};
-
-// Shifts that only exist on certain weekdays (JS getDay(): 0=Sun..6=Sat). Coverage min/max is
-// otherwise DOW-independent by design — this is a narrow exception for one shift, not a general
-// per-day-of-week coverage feature.
-const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5] };
-
-// Areas whose normal D/E/N shifts auto-suppress in favor of the 12h D12/N12 pair during any
-// ACEP/AAEM/SAEM conference-week date (see isConferenceCoverageDate) — PED's 12h shifts exist
-// too but are deliberately NOT in these arrays, staying chief-opt-in year-round instead.
-const CONF_SUPPRESSED_NORMAL_IDS = ['POD-D','POD-E','POD-N','MT-D','MT-E','MT-N','FLEX-D','FLEX-E','FLEX-N'];
-const CONF_AUTO_SWAP_12H_IDS     = ['POD-D12','POD-N12','MT-D12','MT-N12','FLEX-D12','FLEX-N12'];
-
-// Residency-category tint/badge — a different axis from shift-area color (AREA_COLORS above):
-// this colors rows/badges by residency category+PGY, not by shift area. Only coincidentally
-// shares some hues with AREA_COLORS; intentionally NOT folded into that map.
-const CATEGORIES = [
-  { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-blue-50',    badge: 'bg-blue-700 text-white' },
-  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-white' },
-  { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [1,3],   persistent: false, rowBg: 'bg-green-50',   badge: 'bg-green-600 text-white' },
-  { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-white' },
-  { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-white' },
-  { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-400 text-white' },
-  { id: 'ANES',    label: 'Anesthesiology',    shortLabel: 'ANES', pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-600 text-white' },
-  { id: 'PSYCH',   label: 'Psychiatry',        shortLabel: 'PSYCH',pgyOptions: [1],     persistent: false, rowBg: 'bg-amber-50',   badge: 'bg-amber-600 text-white' },
-  { id: 'POD',     label: 'Podiatry',          shortLabel: 'POD',  pgyOptions: [1],     persistent: false, rowBg: 'bg-gray-50',    badge: 'bg-gray-500 text-white' },
-];
-const CAT_MAP = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
+// AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
+// lib/shifts.js; CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS and the coverage
+// constants/helpers now live in lib/coverage.js; CATEGORIES/CAT_MAP now live in
+// lib/parse.js (see that file's own header comment for why) — imported above.
 
 const BLOCK_TYPES_EM = [
   { id: 'EM',          label: 'EM',           schedulable: true,  atUH: true  },
@@ -387,79 +282,8 @@ const BLOCK_TARGETS = {
   EM_HOME_2__PEDS_EM:     19, // 10–12 peds shifts + rest elsewhere
 };
 
-// Min/max residents needed per shift per day, used by Generate Schedule. The generator fills
-// every shift to its minimum first (a hard requirement — below-min surfaces as an unfilled
-// slot and a Validation warning), then optionally tops up toward the maximum only for residents
-// still under their own shift-count target. min:0 means the generator never auto-staffs that
-// shift (e.g. PED-N, which depends on an FM-3 Mon/Tue/Wed or an EM Home resident Thu/Sun being
-// available and willing — coverage stays min:0 either way, chief-directed "best-effort" shift).
-// Chief edits are stored as a
-// sparse override object in localStorage (res_coverage) and merged over these defaults — same
-// idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (one narrow exception:
-// POD's Mon/Tue max bump, DOW_COVERAGE_MAX_OVERRIDE below); PED-S is the one shift whose very
-// EXISTENCE varies by day of week, handled separately via SHIFT_DOW (see Chunk 3/PED-S).
-const DEFAULT_COVERAGE_MINMAX = {
-  // Baseline min 2/max 2 every day; POD is chief-directed "no priority for a 3rd resident" outside
-  // Mon/Tue (see DOW_COVERAGE_MAX_OVERRIDE) — a staffed POD shift also requires an EM PGY-3 with
-  // no fallback exception except the block's own PGY-3 Wellness Wednesday (see
-  // podWellnessSubstituteAllowed/SENIOR_COMPOSITION.POD).
-  'POD-D': { min: 2, max: 2 }, 'POD-E': { min: 2, max: 2 }, 'POD-N': { min: 2, max: 2 },
-  // PED-S: "no priority" per chief — best-effort fill only (min:0), same treatment as PED-N.
-  'PED-D': { min: 1, max: 1 }, 'PED-E': { min: 1, max: 1 }, 'PED-N': { min: 0, max: 1 }, 'PED-S': { min: 0, max: 1 },
-  'FLEX-D': { min: 2, max: 3 }, 'FLEX-E': { min: 2, max: 3 }, 'FLEX-N': { min: 2, max: 3 },
-  'MT-D': { min: 1, max: 1 }, 'MT-E': { min: 1, max: 1 }, 'MT-N': { min: 1, max: 1 },
-  'TRAUMA-D': { min: 1, max: 1 }, 'TRAUMA-N': { min: 1, max: 1 },
-  // 12h conference-week pairs — POD/MT/FLEX max = the sum of the day+eve (or plain N) shifts
-  // they replace, since the 12h shift absorbs both; min = the D shift's own min (the hard
-  // minimum stays the same headcount, just longer shifts). PED-D12/PED-N12 stay explicit
-  // {min:0,max:0} — deliberately inactive by default, chief opts in via the Rules tab (see
-  // DEFAULT_COVERAGE just below, which falls back to {min:1,max:1} for anything ABSENT from
-  // this map — an explicit zero entry is required to keep these truly opt-in).
-  'POD-D12':  { min: 2, max: 4 },   // POD-D's own min (2); max = POD-D.max + POD-E.max (2+2)
-  'POD-N12':  { min: 2, max: 2 },   // unchanged from POD-N
-  'MT-D12':   { min: 1, max: 2 },   // MT-D's own min (1); max = MT-D.max + MT-E.max (1+1)
-  'MT-N12':   { min: 1, max: 1 },   // unchanged from MT-N
-  'FLEX-D12': { min: 2, max: 6 },   // FLEX-D's own min (2); max = FLEX-D.max + FLEX-E.max (3+3)
-  'FLEX-N12': { min: 2, max: 3 },   // unchanged from FLEX-N
-  'PED-D12':  { min: 0, max: 0 },
-  'PED-N12':  { min: 0, max: 0 },
-};
-const DEFAULT_COVERAGE = Object.fromEntries(
-  SHIFTS.map(s => [s.id, DEFAULT_COVERAGE_MINMAX[s.id] ?? { min: 1, max: 1 }])
-);
-// The one narrow day-of-week exception to "coverage min/max don't vary by day of week" (see the
-// comment above DEFAULT_COVERAGE_MINMAX): POD's max rises to 3 on Mon/Tue only (chief-directed,
-// AY26/27) — every other day of the week (and every other shift) stays at the plain base max.
-// Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param; the
-// Rules-tab coverage editor itself stays min/max-only (see its one-line caption near the POD row).
-const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1: 3, 2: 3 }, 'POD-N': { 1: 3, 2: 3 } };
-// Normalizes a possibly-untrusted coverage entry (old single-number shape from a pre-update
-// backup, a hand-edited value, or the current {min,max} shape) into {min,max}. Read-time
-// normalization means old backups and existing localStorage restore correctly with no migration.
-function normalizeCoverageEntry(v) {
-  if (typeof v === 'number' && Number.isFinite(v)) { const n = Math.max(0, v | 0); return { min: n, max: n }; }
-  if (v && typeof v === 'object') {
-    const min = Math.max(0, Number(v.min) || 0);
-    return { min, max: Math.max(min, Number(v.max) || 0) };
-  }
-  return null;
-}
-// dow is optional (0-6, Sunday-first) — when provided and DOW_COVERAGE_MAX_OVERRIDE has an entry
-// for this shiftId+dow, the max is raised to that override (never lowered below the base max, so
-// a chief who's already customized a higher max via the Rules tab editor is never clipped back
-// down by this narrow exception). min is never touched by dow.
-function getCoverageFor(shiftId, coverage = {}, dow, confActive) {
-  if (confActive != null) {
-    if (CONF_SUPPRESSED_NORMAL_IDS.includes(shiftId)) return confActive ? { min: 0, max: 0 } : getCoverageFor(shiftId, coverage, dow);
-    if (CONF_AUTO_SWAP_12H_IDS.includes(shiftId))     return confActive ? getCoverageFor(shiftId, coverage, dow) : { min: 0, max: 0 };
-  }
-  const base = normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
-  if (dow != null) {
-    const override = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
-    if (override != null && override > base.max) return { min: base.min, max: override };
-  }
-  return base;
-}
+// DEFAULT_COVERAGE_MINMAX/DEFAULT_COVERAGE/DOW_COVERAGE_MAX_OVERRIDE/normalizeCoverageEntry/
+// getCoverageFor now live in lib/coverage.js (imported above).
 
 // Per-date coverage counts vs configured min/max, computed from the FULL schedule (never
 // category-filtered rows) — shared by the grid's coverage footer (ScheduleGrid) and the
@@ -866,27 +690,11 @@ const CELL_W = 52;
 const NAME_W = 210;
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
+// parseDate/addDays/toDateStr/getBlockDates/getBlockWeekends/getAcademicYearFor/
+// getAcademicYear/formatAY now live in lib/dates.js (imported above).
 
-// Guards against Invalid Date (isNaN getTime) — toISOString() throws RangeError on those,
-// which without this guard propagates up through every date-math caller as an unhandled crash.
-function toDateStr(d) { return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10); }
-function parseDate(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
-function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function eligKey(r) { return `${r.category}_${r.pgy}`; }
-
-function formatAY(startYear) { return `AY${String(startYear).slice(2)}/${String(startYear+1).slice(2)}`; }
-function getAcademicYearFor(dateStr) {
-  const d = parseDate(dateStr);
-  return formatAY(d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1);
-}
-// NOT delegated to getAcademicYearFor(toDateStr(new Date())) — toDateStr uses toISOString (UTC),
-// which would round-trip "now" through the wrong calendar day for any timezone behind UTC
-// (e.g. US evenings) right around the July 1 AY boundary. Read local Y/M/D directly instead.
-function getAcademicYear() {
-  const now = new Date();
-  return formatAY(now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1);
-}
 
 // Shared start-date handler: auto-fills the end date to the configured block length and
 // (re)derives the academic year from the selected date — used by both Home and Settings.
@@ -904,31 +712,6 @@ function applyStartDate(updateBlock, appSettings, s) {
       academicYear: s && ayIsAutoDerived ? getAcademicYearFor(s) : b.academicYear,
     };
   });
-}
-
-function getBlockDates(start, end) {
-  if (!start || !end) return [];
-  let cur = parseDate(start); const last = parseDate(end);
-  if (isNaN(cur.getTime()) || isNaN(last.getTime())) return [];
-  const dates = [];
-  while (cur <= last) { dates.push(toDateStr(cur)); cur = addDays(cur, 1); }
-  return dates;
-}
-
-// Full Saturday+Sunday weekend pairs fully contained within a block's date range (a weekend
-// straddling the block's edge, with only one of the two days inside, is excluded — not a
-// resident's fault, and the adjacent block may cover the other half). Shared by generateSchedule
-// (soft nudge) and validateAll (warning) so "one full weekend off" can't drift between the two.
-function getBlockWeekends(dates) {
-  const dateSet = new Set(dates);
-  const weekends = [];
-  for (const ds of dates) {
-    if (parseDate(ds).getDay() === 6) {
-      const sun = toDateStr(addDays(parseDate(ds), 1));
-      if (dateSet.has(sun)) weekends.push([ds, sun]);
-    }
-  }
-  return weekends;
 }
 
 // Pads and chunks a block's date range into Sunday-start week rows for the calendar sub-view —
@@ -957,118 +740,8 @@ function formatDisplayDate(s) {
 }
 
 // ─── ROSTER IMPORT ─────────────────────────────────────────────────────────────
-
-// Recognized free-text spellings for each category, beyond its own id/label/shortLabel.
-const CATEGORY_SYNONYMS = {
-  EM_HOME: ['em', 'emhome', 'emergencymedicine'],
-  EM_BAMC: ['bamc', 'embamc'],
-  PEDS:    ['peds', 'pediatrics', 'ped'],
-  FM:      ['fm', 'familymedicine'],
-  IM:      ['im', 'internalmedicine', 'intmed'],
-  NEURO:   ['neuro', 'neurology'],
-  ANES:    ['anes', 'anesthesia', 'anesthesiology'],
-  PSYCH:   ['psych', 'psychiatry', 'psyc'],
-  POD:     ['pod', 'podiatry'],
-};
-function normalizeToken(s) { return String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
-function matchCategory(raw) {
-  const n = normalizeToken(raw);
-  if (!n) return null;
-  for (const c of CATEGORIES) {
-    if (n === normalizeToken(c.id) || n === normalizeToken(c.label) || n === normalizeToken(c.shortLabel)) return c.id;
-  }
-  for (const [id, syns] of Object.entries(CATEGORY_SYNONYMS)) if (syns.includes(n)) return id;
-  return null;
-}
-
-// Splits one CSV line honoring double-quoted fields (so `"Last, First"` survives comma-splitting).
-function splitCsvLine(line) {
-  const out = []; let cur = '', inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"' && line[i+1] === '"') { cur += '"'; i++; }
-      else if (ch === '"') inQuotes = false;
-      else cur += ch;
-    } else if (ch === '"') inQuotes = true;
-    else if (ch === ',') { out.push(cur); cur = ''; }
-    else cur += ch;
-  }
-  out.push(cur);
-  return out.map(s => s.trim());
-}
-
-function splitName(raw) {
-  const s = String(raw ?? '').trim();
-  if (!s) return null;
-  if (s.includes(',')) {
-    const [last, first] = s.split(',').map(x => x.trim());
-    if (!last || !first) return null;
-    return { firstName: first, lastName: last };
-  }
-  const parts = s.split(/\s+/);
-  if (parts.length < 2) return null;
-  return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
-}
-
-// Parses pasted or uploaded roster text into resident rows. Only Name/Category/PGY are read —
-// any Rotation/date columns present (as in the QGenda-style export this mirrors) are ignored.
-// allowedCategoryIds restricts which categories this import target (EM Home vs Off-Service) accepts.
-function parseRosterText(text, allowedCategoryIds) {
-  const lines = String(text ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const ok = [], errors = [];
-  if (!lines.length) return { ok, errors };
-
-  const delim = lines[0].includes('\t') ? '\t' : ',';
-  const split = line => delim === '\t' ? line.split('\t').map(s => s.trim()) : splitCsvLine(line);
-
-  let startIdx = 0, nameIdx = 0, catIdx = 1, pgyIdx = 2;
-  const first = split(lines[0]);
-  if (/resident|name/i.test(first[0] || '') && first.some(c => /category|service/i.test(c))) {
-    startIdx = 1;
-    const li = first.map(c => c.toLowerCase());
-    nameIdx = li.findIndex(c => /resident|name/.test(c));
-    catIdx  = li.findIndex(c => /category|service/.test(c));
-    pgyIdx  = li.findIndex(c => /pgy/.test(c));
-    if (nameIdx < 0) nameIdx = 0; if (catIdx < 0) catIdx = 1; if (pgyIdx < 0) pgyIdx = 2;
-  }
-
-  for (let i = startIdx; i < lines.length; i++) {
-    const lineNo = i + 1;
-    let cols = split(lines[i]);
-    let nI = nameIdx, cI = catIdx, pI = pgyIdx;
-
-    // Unquoted comma-delimited "Last, First" splits the name's own comma into an extra
-    // column (e.g. "Doe, Jane,EM - Home,1" -> 4 cols instead of 3). If the category
-    // doesn't match where expected, retry once with the name and next column rejoined.
-    if (delim === ',' && !matchCategory(cols[cI]) && cols.length > cI + 1 && matchCategory(cols[cI + 1])) {
-      cols = [`${cols[nI]}, ${cols[nI + 1]}`, ...cols.slice(cI + 1)];
-      cI = 1; pI = 2;
-    }
-
-    const name = splitName(cols[nI]);
-    if (!name) { errors.push({ line: lineNo, raw: lines[i], reason: 'Expected a "Last, First" name' }); continue; }
-
-    const category = matchCategory(cols[cI]);
-    if (!category) { errors.push({ line: lineNo, raw: lines[i], reason: `Unrecognized category "${cols[cI] ?? ''}"` }); continue; }
-    if (!allowedCategoryIds.includes(category)) {
-      errors.push({ line: lineNo, raw: lines[i], reason: `"${CAT_MAP[category].label}" can't be imported here` });
-      continue;
-    }
-
-    const pgyMatch = String(cols[pI] ?? '').match(/[0-9]/);
-    const pgy = pgyMatch ? Number(pgyMatch[0]) : null;
-    const pgyOptions = CAT_MAP[category].pgyOptions;
-    if (!pgy || !pgyOptions.includes(pgy)) {
-      errors.push({ line: lineNo, raw: lines[i], reason: `PGY "${cols[pI] ?? ''}" isn't valid for ${CAT_MAP[category].label} (allowed: ${pgyOptions.join(', ')})` });
-      continue;
-    }
-
-    ok.push({ firstName: name.firstName, lastName: name.lastName, category, pgy });
-  }
-
-  return { ok, errors };
-}
+// CATEGORY_SYNONYMS/normalizeToken/matchCategory/splitCsvLine/splitName/parseRosterText/
+// CATEGORIES/CAT_MAP now live in lib/parse.js (imported above).
 
 // ─── MATRIX IMPORT (yearly Master Matrix Excel workbook) ──────────────────────
 // Parses the chief's two-sheet workbook: "Home EM Residents" (a per-PGY grid of every
@@ -1076,9 +749,8 @@ function parseRosterText(text, allowedCategoryIds) {
 // (incoming rotators grouped by month, Name/Dept/Dates columns). Both sheets omit the
 // year in date ranges (e.g. "7/27-8/23") — the two date parsers below use different
 // strategies to infer it, because the two sheets have different structural quirks (see
-// each function's comment).
-
-const DATE_RANGE_RE = /(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})/;
+// each function's comment). DATE_RANGE_RE/parseDateRangeInAY now live in lib/parse.js
+// (imported above); parseSequentialDateRange stays here (Sheet 1 only, not reused elsewhere).
 
 // Sheet 1's PGY sections read left-to-right as one continuous sequence of block windows,
 // including a leading pre-orientation stub (e.g. "6/22-6/30") that sits chronologically
@@ -1097,26 +769,6 @@ function parseSequentialDateRange(raw, cursor) {
   return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
 }
 
-// Sheet 2's rows aren't sequential (three independent month-grouped column tracks), so each
-// range is dated independently via a Jul-cutoff — except the one case that cutoff gets
-// backward: a range that itself straddles Jun->Jul (e.g. "6/29-7/26", right at the AY's
-// start). Same-year ranges use the LATER month's half so that straddle lands on the
-// earlier (AY-start) year instead of being misread as the AY's May/Jun tail.
-function parseDateRangeInAY(raw, ayStartYear) {
-  const m = DATE_RANGE_RE.exec(String(raw ?? ''));
-  if (!m) return null;
-  const sm = Number(m[1]), sd = Number(m[2]), em = Number(m[3]), ed = Number(m[4]);
-  const pad = n => String(n).padStart(2, '0');
-  let startYear, endYear;
-  if (em < sm) { // genuine wrap across the turn of the year (e.g. Dec 18 -> Jan 14)
-    startYear = sm >= 7 ? ayStartYear : ayStartYear + 1;
-    endYear = startYear + 1;
-  } else {
-    const year = em >= 7 ? ayStartYear : ayStartYear + 1;
-    startYear = year; endYear = year;
-  }
-  return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
-}
 
 // Reads the AY start year off the workbook's own title (e.g. "MASTER MATRIX 2026-2027");
 // falls back to the app's current-AY calculation if the title doesn't match.
@@ -1386,21 +1038,7 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
 }
 
 // ─── REST-PERIOD UTILITIES ────────────────────────────────────────────────────
-
-// Millisecond timestamp for the START of a shift on a given date
-function shiftStartMs(shiftId, dateStr) {
-  const t = SHIFT_TIMING[shiftId];
-  if (!t) return null;
-  const d = parseDate(dateStr);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.startH, 0, 0).getTime();
-}
-
-// Millisecond timestamp for the END of a shift (may be next calendar day)
-function shiftEndMs(shiftId, dateStr) {
-  const startMs = shiftStartMs(shiftId, dateStr);
-  if (startMs === null) return null;
-  return startMs + SHIFT_TIMING[shiftId].durationH * 3600_000;
-}
+// shiftStartMs/shiftEndMs now live in lib/shifts.js (imported above).
 
 // Returns violation strings for adding `newShiftId` on `dateStr` for a given resident.
 // Rule: after completing a shift of length H, resident must have ≥ H hours off before the next shift.
@@ -1455,6 +1093,31 @@ function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
   return violations;
 }
 
+// ─── ACGME 80-HOUR ROLLING 4-WEEK AVERAGE ──────────────────────────────────
+// ACGME duty-hour rule: average ≤80h/week, averaged over any 4-week (28-day) window — not a
+// hard per-week cap. For every assigned date, treat it as a candidate 28-day window start and
+// sum durationH for every assignment landing in [windowStart, windowStart + 28d); the worst
+// (max) such window sum is what matters. Pure function — only reads SHIFT_TIMING/parseDate,
+// both already module-scoped above.
+function weeklyHourStats(rs) {
+  const timed = Object.entries(rs)
+    .filter(([, sid]) => sid && SHIFT_TIMING[sid])
+    .map(([ds, sid]) => ({ dateMs: parseDate(ds).getTime(), durationH: SHIFT_TIMING[sid].durationH }));
+  if (!timed.length) return { maxWindowTotalH: 0, maxWeeklyAvg: 0 };
+
+  const WINDOW_MS = 28 * 24 * 60 * 60 * 1000;
+  let maxWindowTotalH = 0;
+  for (const start of timed) {
+    const windowEndMs = start.dateMs + WINDOW_MS;
+    let total = 0;
+    for (const a of timed) {
+      if (a.dateMs >= start.dateMs && a.dateMs < windowEndMs) total += a.durationH;
+    }
+    if (total > maxWindowTotalH) maxWindowTotalH = total;
+  }
+  return { maxWindowTotalH, maxWeeklyAvg: maxWindowTotalH / 4 };
+}
+
 // ─── CIRCADIAN SCHEDULING RULES ────────────────────────────────────────────
 // The rest-period check above only enforces "enough hours off equal to the prior shift's
 // length" — a legal-rest check, not a circadian one. Two schedules can both pass that check
@@ -1499,7 +1162,7 @@ function normalizeRulePriority(arr) {
   return [...cleaned, ...missing];
 }
 function ruleRank(appSettings, id) { return normalizeRulePriority(appSettings?.rulePriority).indexOf(id); }
-function isNightShiftId(sid) { return SHIFT_MAP[sid]?.type === 'night'; }
+// isNightShiftId now lives in lib/shifts.js (imported above).
 // Residents whose entire effective eligibility is night-only (today: FM-3/PED-N) are exempt from
 // the block-wide night cap and the short-night-run warning — for FM-3 specifically, the Mon/Tue/
 // Wed-only day-rule already makes runs of 4+ structurally impossible, so those checks would be
@@ -1841,18 +1504,8 @@ function getFirstTuesdaysInRange(startStr, endStr) {
   }
   return result;
 }
-function shiftOverlapsJC(sid) {
-  const t = SHIFT_TIMING[sid];
-  return !!t && t.startH < 21 && t.startH + t.durationH > 18;
-}
-// July 1 - July 1 window for an "AY26/27"-style academic-year string (see formatAY). Assumes the
-// 2000s century, which covers this app's realistic date range.
-function ayWindowFor(ayString) {
-  const m = /^AY(\d{2})\/(\d{2})$/.exec(ayString || '');
-  if (!m) return null;
-  const startYear = 2000 + parseInt(m[1], 10);
-  return { start: `${startYear}-07-01`, end: `${startYear + 1}-07-01` };
-}
+// shiftOverlapsJC now lives in lib/shifts.js; ayWindowFor now lives in lib/dates.js (both
+// imported above).
 // Counts JC-worked occurrences for a resident across PUBLISHED saved blocks in the given
 // academic year, excluding excludeBlockId (the live/current block, counted separately since it
 // isn't itself a saved snapshot). Defensive against untrusted/partial snapshot shapes.
@@ -2503,6 +2156,16 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
         const grViolation = grRestViolation(resident, a.ds, a.sid);
         if (grViolation) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, ...grViolation });
       }
+    }
+
+    // ACGME 80-hour rolling 4-week average (advisory — a block shorter than 4 weeks has
+    // incomplete data, so this stays a warn, not an error; see weeklyHourStats above).
+    if (isSchedulable(resident)) {
+      const { maxWeeklyAvg } = weeklyHourStats(rs);
+      if (maxWeeklyAvg > 80)
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`,
+          level: 'warn' });
     }
 
     // Circadian night-run check: consecutive night runs should be 4-6 (isolated 1-3-night stints
@@ -3318,6 +2981,70 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
   pdfSave(doc, `schedule_by_resident_${block.startDate || 'block'}.pdf`);
 }
 
+// RFC 5545 text escaping — backslash, semicolon, comma, and embedded newlines all need escaping
+// inside an ICS content line's value.
+function icsEscape(str) {
+  return String(str ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\n/g, '\\n');
+}
+
+// "Floating local time" basic ICS timestamp (YYYYMMDDTHHMMSS — no trailing Z, no TZID) — these
+// are wall-clock hospital shift times, deliberately timezone-naive. `dateObj` supplies Y/M/D,
+// `hourFloat` supplies H/M/S (fractional hours, same representation SHIFT_TIMING uses elsewhere).
+function icsStamp(dateObj, hourFloat) {
+  const y = dateObj.getFullYear();
+  const mo = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const da = String(dateObj.getDate()).padStart(2, '0');
+  const hh = Math.floor(hourFloat) % 24;
+  const mm = Math.round((hourFloat - Math.floor(hourFloat)) * 60);
+  return `${y}${mo}${da}T${String(hh).padStart(2, '0')}${String(mm).padStart(2, '0')}00`;
+}
+
+// One VCALENDAR (as a string) per resident — one VEVENT per assigned shift. Mirrors
+// exportResidentCalendarPDF's date iteration and Notes-marker logic, and buildQGendaCSVRows'
+// midnight-rollover handling (SHIFT_TIMING-derived start/duration, end date bumped a day when
+// startH+durationH >= 24), but neither of those is modified — this is new, standalone code.
+function buildResidentICS(resident, dates, sched) {
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//resident-scheduler//EN', 'CALSCALE:GREGORIAN'];
+
+  for (const ds of dates) {
+    const sid = sched[ds];
+    if (!sid) continue;
+    const t = SHIFT_TIMING[sid];
+    const startH = t?.startH;
+    const durationH = t?.durationH;
+    if (startH == null || durationH == null) continue; // no timing data — nothing safe to emit
+
+    const startDateObj = parseDate(ds);
+    const rollsOver = (startH + durationH) >= 24;
+    const endDateStr = rollsOver ? toDateStr(addDays(startDateObj, 1)) : ds;
+    const endDateObj = parseDate(endDateStr);
+    const endHour = rollsOver ? (startH + durationH - 24) : (startH + durationH);
+
+    const notes = [];
+    if ((resident.approvedDatesOff || []).includes(ds)) notes.push('OFF');
+    if ((resident.vacationDates || []).includes(ds)) notes.push('VAC');
+    if ((resident.jeopardyDates || []).includes(ds)) notes.push('Jeopardy');
+    if ((resident.jcPresentDates || []).includes(ds)) notes.push('JC presenting');
+    if ((resident.grLectureDates || []).includes(ds)) notes.push('GR lecture');
+
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:${resident.id}-${ds}-${sid}@resident-scheduler`);
+    lines.push(`DTSTART:${icsStamp(startDateObj, startH)}`);
+    lines.push(`DTEND:${icsStamp(endDateObj, endHour)}`);
+    lines.push(`SUMMARY:${icsEscape(SHIFT_MAP[sid]?.label || sid)}`);
+    lines.push(`LOCATION:${icsEscape(SHIFT_MAP[sid]?.area || '')}`);
+    lines.push(`DESCRIPTION:${icsEscape(notes.join(', '))}`);
+    lines.push('END:VEVENT');
+  }
+
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n');
+}
+
 // ─── HOOKS ────────────────────────────────────────────────────────────────────
 
 function useLocalStorage(key, def) {
@@ -3783,6 +3510,99 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
           </div>
           <p className="text-[10px] text-gray-400 mt-1.5">Only Published saved blocks (Dashboard tab) plus the current block count toward this cap.</p>
         </div>
+      </div>
+    </CollapsibleCard>
+  );
+}
+
+// Read-only fairness/equity card: per-schedulable-resident nights/weekends/hours/area-mix totals
+// for the current block's academic year. Combines PUBLISHED blocksHistory snapshots in that AY
+// (same iteration/guard pattern as countPublishedJC — skip unpublished, skip the live block's own
+// id, defensive optional-chaining against untrusted snapshot shape) with the live block's own
+// schedule (same idea as countCurrentBlockJC), except walking every assigned date rather than
+// only first-Tuesdays. Display-only — no editing affordances, no updateBlock calls.
+function EquityPanel({ allResidents, block, blocksHistory }) {
+  const ay = block.academicYear;
+
+  const stats = useMemo(() => {
+    const residents = allResidents.filter(isSchedulable);
+    const byId = {};
+    for (const r of residents) {
+      byId[r.id] = { resident: r, nights: 0, weekends: 0, hours: 0, areaMix: {} };
+    }
+    if (!ay) return { rows: [], nightsMedian: 0, weekendsMedian: 0 };
+
+    function tally(residentId, dateStr, sid) {
+      const row = byId[residentId];
+      if (!row || !sid) return;
+      if (isNightShiftId(sid)) row.nights++;
+      const dow = parseDate(dateStr).getDay();
+      if (dow === 0 || dow === 6) row.weekends++;
+      row.hours += SHIFT_TIMING[sid]?.durationH || 0;
+      const area = SHIFT_MAP[sid]?.area;
+      if (area) row.areaMix[area] = (row.areaMix[area] || 0) + 1;
+    }
+
+    for (const snap of blocksHistory) {
+      if (!snap?.published || snap.id === block.id) continue;
+      if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
+      const schedule = snap.data?.schedule || {};
+      for (const residentId of Object.keys(byId)) {
+        const rs = schedule?.[residentId];
+        if (!rs) continue;
+        for (const ds of Object.keys(rs)) tally(residentId, ds, rs[ds]);
+      }
+    }
+
+    // Live (unsaved) block's own schedule — not itself a published snapshot yet.
+    const liveSchedule = block.schedule || {};
+    for (const residentId of Object.keys(byId)) {
+      const rs = liveSchedule[residentId];
+      if (!rs) continue;
+      for (const ds of Object.keys(rs)) tally(residentId, ds, rs[ds]);
+    }
+
+    const rows = Object.values(byId);
+    const median = arr => {
+      if (arr.length === 0) return 0;
+      const s = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(s.length / 2);
+      return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
+    };
+
+    return { rows, nightsMedian: median(rows.map(r => r.nights)), weekendsMedian: median(rows.map(r => r.weekends)) };
+  }, [allResidents, blocksHistory, block, ay]);
+
+  if (!ay) {
+    return (
+      <CollapsibleCard title="Equity — Nights, Weekends & Hours">
+        <p className="text-xs text-gray-400 italic">Set this block's academic year (Settings) to see equity stats.</p>
+      </CollapsibleCard>
+    );
+  }
+
+  return (
+    <CollapsibleCard title="Equity — Nights, Weekends & Hours (this AY)"
+      subtitle={`${ay} · counts published saved blocks (Dashboard tab) plus the current block`}>
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-1.5">
+          {stats.rows.map(({ resident: r, nights, weekends, hours, areaMix }) => {
+            const isOutlier = (stats.nightsMedian > 0 && nights > 1.5 * stats.nightsMedian) ||
+              (stats.weekendsMedian > 0 && weekends > 1.5 * stats.weekendsMedian);
+            const cls = isOutlier ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-gray-50 text-gray-600 border border-gray-200';
+            const mixStr = Object.entries(areaMix).sort((a, b) => b[1] - a[1]).map(([area, n]) => `${area} ${n}`).join(' · ');
+            return (
+              <span key={r.id} className={`text-[10px] font-medium px-2 py-1 rounded-full ${cls}`} title={mixStr || 'No shifts assigned this AY'}>
+                {r.lastName}, {r.firstName} · {nights}N · {weekends}WE · {hours}h{mixStr ? ` · ${mixStr}` : ''}
+              </span>
+            );
+          })}
+          {stats.rows.length === 0 && <span className="text-xs text-gray-400 italic">No schedulable residents on this roster.</span>}
+        </div>
+        <p className="text-[10px] text-gray-400">
+          Amber = nights or weekends exceed 1.5× the group median (median {stats.nightsMedian} night{stats.nightsMedian !== 1 ? 's' : ''} ·{' '}
+          {stats.weekendsMedian} weekend{stats.weekendsMedian !== 1 ? 's' : ''}). Only Published saved blocks plus the current block count.
+        </p>
       </div>
     </CollapsibleCard>
   );
@@ -4324,6 +4144,9 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
           icon={Activity} tone="neutral"/>
       </div>
+
+      {/* Read-only equity/fairness card: per-resident nights/weekends/hours/area-mix for this AY */}
+      <EquityPanel allResidents={allResidents} block={block} blocksHistory={blocksHistory}/>
 
       {/* Block Overview */}
       <CollapsibleCard title="Block Overview">
@@ -7068,7 +6891,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const [confirmRegen, setConfirmRegen] = useState(false);
@@ -7081,6 +6904,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   const regenReadiness = useMemo(
     () => confirmRegen ? checkGenerateReadiness({ allResidents, block, dayRules }) : [],
     [confirmRegen, allResidents, block, dayRules]
+  );
+  // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
+  // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
+  const [confirmPartialRegen, setConfirmPartialRegen] = useState(null); // {kind:'unlocked'} | {kind:'range', start, end} | null
+  const partialRegenReadiness = useMemo(
+    () => confirmPartialRegen ? checkGenerateReadiness({ allResidents, block, dayRules }) : [],
+    [confirmPartialRegen, allResidents, block, dayRules]
   );
   const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
   const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
@@ -7112,7 +6944,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   },[filtered]);
 
   function assign(resId,ds,sid) {
-    updateBlock(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
+    updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
+  }
+
+  // Cell locks: `block.lockedCells[residentId][dateStr] = true` — nested inside `block`, so it
+  // already round-trips through res_current_block/backup/cloud sync with no new persistence key.
+  // Tracked (undoable) like every other schedule-adjacent mutation here.
+  function toggleLock(resId, ds) {
+    updateBlockTracked(b => {
+      const wasLocked = !!b.lockedCells?.[resId]?.[ds];
+      const residentLocks = { ...(b.lockedCells?.[resId] || {}) };
+      if (wasLocked) delete residentLocks[ds]; else residentLocks[ds] = true;
+      return { ...b, lockedCells: { ...(b.lockedCells || {}), [resId]: residentLocks } };
+    });
   }
 
   const totalAssigned = useMemo(()=>Object.values(sched).reduce((s,d)=>s+Object.values(d||{}).filter(Boolean).length,0),[sched]);
@@ -7140,6 +6984,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
 
     const srcRes = allResidents.find(r=>r.id===src.resId);
     if (!srcRes) return;
+
+    const lockedCells = block.lockedCells || {};
+    const srcLocked = !!lockedCells[src.resId]?.[src.ds];
+    const tgtLocked = !!lockedCells[tgtRes.id]?.[tgtDs];
+    if (srcLocked || tgtLocked) { showToast('Cannot move a locked shift — unlock the cell first', 'red'); return; }
 
     const tgtOff = (tgtRes.approvedDatesOff||[]).includes(tgtDs);
     const tgtVac = (tgtRes.vacationDates||[]).includes(tgtDs);
@@ -7173,7 +7022,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
   }
 
   function commitDrop(src, tgt, kind, wasOverridden) {
-    updateBlock(b => {
+    updateBlockTracked(b => {
       const s = { ...b.schedule };
       if (src.resId === tgt.resId) {
         s[src.resId] = { ...(s[src.resId]||{}), [src.ds]: kind==='swap'?tgt.sid:null, [tgt.ds]: src.sid };
@@ -7203,7 +7052,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
     const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory, ayConf });
     if (!res) { showToast('Set block dates first', 'red'); return; }
     if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-    updateBlock(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
+    updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
     const u = res.report.unfilled.length;
     const rc = res.report.restCompromises.length;
     // Filling with a <24h-rest candidate is a real safety-relevant tradeoff (default Soft Rule
@@ -7214,6 +7063,46 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
       : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`;
     if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
     showToast(msg, rc > 0 ? 'amber' : (u === 0 ? 'green' : 'amber'));
+  }
+
+  // ── Partial regenerate: "Regenerate Unlocked" and date-range regenerate share this. Both build
+  // a working copy of the schedule where every cell that's unlocked (and, for the range variant,
+  // inside [start,end]) is cleared, then call generateSchedule with clearFirst:false — the
+  // generator's fill passes never overwrite an already-occupied cell, so only the cleared cells
+  // get (re)filled; locked/out-of-range cells are never touched.
+  function runPartialRegenerate(req) {
+    setConfirmPartialRegen(null);
+    const locked = block.lockedCells || {};
+    const inRange = req.kind === 'range' ? (ds => ds >= req.start && ds <= req.end) : (() => true);
+    const workingSchedule = {};
+    for (const resId of Object.keys(sched)) {
+      const row = sched[resId] || {};
+      const newRow = {};
+      for (const ds of Object.keys(row)) {
+        const cellLocked = !!locked[resId]?.[ds];
+        const clearIt = !cellLocked && inRange(ds);
+        if (!clearIt && row[ds]) newRow[ds] = row[ds];
+      }
+      workingSchedule[resId] = newRow;
+    }
+    const res = generateSchedule({ allResidents, block: { ...block, schedule: workingSchedule }, coverage, eligOverrides, appSettings, dayRules, clearFirst: false, blocksHistory, ayConf });
+    if (!res) { showToast('Set block dates first', 'red'); return; }
+    if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
+    updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
+    const u = res.report.unfilled.length;
+    const msg = u === 0
+      ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
+      : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`;
+    showToast(msg, u === 0 ? 'green' : 'amber');
+  }
+
+  function requestRegenUnlocked() {
+    setConfirmPartialRegen({ kind: 'unlocked' });
+  }
+
+  function requestRegenRange() {
+    if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) { showToast('Pick a valid start/end date for the regenerate range first', 'red'); return; }
+    setConfirmPartialRegen({ kind: 'range', start: rangeStart, end: rangeEnd });
   }
 
   if (!dates.length) return (
@@ -7249,6 +7138,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
         </div>
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
+          const isLocked=!!(block.lockedCells?.[res.id]?.[ds]);
           const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
           const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
           const isVacation=(res.vacationDates||[]).includes(ds);
@@ -7275,7 +7165,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           const shift=sid?SHIFT_MAP[sid]:null;
           let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
           if(hasV) bg='bg-red-50';
-          const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation;
+          const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
           const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
           return (
@@ -7284,20 +7174,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
               onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
               onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
               onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
-              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':elig.length===0?'No eligible shifts':''}
-              className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':''}
+              className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
               {isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-600">WW</span></div>}
               {isGR&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
               {shift && (
-                <div draggable
-                  onDragStart={e=>{ e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
+                <div draggable={!isLocked}
+                  onDragStart={e=>{ if(isLocked){e.preventDefault();return;} e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
                   onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
-                  className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold cursor-grab active:cursor-grabbing ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                  className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
                   {sid}
                 </div>
+              )}
+              {shift && (
+                <button type="button" onClick={e=>{ e.stopPropagation(); toggleLock(res.id, ds); }}
+                  title={isLocked?'Unlock cell (allow drag/regenerate/edit)':'Lock cell (protect from drag, regenerate, and manual edit)'}
+                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-0.5 ${isLocked?'bg-indigo-600 text-white':'bg-white/70 text-gray-400 hover:text-gray-700'}`}>
+                  {isLocked?<Lock size={9}/>:<Unlock size={9}/>}
+                </button>
               )}
               {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
               {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
@@ -7316,7 +7213,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <strong className="text-foreground/80">{schedulableCount}</strong> of {allResidents.length} residents scheduling · <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
         </span>
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-2 flex-wrap">
+          <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
+          <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
           <Button variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
@@ -7324,6 +7223,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={()=>setConfirmRegen(true)}>
             Clear &amp; Regenerate
           </Button>
+          <Button variant="dangerOutline" size="sm" icon={Unlock} onClick={requestRegenUnlocked}
+            title="Clears every unlocked cell and regenerates it — locked cells are left untouched.">
+            Regenerate Unlocked
+          </Button>
+          <span className="flex items-center gap-1">
+            <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
+            <span className="text-xs text-gray-400">–</span>
+            <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
+            <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={requestRegenRange}
+              title="Clears unlocked cells within this date range and regenerates them — locked cells and cells outside the range are left untouched.">
+              Regenerate Range
+            </Button>
+          </span>
           <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
             title="Empties every assignment without regenerating.">
             Clear Schedule
@@ -7407,12 +7321,29 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               This clears <strong>all current assignments — including ones you entered manually</strong> — and
-              regenerates the whole schedule from scratch. This cannot be undone.
+              regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
             </p>
             <ReadinessWarningPanel issues={regenReadiness}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmPartialRegen && (
+        <Modal title={confirmPartialRegen.kind==='range' ? 'Regenerate Date Range?' : 'Regenerate Unlocked Cells?'} onClose={()=>setConfirmPartialRegen(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              {confirmPartialRegen.kind==='range'
+                ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
+                : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
+            </p>
+            <ReadinessWarningPanel issues={partialRegenReadiness}/>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
+              <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
             </div>
           </div>
         </Modal>
@@ -9264,6 +9195,62 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
+  // ─── Schedule undo/redo ──────────────────────────────────────────────────
+  // In-memory only (NOT persisted, NOT part of LS_BACKUP_KEYS) — a session-scoped safety net for
+  // grid edits, not scheduling data. Each stack entry is a `{schedule, lockedCells}` reference
+  // pair: since both are always replaced wholesale via spread (never mutated in place) by every
+  // mutator below, keeping the old references around is enough to restore them later at zero copy
+  // cost. A lock/unlock toggle only changes `lockedCells`, not `schedule` — the pair is required or
+  // undo would silently no-op on lock toggles while still consuming a stack slot.
+  const UNDO_CAP = 30;
+  const [undoStack, setUndoStack] = useState([]); // oldest first
+  const [redoStack, setRedoStack] = useState([]);
+
+  // Every schedule-mutating call site (assign, drag-drop, generate/regenerate, cell lock toggle)
+  // calls this instead of the bare updateBlock above, so the action becomes undoable. Non-schedule
+  // updateBlock calls (block name/dates, etc.) stay on the untracked one.
+  function updateBlockTracked(fn) {
+    setUndoStack(s => {
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
+    });
+    setRedoStack([]);
+    updateBlock(fn);
+  }
+
+  function undoSchedule() {
+    if (!undoStack.length) return;
+    const prev = undoStack[undoStack.length - 1];
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells }]);
+    setUndoStack(s => s.slice(0, -1));
+    setBlock(b => ({ ...b, schedule: prev.schedule, lockedCells: prev.lockedCells }));
+  }
+
+  function redoSchedule() {
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    setUndoStack(s => {
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
+    });
+    setRedoStack(r => r.slice(0, -1));
+    setBlock(b => ({ ...b, schedule: next.schedule, lockedCells: next.lockedCells }));
+  }
+
+  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
+  // focus, so it doesn't hijack normal in-field text-editing undo elsewhere in the app.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undoSchedule(); }
+      else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); redoSchedule(); }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undoStack, redoStack, block]);
+
   function saveBlock() {
     const shiftCount=Object.values(block.schedule||{}).reduce((s,d)=>s+Object.values(d).filter(Boolean).length,0);
     // A saved snapshot replaces its predecessor wholesale — preserve any existing "published"
@@ -9381,6 +9368,30 @@ export default function ResidentScheduler({ viewer } = {}) {
     return [header, ...rows];
   }
 
+  function downloadICS(filename, contents) {
+    const blob = new Blob([contents], { type: 'text/calendar' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // One .ics file per schedulable resident (same filter exportResidentCalendarPDF uses).
+  // Browsers throttle/block several near-simultaneous <a download> clicks, so each file's
+  // trigger is staggered by 150ms rather than firing all at once.
+  function exportResidentICSFiles() {
+    const dates = getBlockDates(block.startDate, block.endDate);
+    if (!dates.length) return;
+    const schedulable = allResidents.filter(isSchedulable);
+    schedulable.forEach((r, i) => {
+      setTimeout(() => {
+        const sched = block.schedule?.[r.id] || {};
+        const ics = buildResidentICS(r, dates, sched);
+        const safeName = `${r.lastName}_${r.firstName}`.replace(/[^A-Za-z0-9_-]/g, '_');
+        downloadICS(`${safeName}.ics`, ics);
+      }, i * 150);
+    });
+  }
+
   function pendingErrorCount() {
     return issueCounts.errors;
   }
@@ -9392,6 +9403,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   function runExport(kind) {
     if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}.csv`, buildGridCSVRows());
     else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
+    else if (kind==='ics') exportResidentICSFiles();
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
         if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
@@ -9412,7 +9424,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     runExport(kind);
   }
 
-  const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
+  const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
 
   const isSwitchNew = switchPending==='__new__';
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
@@ -9497,6 +9509,11 @@ export default function ResidentScheduler({ viewer } = {}) {
                         className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
                         PDF…
                       </button>
+                      <button role="menuitem" onClick={()=>{setExportMenuOpen(false); requestExport('ics');}}
+                        title="One .ics calendar file per resident — for import into Outlook/Google/Apple Calendar"
+                        className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
+                        ICS Calendar
+                      </button>
                     </div>
                   </>
                 )}
@@ -9540,7 +9557,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
