@@ -32,11 +32,16 @@ class ErrorBoundary extends React.Component {
           <p style={{ fontSize: 14, color: '#4b5563', marginBottom: 16 }}>
             The app hit an unexpected error and couldn't finish rendering this screen. Your saved
             data hasn't been touched — it's still in local storage (and synced to the cloud, if
-            configured). Reloading usually gets you back to a working tab.
+            configured). Reloading usually gets you back to a working tab. If reloading brings you
+            right back to this screen, use "Reset view & reload" below instead.
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16, fontFamily: 'monospace' }}>{String(this.state.error?.message || this.state.error)}</p>
           <button onClick={() => window.location.reload()} style={{ background: '#0057B8', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             Reload
+          </button>
+          <button onClick={() => { localStorage.removeItem('res_tab_order'); window.location.reload(); }}
+            style={{ background: 'transparent', color: '#4b5563', border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer', marginLeft: 8 }}>
+            Reset view &amp; reload
           </button>
         </div>
       </div>

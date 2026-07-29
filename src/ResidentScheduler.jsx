@@ -821,7 +821,9 @@ function applyStartDate(updateBlock, appSettings, s) {
 
 function getBlockDates(start, end) {
   if (!start || !end) return [];
-  const dates = []; let cur = parseDate(start); const last = parseDate(end);
+  let cur = parseDate(start); const last = parseDate(end);
+  if (isNaN(cur.getTime()) || isNaN(last.getTime())) return [];
+  const dates = [];
   while (cur <= last) { dates.push(toDateStr(cur)); cur = addDays(cur, 1); }
   return dates;
 }
@@ -3712,53 +3714,80 @@ const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct',
 
 // Sunday-start month-grid calendar for a block calendar row's expanded detail — replaces the old
 // per-shift × per-date heatmap table with an actual calendar (reusing buildWeekRows, the same
-// Sunday-start padding ScheduleCalendarView already relies on). Purely read-only: no click
-// handlers on day cells or dots, since a day-level click sitting next to the row's own "Open
-// Block" button would invite an accidental block switch.
+// Sunday-start padding ScheduleCalendarView already relies on). Read-only navigation-wise (no
+// onOpenBlock/etc. side effects), but a day cell can be tapped/clicked to select it, surfacing
+// the same per-shift detail the dots' hover titles carry in a touch-reachable strip below the
+// grid — hover titles remain for desktop as the fast path.
 function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameById }) {
   const weekRows = useMemo(() => buildWeekRows(dates), [dates]);
   const firstDate = dates[0];
+  const [selectedDs, setSelectedDs] = useState(null);
+  const selectedCov = selectedDs ? coverageByDate[selectedDs] : null;
 
   return (
-    <div className="border border-border/40 rounded-lg overflow-hidden">
-      <div className="grid grid-cols-7 bg-muted/50 border-b border-border">
-        {DOW.map(d => (
-          <div key={d} className="text-[10px] font-semibold text-muted-foreground uppercase text-center py-1">{d}</div>
+    <div>
+      <div className="border border-border/40 rounded-lg overflow-hidden">
+        <div className="grid grid-cols-7 bg-muted/50 border-b border-border">
+          {DOW.map(d => (
+            <div key={d} className="text-[10px] font-semibold text-muted-foreground uppercase text-center py-1">{d}</div>
+          ))}
+        </div>
+        {weekRows.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7">
+            {week.map((ds, di) => {
+              if (!ds) return <div key={di} className="min-h-[64px] border-r border-b border-border/40 p-1 bg-muted/30"/>;
+              const cov = coverageByDate[ds];
+              const status = coverageDayStatus(cov);
+              const d = parseDate(ds);
+              const label = (ds === firstDate || d.getDate() === 1)
+                ? `${MONTH_ABBR[d.getMonth()]} ${d.getDate()}` : String(d.getDate());
+              const isSelected = ds === selectedDs;
+              return (
+                <div key={ds} onClick={() => setSelectedDs(isSelected ? null : ds)}
+                  className={`min-h-[64px] border-r border-b border-border/40 p-1 cursor-pointer ${COVERAGE_DAY_BG[status]} ${isSelected ? 'ring-2 ring-inset ring-primary' : ''}`}>
+                  <div className="flex items-start justify-between gap-1">
+                    <span className="text-[10px] font-medium">{label}</span>
+                    <span className="font-mono tabular-nums text-[10px]">{cov?.filled ?? 0}/{cov?.minTotal ?? 0}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-0.5 mt-1">
+                    {activeShifts.map(s => {
+                      const info = cov?.perShift[s.id];
+                      const dotStatus = shiftCellStatus(info);
+                      const who = info && info.count > 0
+                        ? Object.keys(schedule).filter(rid => schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
+                        : '';
+                      return (
+                        <span key={s.id} title={info ? `${s.id}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : s.id}
+                          className={`w-2 h-2 rounded-full ${COVERAGE_DOT_CLASS[dotStatus]}`}/>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         ))}
       </div>
-      {weekRows.map((week, wi) => (
-        <div key={wi} className="grid grid-cols-7">
-          {week.map((ds, di) => {
-            if (!ds) return <div key={di} className="min-h-[64px] border-r border-b border-border/40 p-1 bg-muted/30"/>;
-            const cov = coverageByDate[ds];
-            const status = coverageDayStatus(cov);
-            const d = parseDate(ds);
-            const label = (ds === firstDate || d.getDate() === 1)
-              ? `${MONTH_ABBR[d.getMonth()]} ${d.getDate()}` : String(d.getDate());
+      {selectedDs && (
+        <div className="mt-2 p-2 rounded-lg bg-muted/50 border border-border text-xs space-y-1">
+          <div className="font-medium text-foreground">{prettyDate(selectedDs)}</div>
+          {activeShifts.map(s => {
+            const info = selectedCov?.perShift[s.id];
+            const dotStatus = shiftCellStatus(info);
+            const who = info && info.count > 0
+              ? Object.keys(schedule).filter(rid => schedule[rid]?.[selectedDs] === s.id).map(rid => nameById[rid] || rid).join(', ')
+              : '';
             return (
-              <div key={ds} className={`min-h-[64px] border-r border-b border-border/40 p-1 ${COVERAGE_DAY_BG[status]}`}>
-                <div className="flex items-start justify-between gap-1">
-                  <span className="text-[10px] font-medium">{label}</span>
-                  <span className="font-mono tabular-nums text-[10px]">{cov?.filled ?? 0}/{cov?.minTotal ?? 0}</span>
-                </div>
-                <div className="flex flex-wrap gap-0.5 mt-1">
-                  {activeShifts.map(s => {
-                    const info = cov?.perShift[s.id];
-                    const dotStatus = shiftCellStatus(info);
-                    const who = info && info.count > 0
-                      ? Object.keys(schedule).filter(rid => schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
-                      : '';
-                    return (
-                      <span key={s.id} title={info ? `${s.id}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : s.id}
-                        className={`w-2 h-2 rounded-full ${COVERAGE_DOT_CLASS[dotStatus]}`}/>
-                    );
-                  })}
-                </div>
+              <div key={s.id} className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${COVERAGE_DOT_CLASS[dotStatus]}`}/>
+                <span className="font-medium">{s.id}</span>
+                <span className="text-muted-foreground">{info ? `${info.count}/${info.min}` : ''}</span>
+                {who && <span className="text-muted-foreground truncate">— {who}</span>}
               </div>
             );
           })}
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -3992,7 +4021,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
@@ -4162,6 +4191,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
             </>
           }>
           <p>Removes '{block.name || 'Unnamed Block'}' completely — the saved copy on this Dashboard and everything in your current workspace. Roster, rules, and other blocks are not affected. This cannot be undone.</p>
+          {currentSnapPublished && <p className="mt-2 text-amber-600">This block is published. Deleting it removes it from journal-club history counts used by validation.</p>}
         </ConfirmDialog>
       )}
 
@@ -7305,7 +7335,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, eligOverrides, appSett
             {grouped.map(({cat,members})=>{
               const active=members.filter(isSchedulable);
               const inactive=members.filter(r=>!isSchedulable(r));
-              const hiddenAssigned=inactive.filter(r=>Object.values(sched[r.id]||{}).filter(Boolean).length>0).length;
+              const hiddenAssigned=inactive.reduce((s,r)=>s+Object.values(sched[r.id]||{}).filter(Boolean).length,0);
               const isExpanded=showInactive[cat.id] ?? true;
               return (
               <div key={cat.id}>
@@ -8769,7 +8799,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
               </span>
               <Icon size={15} className={`shrink-0 ${iconColor}`}/>
               <span className="flex-1">{t.label}</span>
-              {t.global && <Globe size={11} className="text-white/30 shrink-0" title="Applies to all blocks"/>}
+              {t.global && <span title="Applies to all blocks"><Globe size={11} className="text-white/30 shrink-0"/></span>}
               {isValidation && (issueCounts.errors > 0 || issueCounts.warns > 0) && (
                 <span className="flex items-center gap-1">
                   {issueCounts.errors > 0 && (
@@ -9102,14 +9132,15 @@ export default function ResidentScheduler({ viewer } = {}) {
   }),[issues]);
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
   const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
-  // Dirty flag flips true on any updateBlock() edit, false on save/load/new — avoids a full
-  // deep-equal recompute on every keystroke/drag/cell-assign. Lazy initializer runs the (one-time)
-  // deep-equal exactly once, at mount, so a block left mid-edit across a page reload still starts
-  // in the correct state instead of defaulting to false-positive "Saved".
-  const [blockDirty, setBlockDirty] = useState(() => matchingSnap ? !deepEqualNormalized(buildSnapData(block), matchingSnap.data) : false);
-  const blockSaveState = matchingSnap ? (blockDirty ? 'dirty' : 'saved') : 'never';
+  // Derived, not stored — so any code path that changes block/blocksHistory (including raw
+  // setBlock/setBlocksHistory callers like the cloud-sync mount overlay and Master Matrix
+  // re-import, which bypass updateBlock) recomputes the pill correctly instead of desyncing.
+  const blockSaveState = useMemo(() => {
+    if (!matchingSnap) return 'never';
+    return deepEqualNormalized(buildSnapData(block), matchingSnap.data) ? 'saved' : 'dirty';
+  }, [block, matchingSnap]);
 
-  function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); setBlockDirty(true); }
+  function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
 
   function saveBlock() {
     const shiftCount=Object.values(block.schedule||{}).reduce((s,d)=>s+Object.values(d).filter(Boolean).length,0);
@@ -9121,7 +9152,6 @@ export default function ResidentScheduler({ viewer } = {}) {
       residentCount:emRoster.length+(block.offServiceResidents||[]).length, shiftCount,
       data: buildSnapData(block) };
     setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0, appSettings.maxSavedBlocks ?? 24));
-    setBlockDirty(false);
     showToast(`"${snap.name}" saved`,'green');
   }
   function toggleBlockPublished(id) {
@@ -9129,20 +9159,28 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function deleteBlockSnapshot(id) {
+    if (SUPABASE_ENABLED && !dbReady) {
+      showToast('Cloud sync is in an error state — reload to retry before deleting','red');
+      return;
+    }
     setBlocksHistory(p=>p.filter(b=>b.id!==id));
     showToast('Saved block deleted','amber');
   }
 
   function deleteCurrentBlock() {
+    if (SUPABASE_ENABLED && !dbReady) {
+      showToast('Cloud sync is in an error state — reload to retry before deleting','red');
+      return;
+    }
     setBlocksHistory(p=>p.filter(b=>b.id!==block.id));
     setBlock(makeDefaultBlock());
-    setBlockDirty(false);
     showToast('Block deleted','amber');
   }
 
   function loadBlock(snap) {
     const hasCurrent=block.startDate||(block.offServiceResidents||[]).length>0||Object.keys(block.schedule||{}).length>0;
-    hasCurrent ? setSwitchPending(snap) : doLoadBlock(snap);
+    const needsGuard = blockSaveState === 'dirty' || (blockSaveState === 'never' && hasCurrent);
+    needsGuard ? setSwitchPending(snap) : doLoadBlock(snap);
   }
 
   function doLoadBlock(snap) {
@@ -9152,18 +9190,18 @@ export default function ResidentScheduler({ viewer } = {}) {
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
       conferences:d.conferences||{}, generationReport:d.generationReport||null });
-    setBlockDirty(false);
     setSwitchPending(null); setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
 
   function newBlock() {
     const hasCurrent=block.startDate||(block.offServiceResidents||[]).length>0;
-    hasCurrent ? setSwitchPending('__new__') : doNewBlock();
+    const needsGuard = blockSaveState === 'dirty' || (blockSaveState === 'never' && hasCurrent);
+    needsGuard ? setSwitchPending('__new__') : doNewBlock();
   }
 
   function doNewBlock() {
-    setBlock(makeDefaultBlock()); setBlockDirty(false); setSwitchPending(null); setTab('dashboard');
+    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('dashboard');
     showToast('New block ready — enter dates below','amber');
   }
 
@@ -9375,7 +9413,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
-              onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock}/>
+              onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
