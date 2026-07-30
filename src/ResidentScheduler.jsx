@@ -9,7 +9,7 @@ import {
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
-  Archive,
+  Archive, FlaskConical,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -7976,6 +7976,14 @@ function ValidationTab({ issues, block, appSettings }) {
 // is unchanged from before this feature existed.
 
 const RES_STATE_ROW_ID = 'main';
+// Demo Sandbox (see DEMO SANDBOX section near the root component): a second, independent
+// res_state row so a demo can be resumed cross-device, exactly like the real row — never read or
+// written except by demo-mode code paths.
+const RES_STATE_DEMO_ROW_ID = 'demo';
+// Device-local flag (like res_dark_mode) — NOT in LS_BACKUP_KEYS, never synced/backed-up. Read
+// once per mount; every enter/exit/resume/delete action below sets this then reloads the page,
+// since useLocalStorage's lazy initializer only reads localStorage on first mount.
+const DEMO_MODE_KEY = 'res_demo_mode';
 
 const SUPABASE_URL_RAW  = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_URL__)  || '';
 const SUPABASE_ANON_RAW = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_ANON__) || '';
@@ -8032,27 +8040,29 @@ const sbFetch = async (path, opts = {}) => {
 
 // Upsert the whole department document — POST with Prefer: resolution=merge-duplicates is an
 // upsert keyed on the table's PK, same pattern em-scheduler uses (no ON CONFLICT SQL needed).
-const sbSaveState = async (data) => {
+// rowId defaults to the real row; the Demo Sandbox passes RES_STATE_DEMO_ROW_ID so demo I/O never
+// touches the real document.
+const sbSaveState = async (data, rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return;
   await sbFetch('/res_state', {
     method: 'POST',
     prefer: 'resolution=merge-duplicates,return=minimal',
-    body: { id: RES_STATE_ROW_ID, data, saved_at: new Date().toISOString() },
+    body: { id: rowId, data, saved_at: new Date().toISOString() },
   });
 };
 
-// Loads the single shared row — null if never saved yet (or unconfigured).
-const sbLoadState = async () => {
+// Loads a shared row — null if never saved yet (or unconfigured).
+const sbLoadState = async (rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return null;
-  const rows = await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}&select=data,saved_at`);
+  const rows = await sbFetch(`/res_state?id=eq.${rowId}&select=data,saved_at`);
   return rows && rows[0] ? rows[0] : null;
 };
 
-// Delete the shared cloud row — SettingsTab's clearAll() gates the local wipe + reload on this
+// Delete a shared cloud row — SettingsTab's clearAll() gates the local wipe + reload on this
 // succeeding, so the next mount's overlay can't restore the erased document from a still-intact row.
-const sbDeleteState = async () => {
+const sbDeleteState = async (rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return;
-  await sbFetch(`/res_state?id=eq.${RES_STATE_ROW_ID}`, { method: 'DELETE', prefer: 'return=minimal' });
+  await sbFetch(`/res_state?id=eq.${rowId}`, { method: 'DELETE', prefer: 'return=minimal' });
 };
 
 // ─── FEEDBACK ─────────────────────────────────────────────────────────────────
@@ -8104,7 +8114,7 @@ export const submitFeedback = async ({ type, message, contact, page, meta }) => 
 // (matches the sibling em-scheduler app, which excludes its own em_dark_mode the same way).
 const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage','res_tab_order'];
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -8135,6 +8145,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   function importData(e) {
+    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); e.target.value = ''; return; }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -8175,6 +8186,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   async function clearAll() {
+    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); return; }
     if (SUPABASE_ENABLED) {
       // Delete the cloud row FIRST, and only wipe localStorage + reload if it succeeds — otherwise
       // the reload's overlay would fetch the still-intact row and restore everything. syncSuspended
@@ -9025,18 +9037,37 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [pdfPicker, setPdfPicker] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
-  const [emRoster, setEmRoster]           = useLocalStorage('res_em_roster', []);
-  const [eligOverrides, setEligOverrides] = useLocalStorage('res_eligibility_overrides', {});
-  const [blocksHistory, setBlocksHistory] = useLocalStorage('res_blocks_history', []);
-  const [block, setBlock]                 = useLocalStorage('res_current_block', makeDefaultBlock());
+  // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
+  // A disposable copy of the whole workspace an admin can experiment in without risking the real
+  // schedule (see em-scheduler's own "Demo Sandbox" for the pattern this mirrors). Isolation is by
+  // PHYSICAL localStorage key (res_* vs res_demo_*) plus a second Supabase row (RES_STATE_DEMO_ROW_ID)
+  // — never a runtime branch inside shared save/load logic, so the real res_* keys and the 'main'
+  // cloud row are structurally impossible to write while demoMode is on.
+  //
+  // demoMode is read once per mount (useLocalStorage's lazy initializer only reads localStorage on
+  // first mount) — every enter/exit/resume/delete function below sets DEMO_MODE_KEY then calls
+  // window.location.reload(), the same "commit then reload" discipline SettingsTab's
+  // importData/clearAll already use, so a clean remount is what actually swaps which physical keys
+  // the nine hooks below resolve to.
+  const demoMode = useMemo(() => {
+    try { return localStorage.getItem(DEMO_MODE_KEY) === 'true'; } catch { return false; }
+  }, []);
+  // Maps a base res_* key to its physical storage key for the current mode. res_dark_mode is
+  // deliberately never passed through this — it's a device preference shared between real and demo.
+  const physKey = k => demoMode ? k.replace(/^res_/, 'res_demo_') : k;
+
+  const [emRoster, setEmRoster]           = useLocalStorage(physKey('res_em_roster'), []);
+  const [eligOverrides, setEligOverrides] = useLocalStorage(physKey('res_eligibility_overrides'), {});
+  const [blocksHistory, setBlocksHistory] = useLocalStorage(physKey('res_blocks_history'), []);
+  const [block, setBlock]                 = useLocalStorage(physKey('res_current_block'), makeDefaultBlock());
   // AY-level data: conference & ITE dates keyed by academic year string
-  const [ayData, setAyData]               = useLocalStorage('res_ay_data', {});
+  const [ayData, setAyData]               = useLocalStorage(physKey('res_ay_data'), {});
   // App-level settings: rule enforcement, targets, defaults
-  const [appSettings, setAppSettings]     = useLocalStorage('res_app_settings', DEFAULT_APP_SETTINGS);
+  const [appSettings, setAppSettings]     = useLocalStorage(physKey('res_app_settings'), DEFAULT_APP_SETTINGS);
   // Chief-editable day-of-week / block-type scheduling rules (see DEFAULT_DAY_RULES)
-  const [dayRules, setDayRules]           = useLocalStorage('res_day_rules', {});
-  const [coverage, setCoverage]           = useLocalStorage('res_coverage', {});
-  const [tabOrder, setTabOrder]           = useLocalStorage('res_tab_order', TABS.map(t=>t.id));
+  const [dayRules, setDayRules]           = useLocalStorage(physKey('res_day_rules'), {});
+  const [coverage, setCoverage]           = useLocalStorage(physKey('res_coverage'), {});
+  const [tabOrder, setTabOrder]           = useLocalStorage(physKey('res_tab_order'), TABS.map(t=>t.id));
   // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
   const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
 
@@ -9128,7 +9159,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   useEffect(() => {
     if (!SUPABASE_ENABLED) { setDbReady(true); return; }
     setDbStatus('loading');
-    sbLoadState().then(row => {
+    sbLoadState(demoMode ? RES_STATE_DEMO_ROW_ID : undefined).then(row => {
       if (row && row.data) {
         const d = row.data;
         LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
@@ -9192,12 +9223,72 @@ export default function ResidentScheduler({ viewer } = {}) {
       setDbStatus('saving');
       const payload = {};
       LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
-      sbSaveState(payload).then(() => { cloudBaselineRef.current = current; setDbStatus('idle'); })
+      sbSaveState(payload, demoMode ? RES_STATE_DEMO_ROW_ID : undefined).then(() => { cloudBaselineRef.current = current; setDbStatus('idle'); })
         .catch(e => { setDbError(e.message); setDbStatus('error'); });
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, dbReady]);
+
+  // Demo Sandbox entry/exit — see the DEMO SANDBOX comment above the useLocalStorage block for the
+  // isolation design. Every action here ends in window.location.reload(): demoMode is only ever
+  // decided once per mount, so flipping DEMO_MODE_KEY needs a real remount to take effect.
+  const [demoModalOpen, setDemoModalOpen] = useState(false);
+  const [demoExisting, setDemoExisting] = useState(false); // does a resumable demo already exist?
+  const [demoBusy, setDemoBusy] = useState(false);
+  const demoPhysKey = k => k.replace(/^res_/, 'res_demo_');
+
+  async function openDemoModal() {
+    setDemoModalOpen(true);
+    if (LS_BACKUP_KEYS.some(k => localStorage.getItem(demoPhysKey(k)) != null)) { setDemoExisting(true); return; }
+    if (!SUPABASE_ENABLED) { setDemoExisting(false); return; }
+    try {
+      const row = await sbLoadState(RES_STATE_DEMO_ROW_ID);
+      setDemoExisting(!!(row && row.data));
+    } catch { setDemoExisting(false); }
+  }
+
+  // Copies the real, currently-live data into the res_demo_* keys (and the cloud demo row, if
+  // configured) so the sandbox starts as a full working copy — not a blank slate.
+  async function enterDemoFresh() {
+    setDemoBusy(true);
+    try {
+      const doc = {};
+      for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
+      if (SUPABASE_ENABLED) await sbSaveState(doc, RES_STATE_DEMO_ROW_ID);
+      for (const k of LS_BACKUP_KEYS) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
+      localStorage.setItem(DEMO_MODE_KEY, 'true');
+      window.location.reload();
+    } catch {
+      setDemoBusy(false);
+      showToast('Could not start the demo — try again.', 'red');
+    }
+  }
+
+  function enterDemoResume() {
+    localStorage.setItem(DEMO_MODE_KEY, 'true');
+    window.location.reload();
+  }
+
+  function exitDemo() {
+    localStorage.setItem(DEMO_MODE_KEY, 'false');
+    window.location.reload();
+  }
+
+  // Wipes the demo keys/row only — the real res_* keys and 'main' cloud row are never touched by
+  // this path, since it only ever addresses demoPhysKey()'d keys and RES_STATE_DEMO_ROW_ID.
+  async function deleteDemo() {
+    setDemoBusy(true);
+    try {
+      if (SUPABASE_ENABLED) await sbDeleteState(RES_STATE_DEMO_ROW_ID);
+      for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
+      localStorage.setItem(DEMO_MODE_KEY, 'false');
+      window.location.reload();
+    } catch {
+      setDemoBusy(false);
+      showToast('Could not delete the cloud demo — try again.', 'red');
+    }
+  }
 
   // One-time prune: a saved override that's a no-op copy of a since-corrected default (see
   // LEGACY_DAY_RULE_DEFAULTS/LEGACY_ELIGIBILITY_DEFAULTS) would otherwise mask the new default
@@ -9543,6 +9634,12 @@ export default function ResidentScheduler({ viewer } = {}) {
               </span>
             )}
             <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
+            {!demoMode && (
+              <button onClick={openDemoModal} title="Demo Sandbox — practice on a disposable copy of your data"
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                <FlaskConical size={16}/>
+              </button>
+            )}
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
@@ -9594,6 +9691,41 @@ export default function ResidentScheduler({ viewer } = {}) {
         </div>
       </header>
 
+      {demoMode && (
+        <div className="no-print shrink-0 flex items-center justify-between gap-3 px-5 py-2 text-white"
+          style={{ background: 'repeating-linear-gradient(45deg, #a21caf, #a21caf 10px, #86198f 10px, #86198f 20px)' }}>
+          <span className="text-xs font-semibold">DEMO SANDBOX — you're editing a disposable copy. Your real schedules are untouched.</span>
+          <div className="flex items-center gap-2 flex-none">
+            <button onClick={exitDemo} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30">Exit demo</button>
+            <button onClick={deleteDemo} disabled={demoBusy} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30 disabled:opacity-50">Delete demo &amp; exit</button>
+          </div>
+        </div>
+      )}
+
+      {demoModalOpen && (
+        <Modal title="Demo Sandbox" onClose={()=>setDemoModalOpen(false)}>
+          <div className="space-y-3 text-sm text-gray-600">
+            <p>Practice building schedules on a disposable copy of your data — your real roster, block, and rules stay untouched until you exit.</p>
+            <div className="space-y-2 pt-1">
+              {demoExisting && (
+                <Button variant="primary" className="w-full justify-center" disabled={demoBusy} onClick={enterDemoResume}>
+                  Resume existing demo
+                </Button>
+              )}
+              <Button variant="secondary" className="w-full justify-center" disabled={demoBusy} onClick={enterDemoFresh}>
+                {demoExisting ? 'Start fresh (replaces existing demo)' : 'Start fresh — copy of current data'}
+              </Button>
+              {demoExisting && (
+                <Button variant="dangerOutline" className="w-full justify-center" disabled={demoBusy} onClick={deleteDemo}>
+                  Delete demo
+                </Button>
+              )}
+            </div>
+            {SUPABASE_ENABLED && <p className="text-xs text-gray-400">The demo is shared across your devices, in one slot — another admin's demo edits will be lost if overwritten.</p>}
+          </div>
+        </Modal>
+      )}
+
       {BLOCK_SCOPED_TABS.has(tab) && (
         <BlockContextBar block={block} blockSaveState={blockSaveState} onSave={saveBlock} onSwitch={()=>setTab('dashboard')}/>
       )}
@@ -9632,7 +9764,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>

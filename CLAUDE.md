@@ -61,7 +61,8 @@ to CSV, JSON backup/restore in Settings tab.
   place, not empty string, when var isn't defined for that build — verified: build with
   no `.env` leaves literal token in `dist/index.html`) same as "not configured," so
   fork/preview build without vars set falls back to clean local-only mode instead of
-  permanent "Sync error." One Supabase table, `res_state`, one fixed row (`id: 'main'`) holding
+  permanent "Sync error." One Supabase table, `res_state`, one fixed row (`id: 'main'`, the real
+  row — see "Demo Sandbox" below for the second, disposable row this table also holds) holding
   whole `LS_BACKUP_KEYS`-shaped document as single `jsonb` blob — unlike per-record table,
   nothing here needs independent archiving at row level, so one row right shape (see
   section's own comment for exact schema/RLS policy, note policy intentionally wide-open,
@@ -89,6 +90,48 @@ to CSV, JSON backup/restore in Settings tab.
   module-level `syncSuspended` flag so root's debounced auto-save can't race stale write
   onto row mid-operation, `importData` pushes only `LS_BACKUP_KEYS` keys (never
   `res_dark_mode`) into shared document.
+
+- **Demo Sandbox** (`// ─── DEMO SANDBOX ───` section, just above the nine `useLocalStorage` calls
+  in root `ResidentScheduler`; `RES_STATE_DEMO_ROW_ID`/`DEMO_MODE_KEY` declared near
+  `RES_STATE_ROW_ID` in the Cloud sync section above): lets an admin practice/break things on a
+  disposable copy of the whole workspace without risking real data (mirrors sibling em-scheduler's
+  own Demo Sandbox). **Isolation is by PHYSICAL localStorage key, never a runtime branch inside
+  shared save/load code** — `physKey(k)` rewrites only the `res_` prefix (`res_em_roster` →
+  `res_demo_em_roster`) when `demoMode` is true, and every one of the nine `LS_BACKUP_KEYS`-backed
+  `useLocalStorage` calls is wrapped in it; a second Supabase `res_state` row (`id: 'demo'` =
+  `RES_STATE_DEMO_ROW_ID`) mirrors this cloud-side via `sbSaveState`/`sbLoadState`/`sbDeleteState`'s
+  new optional `rowId` param (defaults to `RES_STATE_ROW_ID`, the real row). The real `res_*` keys
+  and the `'main'` cloud row are structurally unreachable while `demoMode` is on, not merely
+  skipped by an `if` — same "can't accidentally write the wrong place" guarantee as the
+  `dbReady`/`syncSuspended` gates above.
+  `demoMode` is a device-local flag under `DEMO_MODE_KEY = 'res_demo_mode'` (same posture as
+  `res_dark_mode` — deliberately excluded from `LS_BACKUP_KEYS`, never synced/backed-up), read
+  ONCE per mount via a `useMemo` reading `localStorage` directly. It is **not** live React state
+  you can just flip — `useLocalStorage`'s lazy initializer only reads localStorage on first mount,
+  so every enter/exit/resume/delete action (`enterDemoFresh`/`enterDemoResume`/`exitDemo`/
+  `deleteDemo`) sets `DEMO_MODE_KEY` then calls `window.location.reload()`; only a genuine remount
+  makes the nine hooks resolve to `res_demo_*` keys (or back to `res_*`). Fresh demo is a full
+  copy of live data, not a blank slate: `enterDemoFresh` reads the current value of all nine
+  `LS_BACKUP_KEYS` vars off `syncBindings` (the same map Cloud sync builds), pushes that copy to
+  the cloud demo row FIRST when `SUPABASE_ENABLED` (`sbSaveState(doc, RES_STATE_DEMO_ROW_ID)`),
+  and only writes the `res_demo_*` localStorage keys / reloads once that succeeds — identical
+  cloud-first-then-commit-locally discipline to `SettingsTab.importData`/`clearAll`, so a failed
+  cloud push can't strand local demo state a second device could never resume. `openDemoModal`
+  decides whether "Resume existing demo" is offered (`demoExisting`) by checking local
+  `res_demo_*` keys first, only probing `sbLoadState(RES_STATE_DEMO_ROW_ID)` if none exist
+  locally. One shared demo slot across every admin/device — resumable cross-device via the cloud
+  row, but two admins in the sandbox at once will race each other overwriting it (accepted
+  tradeoff, not solved, same posture as main sync's last-write-wins). `deleteDemo` only ever
+  touches `demoPhysKey()`'d keys and `RES_STATE_DEMO_ROW_ID` — never the real row or keys.
+  Header flask icon (`FlaskConical`, hidden once already in demo) opens the entry `Modal`
+  (`demoModalOpen`); while `demoMode` is true a diagonal-striped purple banner replaces normal
+  header chrome with "Exit demo" (flips the flag back and reloads — demo data stays on disk,
+  resumable later) and "Delete demo & exit" (`deleteDemo`). `SettingsTab.importData`/`clearAll`
+  both early-return with a toast — "Exit the demo sandbox first." — when the new `demoMode` prop
+  is true, since both act on `LS_BACKUP_KEYS`/the real `'main'` row directly and would otherwise
+  stay reachable-but-wrong from inside the sandbox. No new `LS_BACKUP_KEYS` entry, no
+  `syncBindings` change, no SQL/schema change needed — `'demo'` is just another row in the same
+  wide-open-RLS `res_state` table.
 
 - **User feedback** (`// ─── FEEDBACK ───` section, after Supabase sync helpers; `// ─── FEEDBACK WIDGET ───`/`// ─── FEEDBACK ADMIN TAB ───` sections near `MAIN APP`): floating bug/crash/idea widget (hidden when `SUPABASE_ENABLED` false) posts to separate `feedback` table in same shared Supabase project via `submitFeedback()` — insert-only for anon key (no `SELECT`/`UPDATE`/`DELETE` RLS policy for anon, unlike `res_state`'s wide-open posture). Every row carries `app_name: 'resident-scheduler'` since table shared with `em-scheduler`. `main.jsx` installs `window.onerror`/`unhandledrejection` listener that auto-submits `type: 'crash'` reports through same helper, deduped per session via `sessionStorage`, capped at 5/session. Only way to *read* feedback: password-gated "Feedback" sidebar tab (also hidden when `SUPABASE_ENABLED` false), calls `netlify/functions/feedback-admin.js` — server-only Netlify Function using `SUPABASE_SERVICE_ROLE_KEY` env var to bypass RLS, gated by `x-feedback-password` header checked against `FEEDBACK_ADMIN_PASSWORD`. Both server-only Netlify environment variables (set in Netlify dashboard for this site) — never `VITE_`-prefixed, never routed through `%VITE_*%` HTML-token mechanism `index.html` uses for client-exposed Supabase URL/anon key. See `.env.example` for full list, `docs/superpowers/specs/2026-07-18-user-feedback-design.md` for original design.
 
