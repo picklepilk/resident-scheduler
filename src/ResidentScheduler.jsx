@@ -6470,6 +6470,8 @@ function DayRulesEditor({ rowKey, dr, update }) {
 function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSettings, dayRules, setDayRules, coverage, setCoverage }) {
   const [showAll, setShowAll] = useState(true);
   const [openKeys, setOpenKeys] = useState({});
+  const [view, setView] = useState('coverage');
+  const [typeQuery, setTypeQuery] = useState('');
 
   // Find which types are active this block
   const activeTypes = useMemo(() => {
@@ -6512,28 +6514,30 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
     return parts.length ? `Eligible: ${parts.join(', ')}.` : 'No shifts configured.';
   }
 
-  if (displayRows.length === 0 && !showAll) {
-    return (
-      <div className="text-center py-12 text-gray-400 space-y-3">
-        <Shield size={36} className="mx-auto opacity-40"/>
-        <p className="text-sm">No schedulable residents active this block.</p>
-        <button onClick={()=>setShowAll(true)} className="text-xs text-primary hover:underline">Show all types anyway</button>
-      </div>
-    );
-  }
+  const typeQueryNorm = typeQuery.trim().toLowerCase();
+  const searchedRows = !typeQueryNorm ? displayRows : displayRows.filter(row => {
+    const cat = CAT_MAP[row.catId];
+    return row.label.toLowerCase().includes(typeQueryNorm)
+      || row.sub.toLowerCase().includes(typeQueryNorm)
+      || (cat?.label || '').toLowerCase().includes(typeQueryNorm);
+  });
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-800">Scheduling Rules</h2>
-          <p className="text-xs text-gray-500 mt-0.5">{showAll ? 'All resident types' : `${displayRows.length} type${displayRows.length!==1?'s':''} active this block`} — edited here, no code changes needed.</p>
-        </div>
-        <button onClick={()=>setShowAll(p=>!p)} className="text-xs text-primary hover:underline">
-          {showAll ? 'Show active only' : 'Show all types'}
-        </button>
+      <div>
+        <h2 className="text-base font-semibold text-gray-800">Scheduling Rules</h2>
+        <p className="text-xs text-gray-500 mt-0.5">Edited here, no code changes needed.</p>
       </div>
 
+      <div className="no-print">
+        <SubTabs value={view} onChange={setView} options={[
+          {id:'coverage', label:'Coverage & Priority', icon:Activity},
+          {id:'types', label:'Resident-Type Rules', icon:Users},
+        ]}/>
+      </div>
+
+      {view === 'coverage' && (
+      <div className="space-y-3">
       <SectionCard title="Daily Shift Coverage" subtitle="Minimum and maximum residents each shift can have per day — used by Generate Schedule on the Schedule tab.">
         <div className="overflow-x-auto">
           <table className="text-sm">
@@ -6600,14 +6604,20 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </div>
         <p className="text-xs text-gray-500 mt-2">
           Minimum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).min, 0)}</strong> – maximum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).max, 0)}</strong> resident-shifts per day.
-          The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1: FM-3 covers Mon/Tue/Wed, EM Home may optionally cover Thu/Sun, and it stays best-effort (not required) either way. Trauma day-of-week limits still apply on top.
         </p>
-        <p className="text-xs text-gray-500 mt-1">
-          POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
-        </p>
-        <p className="text-xs text-gray-500 mt-1">
-          12h shifts auto-activate only during ACEP/AAEM/SAEM conference-week dates for POD/MT/FLEX (their normal Day/Eve/Night coverage is suppressed those dates). PED's 12h shifts are opt-in — raise their coverage here any time you need them; PED's normal shifts stay active regardless.
-        </p>
+        <div className="mt-2">
+          <Collapsible title="How coverage works" defaultOpen={false}>
+            <p className="text-xs text-gray-500">
+              The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1: FM-3 covers Mon/Tue/Wed, EM Home may optionally cover Thu/Sun, and it stays best-effort (not required) either way. Trauma day-of-week limits still apply on top.
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              12h shifts auto-activate only during ACEP/AAEM/SAEM conference-week dates for POD/MT/FLEX (their normal Day/Eve/Night coverage is suppressed those dates). PED's 12h shifts are opt-in — raise their coverage here any time you need them; PED's normal shifts stay active regardless.
+            </p>
+          </Collapsible>
+        </div>
       </SectionCard>
 
       <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way.">
@@ -6667,14 +6677,39 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
           )}
         </div>
       </SectionCard>
+      </div>
+      )}
 
-      {displayRows.map(row => {
+      {view === 'types' && (
+      <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-xs text-gray-500">{showAll ? 'All resident types' : `${displayRows.length} type${displayRows.length!==1?'s':''} active this block`}</p>
+        <div className="flex items-center gap-3">
+          <input type="text" value={typeQuery} onChange={e=>setTypeQuery(e.target.value)} placeholder="Search types…"
+            className="text-xs border border-gray-200 rounded-lg px-2 py-1 w-36 focus:w-48 transition-all"/>
+          <button onClick={()=>setShowAll(p=>!p)} className="text-xs text-primary hover:underline shrink-0">
+            {showAll ? 'Show active only' : 'Show all types'}
+          </button>
+        </div>
+      </div>
+
+      {searchedRows.length === 0 && (
+        <div className="text-center py-12 text-gray-400 space-y-3">
+          <Shield size={36} className="mx-auto opacity-40"/>
+          <p className="text-sm">{typeQueryNorm ? 'No resident types match your search.' : 'No schedulable residents active this block.'}</p>
+          {!typeQueryNorm && !showAll && (
+            <button onClick={()=>setShowAll(true)} className="text-xs text-primary hover:underline">Show all types anyway</button>
+          )}
+        </div>
+      )}
+
+      {searchedRows.map(row => {
         const cat = CAT_MAP[row.catId];
         const rn = RULE_NOTES[row.key] || {};
         const dr = effectiveDr(row.key);
         const modified = isRowModified(row.key);
         const effectiveShifts = eligOverrides[row.key] ?? BASE_ELIGIBILITY[row.key] ?? [];
-        const isOpen = openKeys[row.key] !== false; // default open
+        const isOpen = openKeys[row.key] === true; // default closed
         const targetOv = (appSettings?.targetOverrides||{})[row.key];
         const target = targetOv ?? SHIFT_TARGETS[row.key] ?? null;
         const generatedDayRules = [...describeDayRules(dr), ...describeShiftGates({...dr, __traumaBlocks: traumaBlocks})
@@ -6768,7 +6803,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 
                 {/* Supplementary block-type notes */}
                 {rn.blockTypeNotes?.length > 0 && (
-                  <Collapsible title="Additional Notes by Rotation">
+                  <Collapsible title="Additional Notes by Rotation" defaultOpen={false}>
                     <div className="space-y-1">
                       {rn.blockTypeNotes.map((bn,i)=>(
                         <div key={i} className="flex items-start gap-2 text-xs">
@@ -6784,7 +6819,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 
                 {/* Soft prefs */}
                 {rn.softPrefs?.length > 0 && (
-                  <Collapsible title="Soft Preferences">
+                  <Collapsible title="Soft Preferences" defaultOpen={false}>
                     <ul className="space-y-0.5">
                       {rn.softPrefs.map((p,i)=><li key={i} className="text-xs text-blue-700 flex items-start gap-1"><span>•</span>{p}</li>)}
                     </ul>
@@ -6793,7 +6828,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 
                 {/* Special notes */}
                 {rn.specialNotes?.length > 0 && (
-                  <Collapsible title="Special Notes">
+                  <Collapsible title="Special Notes" defaultOpen={false}>
                     <ul className="space-y-0.5">
                       {rn.specialNotes.map((n,i)=><li key={i} className="text-xs text-gray-600 flex items-start gap-1"><span>•</span>{n}</li>)}
                     </ul>
@@ -6802,7 +6837,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 
                 {/* TBD items */}
                 {rn.tbdItems?.length > 0 && (
-                  <Collapsible title="⚠ Pending Clarification" titleClassName="text-amber-600">
+                  <Collapsible title="⚠ Pending Clarification" titleClassName="text-amber-600" defaultOpen={false}>
                     <ul className="space-y-0.5">
                       {rn.tbdItems.map((t,i)=><li key={i} className="text-xs text-amber-700 flex items-start gap-1"><span>•</span>{t}</li>)}
                     </ul>
@@ -6813,6 +6848,8 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
           </div>
         );
       })}
+      </div>
+      )}
     </div>
   );
 }
