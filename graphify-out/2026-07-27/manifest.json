@@ -1,0 +1,197 @@
+{
+  ".mcp.json": {
+    "mtime": 1784915635.6920714,
+    "ast_hash": "a4bf2e5f681b0c1e8d4b065ed334e778",
+    "semantic_hash": "a4bf2e5f681b0c1e8d4b065ed334e778"
+  },
+  "netlify/functions/feedback-admin.js": {
+    "mtime": 1784511571.0238004,
+    "ast_hash": "b174b646a324391289bf5659e3d34679",
+    "semantic_hash": "b174b646a324391289bf5659e3d34679"
+  },
+  "package.json": {
+    "mtime": 1784429150.772039,
+    "ast_hash": "69c307c1da867241e18eb9993f35508e",
+    "semantic_hash": "69c307c1da867241e18eb9993f35508e"
+  },
+  "postcss.config.js": {
+    "mtime": 1783060599.0848892,
+    "ast_hash": "4acb6a30c0858e1e9ceb649da060dca5",
+    "semantic_hash": "4acb6a30c0858e1e9ceb649da060dca5"
+  },
+  "src/AppGate.jsx": {
+    "mtime": 1784663475.9707308,
+    "ast_hash": "35bf58309f95099fcb7f170a55b5d818",
+    "semantic_hash": "35bf58309f95099fcb7f170a55b5d818"
+  },
+  "src/RequestsTab.jsx": {
+    "mtime": 1784914836.6433716,
+    "ast_hash": "58c2dea3a132052436d014cd38b965cd",
+    "semantic_hash": "58c2dea3a132052436d014cd38b965cd"
+  },
+  "src/ResidentScheduler.jsx": {
+    "mtime": 1785132721.880758,
+    "ast_hash": "ea331d0c03fe9cc0981a617e00345d3c",
+    "semantic_hash": ""
+  },
+  "src/main.jsx": {
+    "mtime": 1784484407.7938752,
+    "ast_hash": "59ddb577e42411518daae901c051dd1b",
+    "semantic_hash": "59ddb577e42411518daae901c051dd1b"
+  },
+  "src/residentRequests/LoginScreen.jsx": {
+    "mtime": 1784661817.835239,
+    "ast_hash": "9d27a7f9a6cdef3a5830b45aae4514fa",
+    "semantic_hash": "9d27a7f9a6cdef3a5830b45aae4514fa"
+  },
+  "src/residentRequests/RequestForm.jsx": {
+    "mtime": 1784663674.7671518,
+    "ast_hash": "eb4836a9fe33f9518dd4647912b7ba72",
+    "semantic_hash": "eb4836a9fe33f9518dd4647912b7ba72"
+  },
+  "src/residentRequests/RequestList.jsx": {
+    "mtime": 1784914784.0282261,
+    "ast_hash": "c77b2b9f44db1afa793eaa0beac6de97",
+    "semantic_hash": "c77b2b9f44db1afa793eaa0beac6de97"
+  },
+  "src/residentRequests/ResidentPicker.jsx": {
+    "mtime": 1784618598.082764,
+    "ast_hash": "c68f2bfb0a9e13e940becbdc1cffdcb9",
+    "semantic_hash": "c68f2bfb0a9e13e940becbdc1cffdcb9"
+  },
+  "src/residentRequests/ResidentRequestsApp.jsx": {
+    "mtime": 1784914699.197732,
+    "ast_hash": "8b6e10efd90b32ec1c9434c862f1bd3c",
+    "semantic_hash": "8b6e10efd90b32ec1c9434c862f1bd3c"
+  },
+  "src/residentRequests/blockLookup.js": {
+    "mtime": 1784437862.3177972,
+    "ast_hash": "26a230dde0d01a42f7c39dd7ff4ee78a",
+    "semantic_hash": "26a230dde0d01a42f7c39dd7ff4ee78a"
+  },
+  "src/supabaseClient.js": {
+    "mtime": 1784618395.6988754,
+    "ast_hash": "4bbf2fa08643b6026980d50dd4d3f456",
+    "semantic_hash": "4bbf2fa08643b6026980d50dd4d3f456"
+  },
+  "supabase/auth_hook_domain_restriction.sql": {
+    "mtime": 1784511719.6780636,
+    "ast_hash": "52762ea49cf210afd3f7efc08332ea25",
+    "semantic_hash": "52762ea49cf210afd3f7efc08332ea25"
+  },
+  "supabase/day_off_requests.sql": {
+    "mtime": 1784663436.1036806,
+    "ast_hash": "d7d27da6d19d56bd83911bcdc979d924",
+    "semantic_hash": "d7d27da6d19d56bd83911bcdc979d924"
+  },
+  "supabase/functions/notify-request/index.ts": {
+    "mtime": 1784511614.4450445,
+    "ast_hash": "3a77352101bc9aedc595ef91fcb52e6f",
+    "semantic_hash": "3a77352101bc9aedc595ef91fcb52e6f"
+  },
+  "supabase/migrate_add_pending_approval.sql": {
+    "mtime": 1784484352.5870492,
+    "ast_hash": "16f87acf7f2e06826a16a1626e59f313",
+    "semantic_hash": "16f87acf7f2e06826a16a1626e59f313"
+  },
+  "supabase/migrate_admin_email_allowlist.sql": {
+    "mtime": 1784612184.976688,
+    "ast_hash": "edee870f069f3442f8aa1d177f54d5a8",
+    "semantic_hash": "edee870f069f3442f8aa1d177f54d5a8"
+  },
+  "supabase/migrate_admin_request_on_behalf.sql": {
+    "mtime": 1784663415.0974524,
+    "ast_hash": "9119c44323174959cca1d63e685e13ea",
+    "semantic_hash": "9119c44323174959cca1d63e685e13ea"
+  },
+  "supabase/migrate_block_pending_account_access.sql": {
+    "mtime": 1784618313.019255,
+    "ast_hash": "d8cf9acae300eaacb30d4854f9378486",
+    "semantic_hash": "d8cf9acae300eaacb30d4854f9378486"
+  },
+  "supabase/migrate_chief_to_admin.sql": {
+    "mtime": 1784482284.6052933,
+    "ast_hash": "f56961e2c6142f68aa520d7273918b48",
+    "semantic_hash": "f56961e2c6142f68aa520d7273918b48"
+  },
+  "supabase/migrate_lock_request_identity_columns.sql": {
+    "mtime": 1784610378.2283678,
+    "ast_hash": "8c5d4cfc85ef3626cadb13edd4145699",
+    "semantic_hash": "8c5d4cfc85ef3626cadb13edd4145699"
+  },
+  "supabase/webhooks.sql": {
+    "mtime": 1784511619.8196983,
+    "ast_hash": "ae4521f8d8585fba4715753c1f2d7ea8",
+    "semantic_hash": "ae4521f8d8585fba4715753c1f2d7ea8"
+  },
+  "tailwind.config.js": {
+    "mtime": 1784343360.8606253,
+    "ast_hash": "970bb00a0cdde659ddfdcd6514db50be",
+    "semantic_hash": "970bb00a0cdde659ddfdcd6514db50be"
+  },
+  "vite.config.js": {
+    "mtime": 1784418718.666232,
+    "ast_hash": "e37cbd1c176bd2699030f7a158fa0073",
+    "semantic_hash": "e37cbd1c176bd2699030f7a158fa0073"
+  },
+  ".clinerules/caveman.md": {
+    "mtime": 1784660127.0195794,
+    "ast_hash": "b270ab9b0929c4f5ddd73b9e51169a9b",
+    "semantic_hash": "b270ab9b0929c4f5ddd73b9e51169a9b"
+  },
+  ".github/copilot-instructions.md": {
+    "mtime": 1784660127.0195794,
+    "ast_hash": "b270ab9b0929c4f5ddd73b9e51169a9b",
+    "semantic_hash": "b270ab9b0929c4f5ddd73b9e51169a9b"
+  },
+  ".opencode/AGENTS.md": {
+    "mtime": 1784660127.020584,
+    "ast_hash": "b270ab9b0929c4f5ddd73b9e51169a9b",
+    "semantic_hash": "b270ab9b0929c4f5ddd73b9e51169a9b"
+  },
+  ".windsurf/rules/caveman.md": {
+    "mtime": 1784660127.0190763,
+    "ast_hash": "fdee5c88bc960d78441fdaa65d685cf2",
+    "semantic_hash": "fdee5c88bc960d78441fdaa65d685cf2"
+  },
+  "AGENTS.md": {
+    "mtime": 1784915746.4407308,
+    "ast_hash": "4138e59c177dedd107bb45114cb7d199",
+    "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
+  },
+  "CLAUDE.md": {
+    "mtime": 1785113665.0775247,
+    "ast_hash": "8330976f7c2870e17fbc6f5e6bb3120e",
+    "semantic_hash": ""
+  },
+  "docs/DESIGN.md": {
+    "mtime": 1784343388.1072376,
+    "ast_hash": "9b7db7667a73a096d03a0bb8830de3b7",
+    "semantic_hash": "9b7db7667a73a096d03a0bb8830de3b7"
+  },
+  "docs/superpowers/plans/2026-07-18-resident-day-off-requests.md": {
+    "mtime": 1784429150.7699678,
+    "ast_hash": "e6207004f00b157c818835588d6300aa",
+    "semantic_hash": "e6207004f00b157c818835588d6300aa"
+  },
+  "docs/superpowers/plans/2026-07-18-user-feedback-plan.md": {
+    "mtime": 1784401101.8665333,
+    "ast_hash": "431c385e9127ba2e1efccc8f0ea2a491",
+    "semantic_hash": "431c385e9127ba2e1efccc8f0ea2a491"
+  },
+  "docs/superpowers/specs/2026-07-18-resident-day-off-requests-design.md": {
+    "mtime": 1784429150.7704978,
+    "ast_hash": "93b0bb28a9eadf5683d441c4432f7ff4",
+    "semantic_hash": "93b0bb28a9eadf5683d441c4432f7ff4"
+  },
+  "docs/superpowers/specs/2026-07-18-user-feedback-design.md": {
+    "mtime": 1784399514.5737457,
+    "ast_hash": "b3a7055faf23fc5f4664e419d193e32f",
+    "semantic_hash": "b3a7055faf23fc5f4664e419d193e32f"
+  },
+  "index.html": {
+    "mtime": 1784429150.7704978,
+    "ast_hash": "029fb0ce689571fabacb4f0cc07da031",
+    "semantic_hash": "029fb0ce689571fabacb4f0cc07da031"
+  }
+}
