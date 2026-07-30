@@ -1185,6 +1185,24 @@ function nightRunBefore(rs, dateStr) { return nightRun(rs, dateStr, -1); }
 // can avoid stranding a short run when deciding what to place on an adjacent day.
 function nightRunAfter(rs, dateStr) { return nightRun(rs, dateStr, 1); }
 function countNightsInSchedule(rs) { return Object.values(rs).filter(isNightShiftId).length; }
+// Number of separate consecutive-night runs currently in a resident's schedule (any shift-type
+// mix of night ids counts as one run, same as nightRun above) — used by score()'s night-run
+// clustering term to discourage a resident picking up a 2nd/3rd disconnected night stint instead
+// of extending their one existing run. Date-order-independent (sorts keys), so it stays correct
+// across generateSchedule's multi-pass fill order (TRAUMA-D / optional passes revisit dates
+// out of pure chronological order relative to when a given ds is scored).
+function nightRunSegments(rs) {
+  const nightDates = Object.keys(rs).filter(ds => isNightShiftId(rs[ds])).sort();
+  const segments = [];
+  let prevDs = null;
+  for (const ds of nightDates) {
+    const contiguous = prevDs && toDateStr(addDays(parseDate(prevDs), 1)) === ds;
+    if (contiguous) segments[segments.length - 1]++;
+    else segments.push(1);
+    prevDs = ds;
+  }
+  return segments;
+}
 // Hours between the end of a night shift on dateStr and Grand Rounds (GR_START_HOUR) on the
 // resident's next GR weekday, checked up to 2 days out — or null if no GR falls in that window.
 // GR is never a schedule entry, so this is the only way the postNightRest soft rule can see it.
@@ -2203,6 +2221,12 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
         if (totalNights > NIGHT_RULES.maxPerBlock)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
+        // Prefer nights land in one clean run per block; a 2nd separate stint is tolerated, a
+        // 3rd+ means nights are fragmented across the block instead of clustered.
+        const runCount = nightRunSegments(rs).length;
+        if (runCount > 2)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+            message: `${runCount} separate night stints this block — prefer clustering into one run (two is acceptable, more fragments nights unnecessarily)`, level: 'warn' });
       }
     }
   }
@@ -2504,12 +2528,21 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const bamcWedBonus = bamcFlexPodPedsDay && dow === 3 ? 1 : 0;
     // Circadian night clustering: strongly prefer extending an existing night run over starting
     // an isolated one; avoid starting a run that can't reach the 4-night minimum; avoid placing
-    // a non-night shift that would strand an existing short (1-3) night run mid-stretch.
+    // a non-night shift that would strand an existing short (1-3) night run mid-stretch. Beyond
+    // that, prefer a resident end up with ONE night run per block — a 2nd separate run is
+    // tolerated (mild discourage) but a 3rd+ is a strong discourage, since that's what produces
+    // the "isolated night shift every other day" pattern chief flagged rather than one clean run.
     const runBefore = nightRunBefore(schedule[r.id], ds);
     let nightCluster = 0;
     if (shift.type === 'night') {
-      if (runBefore > 0 && runBefore < NIGHT_RULES.maxRun) nightCluster = 1;
-      else if (runBefore === 0 && (t - assigned[r.id]) < NIGHT_RULES.minRun) nightCluster = -0.5;
+      if (runBefore > 0 && runBefore < NIGHT_RULES.maxRun) {
+        nightCluster = 1;
+      } else if (runBefore === 0) {
+        const priorRunCount = nightRunSegments(schedule[r.id]).length;
+        if ((t - assigned[r.id]) < NIGHT_RULES.minRun) nightCluster = -0.5;
+        else if (priorRunCount >= 2) nightCluster = -1.5; // would start a 3rd+ separate run
+        else if (priorRunCount === 1) nightCluster = -0.4; // would start a 2nd separate run
+      }
     } else if (runBefore >= 1 && runBefore <= 3) {
       nightCluster = -0.625; // -25 at the 40-point scale below
     }
