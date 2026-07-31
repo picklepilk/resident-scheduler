@@ -95,14 +95,18 @@ to CSV, JSON backup/restore in Settings tab.
   in root `ResidentScheduler`; `RES_STATE_DEMO_ROW_ID`/`DEMO_MODE_KEY` declared near
   `RES_STATE_ROW_ID` in the Cloud sync section above): lets an admin practice/break things on a
   disposable copy of the whole workspace without risking real data (mirrors sibling em-scheduler's
-  own Demo Sandbox). **Isolation is by PHYSICAL localStorage key, never a runtime branch inside
+  own Demo Sandbox). **Isolation is by PHYSICAL localStorage key, not a mode check inside
   shared save/load code** — `physKey(k)` rewrites only the `res_` prefix (`res_em_roster` →
   `res_demo_em_roster`) when `demoMode` is true, and every one of the nine `LS_BACKUP_KEYS`-backed
   `useLocalStorage` calls is wrapped in it; a second Supabase `res_state` row (`id: 'demo'` =
   `RES_STATE_DEMO_ROW_ID`) mirrors this cloud-side via `sbSaveState`/`sbLoadState`/`sbDeleteState`'s
   new optional `rowId` param (defaults to `RES_STATE_ROW_ID`, the real row). The real `res_*` keys
-  and the `'main'` cloud row are structurally unreachable while `demoMode` is on, not merely
-  skipped by an `if` — same "can't accidentally write the wrong place" guarantee as the
+  and the `'main'` cloud row are reachable only through `rowId`'s default parameter and the
+  mount-load/debounced-save effects' own `demoMode` ternary — every demo code path explicitly
+  passes `RES_STATE_DEMO_ROW_ID`, and every real-data code path (including
+  `SettingsTab.importData`/`clearAll`) relies on the default, so the two never collide by
+  construction, but it is a discipline enforced by each call site, not a structural
+  impossibility — same "can't accidentally write the wrong place" intent as the
   `dbReady`/`syncSuspended` gates above.
   `demoMode` is a device-local flag under `DEMO_MODE_KEY = 'res_demo_mode'` (same posture as
   `res_dark_mode` — deliberately excluded from `LS_BACKUP_KEYS`, never synced/backed-up), read
