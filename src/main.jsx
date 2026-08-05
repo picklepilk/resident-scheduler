@@ -39,9 +39,13 @@ class ErrorBoundary extends React.Component {
           <button onClick={() => window.location.reload()} style={{ background: '#0057B8', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             Reload
           </button>
-          <button onClick={() => { localStorage.removeItem('res_tab_order'); window.location.reload(); }}
+          <button onClick={() => { localStorage.removeItem('res_tab_order'); localStorage.removeItem('res_demo_tab_order'); window.location.reload(); }}
             style={{ background: 'transparent', color: '#4b5563', border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer', marginLeft: 8 }}>
             Reset view &amp; reload
+          </button>
+          <button onClick={() => { localStorage.setItem('res_demo_mode', 'false'); window.location.reload(); }}
+            style={{ background: 'transparent', color: '#4b5563', border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer', marginLeft: 8 }}>
+            Exit demo &amp; reload
           </button>
         </div>
       </div>

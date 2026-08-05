@@ -11,7 +11,7 @@ import { findBlockForDate, formatResidentName } from './residentRequests/blockLo
 // than the primary gate — kept deliberately, since this component is exported and a future caller
 // might mount it somewhere less protected. The profile-row upsert that used to live here is gone:
 // AppGate now owns first-login row creation, and doing it in both places raced.
-export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast }) {
+export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast, demoMode }) {
   const [session, setSession] = useState(undefined);
   const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
   const [profiles, setProfiles] = useState([]);
@@ -67,10 +67,10 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
 
   return (
     <>
-      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} refreshSignal={pendingRefreshSignal} />
+      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} refreshSignal={pendingRefreshSignal} demoMode={demoMode} showToast={showToast} />
       <ViewAsPanel emRoster={emRoster} blocks={blocks} profiles={profiles} profilesError={profilesError}
-        onRequestsChanged={onRequestsChanged} onFiled={() => setPendingRefreshSignal(s => s + 1)} />
-      <AdminManagement session={session} emRoster={emRoster} profiles={profiles} onProfileChanged={loadProfiles} />
+        onRequestsChanged={onRequestsChanged} onFiled={() => setPendingRefreshSignal(s => s + 1)} demoMode={demoMode} />
+      <AdminManagement session={session} emRoster={emRoster} profiles={profiles} onProfileChanged={loadProfiles} demoMode={demoMode} />
       <RequestPortalCard showToast={showToast} />
     </>
   );
@@ -151,10 +151,19 @@ function RequestPortalCard({ showToast }) {
 // works because of requests_admin_insert_all (migrate_admin_request_on_behalf.sql). Without that
 // policy the insert is denied, since requests_insert_own requires the row's resident_id to match
 // the caller's own and an admin's is normally NULL.
-function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChanged, onFiled }) {
+function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChanged, onFiled, demoMode }) {
   const [selected, setSelected] = useState('');
   const [filing, setFiling] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  if (demoMode) {
+    return (
+      <div className="no-print p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+        <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">View as resident</p>
+        <p className="text-xs text-gray-400">Unavailable in the demo sandbox — this panel files real requests. Exit the demo to use it.</p>
+      </div>
+    );
+  }
 
   // Only residents someone has actually linked an account to — previewing a roster entry with no
   // account would always render an empty list and read as a bug. Derived straight from the
@@ -239,7 +248,7 @@ function groupByBlock(requests, blocks) {
   return labels.map(label => ({ label, requests: byLabel.get(label) }));
 }
 
-function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal }) {
+function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal, demoMode, showToast }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
   const [error, setError] = useState(null);
@@ -259,6 +268,7 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
   }
 
   async function decide(req, status) {
+    if (demoMode) { showToast?.('Exit the demo sandbox first.', 'red'); return; }
     const note = noteDraft[req.id] || null;
     // Check the write's own error rather than assuming success — an RLS denial, expired session,
     // or network blip must not update local approvedDatesOff/UI state while the database write
@@ -302,8 +312,8 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
                       onChange={e => setNoteDraft(prev => ({ ...prev, [req.id]: e.target.value }))}
                       className="input-field w-full mt-2 text-xs" />
                     <div className="flex gap-2 mt-2">
-                      <button onClick={() => decide(req, 'approved')} className="bg-green-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Approve</button>
-                      <button onClick={() => decide(req, 'denied')} className="bg-red-600 text-white text-xs font-medium rounded-md px-3 py-1.5">Deny</button>
+                      <button onClick={() => decide(req, 'approved')} disabled={demoMode} className="bg-green-600 text-white text-xs font-medium rounded-md px-3 py-1.5 disabled:opacity-40">Approve</button>
+                      <button onClick={() => decide(req, 'denied')} disabled={demoMode} className="bg-red-600 text-white text-xs font-medium rounded-md px-3 py-1.5 disabled:opacity-40">Deny</button>
                     </div>
                   </div>
                 ))}
@@ -330,9 +340,18 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
 // that is approved/promoted here instead. Relies on the profiles_admin_select_all /
 // profiles_admin_update_role RLS policies (admin-only; a resident/pending session sees/changes
 // nothing here even if this component somehow rendered for one).
-function AdminManagement({ session, emRoster, profiles, onProfileChanged }) {
+function AdminManagement({ session, emRoster, profiles, onProfileChanged, demoMode }) {
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
+
+  if (demoMode) {
+    return (
+      <div className="no-print p-4 max-w-2xl border-t border-gray-200 mt-6 pt-4">
+        <p className="font-display text-sm font-semibold uppercase tracking-wide text-gray-800 mb-2">Admin access</p>
+        <p className="text-xs text-gray-400">Unavailable in the demo sandbox — this panel changes real accounts. Exit the demo to use it.</p>
+      </div>
+    );
+  }
 
   function residentLabel(residentId) {
     if (!residentId) return 'Not linked';

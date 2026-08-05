@@ -2899,15 +2899,34 @@ function pdfPageFooter(doc, left) {
   doc.text('Page ' + doc.internal.getCurrentPageInfo().pageNumber, W - 12, H - 6, { align: 'right' });
 }
 
+// Demo Sandbox: a visible red banner drawn just below pdfPageHeader's bar so a demo-mode PDF
+// export can never be mistaken for the real thing. Callers that draw this must also push their
+// table's startY down by the same amount (see exportMatrixPDF/exportResidentCalendarPDF) to
+// avoid overlapping the banner.
+const PDF_DEMO_BANNER_H = 6;
+function pdfDemoBanner(doc) {
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFillColor(220, 38, 38); doc.rect(0, 23.5, W, PDF_DEMO_BANNER_H, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+  doc.text(pdfSafeText('DEMO — NOT THE REAL SCHEDULE'), W / 2, 23.5 + PDF_DEMO_BANNER_H - 1.7, { align: 'center' });
+  doc.setTextColor(25, 35, 55);
+}
+
 // Raw RGB, derived from AREA_COLORS (see CONSTANTS section) — the single source of truth for
 // shift-area color. jsPDF can't consume Tailwind classes, so this pulls just the RGB tuples out.
 const PDF_AREA_LIGHT = Object.fromEntries(
   Object.entries(AREA_COLORS).map(([area, c]) => [area, c.pdfLight])
 );
 
+// Shared by every export path (PDF/ICS/CSV/backup) so a demo-mode file's name always signals
+// it's not the real schedule — see DEMO SANDBOX section.
+function demoFilenameSuffix(demoMode) {
+  return demoMode ? '-demo' : '';
+}
+
 // Residents × dates matrix — the primary PDF deliverable. Landscape A3 since a ~28-day block's
 // date columns don't fit legibly on letter/A4.
-function exportMatrixPDF({ block, allResidents, schedule }) {
+function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
@@ -2931,13 +2950,14 @@ function exportMatrixPDF({ block, allResidents, schedule }) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
   const dateRange = block.startDate && block.endDate ? `${prettyDate(block.startDate)} to ${prettyDate(block.endDate)}` : '';
   pdfPageHeader(doc, `EM Residency Schedule — ${block.name || 'Block'}`, dateRange);
+  if (demoMode) pdfDemoBanner(doc);
 
   doc.autoTable({
     head: [head],
     body,
-    startY: 28,
+    startY: demoMode ? 28 + PDF_DEMO_BANNER_H : 28,
     theme: 'grid',
-    margin: { left: 8, right: 8 },
+    margin: { left: 8, right: 8, ...(demoMode ? { top: 23.5 + PDF_DEMO_BANNER_H + 2 } : {}) },
     styles: { fontSize: 6, cellPadding: 1, overflow: 'ellipsize', lineColor: [203,213,225], lineWidth: 0.1 },
     headStyles: { fillColor: [51,65,85], textColor: 255, fontSize: 6 },
     columnStyles: { 0: { cellWidth: 32, fontStyle: 'bold' } },
@@ -2961,17 +2981,17 @@ function exportMatrixPDF({ block, allResidents, schedule }) {
         }
       }
     },
-    didDrawPage: () => pdfPageFooter(doc, `${allResidents.length} residents · Generated ${new Date().toLocaleString()}`),
+    didDrawPage: () => { if (demoMode) pdfDemoBanner(doc); pdfPageFooter(doc, `${allResidents.length} residents · Generated ${new Date().toLocaleString()}`); },
   });
 
-  pdfSave(doc, `schedule_matrix_${block.startDate || 'block'}.pdf`);
+  pdfSave(doc, `schedule_matrix_${block.startDate || 'block'}${demoFilenameSuffix(demoMode)}.pdf`);
 }
 
 // One page per schedulable resident: Date/Shift/Time/Notes rows for the whole block. Notes
 // carries the same OFF/jeopardy/JC-presenting/GR-lecture markers ResidentCardsView shows on
 // screen. Portrait letter — simpler than a week-quadrant calendar layout, and sufficient for a
 // take-home schedule printout.
-function exportResidentCalendarPDF({ block, allResidents, schedule }) {
+function exportResidentCalendarPDF({ block, allResidents, schedule, demoMode }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
@@ -2984,6 +3004,7 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
     if (i > 0) doc.addPage();
     const rs = sched[r.id] || {};
     pdfPageHeader(doc, `${r.lastName}, ${r.firstName} — PGY-${r.pgy}`, block.name || '');
+    if (demoMode) pdfDemoBanner(doc);
 
     const rows = dates.map(ds => {
       const sid = rs[ds] || null;
@@ -3004,15 +3025,16 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
     doc.autoTable({
       head: [['Date', 'Shift', 'Time', 'Notes']],
       body: rows,
-      startY: 28,
+      startY: demoMode ? 28 + PDF_DEMO_BANNER_H : 28,
+      ...(demoMode ? { margin: { top: 23.5 + PDF_DEMO_BANNER_H + 2 } } : {}),
       theme: 'striped',
       styles: { fontSize: 8, cellPadding: 2 },
       headStyles: { fillColor: [51,65,85] },
-      didDrawPage: () => pdfPageFooter(doc, `${r.lastName}, ${r.firstName}`),
+      didDrawPage: () => { if (demoMode) pdfDemoBanner(doc); pdfPageFooter(doc, `${r.lastName}, ${r.firstName}`); },
     });
   });
 
-  pdfSave(doc, `schedule_by_resident_${block.startDate || 'block'}.pdf`);
+  pdfSave(doc, `schedule_by_resident_${block.startDate || 'block'}${demoFilenameSuffix(demoMode)}.pdf`);
 }
 
 // RFC 5545 text escaping — backslash, semicolon, comma, and embedded newlines all need escaping
@@ -3041,7 +3063,7 @@ function icsStamp(dateObj, hourFloat) {
 // exportResidentCalendarPDF's date iteration and Notes-marker logic, and buildQGendaCSVRows'
 // midnight-rollover handling (SHIFT_TIMING-derived start/duration, end date bumped a day when
 // startH+durationH >= 24), but neither of those is modified — this is new, standalone code.
-function buildResidentICS(resident, dates, sched) {
+function buildResidentICS(resident, dates, sched, demoMode) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//resident-scheduler//EN', 'CALSCALE:GREGORIAN'];
 
   for (const ds of dates) {
@@ -3066,10 +3088,10 @@ function buildResidentICS(resident, dates, sched) {
     if ((resident.grLectureDates || []).includes(ds)) notes.push('GR lecture');
 
     lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${resident.id}-${ds}-${sid}@resident-scheduler`);
+    lines.push(`UID:${resident.id}-${ds}-${sid}@resident-scheduler${demoFilenameSuffix(demoMode)}`);
     lines.push(`DTSTART:${icsStamp(startDateObj, startH)}`);
     lines.push(`DTEND:${icsStamp(endDateObj, endHour)}`);
-    lines.push(`SUMMARY:${icsEscape(SHIFT_MAP[sid]?.label || sid)}`);
+    lines.push(`SUMMARY:${icsEscape(`${demoMode ? '[DEMO] ' : ''}${SHIFT_MAP[sid]?.label || sid}`)}`);
     lines.push(`LOCATION:${icsEscape(SHIFT_MAP[sid]?.area || '')}`);
     lines.push(`DESCRIPTION:${icsEscape(notes.join(', '))}`);
     lines.push('END:VEVENT');
@@ -8114,7 +8136,7 @@ export const submitFeedback = async ({ type, message, contact, page, meta }) => 
 // (matches the sibling em-scheduler app, which excludes its own em_dark_mode the same way).
 const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage','res_tab_order'];
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -8131,15 +8153,20 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   function exportData() {
+    if (SUPABASE_ENABLED && demoMode && !dbReady) {
+      showToast('Demo data is still loading from the cloud — wait a moment and try again.', 'amber');
+      return;
+    }
     const data = {};
     for (const k of LS_BACKUP_KEYS) {
-      try { data[k] = JSON.parse(localStorage.getItem(k)); } catch { data[k] = null; }
+      const physKey = demoMode ? k.replace(/^res_/, 'res_demo_') : k;
+      try { data[k] = JSON.parse(localStorage.getItem(physKey)); } catch { data[k] = null; }
     }
-    const payload = { app: 'resident-scheduler', exportedAt: new Date().toISOString(), data };
+    const payload = { app: 'resident-scheduler', exportedAt: new Date().toISOString(), demo: demoMode, data };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `resident-scheduler-backup-${toDateStr(new Date())}.json`; a.click();
+    a.href = url; a.download = `resident-scheduler-backup${demoFilenameSuffix(demoMode)}-${toDateStr(new Date())}.json`; a.click();
     URL.revokeObjectURL(url);
     showToast('Backup downloaded', 'green');
   }
@@ -8152,6 +8179,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     reader.onload = async () => {
       try {
         const parsed = JSON.parse(reader.result);
+        if (parsed.demo === true) { showToast("That file is a demo-sandbox backup — it can't be restored over real data.", 'red'); return; }
         const d = parsed.data || parsed;
         // Build a clean, sync-safe object from LS_BACKUP_KEYS only — this excludes res_dark_mode
         // and any other stray keys in the file from ever reaching the shared cloud document.
@@ -8188,9 +8216,12 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   async function clearAll() {
     if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); return; }
     if (SUPABASE_ENABLED) {
-      // Delete the cloud row FIRST, and only wipe localStorage + reload if it succeeds — otherwise
-      // the reload's overlay would fetch the still-intact row and restore everything. syncSuspended
-      // blocks the root's debounced auto-save from re-creating the row during our delete.
+      // Delete the cloud rows FIRST, and only wipe localStorage + reload if the MAIN row succeeds —
+      // otherwise the reload's overlay would fetch the still-intact row and restore everything.
+      // syncSuspended blocks the root's debounced auto-save from re-creating either row during our
+      // delete. Main row deleted first (not demo) so "nothing changed" stays true if it fails — the
+      // demo row is a disposable, resumable sandbox slot, not real data, so its own delete is
+      // attempted after and failing it doesn't block or misreport the real-data clear.
       syncSuspended = true;
       try {
         await sbDeleteState();
@@ -8199,8 +8230,13 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         showToast('Could not clear cloud data — nothing changed. Try again when online.', 'red');
         return;
       }
+      try { await sbDeleteState(RES_STATE_DEMO_ROW_ID); } catch { /* demo row orphaned; real data already cleared below */ }
     }
-    for (const k of LS_BACKUP_KEYS) localStorage.removeItem(k);
+    for (const k of LS_BACKUP_KEYS) {
+      localStorage.removeItem(k);
+      localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
+    }
+    localStorage.removeItem(DEMO_MODE_KEY);
     window.location.reload();
   }
 
@@ -9040,9 +9076,10 @@ export default function ResidentScheduler({ viewer } = {}) {
   // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
   // A disposable copy of the whole workspace an admin can experiment in without risking the real
   // schedule (see em-scheduler's own "Demo Sandbox" for the pattern this mirrors). Isolation is by
-  // PHYSICAL localStorage key (res_* vs res_demo_*) plus a second Supabase row (RES_STATE_DEMO_ROW_ID)
-  // — never a runtime branch inside shared save/load logic, so the real res_* keys and the 'main'
-  // cloud row are structurally impossible to write while demoMode is on.
+  // PHYSICAL localStorage key (res_* vs res_demo_*) plus a second Supabase row (RES_STATE_DEMO_ROW_ID).
+  // The real res_* keys and the 'main' cloud row are reachable only through rowId's default param
+  // and the mount-load/debounced-save effects' own demoMode ternary — a discipline each call site
+  // must honor, not a structural impossibility.
   //
   // demoMode is read once per mount (useLocalStorage's lazy initializer only reads localStorage on
   // first mount) — every enter/exit/resume/delete function below sets DEMO_MODE_KEY then calls
@@ -9078,6 +9115,11 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [dbStatus, setDbStatus] = useState('idle'); // 'idle' | 'loading' | 'saving' | 'error'
   const [dbError, setDbError] = useState(null);
   const saveTimerRef = useRef(null);
+  // The in-flight sbSaveState promise once the debounce timer has fired (null before/after). Lets
+  // flushPendingCloudSave rescue a save that's already mid-network-call, not just one still waiting
+  // on the timer — a fired-but-unresolved save is otherwise invisible to the flush and gets aborted
+  // by a demo-transition reload right underneath it.
+  const savePromiseRef = useRef(null);
 
   // Pending resident day-off requests, for the Schedule-grid marker + sidebar badge. Gated on the
   // admin having an active Supabase auth session (RLS blocks the anonymous select otherwise) — no
@@ -9212,6 +9254,27 @@ export default function ResidentScheduler({ viewer } = {}) {
   // concern from the 600ms UI-pill timer. Guarded against re-uploading the just-loaded document:
   // it only writes when the current values differ from cloudBaselineRef (what the cloud already
   // holds), so the dbReady false→true flip on mount doesn't trigger a redundant save.
+  // Shared by the debounced timeout below AND flushPendingCloudSave — a single copy of the
+  // baseline-check/payload-build/upload/baseline-update sequence, so the two call sites can't drift
+  // on what "save the cloud row" means. Never throws: a failed upload is recorded via
+  // dbStatus/dbError (the pill goes "Sync error") rather than surfaced to the caller, since both
+  // callers treat a save as best-effort.
+  async function saveCloudNow() {
+    const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+    const base = cloudBaselineRef.current;
+    if (base && current.every((v, i) => v === base[i])) return; // already matches the cloud row
+    setDbStatus('saving');
+    const payload = {};
+    LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+    try {
+      await sbSaveState(payload, demoMode ? RES_STATE_DEMO_ROW_ID : undefined);
+      cloudBaselineRef.current = current;
+      setDbStatus('idle');
+    } catch (e) {
+      setDbError(e.message); setDbStatus('error');
+    }
+  }
+
   useEffect(() => {
     if (!dbReady || !SUPABASE_ENABLED) return;
     const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
@@ -9219,12 +9282,9 @@ export default function ResidentScheduler({ viewer } = {}) {
     if (base && current.every((v, i) => v === base[i])) return; // already matches the cloud row
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
       if (syncSuspended) return; // import/clear owns the row right now — don't race them
-      setDbStatus('saving');
-      const payload = {};
-      LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
-      sbSaveState(payload, demoMode ? RES_STATE_DEMO_ROW_ID : undefined).then(() => { cloudBaselineRef.current = current; setDbStatus('idle'); })
-        .catch(e => { setDbError(e.message); setDbStatus('error'); });
+      savePromiseRef.current = saveCloudNow().finally(() => { savePromiseRef.current = null; });
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9235,17 +9295,56 @@ export default function ResidentScheduler({ viewer } = {}) {
   // decided once per mount, so flipping DEMO_MODE_KEY needs a real remount to take effect.
   const [demoModalOpen, setDemoModalOpen] = useState(false);
   const [demoExisting, setDemoExisting] = useState(false); // does a resumable demo already exist?
+  const [demoCheckPending, setDemoCheckPending] = useState(true); // still checking local/cloud for an existing demo?
+  const [demoCheckError, setDemoCheckError] = useState(false); // couldn't confirm either way — don't guess
   const [demoBusy, setDemoBusy] = useState(false);
   const demoPhysKey = k => k.replace(/^res_/, 'res_demo_');
+  // Bumped on every openDemoModal() call; a slow/stale cloud probe checks this before writing
+  // state so a reopened modal's fresh result can't be clobbered by an earlier, still-in-flight
+  // probe resolving/rejecting later (e.g. open, close, reopen — first sbLoadState finally lands).
+  const demoCheckGenRef = useRef(0);
+
+  // Flushes a pending or in-flight debounced cloud-save before a demo transition reloads the page.
+  // Without this, an edit made shortly before clicking a demo button never gets uploaded — the
+  // mount-time load then overlays the stale cloud row over the newer local state, silently losing
+  // the edit (and cloudBaselineRef ends up matching, so nothing ever re-uploads it later). Two
+  // cases, handled separately: a timer still WAITING (saveTimerRef set, savePromiseRef not yet
+  // created) is fired immediately instead of waiting out the debounce; a save already IN FLIGHT
+  // (savePromiseRef set — the timer fired and the network call is mid-flight, up to 15s) is
+  // awaited rather than abandoned, since the reload would otherwise race and abort it underneath
+  // the caller. Never throws — saveCloudNow itself is best-effort, so every caller can just
+  // `await flushPendingCloudSave()` and proceed regardless of outcome.
+  async function flushPendingCloudSave() {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+      if (SUPABASE_ENABLED && dbReady && !syncSuspended) {
+        savePromiseRef.current = saveCloudNow().finally(() => { savePromiseRef.current = null; });
+      }
+    }
+    if (savePromiseRef.current) await savePromiseRef.current;
+  }
 
   async function openDemoModal() {
+    const gen = ++demoCheckGenRef.current;
     setDemoModalOpen(true);
-    if (LS_BACKUP_KEYS.some(k => localStorage.getItem(demoPhysKey(k)) != null)) { setDemoExisting(true); return; }
-    if (!SUPABASE_ENABLED) { setDemoExisting(false); return; }
+    setDemoCheckPending(true);
+    setDemoCheckError(false);
+    if (LS_BACKUP_KEYS.some(k => localStorage.getItem(demoPhysKey(k)) != null)) { setDemoExisting(true); setDemoCheckPending(false); return; }
+    if (!SUPABASE_ENABLED) { setDemoExisting(false); setDemoCheckPending(false); return; }
     try {
       const row = await sbLoadState(RES_STATE_DEMO_ROW_ID);
+      if (gen !== demoCheckGenRef.current) return; // superseded by a later openDemoModal() call
       setDemoExisting(!!(row && row.data));
-    } catch { setDemoExisting(false); }
+    } catch {
+      // Unknown, not "no demo" and not "a demo exists" — either guess is wrong in a different way
+      // (offering a phantom Resume vs silently enabling an overwrite of a demo we never confirmed
+      // is absent). Force the admin to retry rather than acting on an unconfirmed guess.
+      if (gen !== demoCheckGenRef.current) return;
+      setDemoCheckError(true);
+    } finally {
+      if (gen === demoCheckGenRef.current) setDemoCheckPending(false);
+    }
   }
 
   // Copies the real, currently-live data into the res_demo_* keys (and the cloud demo row, if
@@ -9253,6 +9352,15 @@ export default function ResidentScheduler({ viewer } = {}) {
   async function enterDemoFresh() {
     setDemoBusy(true);
     try {
+      await flushPendingCloudSave();
+      // Cloud-first discipline (same as SettingsTab.importData/clearAll): a device that hasn't
+      // confirmed what the cloud holds must not push to it — abort instead of silently degrading
+      // to a local-only demo that a later reload could overwrite with a stale cloud row.
+      if (SUPABASE_ENABLED && !dbReady) {
+        setDemoBusy(false);
+        showToast('Cloud sync is not ready — reload and try again.', 'red');
+        return;
+      }
       const doc = {};
       for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
       if (SUPABASE_ENABLED) await sbSaveState(doc, RES_STATE_DEMO_ROW_ID);
@@ -9265,12 +9373,19 @@ export default function ResidentScheduler({ viewer } = {}) {
     }
   }
 
-  function enterDemoResume() {
+  // flushPendingCloudSave never throws, and nothing else here can fail — so, unlike
+  // enterDemoFresh/deleteDemo below (which have real network ops of their own to guard), these two
+  // stay unconditional: entering/exiting the sandbox can never get stuck behind a toast.
+  async function enterDemoResume() {
+    setDemoBusy(true);
+    await flushPendingCloudSave();
     localStorage.setItem(DEMO_MODE_KEY, 'true');
     window.location.reload();
   }
 
-  function exitDemo() {
+  async function exitDemo() {
+    setDemoBusy(true);
+    await flushPendingCloudSave();
     localStorage.setItem(DEMO_MODE_KEY, 'false');
     window.location.reload();
   }
@@ -9280,11 +9395,25 @@ export default function ResidentScheduler({ viewer } = {}) {
   async function deleteDemo() {
     setDemoBusy(true);
     try {
-      if (SUPABASE_ENABLED) await sbDeleteState(RES_STATE_DEMO_ROW_ID);
+      // Rescues any save still pending or already in flight BEFORE syncSuspended goes up — this is
+      // what actually closes the resurrection race below, not the belt-and-suspenders double
+      // delete: once this resolves, no debounced upsert for the demo row can still be outstanding.
+      await flushPendingCloudSave();
+      syncSuspended = true;
+      if (SUPABASE_ENABLED) {
+        await sbDeleteState(RES_STATE_DEMO_ROW_ID);
+        // Defense in depth: a debounced auto-save fetch that fired before syncSuspended went up
+        // (and before flushPendingCloudSave started watching it — e.g. one queued between the flush
+        // and the line above) could in principle still land and resurrect the row; delete again.
+        await sbDeleteState(RES_STATE_DEMO_ROW_ID);
+      }
+      // Local demo keys are removed only after BOTH cloud deletes have succeeded — if either
+      // throws, the catch below is honest: local demo data is still intact, nothing was lost.
       for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
       localStorage.setItem(DEMO_MODE_KEY, 'false');
       window.location.reload();
     } catch {
+      syncSuspended = false;
       setDemoBusy(false);
       showToast('Could not delete the cloud demo — try again.', 'red');
     }
@@ -9497,6 +9626,10 @@ export default function ResidentScheduler({ viewer } = {}) {
       const cells=dates.map(d=>block.schedule?.[r.id]?.[d]||'');
       return[`${r.lastName}, ${r.firstName}`,CAT_MAP[r.category]?.label||r.category,`PGY-${r.pgy}`,r.blockType||'—',...cells];
     });
+    if (demoMode) {
+      const marker=['DEMO - NOT THE REAL SCHEDULE',...header.slice(1).map(()=>'')];
+      return [marker,header,...rows];
+    }
     return [header,...rows];
   }
 
@@ -9547,9 +9680,9 @@ export default function ResidentScheduler({ viewer } = {}) {
     schedulable.forEach((r, i) => {
       setTimeout(() => {
         const sched = block.schedule?.[r.id] || {};
-        const ics = buildResidentICS(r, dates, sched);
+        const ics = buildResidentICS(r, dates, sched, demoMode);
         const safeName = `${r.lastName}_${r.firstName}`.replace(/[^A-Za-z0-9_-]/g, '_');
-        downloadICS(`${safeName}.ics`, ics);
+        downloadICS(`${safeName}${demoFilenameSuffix(demoMode)}.ics`, ics);
       }, i * 150);
     });
   }
@@ -9563,13 +9696,15 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function runExport(kind) {
-    if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}.csv`, buildGridCSVRows());
-    else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}.csv`, buildQGendaCSVRows());
+    const demoSuffix = demoFilenameSuffix(demoMode);
+    if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); setExportConfirm(null); return; }
+    if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}${demoSuffix}.csv`, buildGridCSVRows());
+    else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}${demoSuffix}.csv`, buildQGendaCSVRows());
     else if (kind==='ics') exportResidentICSFiles();
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
-        if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
-        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule });
+        if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule, demoMode });
+        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, demoMode });
       } catch {
         // pdfSave() has nothing left to fall back to once it fails, so it propagates here —
         // surface it instead of leaving the chief thinking the export silently succeeded.
@@ -9582,6 +9717,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function requestExport(kind) {
+    if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); return; }
     if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0) { setExportConfirm(kind); return; }
     runExport(kind);
   }
@@ -9706,17 +9842,19 @@ export default function ResidentScheduler({ viewer } = {}) {
         <Modal title="Demo Sandbox" onClose={()=>setDemoModalOpen(false)}>
           <div className="space-y-3 text-sm text-gray-600">
             <p>Practice building schedules on a disposable copy of your data — your real roster, block, and rules stay untouched until you exit.</p>
+            {demoCheckPending && <p className="text-xs text-gray-400">Checking for an existing demo…</p>}
+            {demoCheckError && <p className="text-xs text-red-600">Could not confirm whether a demo already exists — close this and try again before starting or deleting one.</p>}
             <div className="space-y-2 pt-1">
               {demoExisting && (
-                <Button variant="primary" className="w-full justify-center" disabled={demoBusy} onClick={enterDemoResume}>
+                <Button variant="primary" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={enterDemoResume}>
                   Resume existing demo
                 </Button>
               )}
-              <Button variant="secondary" className="w-full justify-center" disabled={demoBusy} onClick={enterDemoFresh}>
+              <Button variant="secondary" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={enterDemoFresh}>
                 {demoExisting ? 'Start fresh (replaces existing demo)' : 'Start fresh — copy of current data'}
               </Button>
               {demoExisting && (
-                <Button variant="dangerOutline" className="w-full justify-center" disabled={demoBusy} onClick={deleteDemo}>
+                <Button variant="dangerOutline" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={deleteDemo}>
                   Delete demo
                 </Button>
               )}
@@ -9763,8 +9901,8 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
