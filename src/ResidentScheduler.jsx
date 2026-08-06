@@ -2968,10 +2968,10 @@ function exportMatrixPDF({ block, allResidents, schedule }) {
 }
 
 // One page per schedulable resident: Date/Shift/Time/Notes rows for the whole block. Notes
-// carries the same OFF/jeopardy/JC-presenting/GR-lecture markers ResidentCardsView shows on
-// screen. Portrait letter — simpler than a week-quadrant calendar layout, and sufficient for a
-// take-home schedule printout.
-function exportResidentCalendarPDF({ block, allResidents, schedule }) {
+// carries the same OFF/jeopardy/JC-presenting/GR weekly attendance/GR-lecture/Wellness Wednesday
+// markers ResidentCardsView shows on screen. Portrait letter — simpler than a week-quadrant
+// calendar layout, and sufficient for a take-home schedule printout.
+function exportResidentCalendarPDF({ block, allResidents, schedule, dayRules }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
@@ -2985,14 +2985,23 @@ function exportResidentCalendarPDF({ block, allResidents, schedule }) {
     const rs = sched[r.id] || {};
     pdfPageHeader(doc, `${r.lastName}, ${r.firstName} — PGY-${r.pgy}`, block.name || '');
 
+    const wwOrdinal = r.category==='EM_HOME'
+      ? (getEffectiveDayRules(`${r.category}_${r.pgy}`, dayRules||{}).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+      : null;
+
     const rows = dates.map(ds => {
       const sid = rs[ds] || null;
+      const dow = parseDate(ds).getDay();
+      const isOff = (r.approvedDatesOff||[]).includes(ds);
+      const isVac = (r.vacationDates||[]).includes(ds);
       const notes = [];
-      if ((r.approvedDatesOff||[]).includes(ds)) notes.push('OFF');
-      if ((r.vacationDates||[]).includes(ds)) notes.push('VAC');
+      if (isOff) notes.push('OFF');
+      if (isVac) notes.push('VAC');
       if ((r.jeopardyDates||[]).includes(ds)) notes.push('Jeopardy');
       if ((r.jcPresentDates||[]).includes(ds)) notes.push('JC presenting');
       if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
+      if (grWorkDow(r)===dow && !isOff && !isVac) notes.push('Grand Rounds');
+      if (dow===3 && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(block.startDate, 3, wwOrdinal)) notes.push('Wellness Wednesday');
       return [
         formatDisplayDate(ds),
         sid ? (SHIFT_MAP[sid]?.label || sid) : '-',
@@ -3041,8 +3050,11 @@ function icsStamp(dateObj, hourFloat) {
 // exportResidentCalendarPDF's date iteration and Notes-marker logic, and buildQGendaCSVRows'
 // midnight-rollover handling (SHIFT_TIMING-derived start/duration, end date bumped a day when
 // startH+durationH >= 24), but neither of those is modified — this is new, standalone code.
-function buildResidentICS(resident, dates, sched) {
+function buildResidentICS(resident, dates, sched, dayRules, blockStart) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//resident-scheduler//EN', 'CALSCALE:GREGORIAN'];
+  const wwOrdinal = resident.category==='EM_HOME'
+    ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules||{}).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+    : null;
 
   for (const ds of dates) {
     const sid = sched[ds];
@@ -3053,17 +3065,22 @@ function buildResidentICS(resident, dates, sched) {
     if (startH == null || durationH == null) continue; // no timing data — nothing safe to emit
 
     const startDateObj = parseDate(ds);
+    const dow = startDateObj.getDay();
     const rollsOver = (startH + durationH) >= 24;
     const endDateStr = rollsOver ? toDateStr(addDays(startDateObj, 1)) : ds;
     const endDateObj = parseDate(endDateStr);
     const endHour = rollsOver ? (startH + durationH - 24) : (startH + durationH);
 
+    const isOff = (resident.approvedDatesOff || []).includes(ds);
+    const isVac = (resident.vacationDates || []).includes(ds);
     const notes = [];
-    if ((resident.approvedDatesOff || []).includes(ds)) notes.push('OFF');
-    if ((resident.vacationDates || []).includes(ds)) notes.push('VAC');
+    if (isOff) notes.push('OFF');
+    if (isVac) notes.push('VAC');
     if ((resident.jeopardyDates || []).includes(ds)) notes.push('Jeopardy');
     if ((resident.jcPresentDates || []).includes(ds)) notes.push('JC presenting');
     if ((resident.grLectureDates || []).includes(ds)) notes.push('GR lecture');
+    if (grWorkDow(resident)===dow && !isOff && !isVac) notes.push('Grand Rounds');
+    if (blockStart && dow===3 && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(blockStart, 3, wwOrdinal)) notes.push('Wellness Wednesday');
 
     lines.push('BEGIN:VEVENT');
     lines.push(`UID:${resident.id}-${ds}-${sid}@resident-scheduler`);
@@ -7219,39 +7236,44 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           const elig=getEligibleShifts(res,ds,sd,eligOverrides,appSettings,dayRules,{blockStart:block.startDate,ayConf});
           const d=parseDate(ds); const dow=d.getDay();
           const isWed=dow===3; const isWknd=dow===0||dow===6;
-          // GR Wednesday cue for EM Home: every Wednesday is a Grand Rounds day for
-          // them. Don't gate on elig.length===0 — GR Wednesday now only strips DAY
-          // shifts (dayTypeRestrictions noDay), so eves/nights stay eligible and the
-          // cell is no longer empty; the old ===0 check silently dropped this cue.
-          const isGR=isWed&&res.category==='EM_HOME';
+          // GR cue: the resident's own weekly Grand Rounds weekday (EM Home = Wed, BAMC =
+          // Thu, via grWorkDow — don't hardcode Wednesday/EM_HOME here, that was the bug
+          // that made BAMC's Thursday GR invisible everywhere). Suppressed when the
+          // resident isn't actually there that day.
+          const isGR = grWorkDow(res)===dow && !isApprovedOff && !isVacation;
+          const isJC = (res.jcPresentDates||[]).includes(ds);
           // Wellness Wednesday cue: the resident's own PGY-specific ordinal (1st/2nd/3rd
           // Wed on/after block start) — a subset of GR Wednesdays, so it always
           // coincides with isGR for that one cell. WW takes visual priority over the
-          // plain GR cue there (more specific: it additionally strips evenings), rather
-          // than stacking two badges in one cell.
+          // JC/GR cues there (more specific: it additionally strips evenings), rather
+          // than stacking multiple badges in one cell.
           const wwOrdinal = res.category==='EM_HOME'
             ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
             : null;
           const isWW = isWed && wwOrdinal!=null && ds===nthWeekdayOnOrAfter(block.startDate, 3, wwOrdinal);
           const shift=sid?SHIFT_MAP[sid]:null;
-          let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
+          let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isJC?'bg-primary/10':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
           if(hasV) bg='bg-red-50';
           const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
           const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
+          const dayMarkerText = isWW ? `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block)` : isJC ? 'JC presenting' : isGR ? 'Grand Rounds' : null;
+          const cornerLabel = isWW ? 'WW' : isJC ? 'JC' : isGR ? 'GR' : null;
+          const cornerColor = isWW ? 'text-violet-600 bg-violet-100' : isJC ? 'text-primary bg-primary/10' : 'text-yellow-600 bg-yellow-100';
           return (
             <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
               onClick={()=>{ if(drag) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
               onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
               onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
               onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
-              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':isWW?`Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block) — no day/eve`:isGR?'GR Wednesday':isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':''}
+              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':dayMarkerText?(shift?`${sid} — ${dayMarkerText}`:isWW?`${dayMarkerText} — no day/eve`:dayMarkerText):isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':''}
               className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
               {isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-violet-600">WW</span></div>}
-              {isGR&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
+              {isJC&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-primary">JC</span></div>}
+              {isGR&&!isWW&&!isJC&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
               {shift && (
                 <div draggable={!isLocked}
                   onDragStart={e=>{ if(isLocked){e.preventDefault();return;} e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
@@ -7267,6 +7289,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                   {isLocked?<Lock size={9}/>:<Unlock size={9}/>}
                 </button>
               )}
+              {shift && cornerLabel && <span className={`absolute bottom-0 left-0 text-[9px] leading-none font-bold rounded-tr px-0.5 py-px z-10 ${cornerColor}`} title={dayMarkerText}>{cornerLabel}</span>}
               {isJeopardy&&!isJeoBlocked && <span className="absolute top-0 right-0 text-[9px] leading-none font-bold text-purple-600 bg-purple-100 rounded-bl px-0.5 py-px z-10" title="Jeopardy call">J</span>}
               {isPendingRequest && <span className="absolute top-0 left-0 text-[9px] leading-none font-bold text-blue-600 bg-blue-100 rounded-br px-0.5 py-px z-10" title="Day-off request pending">R</span>}
             </div>
@@ -7353,12 +7376,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {/* Legend */}
       {view==='grid' && (
       <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
-        <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700" title="Grand Rounds day (EM Home Wed / BAMC Thu) — distinct from GR lecture, the personal presenting date">GR</span>
+        <span className="px-1.5 py-0.5 rounded font-bold bg-primary/10 text-primary" title="Journal Club presenting">JC</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-600">WW</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-orange-100 text-orange-500">OFF</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-teal-100 text-teal-600">VAC</span>
         <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-600">J</span>
-        <span>= grand rounds · wellness Wednesday · approved off · vacation · jeopardy call</span>
+        <span>= Grand Rounds day · JC presenting · wellness Wednesday · approved off · vacation · jeopardy call</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
       </div>
@@ -7531,6 +7555,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
       {view==='resident' && (
         <ResidentCardsView grouped={grouped} sched={sched} dates={dates} appSettings={appSettings} violMap={violMap}
+          dayRules={dayRules} blockStart={block.startDate}
           onRowClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
@@ -7624,9 +7649,10 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
 }
 
 // By-resident sub-view of the schedule grid: one card per resident, grouped the same as the grid
-// rows, with shifts (and non-shift markers: OFF/jeopardy/JC-presenting/GR-lecture) grouped by
-// calendar week. Reuses ScheduleGrid's own violMap memo — never runs a second validateAll pass.
-function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, onRowClick }) {
+// rows, with shifts (and non-shift markers: OFF/jeopardy/JC-presenting/GR weekly attendance/GR
+// lecture/Wellness Wednesday) grouped by calendar week. Reuses ScheduleGrid's own violMap memo —
+// never runs a second validateAll pass.
+function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, dayRules, blockStart, onRowClick }) {
   return (
     <div className="space-y-5">
       {grouped.map(({cat,members})=>(
@@ -7635,7 +7661,7 @@ function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, onRowC
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3 mt-2">
             {members.map(res=>(
               <ResidentCard key={res.id} res={res} rs={sched[res.id]||{}} dates={dates}
-                appSettings={appSettings} violMap={violMap} onRowClick={onRowClick}/>
+                appSettings={appSettings} violMap={violMap} dayRules={dayRules} blockStart={blockStart} onRowClick={onRowClick}/>
             ))}
           </div>
         </div>
@@ -7647,6 +7673,9 @@ function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, onRowC
 // Month-style (continuous Sunday-start week rows, no pagination) calendar sub-view of the
 // Schedule tab. Read-mostly — editing goes through the same ShiftPickerModal as the grid via
 // onChipClick, so there's exactly one place that validates and commits a shift change.
+const CALENDAR_TIME_OF_DAY_ORDER = ['day','swing','eve','night'];
+const CALENDAR_TIME_OF_DAY_LABEL = { day:'D', swing:'S', eve:'E', night:'N' };
+
 function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick }) {
   const weekRows = useMemo(()=>buildWeekRows(dates), [dates]);
   return (
@@ -7663,12 +7692,22 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
               {row.map((ds, j) => {
                 if (!ds) return <div key={j} className="min-h-[120px] bg-gray-50/40 border-r border-gray-100 last:border-r-0"/>;
                 const d = parseDate(ds);
-                const isWed = d.getDay() === 3;
+                const dow = d.getDay();
+                const isWed = dow === 3;
                 const cov = coverageByDate[ds];
                 const assignments = residents
                   .map(r => ({ r, sid: sched[r.id]?.[ds] }))
                   .filter(({sid}) => sid && (areaFilter==='ALL' || SHIFT_MAP[sid]?.area === areaFilter))
                   .sort((a,b) => SHIFTS.findIndex(s=>s.id===a.sid) - SHIFTS.findIndex(s=>s.id===b.sid));
+                const byTimeOfDay = {};
+                for (const a of assignments) {
+                  const t = SHIFT_MAP[a.sid]?.type;
+                  (byTimeOfDay[t] = byTimeOfDay[t] || []).push(a);
+                }
+                const grResidents = residents.filter(r => grWorkDow(r)===dow && !(r.vacationDates||[]).includes(ds) && !(r.approvedDatesOff||[]).includes(ds));
+                const isJCDay = isFirstTuesday(ds);
+                const jcPresenters = residents.filter(r => (r.jcPresentDates||[]).includes(ds));
+                const grLecturers = residents.filter(r => (r.grLectureDates||[]).includes(ds));
                 return (
                   <div key={ds} className={`min-h-[120px] border-r border-gray-100 last:border-r-0 p-1.5 ${isWed?'bg-yellow-50/40':''}`}>
                     <div className="flex items-center justify-between mb-1">
@@ -7680,13 +7719,30 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
                         </span>
                       )}
                     </div>
+                    {(grResidents.length>0 || isJCDay || jcPresenters.length>0 || grLecturers.length>0) && (
+                      <div className="flex flex-wrap gap-0.5 mb-1">
+                        {grResidents.length>0 && <span className="text-[9px] font-bold px-1 rounded bg-yellow-100 text-yellow-700" title={`Grand Rounds day: ${grResidents.map(r=>r.lastName).join(', ')}`}>GR</span>}
+                        {isJCDay && <span className="text-[9px] font-bold px-1 rounded bg-primary/10 text-primary" title="Journal Club (first Tuesday)">JC</span>}
+                        {jcPresenters.map(r => (
+                          <span key={`jc_${r.id}`} className="text-[9px] font-medium px-1 rounded bg-primary/10 text-primary truncate max-w-[90px]" title={`${r.lastName}, ${r.firstName} — Journal Club presenting`}>JC · {r.lastName}</span>
+                        ))}
+                        {grLecturers.map(r => (
+                          <span key={`lect_${r.id}`} className="text-[9px] font-medium px-1 rounded bg-white border border-yellow-400 text-yellow-700 truncate max-w-[90px]" title={`${r.lastName}, ${r.firstName} — Grand Rounds lecture`}>Lect · {r.lastName}</span>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex flex-col gap-0.5">
-                      {assignments.map(({r, sid}) => (
-                        <button key={`${r.id}_${sid}`} onClick={()=>onChipClick(r, ds)}
-                          className={`text-[10px] font-medium px-1 py-0.5 rounded truncate text-left ${SHIFT_MAP[sid]?.chip}`}
-                          title={`${sid} — ${r.lastName}, ${r.firstName}`}>
-                          {sid} · {r.lastName}
-                        </button>
+                      {CALENDAR_TIME_OF_DAY_ORDER.filter(t=>byTimeOfDay[t]?.length).map((t, gi) => (
+                        <div key={t} className={gi>0 ? 'pt-0.5 mt-0.5 border-t border-gray-100' : ''}>
+                          <span className="text-[9px] font-semibold text-gray-300">{CALENDAR_TIME_OF_DAY_LABEL[t]}</span>
+                          {byTimeOfDay[t].map(({r, sid}) => (
+                            <button key={`${r.id}_${sid}`} onClick={()=>onChipClick(r, ds)}
+                              className={`block w-full text-[10px] font-medium px-1 py-0.5 rounded truncate text-left ${SHIFT_MAP[sid]?.chip}`}
+                              title={`${sid} — ${r.lastName}, ${r.firstName}`}>
+                              {sid} · {r.lastName}
+                            </button>
+                          ))}
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -7703,7 +7759,7 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
 const MIX_TYPE_ORDER = ['day','eve','night','swing'];
 const MIX_TYPE_LABEL = { day:'D', eve:'E', night:'N', swing:'S' };
 
-function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
+function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockStart, onRowClick }) {
   const sched_ok = isSchedulable(res);
   const cnt = Object.values(rs).filter(Boolean).length;
   const tgt = getShiftTarget(res, appSettings);
@@ -7725,11 +7781,17 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
     const isVac = (res.vacationDates||[]).includes(ds);
     const isJeo = (res.jeopardyDates||[]).includes(ds);
     const isJC = (res.jcPresentDates||[]).includes(ds);
-    const isGR = (res.grLectureDates||[]).includes(ds);
-    if (!sid && !isOff && !isVac && !isJeo && !isJC && !isGR) continue;
+    const isLecture = (res.grLectureDates||[]).includes(ds);
     const d = parseDate(ds);
+    const dow = d.getDay();
+    const isGR = grWorkDow(res)===dow && !isOff && !isVac;
+    const wwOrdinal = res.category==='EM_HOME'
+      ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+      : null;
+    const isWW = dow===3 && wwOrdinal!=null && blockStart && ds===nthWeekdayOnOrAfter(blockStart, 3, wwOrdinal);
+    if (!sid && !isOff && !isVac && !isJeo && !isJC && !isLecture && !isGR && !isWW) continue;
     const ws = toDateStr(addDays(d, -d.getDay()));
-    (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isVac, isJeo, isJC, isGR });
+    (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isVac, isJeo, isJC, isLecture, isGR, isWW });
   }
   const weekKeys = Object.keys(weeks).sort();
 
@@ -7766,7 +7828,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
                 <span>{formatDisplayDate(ws)} – {formatDisplayDate(toDateStr(addDays(parseDate(ws),6)))}</span>
                 <span className="tabular-nums font-mono">{rows.filter(r=>r.sid).length} shift{rows.filter(r=>r.sid).length!==1?'s':''}</span>
               </div>
-              {rows.map(({ds,sid,isOff,isVac,isJeo,isJC,isGR})=>{
+              {rows.map(({ds,sid,isOff,isVac,isJeo,isJC,isLecture,isGR,isWW})=>{
                 const shift = sid ? SHIFT_MAP[sid] : null;
                 const vKey = `${res.id}_${ds}`;
                 const hasV = !!(violMap[vKey]?.length);
@@ -7781,8 +7843,10 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, onRowClick }) {
                     {!shift && isOff && <span className="text-[10px] font-bold text-orange-500">OFF</span>}
                     {!shift && isVac && !isOff && <span className="text-[10px] font-bold text-teal-600">VAC</span>}
                     {!shift && isJeo && <span className="text-[10px] font-bold text-purple-500">J</span>}
+                    {isWW && <span className="text-[10px] font-bold px-1 rounded bg-violet-100 text-violet-600">WW</span>}
+                    {isGR && !isWW && <span className="text-[10px] font-bold px-1 rounded bg-yellow-100 text-yellow-700">GR</span>}
                     {isJC && <span className="text-[10px] font-bold px-1 rounded bg-primary/10 text-primary">JC</span>}
-                    {isGR && <span className="text-[10px] font-bold px-1 rounded bg-yellow-100 text-yellow-700">GR</span>}
+                    {isLecture && <span className="text-[10px] font-bold px-1 rounded bg-white border border-yellow-400 text-yellow-700">Lect</span>}
                   </div>
                 );
               })}
@@ -8416,7 +8480,7 @@ const GUIDE_SECTIONS = [
   { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit import upload csv paste bulk availability date ranges specific days can-work' },
   { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset PED-N FM-3' },
   { id: 'generate',   title: 'Generate Schedule — Auto-Fill', goTab: 'rules', keywords: 'generate auto generate coverage fill regenerate clear wand button 6 day streak 1 in 7 consecutive trauma cap peds em mix' },
-  { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds off jeopardy red ring gray picker rest period filter chips targets generate' },
+  { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds JC journal club lecture off jeopardy red ring gray picker rest period filter chips targets generate' },
   { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
   { id: 'rules',      title: 'Violations & Generation Report', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count generation report unfilled recommendations' },
   { id: 'export',     title: 'Exporting to QGenda', keywords: 'export CSV QGenda download grid import migrate' },
@@ -8540,8 +8604,10 @@ function UserGuideTab({ onNavigate }) {
 
       {show('grid') && <GuideSection {...sec('grid')}>
         <ul className="list-disc space-y-1">
-          <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds Wednesday; EM Home residents have no day shifts (evenings/nights are still workable).</li>
-          <li><strong className="text-violet-600">WW</strong> (violet) — Wellness Wednesday; each EM Home PGY's own 1st/2nd/3rd Wednesday on/after the block's start date (PGY-1/2/3 respectively) — no day <em>or</em> evening shifts that day (a night shift starting that Wednesday is still workable). Takes priority over the plain GR cue on that one cell since it's the stricter rule.</li>
+          <li><strong className="text-yellow-600">GR</strong> (yellow) — Grand Rounds day: every EM Home resident's Wednesday, every BAMC resident's Thursday (suppressed on a vacation/approved-off date). Shows as a corner tag on cells that also have a shift assigned, not just empty ones — a resident with GR <em>and</em> an evening/night shift the same day now shows both.</li>
+          <li><strong className="text-primary">JC</strong> (blue) — this resident is presenting Journal Club that date (their own <code>jcPresentDates</code>) — a different thing from the plain GR day above.</li>
+          <li><strong className="text-yellow-700">GR lecture</strong> — this resident is giving a Grand Rounds lecture that date (their own <code>grLectureDates</code>) — a personal presenting date, not the weekly GR attendance day.</li>
+          <li><strong className="text-violet-600">WW</strong> (violet) — Wellness Wednesday; each EM Home PGY's own 1st/2nd/3rd Wednesday on/after the block's start date (PGY-1/2/3 respectively) — no day <em>or</em> evening shifts that day (a night shift starting that Wednesday is still workable). Takes priority over the plain GR/JC cue on that one cell since it's the stricter rule.</li>
           <li><strong className="text-orange-500">OFF</strong> (orange) — approved day off.</li>
           <li><strong className="text-teal-600">VAC</strong> (teal) — vacation date (tracked separately from approved day off, same hard block).</li>
           <li><strong className="text-purple-600">J</strong> (purple) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
@@ -8569,7 +8635,9 @@ function UserGuideTab({ onNavigate }) {
         </div>
         <p className="text-xs text-gray-500 pt-1">Special cell markers:</p>
         <div className="flex items-center gap-3 flex-wrap text-[11px] text-gray-600">
-          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span> Grand Rounds Wed</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-yellow-100 text-yellow-700">GR</span> Grand Rounds day (EM Home Wed / BAMC Thu)</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-primary/10 text-primary">JC</span> Journal Club presenting</span>
+          <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white border border-yellow-400 text-yellow-700">Lect</span> GR lecture (presenting)</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-violet-100 text-violet-600">WW</span> Wellness Wed (no day/eve)</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-orange-100 text-orange-600">OFF</span> approved day off</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-teal-100 text-teal-600">VAC</span> vacation</span>
@@ -8972,7 +9040,8 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-white/50">
-          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-yellow-300">GR</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-yellow-300" title="Grand Rounds day (EM Home Wed / BAMC Thu)">GR</span>
+          <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-sky-300" title="Journal Club presenting">JC</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-violet-300">WW</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-orange-300">OFF</span>
           <span className="px-1.5 py-0.5 rounded font-bold bg-white/15 text-teal-300">VAC</span>
@@ -9547,7 +9616,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     schedulable.forEach((r, i) => {
       setTimeout(() => {
         const sched = block.schedule?.[r.id] || {};
-        const ics = buildResidentICS(r, dates, sched);
+        const ics = buildResidentICS(r, dates, sched, dayRules, block.startDate);
         const safeName = `${r.lastName}_${r.firstName}`.replace(/[^A-Za-z0-9_-]/g, '_');
         downloadICS(`${safeName}.ics`, ics);
       }, i * 150);
@@ -9569,7 +9638,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
         if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule });
-        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule });
+        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, dayRules });
       } catch {
         // pdfSave() has nothing left to fall back to once it fails, so it propagates here —
         // surface it instead of leaving the chief thinking the export silently succeeded.
