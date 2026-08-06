@@ -8,6 +8,15 @@ export function toDateStr(d) { return isNaN(d.getTime()) ? null : d.toISOString(
 export function parseDate(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
 export function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 
+// M/d/yyyy (4-digit year) — QGenda's CSV importer rejects prettyDate's M/d/yy (2-digit year)
+// with "Date must be in M/d/yyyy format". Scoped to the QGenda export only; every on-screen UI
+// date label keeps using prettyDate (ResidentScheduler.jsx) — do not repoint those here.
+export function qgendaDate(s) {
+  if (!s) return '';
+  const d = parseDate(s);
+  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+}
+
 export function formatAY(startYear) { return `AY${String(startYear).slice(2)}/${String(startYear+1).slice(2)}`; }
 export function getAcademicYearFor(dateStr) {
   const d = parseDate(dateStr);

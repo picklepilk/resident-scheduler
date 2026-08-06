@@ -22,7 +22,7 @@ import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
-import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor } from './lib/dates.js';
+import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs } from './lib/shifts.js';
 import { getCoverageFor, DEFAULT_COVERAGE, CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS } from './lib/coverage.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
@@ -9846,7 +9846,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         const endDate = rollsOver ? toDateStr(addDays(parseDate(d), 1)) : d;
         rows.push([
           `${r.lastName}, ${r.firstName}`, CAT_MAP[r.category]?.label||r.category, `PGY-${r.pgy}`, r.blockType||'—',
-          prettyDate(d), prettyDate(endDate), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
+          qgendaDate(d), qgendaDate(endDate), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
           startStr, endStr, durationH ?? '',
         ]);
       }
