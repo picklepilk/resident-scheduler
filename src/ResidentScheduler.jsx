@@ -1350,28 +1350,72 @@ function isSchedulable(resident) {
 }
 
 // ─── 6-consecutive-work-day rule (ACGME 1-in-7) ────────────────────────────
-// grWorkDow still identifies a resident's Grand Rounds weekday (EM Home = Wednesday,
-// BAMC = Thursday) — used by GR-lecture validation and the post-night GR rest-gap check
-// elsewhere in this file. It is NOT used by isStreakWorkDay below: a Grand Rounds day with
-// no shift assigned counts as a day OFF for streak purposes, not a work day.
+// grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
+// — used by GR-lecture validation, the post-night GR rest-gap check, and isStreakWorkDay below.
+// Chief ruling (confirmed — a resident was once scheduled 8 days straight because a shift-less GR
+// Wednesday counted as a day OFF, silently splitting one real 8-day obligation run into two
+// "legal" <=6 runs): a day counts toward the streak if a shift is assigned that date, OR it's the
+// resident's own GR weekday, OR it's a Journal Club presenting date (resident.jcPresentDates) —
+// UNLESS the resident is on vacation or an approved day off that date, in which case it never
+// counts even with an otherwise-obligated GR/JC date. `prevRs` (optional) is the resident's row
+// from the immediately preceding saved block, so a shift there also counts — the walk needs to
+// see across block boundaries, not just within the live block's own dates.
 function grWorkDow(resident) {
   if (resident.category === 'EM_HOME') return 3;
   if (resident.category === 'EM_BAMC') return 4;
   return null;
 }
-function isStreakWorkDay(rs, resident, ds) {
-  return !!(rs && rs[ds]);
+function isStreakWorkDay(rs, resident, ds, prevRs = null) {
+  if ((rs && rs[ds]) || (prevRs && prevRs[ds])) return true;
+  if (!resident) return false;
+  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return false;
+  if ((resident.jcPresentDates || []).includes(ds)) return true;
+  const g = grWorkDow(resident);
+  return g != null && parseDate(ds).getDay() === g;
 }
 const MAX_CONSECUTIVE_WORK_DAYS = 6;
 // Length of the consecutive work-day run containing dateStr, assuming dateStr itself is worked.
 // Walks both directions from dateStr; capped at 60 days each way as a sanity bound.
-function runLengthIfWorked(rs, resident, dateStr) {
+function runLengthIfWorked(rs, resident, dateStr, prevRs = null) {
   let len = 1;
   let d = addDays(parseDate(dateStr), -1);
-  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d)); i++) { len++; d = addDays(d, -1); }
+  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs); i++) { len++; d = addDays(d, -1); }
   d = addDays(parseDate(dateStr), 1);
-  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d)); i++) { len++; d = addDays(d, 1); }
+  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs); i++) { len++; d = addDays(d, 1); }
   return len;
+}
+// Tail (last 14 days before block.startDate) of the immediately-preceding saved block's schedule,
+// per resident — lets the streak walk see across a block boundary (a resident who worked the tail
+// of the prior block shouldn't get a fresh streak counter just because a new block started).
+// Prefers a published snapshot covering the day before block.startDate; falls back to the most
+// recently saved one. Defensive against untrusted/partial snapshot shapes, same idiom as
+// countPublishedJC. Returns {} when there's no block, no matching snapshot, or nothing to keep.
+function prevBlockTailSchedules(block, blocksHistory = []) {
+  if (!block?.startDate) return {};
+  const dayBefore = toDateStr(addDays(parseDate(block.startDate), -1));
+  const candidates = (blocksHistory || []).filter(snap => {
+    if (!snap || snap.id === block.id) return false;
+    const start = snap.startDate || snap.data?.startDate;
+    const end = snap.endDate || snap.data?.endDate;
+    return start && end && start <= dayBefore && dayBefore <= end;
+  });
+  if (!candidates.length) return {};
+  candidates.sort((a, b) => {
+    if (!!a.published !== !!b.published) return a.published ? -1 : 1;
+    return (b.savedAt || 0) - (a.savedAt || 0);
+  });
+  const schedule = candidates[0].data?.schedule || {};
+  const windowStart = toDateStr(addDays(parseDate(block.startDate), -14));
+  const result = {};
+  for (const [rid, rs] of Object.entries(schedule)) {
+    if (!rs) continue;
+    const tail = {};
+    for (const [ds, sid] of Object.entries(rs)) {
+      if (sid && ds >= windowStart && ds < block.startDate) tail[ds] = sid;
+    }
+    if (Object.keys(tail).length) result[rid] = tail;
+  }
+  return result;
 }
 
 // ─── Half-block Peds/Trauma split (TRAUMA_PEDS / PEDS_TRAUMA rotations) ────
@@ -1809,6 +1853,11 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
   const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides);
   let eligible = list;
 
+  // Shift-exists-on-this-weekday-at-all (e.g. PED-S is only Mon/Tue/Thu/Fri) — applies to both
+  // the manual picker and the generator; the generator already skips these dates separately in
+  // fillDayPass, but the picker had no equivalent check, so it offered the shift on invalid days.
+  eligible = eligible.filter(s => !SHIFT_DOW[s] || SHIFT_DOW[s].includes(dow));
+
   // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
   // per-resident assignment, not a category/PGY default): no evening/night shifts on Tuesdays.
   // Only the 'academic' role carries this restriction — the legacy isChief→'scheduling' fallback
@@ -1946,6 +1995,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   // Also resident-independent (depends only on the block's date range) — compute once, not once
   // per resident inside the weekend-off check below.
   const blockWeekends = getBlockWeekends(blockDates);
+  const prevTail = prevBlockTailSchedules(block, blocksHistory);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
@@ -2097,44 +2147,52 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: 'error' });
     }
 
-    // 6-consecutive-work-day rule (ACGME 1-in-7) — a Grand Rounds day with no shift assigned
-    // is a day off, not a work day (see isStreakWorkDay)
-    if (isSchedulable(resident)) {
+    // 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as a
+    // worked day (shift assigned, GR weekday, or JC presenting date, unless vacation/approved
+    // off). Walk starts 14 days before the block so a run continuing from the previous saved
+    // block (prevTail) is visible, but only runs ending inside this block are reported — a run
+    // that lives entirely in the previous block was already reported when that block was current.
+    if (isSchedulable(resident) || Object.values(rs).some(Boolean)) {
+      const residentPrevTail = prevTail[resident.id] || null;
+      const walkDates = [...Array.from({ length: 14 }, (_, i) => toDateStr(addDays(parseDate(block.startDate), i - 14))), ...blockDates];
       let runStart = null, runHasShift = false;
       const flushRun = (runEnd) => {
         if (runStart == null) return;
         const len = blockDayIndex(runStart, runEnd) + 1;
-        if (len > MAX_CONSECUTIVE_WORK_DAYS && runHasShift)
+        if (len > MAX_CONSECUTIVE_WORK_DAYS && runHasShift && runEnd >= block.startDate)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `${len} consecutive work days (${formatDisplayDate(runStart)}–${formatDisplayDate(runEnd)}) — max ${MAX_CONSECUTIVE_WORK_DAYS}`,
             level: 'error' });
         runStart = null; runHasShift = false;
       };
       let prevDs = null;
-      for (const ds of blockDates) {
-        if (isStreakWorkDay(rs, resident, ds)) {
+      for (const ds of walkDates) {
+        if (isStreakWorkDay(rs, resident, ds, residentPrevTail)) {
           if (runStart == null) runStart = ds;
-          if (rs[ds]) runHasShift = true;
+          if (ds >= block.startDate && rs[ds]) runHasShift = true;
         } else {
           if (prevDs != null) flushRun(prevDs);
         }
         prevDs = ds;
       }
-      flushRun(blockDates[blockDates.length - 1]);
+      flushRun(walkDates[walkDates.length - 1]);
     }
 
-    // Rest-period check — sort all assignments by start time, then check each consecutive pair
-    if (appSettings.enforceRest !== false) {
-      const assignments = Object.entries(rs)
-        .filter(([, sid]) => sid && SHIFT_TIMING[sid])
-        .map(([ds, sid]) => ({
-          ds, sid,
-          startMs: shiftStartMs(sid, ds),
-          endMs:   shiftEndMs(sid, ds),
-          durationH: SHIFT_TIMING[sid].durationH,
-        }))
-        .sort((a, b) => a.startMs - b.startMs);
+    // Rest-period check — sort all assignments by start time, then check each consecutive pair.
+    // The pairwise legal-rest-hours check below is the only part gated by enforceRest; the
+    // circadian/GR-rest checks that follow are hard circadian rules (matching how the generator
+    // already enforces them unconditionally) and always run regardless of that toggle.
+    const assignments = Object.entries(rs)
+      .filter(([, sid]) => sid && SHIFT_TIMING[sid])
+      .map(([ds, sid]) => ({
+        ds, sid,
+        startMs: shiftStartMs(sid, ds),
+        endMs:   shiftEndMs(sid, ds),
+        durationH: SHIFT_TIMING[sid].durationH,
+      }))
+      .sort((a, b) => a.startMs - b.startMs);
 
+    if (appSettings.enforceRest !== false) {
       for (let i = 0; i < assignments.length - 1; i++) {
         const a = assignments[i];
         const b = assignments[i + 1];
@@ -2155,26 +2213,26 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
           }
         }
       }
+    }
 
-      // Post-night-day (soft postNightRest preference) and eve→day-next-day (hard) turnarounds —
-      // delegate to checkCircadianViolations's 'day' branch (it looks backward from dateStr
-      // through the already-complete schedule) so this retrospective check can't drift from the
-      // generator/picker's real-time version of the same rule. Every returned level is surfaced
-      // now — the 24h rest rule is a warn since it was demoted to a ranked soft rule.
-      for (const a of assignments) {
-        if (SHIFT_MAP[a.sid]?.type !== 'day') continue;
-        for (const v of checkCircadianViolations(resident, a.ds, a.sid, rs)) {
-          issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level, rule: v.rule, gapH: v.gapH });
-        }
+    // Post-night-day (soft postNightRest preference) and eve→day-next-day (hard) turnarounds —
+    // delegate to checkCircadianViolations's 'day' branch (it looks backward from dateStr
+    // through the already-complete schedule) so this retrospective check can't drift from the
+    // generator/picker's real-time version of the same rule. Every returned level is surfaced
+    // now — the 24h rest rule is a warn since it was demoted to a ranked soft rule.
+    for (const a of assignments) {
+      if (SHIFT_MAP[a.sid]?.type !== 'day') continue;
+      for (const v of checkCircadianViolations(resident, a.ds, a.sid, rs)) {
+        issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level, rule: v.rule, gapH: v.gapH });
       }
+    }
 
-      // Grand Rounds the morning after a night shift counts against the same postNightRest soft
-      // rule — GR isn't a schedule entry, so it's checked separately via grRestViolation.
-      for (const a of assignments) {
-        if (SHIFT_MAP[a.sid]?.type !== 'night') continue;
-        const grViolation = grRestViolation(resident, a.ds, a.sid);
-        if (grViolation) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, ...grViolation });
-      }
+    // Grand Rounds the morning after a night shift counts against the same postNightRest soft
+    // rule — GR isn't a schedule entry, so it's checked separately via grRestViolation.
+    for (const a of assignments) {
+      if (SHIFT_MAP[a.sid]?.type !== 'night') continue;
+      const grViolation = grRestViolation(resident, a.ds, a.sid);
+      if (grViolation) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, ...grViolation });
     }
 
     // ACGME 80-hour rolling 4-week average (advisory — a block shorter than 4 weeks has
@@ -2337,7 +2395,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
 
   // Per-resident running state, seeded from kept assignments
-  const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
+  const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {}, hoursTotal = {};
   // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
   // trauma-night load between PGY-2/3 across the year (see traumaNightPgyPrefersDow in score()).
   const traumaNightYearly = {};
@@ -2354,6 +2412,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     traumaCount[r.id] = 0;
     pedsCount[r.id] = 0;
     nightCount[r.id] = 0;
+    hoursTotal[r.id] = 0;
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
     traumaNightYearly[r.id] = isTraumaCapSubject(r) ? countPublishedTraumaNights(r.id, block.academicYear, blocksHistory, block.id) : 0;
     priorPedsTrauma[r.id] = hasPriorPedsTrauma(r, blocksHistory, block, traumaBlocks);
@@ -2372,9 +2431,14 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (sh?.area === 'TRAUMA') traumaCount[r.id]++;
       if (sh?.area === 'PED') pedsCount[r.id]++;
       if (sh?.type === 'night') nightCount[r.id]++;
+      hoursTotal[r.id] += SHIFT_TIMING[sid]?.durationH || 0;
       if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
     }
   }
+
+  // Cross-block tail of the previous saved block's schedule, for the streak-hard-filter below —
+  // NOT merged into `schedule` itself, since that would corrupt assigned/target counters.
+  const prevTail = prevBlockTailSchedules(block, blocksHistory);
 
   // Eligibility cache: eligCache[rid][ds] = Set of eligible shift ids
   const eligCache = {};
@@ -2392,13 +2456,17 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
   // how many assignments happen ON ds — safe to compute once per (resident, day) and reuse
-  // across every slot/candidate that day instead of re-walking up to 14 days each time.
+  // across every slot/candidate that day instead of re-walking up to 14 days each time. Uses
+  // isStreakWorkDay (not a bare truthy-shift check) so GR/JC obligation days count the same way
+  // the hard streak filter above does, and prevTail so a run continuing from the previous saved
+  // block isn't undercounted right at the start of this one.
   let streakCache = {};
-  function streakBefore(rid, ds) {
-    if (streakCache[rid] !== undefined) return streakCache[rid];
+  function streakBefore(r, ds) {
+    if (streakCache[r.id] !== undefined) return streakCache[r.id];
     let n = 0, d = parseDate(ds);
-    while (n < 14) { d = addDays(d, -1); if (schedule[rid][toDateStr(d)]) n++; else break; }
-    return streakCache[rid] = n;
+    const rPrevTail = prevTail[r.id] || null;
+    while (n < 14) { d = addDays(d, -1); if (isStreakWorkDay(schedule[r.id], r, toDateStr(d), rPrevTail)) n++; else break; }
+    return streakCache[r.id] = n;
   }
 
   function hasSenior(shiftId, ds) {
@@ -2436,6 +2504,12 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     if (!pool.length) return { candidates: [], reason: 'selfCoverOnly' };
     pool = pool.filter(r => assigned[r.id] < target[r.id]);
     if (!pool.length) return { candidates: [], reason: 'allAtTarget' };
+    // ACGME 80-hour rolling average, applied as a flat block-length cap (80/7 * block days) since
+    // generateSchedule doesn't track week boundaries per resident — a soft over-cap in one week
+    // balanced by a light one elsewhere still passes validateAll's own 4-week rolling check.
+    const maxBlockHours = (80 / 7) * dates.length;
+    pool = pool.filter(r => hoursTotal[r.id] + (SHIFT_TIMING[shift.id]?.durationH || 0) <= maxBlockHours);
+    if (!pool.length) return { candidates: [], reason: 'hoursCapped' };
     if (isFirstTuesday(ds) && shiftOverlapsJC(shift.id)) {
       pool = pool.filter(r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY);
       if (!pool.length) return { candidates: [], reason: 'jcCapped' };
@@ -2477,8 +2551,9 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       pool = pool.filter(r => !(isPedsEmMix(r) && pedsCount[r.id] >= PEDS_EM_MIX.max));
       if (!pool.length) return { candidates: [], restFallback: [], reason: 'pedsMixCapped' };
     }
-    // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — GR day with no shift is a day off (see isStreakWorkDay)
-    pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds) <= MAX_CONSECUTIVE_WORK_DAYS);
+    // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as
+    // worked; prevTail lets the walk see a run continuing from the previous saved block.
+    pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds, prevTail[r.id] || null) <= MAX_CONSECUTIVE_WORK_DAYS);
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
     // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
@@ -2505,7 +2580,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     const t = target[r.id];
     const deficit = (t - assigned[r.id]) / t;
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
-    const streak = streakBefore(r.id, ds);
+    const streak = streakBefore(r, ds);
     const jeo = jeoPolicy === 'warn' && (r.jeopardyDates || []).includes(ds) ? 1 : 0;
     const dsDate = parseDate(ds); const dow = dsDate.getDay(); // parsed once — reused by the dow/adjacent-day terms below
     // PGY-2/3 should aim for trauma NIGHTS, using days only if necessary
@@ -2539,7 +2614,10 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
         nightCluster = 1;
       } else if (runBefore === 0) {
         const priorRunCount = nightRunSegments(schedule[r.id]).length;
-        if ((t - assigned[r.id]) < NIGHT_RULES.minRun) nightCluster = -0.5;
+        // Doubled from -0.5 (chief feedback: too-short night runs were still slipping through) —
+        // now a stronger discourage than starting a 2nd separate run, since a run that structurally
+        // can't reach minRun is worse than one that reaches it but isn't the resident's first.
+        if ((t - assigned[r.id]) < NIGHT_RULES.minRun) nightCluster = -1.0;
         else if (priorRunCount >= 2) nightCluster = -1.5; // would start a 3rd+ separate run
         else if (priorRunCount === 1) nightCluster = -0.4; // would start a 2nd separate run
       }
@@ -2618,7 +2696,10 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     for (const shift of SHIFTS.filter(includeShift)) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
-      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
+      let cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
+      // Trauma bays are single-resident by nature (see validateAll's own double-booking error) —
+      // clamp regardless of whatever the chief configured in the coverage editor.
+      if (shift.id === 'TRAUMA-D' || shift.id === 'TRAUMA-N') cov = { min: Math.min(cov.min, 1), max: Math.min(cov.max, 1) };
       if (phase === 'min') {
         // Count manual assignments that exceed configured coverage too, or totalSlots can end up
         // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
@@ -2689,9 +2770,39 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       // happens to exist (when restCompromise is already true, candidates === restFallback, so
       // seniorPool below would already have found a rest-violating senior — no separate check
       // needed in that case).
-      // Computed once per slot (not per candidate below — it doesn't depend on the candidate).
-      const seniorFilled = SENIOR_COMPOSITION[slot.shift.area] ? hasSenior(slot.shift.id, ds) : null;
-      if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled) {
+      // Computed once per slot (not per candidate below — it doesn't depend on the candidate). POD
+      // doesn't use isSeniorFor('POD', r)'s generic PGY-3-primary/PGY-2-fallback membership here —
+      // the AY26/27 hard rule (validateAll mirrors this) needs an EM Home PGY-3 specifically, with
+      // a PGY-2 substitute allowed ONLY on the block's own PGY-3 Wellness Wednesday (see
+      // podWellnessSubstituteAllowed) — so "filled" and candidate restriction get their own branch
+      // below instead of sharing FLEX's soft, always-either-PGY generic logic.
+      const isPod = slot.shift.area === 'POD';
+      const podWellnessOk = isPod && podWellnessSubstituteAllowed(ds, block.startDate);
+      const podSatisfies = r => r.category === 'EM_HOME' && (r.pgy === 3 || (podWellnessOk && r.pgy === 2));
+      const seniorFilled = isPod
+        ? allResidents.some(r => schedule[r.id][ds] === slot.shift.id && podSatisfies(r))
+        : (SENIOR_COMPOSITION[slot.shift.area] ? hasSenior(slot.shift.id, ds) : null);
+      if (isPod && !seniorFilled) {
+        const pgy3Pool = candidates.filter(podSatisfies);
+        if (pgy3Pool.length) {
+          candidates = pgy3Pool;
+        } else if (phase === 'min') {
+          const candidateSet = new Set(candidates);
+          const pgy3RestOnly = restCompromise ? [] : (restFallback || []).filter(r => podSatisfies(r) && !candidateSet.has(r));
+          if (pgy3RestOnly.length && restRank > covRank) {
+            // Same "break the least-important available rule" pattern as the postNightRest
+            // fallback above — POD's PGY-3 requirement is hard (no seniorRank tradeoff, unlike
+            // FLEX below), so postNightRest is the only rule left that can be broken to fill it.
+            candidates = pgy3RestOnly;
+            restCompromise = true;
+          } else {
+            report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: 'pgy3Required' });
+            continue;
+          }
+        } else {
+          continue; // optional phase: max is a cap, not a requirement — same as other optional misses
+        }
+      } else if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled) {
         const seniorPool = candidates.filter(r => isSeniorFor(slot.shift.area, r));
         if (seniorPool.length) {
           candidates = seniorPool;
@@ -2832,6 +2943,8 @@ function summarizeGenerationReport(report, appSettings = {}) {
     if (reasonCounts.jcCapped) recs.push(`Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts Published blocks) — cover ${label} with a resident under the cap.`);
     if (reasonCounts.restProtected) recs.push(`Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
     if (reasonCounts.seniorProtected) recs.push(`Left unfilled to protect FLEX/POD senior composition — no senior PGY was eligible for ${label}. Reorder Soft Rule Priority on the Rules tab to staff a junior instead, or assign manually.`);
+    if (reasonCounts.pgy3Required) recs.push(`No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
+    if (reasonCounts.hoursCapped) recs.push(`Eligible residents were already within reach of the ACGME 80h/week average for this block — cover ${label} with a resident further from the cap, or assign manually.`);
 
     return { shiftId, slots, reasonCounts, structural, gapDows, recommendations: recs };
   }).sort((a, b) => (a.structural ? 1 : 0) - (b.structural ? 1 : 0));
@@ -6863,7 +6976,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // legal rest hours, max-run/eve-day-turnaround circadian checks) from the ranked postNightRest soft
 // rule ('warn'), so the picker and drag-and-drop UIs can visually tell apart a genuine hard block
 // from a chief-configurable preference, both surfaced the same "Assign/Swap/Move Anyway" way.
-function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf) {
+function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}) {
   if (!sid) return [];
   const sd = block.specialDays || {};
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf });
@@ -6893,10 +7006,18 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   const nightOnly = isNightOnlyResident(resident, eligOverrides);
   vs.push(...checkCircadianViolations(resident, dateStr, sid, (block.schedule || {})[resident.id] || {}, { nightOnly })
     .map(v => ({ message: v.message, level: v.level, rule: v.rule })));
+  // 5. 6-consecutive-work-day rule (ACGME 1-in-7) — same isStreakWorkDay semantics as
+  // validateAll/generateSchedule, so a chief can't create an 8-day run through the picker or
+  // drag-and-drop that validateAll would then flag after the fact.
+  const row = (block.schedule || {})[resident.id] || {};
+  const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null);
+  if (len > MAX_CONSECUTIVE_WORK_DAYS) {
+    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: 'error' });
+  }
   return vs;
 }
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf }) {
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf, prevTail }) {
   const [pending, setPending] = useState(null);
   const sd = block.specialDays || {};
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf });
@@ -6904,7 +7025,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = (resident.jeopardyDates || []).includes(dateStr);
 
-  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf);
+  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf, prevTail);
 
   function confirm() {
     onSelect(pending);
@@ -6992,6 +7113,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
   const dates = useMemo(()=>getBlockDates(block.startDate,block.endDate),[block.startDate,block.endDate]);
+  const prevTail = useMemo(() => prevBlockTailSchedules(block, blocksHistory), [block.id, block.startDate, blocksHistory]);
 
   const violMap = useMemo(()=>{
     const m={};
@@ -7075,13 +7197,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
-      eligOverrides, appSettings, dayRules, ayConf
+      eligOverrides, appSettings, dayRules, ayConf, prevTail
     ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
-          eligOverrides, appSettings, dayRules, ayConf
+          eligOverrides, appSettings, dayRules, ayConf, prevTail
         ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
       : [];
 
@@ -7550,7 +7672,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
           block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
           onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
-          onClose={()=>setPicker(null)} showToast={showToast} ayConf={ayConf}/>
+          onClose={()=>setPicker(null)} showToast={showToast} ayConf={ayConf} prevTail={prevTail}/>
       )}
     </div>
   );
