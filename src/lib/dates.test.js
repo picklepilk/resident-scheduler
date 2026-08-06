@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   toDateStr, parseDate, addDays, formatAY, getAcademicYearFor,
-  getBlockDates, getBlockWeekends, ayWindowFor,
+  getBlockDates, getBlockWeekends, ayWindowFor, qgendaDate,
 } from './dates.js';
 
 describe('parseDate / toDateStr round-trip', () => {
@@ -97,6 +97,22 @@ describe('getBlockWeekends', () => {
   it('returns [] for a block with no full weekend', () => {
     const dates = getBlockDates('2026-07-01', '2026-07-02'); // Wed/Thu
     expect(getBlockWeekends(dates)).toEqual([]);
+  });
+});
+
+describe('qgendaDate', () => {
+  it('formats a single-digit day/month with a 4-digit year, no zero-padding', () => {
+    expect(qgendaDate('2026-09-21')).toBe('9/21/2026');
+  });
+
+  it('does not zero-pad a double-digit month/day', () => {
+    expect(qgendaDate('2026-12-25')).toBe('12/25/2026');
+  });
+
+  it('returns "" for a falsy input', () => {
+    expect(qgendaDate('')).toBe('');
+    expect(qgendaDate(null)).toBe('');
+    expect(qgendaDate(undefined)).toBe('');
   });
 });
 
