@@ -33,7 +33,10 @@ to CSV, JSON backup/restore in Settings tab.
   `SHIFT_TYPES` derived from/alongside `SHIFTS` — add new shift types there, not ad-hoc
   strings elsewhere. `PED-S` (Peds Swing, 11:00–20:00, type `'swing'`) EM-Home-PGY-2-only,
   only exists Mon/Tue/Thu/Fri (`SHIFT_DOW`) — see "Journal Club / Grand Rounds / circadian rules"
-  below why `'swing'` own type rather than reusing `'eve'`.
+  below why `'swing'` own type rather than reusing `'eve'`. `SHIFT_DOW` is now also enforced
+  inside `getEligibleShifts` (both generator and manual-picker paths) — previously only checked
+  by the generator's own fill loop and the coverage-warning pass, so the manual picker would
+  offer PED-S on an invalid weekday with no warning anywhere.
 - Persistence local-first, optional cloud sync layered on top: `useLocalStorage` hook
   backs ten state slots under `res_*` keys, synchronously written to `localStorage` on every
   change regardless whether cloud sync configured. Nine round-trip through
@@ -89,7 +92,15 @@ to CSV, JSON backup/restore in Settings tab.
   would let mount overlay revert it from still-stale/still-intact row; both also set
   module-level `syncSuspended` flag so root's debounced auto-save can't race stale write
   onto row mid-operation, `importData` pushes only `LS_BACKUP_KEYS` keys (never
-  `res_dark_mode`) into shared document.
+  `res_dark_mode`) into shared document. `clearAll` also deletes the `'demo'` cloud row (Clear
+  All wipes the whole shared workspace, sandbox included) — **main row deleted first, demo row
+  second and best-effort** (its own try/catch, failure doesn't block or get reported), so the
+  "nothing changed" error toast stays literally true if only the real-row delete fails.
+  The debounced save's body (baseline check, payload build, upload, baseline update) lives in
+  one shared `saveCloudNow()`, called by both the timer and `flushPendingCloudSave()` (see Demo
+  Sandbox below) — a `savePromiseRef` tracks the in-flight `sbSaveState` call once the debounce
+  timer fires, so a save mid-flight (not just one still waiting on the timer) can be awaited
+  rather than abandoned when something needs to flush before reloading.
 
 - **Demo Sandbox** (`// ─── DEMO SANDBOX ───` section, just above the nine `useLocalStorage` calls
   in root `ResidentScheduler`; `RES_STATE_DEMO_ROW_ID`/`DEMO_MODE_KEY` declared near
@@ -123,7 +134,9 @@ to CSV, JSON backup/restore in Settings tab.
   cloud push can't strand local demo state a second device could never resume. `openDemoModal`
   decides whether "Resume existing demo" is offered (`demoExisting`) by checking local
   `res_demo_*` keys first, only probing `sbLoadState(RES_STATE_DEMO_ROW_ID)` if none exist
-  locally. One shared demo slot across every admin/device — resumable cross-device via the cloud
+  locally — guarded by a `demoCheckGenRef` counter bumped on every call, so a slow probe from a
+  closed-then-reopened modal can't land late and clobber a fresher probe's result. One shared
+  demo slot across every admin/device — resumable cross-device via the cloud
   row, but two admins in the sandbox at once will race each other overwriting it (accepted
   tradeoff, not solved, same posture as main sync's last-write-wins). `deleteDemo` only ever
   touches `demoPhysKey()`'d keys and `RES_STATE_DEMO_ROW_ID` — never the real row or keys.
@@ -135,7 +148,21 @@ to CSV, JSON backup/restore in Settings tab.
   is true, since both act on `LS_BACKUP_KEYS`/the real `'main'` row directly and would otherwise
   stay reachable-but-wrong from inside the sandbox. No new `LS_BACKUP_KEYS` entry, no
   `syncBindings` change, no SQL/schema change needed — `'demo'` is just another row in the same
-  wide-open-RLS `res_state` table.
+  wide-open-RLS `res_state` table. `SettingsTab.exportData` also takes a `dbReady` prop: in demo
+  mode with cloud sync configured, exporting before the mount-time cloud overlay has resolved
+  would read still-empty `res_demo_*` keys (a resumed cloud-only demo hasn't copied its data
+  into local keys yet) and silently download an all-null backup — guarded with a toast instead.
+  Every enter/exit/resume/delete action first calls `flushPendingCloudSave()` (defined next to
+  them) to upload an edit made shortly before the click; it rescues a save whose debounce timer
+  hasn't fired yet AND one already mid-flight (via `savePromiseRef`, see Cloud sync above), and
+  never throws, so `exitDemo`/`enterDemoResume` — which do nothing else that can fail — call it
+  unconditionally with no try/catch: entering/exiting the sandbox can't get stuck behind an error
+  toast. `enterDemoFresh`/`deleteDemo` keep their own try/catch since they have further cloud ops
+  (`sbSaveState`/`sbDeleteState`) that can genuinely fail. `deleteDemo` deletes the demo row
+  **twice** before touching local state — the second delete is defense-in-depth against a
+  debounced upsert that raced past the flush and `syncSuspended` flag — and only removes the
+  local `res_demo_*` keys after BOTH deletes succeed, so a failure leaves local demo data intact
+  rather than gone with no cloud confirmation.
 
 - **User feedback** (`// ─── FEEDBACK ───` section, after Supabase sync helpers; `// ─── FEEDBACK WIDGET ───`/`// ─── FEEDBACK ADMIN TAB ───` sections near `MAIN APP`): floating bug/crash/idea widget (hidden when `SUPABASE_ENABLED` false) posts to separate `feedback` table in same shared Supabase project via `submitFeedback()` — insert-only for anon key (no `SELECT`/`UPDATE`/`DELETE` RLS policy for anon, unlike `res_state`'s wide-open posture). Every row carries `app_name: 'resident-scheduler'` since table shared with `em-scheduler`. `main.jsx` installs `window.onerror`/`unhandledrejection` listener that auto-submits `type: 'crash'` reports through same helper, deduped per session via `sessionStorage`, capped at 5/session. Only way to *read* feedback: password-gated "Feedback" sidebar tab (also hidden when `SUPABASE_ENABLED` false), calls `netlify/functions/feedback-admin.js` — server-only Netlify Function using `SUPABASE_SERVICE_ROLE_KEY` env var to bypass RLS, gated by `x-feedback-password` header checked against `FEEDBACK_ADMIN_PASSWORD`. Both server-only Netlify environment variables (set in Netlify dashboard for this site) — never `VITE_`-prefixed, never routed through `%VITE_*%` HTML-token mechanism `index.html` uses for client-exposed Supabase URL/anon key. See `.env.example` for full list, `docs/superpowers/specs/2026-07-18-user-feedback-design.md` for original design.
 
@@ -217,8 +244,11 @@ silently ships fully open app to internet.
 npm run dev
 npm run build     # → dist/
 npm run preview
+npm test          # vitest — covers src/lib/*.js only (dates/shifts/coverage/parse), not
+                   # ResidentScheduler.jsx itself, which has no test suite (verify by running the app)
 ```
-- No lint or test command exists (no ESLint config, no test runner).
+- No lint config exists (no ESLint config). `src/lib/` has vitest coverage; `ResidentScheduler.jsx`
+  does not — verify changes there by running `npm run dev` and generating/exporting a sample schedule.
 - Netlify deploy (`netlify.toml`: build = `npm run build`, publish = `dist`, SPA redirect
   `/* → /index.html`).
 
@@ -326,14 +356,24 @@ names below rather than trusting offsets.
   engine (jeopardy policy, 7-consecutive-work-day rule, trauma double-booking, min/max coverage,
   circadian night-run/turnaround checks, FLEX/POD seniority, Journal Club cap/presenter checks,
   Grand Rounds lecture day-before check — see each feature's section below for specifics).
-  `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked` implement the **strict ACGME max-6-consecutive-
-  work-day rule** (`MAX_CONSECUTIVE_WORK_DAYS = 6`) shared by both — **a day counts as worked ONLY
-  if a shift is actually assigned that date** (`isStreakWorkDay` = `!!rs[ds]`, nothing else); Grand
-  Rounds with no shift assigned is now correctly a day OFF for streak purposes (this flipped
-  from the app's original behavior, where GR always counted as work even shift-less — don't
-  reintroduce that). `grWorkDow` (EM_HOME→Wed, EM_BAMC→Thu) is still used to validate
-  `grLectureDates` falls on the resident's own GR weekday, and for the wellness-Wednesday/
-  academic-chief rules below — it just no longer feeds the streak check.
+  `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked`/`prevBlockTailSchedules` implement the
+  **strict ACGME max-6-consecutive-work-day rule** (`MAX_CONSECUTIVE_WORK_DAYS = 6`), shared by
+  `validateAll`, `generateSchedule`, and the manual picker/drag-drop (`cellViolations`) — this
+  flipped from an earlier version of the rule where a shift-less GR day counted as a day off
+  (that version caused a real 8-day-straight scheduling bug: two legal ≤6 runs straddling a
+  shift-less GR Wednesday). Current, chief-confirmed semantics (`isStreakWorkDay`): a day counts
+  as worked if a shift is assigned that date (current block OR the previous block's tail, via
+  `prevBlockTailSchedules`), OR it's the resident's own Grand Rounds weekday (`grWorkDow`:
+  EM_HOME→Wed, EM_BAMC→Thu), OR it's a Journal Club presenting date (`jcPresentDates`) — UNLESS
+  that date is in the resident's `vacationDates`/`approvedDatesOff` (they're not there, so it
+  doesn't count). A resident CAN work the same day as GR — it's one obligation day, not two,
+  since this is a boolean per date, not a sum. `prevBlockTailSchedules(block, blocksHistory)`
+  picks the immediately-preceding saved snapshot whose date range abuts `block.startDate`
+  (published preferred, else most recent `savedAt`) and returns each resident's last ~14 days of
+  that block's shifts, so a run straddling a block boundary is still caught by both the generator
+  and Validation (and the picker, via a `prevTail` map threaded down from `ScheduleGrid`).
+  `validateAll`'s walk revived a previously-dead `runHasShift` flag: a run built entirely from
+  GR/JC obligation days (zero actual shifts in the current block) does not raise an error.
 - `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot ordering per
   day, candidate filtering with named unfilled-reasons — including `halfTargetMet`,
   `circadianBlocked`, `nightCapped`, `jcCapped` — target/type-mix/streak/jeopardy/trauma-nights-
@@ -424,7 +464,12 @@ names below rather than trusting offsets.
   `exportResidentCalendarPDF` (one page per schedulable resident, Date/Shift/Time/Notes rows,
   Notes carrying same OFF/jeopardy/JC-presenting/GR-lecture markers `ResidentCardsView` shows
   on screen), both via header "PDF" button → format-picker `Modal` → existing
-  `requestExport`/`exportConfirm` error gate. **`jspdf-autotable@3.8.4`'s default-export interop
+  `requestExport`/`exportConfirm` error gate. In demo mode both draw a red `pdfDemoBanner` via
+  `didDrawPage` so it repeats on every page, not just the first — the table's `margin.top` is
+  set to clear the banner's height (`PDF_DEMO_BANNER_H`) whenever `demoMode`, not just its
+  `startY` (which only affects page 1); without `margin.top`, autoTable's own default top margin
+  on continuation pages sits above the banner and the banner paints over the first couple of
+  rows. **`jspdf-autotable@3.8.4`'s default-export interop
   broken under esbuild/Rollup bundling** — `import autoTable from 'jspdf-autotable'` resolves
   to CJS namespace object, not callable function, throws `"...is not a function"` at
   call time (verified against actual installed version via standalone esbuild bundle, same
@@ -520,7 +565,18 @@ names below rather than trusting offsets.
   entry), checked in both directions (backward when placing day shift, forward when placing
   night shift ahead of already-placed day shift — generator's optional fill pass runs after
   TRAUMA-D filled, so one-directional check let violations slip through generation). See
-  "Soft Rule Priority" below how generator decides whether to break it.
+  "Soft Rule Priority" below how generator decides whether to break it. **The hard circadian
+  checks (`checkCircadianViolations`) and the Grand-Rounds rest-gap check now run in
+  `validateAll` regardless of `appSettings.enforceRest`** — that toggle now only gates the
+  pairwise legal-rest-hours check, matching the generator, which already enforced circadian
+  rules unconditionally; previously a chief who disabled the rest-hours toggle also silently lost
+  hard eve→day/day→eve validation. TRAUMA-D/TRAUMA-N are hard-clamped to at most 1 resident in
+  the generator's own coverage handling regardless of the chief's coverage-editor max (manual
+  double-booking via the picker is still caught separately by `validateAll`, unconditionally).
+  The generator also tracks a rolling per-resident hours total against a pro-rated ACGME 80h/week
+  average and hard-excludes candidates who'd exceed it (`reason: 'hoursCapped'`) — `validateAll`'s
+  `weeklyHourStats` warn remains the authoritative retrospective check for edge cases the
+  pro-ration approximates.
 - **Soft Rule Priority** (`appSettings.rulePriority`, `SOFT_RULES`, `DEFAULT_RULE_PRIORITY`,
   `normalizeRulePriority`, `ruleRank` — all near `NIGHT_RULES`): chief-orderable ranking of three
   soft rules — `coverageMin`, `seniorComposition`, `postNightRest` — edited on Rules tab
@@ -552,10 +608,17 @@ names below rather than trusting offsets.
   PGY-2 (fallback PGY-3); generator restricts to the senior sub-pool while none present, falls
   back to full pool (recording `report.seniorGaps`) only if no senior at all — staffing junior
   beats leaving min-coverage slot empty. **POD seniority is now HARD** — `SENIOR_COMPOSITION.POD
-  = {primary:3,fallback:2}` still names a fallback, but `validateAll` now raises a hard ERROR
+  = {primary:3,fallback:2}` still names a fallback, but `validateAll` raises a hard ERROR
   (not a soft `seniorGaps` warning) for a staffed POD shift with no PGY-3, UNLESS
   `podWellnessSubstituteAllowed(ds, blockStart)` is true — i.e. UNLESS `ds` is that resident's
-  own "3rd Wellness Wednesday" (see below), the ONE day a PGY-2 may substitute. POD coverage is
+  own "3rd Wellness Wednesday" (see below), the ONE day a PGY-2 may substitute. **The generator
+  now enforces this too**, in its own POD branch inside `fillDayPass` (previously it fell through
+  to the generic `isSeniorFor`/`seniorPool` path shared with FLEX, which accepts the PGY-2
+  fallback on any day and would routinely build PGY-2-only POD groups `validateAll` then
+  errored on) — while no PGY-3 (or WW-substitute PGY-2) is assigned, the candidate pool is
+  restricted to residents satisfying the real requirement; if none are available even via the
+  min-phase rest-priority fallback, the slot is left unfilled and reported with reason
+  `'pgy3Required'` rather than staffed with the wrong PGY. POD coverage is
   `{min:2,max:2}` all week, except Mon/Tue where max rises to 3 (`DOW_COVERAGE_MAX_OVERRIDE`,
   `getCoverageFor(shiftId, coverage, dow)`'s third `dow` param — the ONLY day-of-week-dependent
   coverage exception in the app; the Rules-tab coverage EDITOR stays simple/non-dow-aware, just
@@ -601,6 +664,11 @@ names below rather than trusting offsets.
   the old approach broke silently if a label's formatting ever changed and had no
   midnight-rollover handling. New `EndDate` column added (`= Date` unless
   `startH + durationH >= 24`, then `Date + 1`) so an overnight shift's end is unambiguous.
+  **`Date`/`EndDate` use a dedicated `qgendaDate()` formatter (`src/lib/dates.js`) that
+  renders `M/d/yyyy` (4-digit year)** — QGenda's own importer rejects `M/d/yy`, which is what
+  the UI-display formatter `prettyDate()` produces (correct for on-screen labels, wrong for this
+  export); do not swap this export back to `prettyDate` and do not change `prettyDate` itself,
+  which has ~25 other on-screen call sites that want the 2-digit year.
 - **Resident Request Portal card** (`src/RequestsTab.jsx`, admin-facing): shows the absolute
   `/requests` URL, a copy-link button, and a client-side QR code (`qrcode` npm package — small,
   no network calls, canvas render) sized for a phone camera or a printed page. Print view follows
@@ -668,5 +736,6 @@ existing chief customizations will silently mask the fix.
 ## When editing
 - Since nearly everything is in `ResidentScheduler.jsx`, grep before assuming helper unused —
   file has no module boundaries to enforce dead-code detection.
-- No test suite — verify changes by running `npm run dev` and generating/exporting sample
-  schedule (including Generate Schedule on Schedule tab where relevant).
+- `ResidentScheduler.jsx` itself has no test suite (`src/lib/*.js` does, via `npm test`) —
+  verify changes there by running `npm run dev` and generating/exporting a sample schedule
+  (including Generate Schedule on Schedule tab where relevant).
