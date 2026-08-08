@@ -51,6 +51,12 @@ export const DEFAULT_COVERAGE = Object.fromEntries(
 // Rules-tab coverage editor itself stays min/max-only (see its one-line caption near the POD row).
 export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1: 3, 2: 3 }, 'POD-N': { 1: 3, 2: 3 } };
 
+// Trauma bays are single-resident by nature (validateAll's own double-booking error) — clamped
+// here, the one place every consumer (generator, validateAll, computeCoverageByDate) reads
+// coverage through, so a legacy backup or hand-edited res_coverage entry above 1 can never make
+// the generator and the validator disagree about what TRAUMA's minimum/maximum actually is.
+const TRAUMA_SOLO_IDS = ['TRAUMA-D', 'TRAUMA-N'];
+
 // Areas whose normal D/E/N shifts auto-suppress in favor of the 12h D12/N12 pair during any
 // ACEP/AAEM/SAEM conference-week date (see isConferenceCoverageDate) — PED's 12h shifts exist
 // too but are deliberately NOT in these arrays, staying chief-opt-in year-round instead.
@@ -78,6 +84,7 @@ export function getCoverageFor(shiftId, coverage = {}, dow, confActive) {
     if (CONF_AUTO_SWAP_12H_IDS.includes(shiftId))     return confActive ? getCoverageFor(shiftId, coverage, dow) : { min: 0, max: 0 };
   }
   const base = normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
+  if (TRAUMA_SOLO_IDS.includes(shiftId)) return { min: Math.min(base.min, 1), max: Math.min(base.max, 1) };
   if (dow != null) {
     const override = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
     if (override != null && override > base.max) return { min: base.min, max: override };

@@ -1365,33 +1365,53 @@ function grWorkDow(resident) {
   if (resident.category === 'EM_BAMC') return 4;
   return null;
 }
-function isStreakWorkDay(rs, resident, ds, prevRs = null) {
+// `bounds` (optional {min,max} date strings) caps how far the GR/JC/weekday fallback below is
+// allowed to fabricate an obligation day with no actual schedule evidence — an assigned shift
+// (rs[ds] or prevRs[ds]) always counts regardless of bounds, since that's real data, not
+// inference. Without bounds, callers get the old unconditional behavior (every in-block caller
+// already only ever asks about in-block dates, where the fallback is intentional per chief
+// sign-off — see the comment block above grWorkDow).
+function isStreakWorkDay(rs, resident, ds, prevRs = null, bounds = null) {
   if ((rs && rs[ds]) || (prevRs && prevRs[ds])) return true;
   if (!resident) return false;
   if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return false;
+  if (bounds && (ds < bounds.min || ds > bounds.max)) return false;
   if ((resident.jcPresentDates || []).includes(ds)) return true;
   const g = grWorkDow(resident);
   return g != null && parseDate(ds).getDay() === g;
 }
 const MAX_CONSECUTIVE_WORK_DAYS = 6;
 // Length of the consecutive work-day run containing dateStr, assuming dateStr itself is worked.
-// Walks both directions from dateStr; capped at 60 days each way as a sanity bound.
-function runLengthIfWorked(rs, resident, dateStr, prevRs = null) {
+// Walks both directions from dateStr; capped at 60 days each way as a sanity bound. `bounds` (see
+// isStreakWorkDay) stops the walk from fabricating a GR/JC obligation day past either edge of what
+// the app actually has evidence for — the block's own end date going forward, and (when no
+// previous-block snapshot exists at all) the block's own start date going backward.
+function runLengthIfWorked(rs, resident, dateStr, prevRs = null, bounds = null) {
   let len = 1;
   let d = addDays(parseDate(dateStr), -1);
-  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs); i++) { len++; d = addDays(d, -1); }
+  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs, bounds); i++) { len++; d = addDays(d, -1); }
   d = addDays(parseDate(dateStr), 1);
-  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs); i++) { len++; d = addDays(d, 1); }
+  for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(d), prevRs, bounds); i++) { len++; d = addDays(d, 1); }
   return len;
 }
-// Tail (last 14 days before block.startDate) of the immediately-preceding saved block's schedule,
-// per resident — lets the streak walk see across a block boundary (a resident who worked the tail
-// of the prior block shouldn't get a fresh streak counter just because a new block started).
-// Prefers a published snapshot covering the day before block.startDate; falls back to the most
-// recently saved one. Defensive against untrusted/partial snapshot shapes, same idiom as
-// countPublishedJC. Returns {} when there's no block, no matching snapshot, or nothing to keep.
-function prevBlockTailSchedules(block, blocksHistory = []) {
-  if (!block?.startDate) return {};
+// The {min,max} bounds a streak walk for this block should respect (see isStreakWorkDay) — max is
+// always the block's own end date (there's no evidence for a day past it, since the next block may
+// not exist yet); min is the 14-day lookback window ONLY when a previous-block snapshot was
+// actually found (prevTail.__hasPrevBlock — see prevBlockTailSchedules), otherwise the block's own
+// start date, so a GR/JC obligation is never fabricated for a week the app has zero record of.
+function streakBounds(block, prevTail) {
+  const hasPrevBlock = !!(prevTail && prevTail.__hasPrevBlock);
+  return {
+    min: hasPrevBlock ? toDateStr(addDays(parseDate(block.startDate), -14)) : block.startDate,
+    max: block.endDate,
+  };
+}
+// Finds the snapshot prevBlockTailSchedules should read from: prefers a published snapshot
+// covering the day before block.startDate; falls back to the most recently saved one. Extracted
+// so callers needing only "did a previous block exist at all" (e.g. streakBounds) don't have to
+// duplicate this search.
+function findPrevBlockSnapshot(block, blocksHistory = []) {
+  if (!block?.startDate) return null;
   const dayBefore = toDateStr(addDays(parseDate(block.startDate), -1));
   const candidates = (blocksHistory || []).filter(snap => {
     if (!snap || snap.id === block.id) return false;
@@ -1399,14 +1419,29 @@ function prevBlockTailSchedules(block, blocksHistory = []) {
     const end = snap.endDate || snap.data?.endDate;
     return start && end && start <= dayBefore && dayBefore <= end;
   });
-  if (!candidates.length) return {};
+  if (!candidates.length) return null;
   candidates.sort((a, b) => {
     if (!!a.published !== !!b.published) return a.published ? -1 : 1;
-    return (b.savedAt || 0) - (a.savedAt || 0);
+    return new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime();
   });
-  const schedule = candidates[0].data?.schedule || {};
-  const windowStart = toDateStr(addDays(parseDate(block.startDate), -14));
+  return candidates[0];
+}
+// Tail (last 14 days before block.startDate) of the immediately-preceding saved block's schedule,
+// per resident — lets the streak walk see across a block boundary (a resident who worked the tail
+// of the prior block shouldn't get a fresh streak counter just because a new block started).
+// Defensive against untrusted/partial snapshot shapes, same idiom as countPublishedJC. Returns {}
+// when there's no block, no matching snapshot, or nothing to keep. The returned object also
+// carries a non-enumerable `__hasPrevBlock` flag (see streakBounds) so callers can tell "no
+// previous block was ever saved" apart from "one was saved but this resident had no shifts in its
+// tail window" — both cases otherwise look identical (no entry for that resident's id).
+function prevBlockTailSchedules(block, blocksHistory = []) {
   const result = {};
+  if (!block?.startDate) return result;
+  const snap = findPrevBlockSnapshot(block, blocksHistory);
+  if (!snap) return result;
+  Object.defineProperty(result, '__hasPrevBlock', { value: true, enumerable: false });
+  const schedule = snap.data?.schedule || {};
+  const windowStart = toDateStr(addDays(parseDate(block.startDate), -14));
   for (const [rid, rs] of Object.entries(schedule)) {
     if (!rs) continue;
     const tail = {};
@@ -1996,6 +2031,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
   // per resident inside the weekend-off check below.
   const blockWeekends = getBlockWeekends(blockDates);
   const prevTail = prevBlockTailSchedules(block, blocksHistory);
+  const streakWalkBounds = streakBounds(block, prevTail);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
@@ -2167,7 +2203,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
       };
       let prevDs = null;
       for (const ds of walkDates) {
-        if (isStreakWorkDay(rs, resident, ds, residentPrevTail)) {
+        if (isStreakWorkDay(rs, resident, ds, residentPrevTail, streakWalkBounds)) {
           if (runStart == null) runStart = ds;
           if (ds >= block.startDate && rs[ds]) runHasShift = true;
         } else {
@@ -2439,6 +2475,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   // Cross-block tail of the previous saved block's schedule, for the streak-hard-filter below —
   // NOT merged into `schedule` itself, since that would corrupt assigned/target counters.
   const prevTail = prevBlockTailSchedules(block, blocksHistory);
+  const streakWalkBounds = streakBounds(block, prevTail);
 
   // Eligibility cache: eligCache[rid][ds] = Set of eligible shift ids
   const eligCache = {};
@@ -2465,7 +2502,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     if (streakCache[r.id] !== undefined) return streakCache[r.id];
     let n = 0, d = parseDate(ds);
     const rPrevTail = prevTail[r.id] || null;
-    while (n < 14) { d = addDays(d, -1); if (isStreakWorkDay(schedule[r.id], r, toDateStr(d), rPrevTail)) n++; else break; }
+    while (n < 14) { d = addDays(d, -1); if (isStreakWorkDay(schedule[r.id], r, toDateStr(d), rPrevTail, streakWalkBounds)) n++; else break; }
     return streakCache[r.id] = n;
   }
 
@@ -2553,7 +2590,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     }
     // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as
     // worked; prevTail lets the walk see a run continuing from the previous saved block.
-    pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds, prevTail[r.id] || null) <= MAX_CONSECUTIVE_WORK_DAYS);
+    pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds, prevTail[r.id] || null, streakWalkBounds) <= MAX_CONSECUTIVE_WORK_DAYS);
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
     // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
@@ -2696,10 +2733,9 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     for (const shift of SHIFTS.filter(includeShift)) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
-      let cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
-      // Trauma bays are single-resident by nature (see validateAll's own double-booking error) —
-      // clamp regardless of whatever the chief configured in the coverage editor.
-      if (shift.id === 'TRAUMA-D' || shift.id === 'TRAUMA-N') cov = { min: Math.min(cov.min, 1), max: Math.min(cov.max, 1) };
+      // TRAUMA-D/TRAUMA-N are clamped to at most 1 inside getCoverageFor itself (single source of
+      // truth shared with validateAll/computeCoverageByDate — see lib/coverage.js).
+      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
       if (phase === 'min') {
         // Count manual assignments that exceed configured coverage too, or totalSlots can end up
         // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
@@ -2796,7 +2832,11 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
             candidates = pgy3RestOnly;
             restCompromise = true;
           } else {
-            report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: 'pgy3Required' });
+            // A rest-violating PGY-3 existed but Soft Rule Priority protects postNightRest over
+            // coverageMin — that's 'restProtected' (the chief can fill this by reordering the
+            // priority), not 'pgy3Required' (no PGY-3 existed at all, nothing to reorder).
+            const reason = pgy3RestOnly.length ? 'restProtected' : 'pgy3Required';
+            report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason });
             continue;
           }
         } else {
@@ -2851,6 +2891,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       }
       schedule[best.id][ds] = slot.shift.id;
       assigned[best.id]++;
+      hoursTotal[best.id] += SHIFT_TIMING[slot.shift.id]?.durationH || 0;
       typeCount[best.id][slot.shift.type]++;
       if (slot.shift.area === 'TRAUMA') traumaCount[best.id]++;
       if (slot.shift.area === 'PED') pedsCount[best.id]++;
@@ -7049,7 +7090,7 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // validateAll/generateSchedule, so a chief can't create an 8-day run through the picker or
   // drag-and-drop that validateAll would then flag after the fact.
   const row = (block.schedule || {})[resident.id] || {};
-  const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null);
+  const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null, streakBounds(block, prevTail));
   if (len > MAX_CONSECUTIVE_WORK_DAYS) {
     vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: 'error' });
   }
