@@ -1,0 +1,35 @@
+{
+  "standard": {
+    "seed": 42,
+    "errors": 0,
+    "quality": [
+      452,
+      15,
+      10,
+      206.1235563253984
+    ],
+    "unfilled": 452
+  },
+  "understaffed": {
+    "seed": 42,
+    "errors": 0,
+    "quality": [
+      531,
+      14,
+      13,
+      138.95260513825252
+    ],
+    "unfilled": 531
+  },
+  "vacationHeavy": {
+    "seed": 42,
+    "errors": 0,
+    "quality": [
+      464,
+      18,
+      11,
+      225.99674569010347
+    ],
+    "unfilled": 464
+  }
+}

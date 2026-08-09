@@ -26,6 +26,8 @@ import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcad
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs } from './lib/shifts.js';
 import { getCoverageFor, DEFAULT_COVERAGE, CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS } from './lib/coverage.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
+import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
+import { mulberry32 } from './lib/rng.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -1128,7 +1130,7 @@ function weeklyHourStats(rs) {
 // before returning to a day shift after a night run, and an evening shift can never be
 // immediately followed by a day shift the next day (or vice versa) — only a night shift or
 // another evening/day shift after a rest gap.
-const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
+export const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
 // Grand Rounds start hour, used to compute rest gap between a night shift's end and GR the
 // following morning for the postNightRest soft rule (GR itself is never a schedule entry).
 const GR_START_HOUR = 8;
@@ -1145,11 +1147,11 @@ const SOFT_RULES = [
   // the rule itself, not a fact re-derived at each export-gate call site.
   { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day shift or Grand Rounds following a night shift.', blocksExport: true },
 ];
-const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
+export const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
 const EXPORT_BLOCKING_RULE_IDS = new Set(SOFT_RULES.filter(r => r.blocksExport).map(r => r.id));
 // Accepts an untrusted persisted value (old backup, hand-edited storage) and returns a valid,
 // complete ordering: unknown ids dropped, missing ids appended in default order.
-function normalizeRulePriority(arr) {
+export function normalizeRulePriority(arr) {
   const ids = new Set(SOFT_RULES.map(r => r.id));
   // Dedup while filtering: a corrupted/hand-edited backup (untrusted shape, per this repo's
   // persistence convention) could repeat an id, which would otherwise survive into `cleaned` and
@@ -1168,7 +1170,7 @@ function ruleRank(appSettings, id) { return normalizeRulePriority(appSettings?.r
 // the block-wide night cap and the short-night-run warning — for FM-3 specifically, the Mon/Tue/
 // Wed-only day-rule already makes runs of 4+ structurally impossible, so those checks would be
 // pure noise for them.
-function isNightOnlyResident(resident, eligOverrides = {}) {
+export function isNightOnlyResident(resident, eligOverrides = {}) {
   const { list } = getEffectiveEligibility(resident, eligOverrides);
   return list.length > 0 && list.every(isNightShiftId);
 }
@@ -1754,7 +1756,7 @@ function effectiveChiefRole(resident) {
 
 // Effective shift target for a resident, honoring Settings overrides, then rotation-specific
 // BLOCK_TARGETS (EM Home only), then the category-level SHIFT_TARGETS baseline.
-function getShiftTarget(resident, appSettings = {}) {
+export function getShiftTarget(resident, appSettings = {}) {
   const o = appSettings.targetOverrides || {};
   if (effectiveChiefRole(resident)) return o.CHIEF ?? 16;
   const key = `${resident.category}_${resident.pgy}`;
@@ -2020,7 +2022,7 @@ function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, 
   }
 }
 
-function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = [], ayConf = {}) {
+export function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = [], ayConf = {}) {
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
@@ -2414,7 +2416,7 @@ function validateAll(allResidents, schedule, block, eligOverrides = {}, appSetti
 // eligible resident furthest below target, preferring day/eve/night variety and short streaks.
 // Fill mode never overwrites a non-empty cell — that is the "keep manual assignments" contract.
 // Returns { schedule, report } or null when the block has no dates.
-function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {} }) {
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
@@ -2471,6 +2473,18 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
     }
   }
+  const residentById = new Map(allResidents.map(r => [r.id, r]));
+  // Every non-empty cell present in the incoming schedule BEFORE any fill pass runs — manual
+  // entries (clearFirst:false) and partial-regenerate's locked/out-of-range cells alike (both
+  // arrive via block.schedule, so this one set covers both UI paths by construction). The repair
+  // pass (below, after the three fill passes) never touches these — same never-overwrite
+  // invariant the fill passes themselves already honor for non-empty cells.
+  const keptCells = new Set();
+  for (const r of allResidents) {
+    for (const ds of Object.keys(schedule[r.id])) {
+      if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
+    }
+  }
 
   // Cross-block tail of the previous saved block's schedule, for the streak-hard-filter below —
   // NOT merged into `schedule` itself, since that would corrupt assigned/target counters.
@@ -2488,7 +2502,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     generatedAt: new Date().toISOString(),
     mode: clearFirst ? 'regenerate' : 'fill',
     totalSlots: 0, keptManual, filled: 0, optionalFilled: 0,
-    unfilled: [], underTarget: [], jeopardyPlacements: [], seniorGaps: [], restCompromises: [],
+    unfilled: [], underTarget: [], jeopardyPlacements: [], seniorGaps: [], restCompromises: [], repairs: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -2715,7 +2729,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
       - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap
       + 12 * traumaNightDowPref - 2 * traumaNightBalance + 10 * generalPedsNudge - 10 * pedsClassRepeat
       - 18 * weekendOffRisk - 35 * secondIntern - 20 * fm1OverPedsCap - 25 * pedNPgy1Deprioritize
-      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + 15 * podPgy1SecondSlot + 8 * toxPedsEvePref + Math.random();
+      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + 15 * podPgy1SecondSlot + 8 * toxPedsEvePref + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -2908,6 +2922,246 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     }
   }
 
+  // Bounded post-fill repair pass (only runs when `repair:true` is passed — generateScheduleBest
+  // calls this once, on the winning seed, after best-of-N selection). Every move goes through the
+  // SAME candidatePool the fill passes used (zero parallel rule implementation, zero rule drift)
+  // and only ever admits clean `candidates` (never restFallback violators) — repair can fix a
+  // compromise but never trade one soft-rule violation for another. `keptCells` (pre-existing
+  // non-empty cells at seed time — manual entries AND partial-regenerate's locked/out-of-range
+  // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
+  // never-overwrite invariant.
+  function repairPass() {
+    let budget = 300; // global cap on poolFor calls across every phase, so a stubborn block can't
+                       // spin the repair pass indefinitely.
+
+    function filledCount(sid, ds) {
+      let n = 0;
+      for (const r of allResidents) if (schedule[r.id][ds] === sid) n++;
+      return n;
+    }
+    function minFor(sid, ds) {
+      const dow = parseDate(ds).getDay();
+      return getCoverageFor(sid, coverage, dow, isConferenceCoverageDate(ds, ayConf)).min;
+    }
+    function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
+
+    // Exact inverse of fillDayPass's commit block (L2894 area) — every counter it increments,
+    // this decrements, term for term (including jcCount/traumaNightYearly, easy to miss).
+    function unassignCell(rid, ds) {
+      const sid = schedule[rid][ds];
+      if (!sid) return null;
+      delete schedule[rid][ds];
+      assigned[rid]--;
+      hoursTotal[rid] -= SHIFT_TIMING[sid]?.durationH || 0;
+      const sh = SHIFT_MAP[sid];
+      if (sh) typeCount[rid][sh.type]--;
+      if (sh?.area === 'TRAUMA') traumaCount[rid]--;
+      if (sh?.area === 'PED') pedsCount[rid]--;
+      if (sh?.type === 'night') nightCount[rid]--;
+      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
+      const r = residentById.get(rid);
+      if (r?.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
+      return sid;
+    }
+    function assignCell(rid, sid, ds) {
+      schedule[rid][ds] = sid;
+      assigned[rid]++;
+      hoursTotal[rid] += SHIFT_TIMING[sid]?.durationH || 0;
+      const sh = SHIFT_MAP[sid];
+      if (sh) typeCount[rid][sh.type]++;
+      if (sh?.area === 'TRAUMA') traumaCount[rid]++;
+      if (sh?.area === 'PED') pedsCount[rid]++;
+      if (sh?.type === 'night') nightCount[rid]++;
+      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
+      const r = residentById.get(rid);
+      if (r?.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
+    }
+    // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
+    // resets it first, since repair jumps between arbitrary dates, not one day at a time.
+    function poolFor(shift, ds) {
+      streakCache = {};
+      budget--;
+      return candidatePool(shift, ds);
+    }
+    function pickBestScore(pool, shift, ds) {
+      const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
+      let best = pool[0], bestScore = -Infinity;
+      for (const r of pool) {
+        const s = score(r, shift, ds, seniorFilled);
+        if (s > bestScore) { bestScore = s; best = r; }
+      }
+      return best;
+    }
+    // Narrows a clean candidate pool by the same seniority requirement fillDayPass enforces —
+    // candidatePool() itself doesn't know about POD/FLEX seniority composition (that narrowing is
+    // fillDayPass's own extra layer), so without this, repair could place a junior into a POD slot
+    // with no PGY-3 present, introducing a NEW hard validateAll error (confirmed empirically: a
+    // Move A/B run without this narrowing did exactly that). POD is hard — if the shift/date has
+    // no qualifying resident already and the pool has none either, this candidate can't fill it.
+    // FLEX stays soft — prefer a senior when the pool has one, but junior fallback is still
+    // admissible (matches fillDayPass's own soft fallback, and the resulting seniorGaps entry is
+    // exactly what fillDayPass would have recorded — scored honestly by the quality vector either
+    // way, not a hard error).
+    function narrowForSeniority(pool, shift, ds) {
+      if (shift.area === 'POD') {
+        const podWellnessOk = podWellnessSubstituteAllowed(ds, block.startDate);
+        const satisfies = r => r.category === 'EM_HOME' && (r.pgy === 3 || (podWellnessOk && r.pgy === 2));
+        if (allResidents.some(r => schedule[r.id][ds] === shift.id && satisfies(r))) return pool;
+        return pool.filter(satisfies);
+      }
+      if (SENIOR_COMPOSITION[shift.area] && !hasSenior(shift.id, ds)) {
+        const seniors = pool.filter(r => isSeniorFor(shift.area, r));
+        if (seniors.length) return seniors;
+      }
+      return pool;
+    }
+    // The donor-side twin of narrowForSeniority: vacating a cell can look like numeric surplus
+    // (headcount above min) while the resident being removed was the shift's ONLY qualifying
+    // PGY-3 — confirmed empirically: a Move A/B run without this check freed a POD-D slot whose
+    // sole PGY-3 was the one being moved, leaving POD-D senior-less even though its headcount
+    // stayed at min. Read against CURRENT schedule state (call after the tentative unassign, same
+    // as the headcount check it accompanies) — true for every non-POD shift.
+    function podStillSatisfied(shiftId, ds) {
+      const shift = SHIFT_MAP[shiftId];
+      if (shift?.area !== 'POD') return true;
+      const podWellnessOk = podWellnessSubstituteAllowed(ds, block.startDate);
+      const satisfies = r => r.category === 'EM_HOME' && (r.pgy === 3 || (podWellnessOk && r.pgy === 2));
+      return allResidents.some(r => schedule[r.id][ds] === shiftId && satisfies(r));
+    }
+
+    // Phase 1 — unfilled min slots. Move A: same-day reassignment (someone already working a
+    // different shift today switches to the unfilled shift). Move B: cross-day swap (someone
+    // eligible but blocked today — at target, hours-capped — gets freed by vacating a genuinely
+    // surplus cell elsewhere). Commit invariant: every shift touched — source AND destination,
+    // every date — must sit at >= its own coverage min after the tentative mutation, or the move
+    // reverts exactly. Every candidate pool is also run through narrowForSeniority (POD hard /
+    // FLEX soft) so repair can't introduce a NEW hard error or bypass the seniority rule the fill
+    // passes themselves enforce — generateScheduleBest's post-repair validateAll gate is still the
+    // final backstop (discards the whole repaired result on any net regression), but this keeps
+    // repair from routinely wasting its own attempts on moves that backstop would reject anyway.
+    function repairUnfilledSlot(u) {
+      const S = SHIFT_MAP[u.shiftId];
+      if (!S) return false;
+      const ds = u.dateStr;
+      if (filledCount(S.id, ds) >= minFor(S.id, ds)) return true; // already fixed as a side effect
+
+      const workingToday = allResidents.filter(r => schedule[r.id][ds] && movable(r.id, ds)).slice(0, 8);
+      for (const r of workingToday) {
+        if (budget <= 0) break;
+        const tSid = unassignCell(r.id, ds);
+        const { candidates: rawS } = poolFor(S, ds);
+        const candidates = narrowForSeniority(rawS, S, ds);
+        if (candidates.includes(r)) {
+          assignCell(r.id, S.id, ds);
+          if (filledCount(tSid, ds) >= minFor(tSid, ds) && podStillSatisfied(tSid, ds)) {
+            // r's presence on T was headroom above T's own min (and, if T is POD, r wasn't its
+            // only qualifying PGY-3) — a straight move, no backfill needed.
+            report.optionalFilled = Math.max(0, report.optionalFilled - 1);
+            report.repairs.push({ type: 'moveA', residentId: r.id, dateStr: ds, from: tSid, to: S.id });
+            return true;
+          }
+          const tShift = SHIFT_MAP[tSid];
+          const rawBackfill = tShift ? poolFor(tShift, ds) : { candidates: [] };
+          const backfill = { candidates: tShift ? narrowForSeniority(rawBackfill.candidates, tShift, ds) : [] };
+          if (backfill.candidates.length) {
+            const winner = pickBestScore(backfill.candidates, tShift, ds);
+            assignCell(winner.id, tSid, ds);
+            report.repairs.push({ type: 'moveA', residentId: r.id, dateStr: ds, from: tSid, to: S.id, backfilledBy: winner.id });
+            return true;
+          }
+          // T would drop below its own min with no one to backfill it — revert entirely.
+          unassignCell(r.id, ds);
+          assignCell(r.id, tSid, ds);
+          continue;
+        }
+        assignCell(r.id, tSid, ds); // r isn't eligible for S — revert, try the next candidate.
+        if (budget <= 0) break;
+      }
+
+      const eligibleNotWorking = allResidents.filter(r => eligCache[r.id][ds].has(S.id) && !schedule[r.id][ds]).slice(0, 8);
+      for (const r of eligibleNotWorking) {
+        if (budget <= 0) break;
+        for (const ds2 of dates) {
+          if (ds2 === ds || budget <= 0) continue;
+          const sid2 = schedule[r.id][ds2];
+          if (!sid2 || !movable(r.id, ds2)) continue;
+          if (filledCount(sid2, ds2) <= minFor(sid2, ds2)) continue; // no headcount surplus to spare
+          unassignCell(r.id, ds2);
+          if (!podStillSatisfied(sid2, ds2)) { assignCell(r.id, sid2, ds2); continue; } // r was ds2's only PGY-3 — revert
+          const { candidates: rawS } = poolFor(S, ds);
+          const candidates = narrowForSeniority(rawS, S, ds);
+          if (candidates.includes(r)) {
+            assignCell(r.id, S.id, ds);
+            report.optionalFilled = Math.max(0, report.optionalFilled - 1);
+            report.repairs.push({ type: 'moveB', residentId: r.id, dateStr: ds, to: S.id, freedFrom: { dateStr: ds2, shiftId: sid2 } });
+            return true;
+          }
+          assignCell(r.id, sid2, ds2); // revert, try the next donor date
+        }
+      }
+      return false;
+    }
+
+    for (const u of [...report.unfilled]) {
+      if (budget <= 0) break;
+      // Moves can't change eligCache — a noEligible gap is structural, unfixable by rearrangement.
+      if (u.reason === 'noEligible') continue;
+      if (repairUnfilledSlot(u)) report.filled++;
+    }
+    // Re-derive which unfilled rows are still actually unfilled from the final schedule state —
+    // report arrays are never authoritative after mutation (a row fixed as a side effect of a
+    // DIFFERENT slot's repair must also drop here, not just the one repairUnfilledSlot directly
+    // targeted).
+    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+
+    // Phase 2 — rest compromises. Swap the violator out for a clean candidate if one exists now
+    // (same shift/date, one out one in — coverage count is unchanged, no min-check needed).
+    const restFixed = new Set();
+    for (const c of [...report.restCompromises]) {
+      if (budget <= 0) break;
+      if (schedule[c.residentId]?.[c.dateStr] !== c.shiftId || !movable(c.residentId, c.dateStr)) continue;
+      unassignCell(c.residentId, c.dateStr);
+      const { candidates } = poolFor(SHIFT_MAP[c.shiftId], c.dateStr);
+      if (candidates.length) {
+        const winner = pickBestScore(candidates, SHIFT_MAP[c.shiftId], c.dateStr);
+        assignCell(winner.id, c.shiftId, c.dateStr);
+        restFixed.add(c);
+        report.repairs.push({ type: 'clearRestCompromise', dateStr: c.dateStr, shiftId: c.shiftId, replacedResidentId: c.residentId, withResidentId: winner.id });
+      } else {
+        assignCell(c.residentId, c.shiftId, c.dateStr); // revert
+      }
+    }
+    report.restCompromises = report.restCompromises.filter(c => !restFixed.has(c));
+
+    // Phase 3 — senior gaps (FLEX only; POD's hard PGY-3 rule never produces a seniorGaps entry).
+    // Try the lowest-scoring junior on that slot first (most "expendable" by the generator's own
+    // scoring), 1-for-1 swap for a senior if one is available now.
+    const gapFixed = new Set();
+    for (const g of [...report.seniorGaps]) {
+      if (budget <= 0) break;
+      const shift = SHIFT_MAP[g.shiftId];
+      if (!shift) continue;
+      const juniors = allResidents
+        .filter(r => schedule[r.id][g.dateStr] === g.shiftId && movable(r.id, g.dateStr))
+        .sort((a, b) => score(a, shift, g.dateStr, false) - score(b, shift, g.dateStr, false));
+      for (const junior of juniors) {
+        if (budget <= 0) break;
+        unassignCell(junior.id, g.dateStr);
+        const { candidates } = poolFor(shift, g.dateStr);
+        const seniors = candidates.filter(r => isSeniorFor(shift.area, r));
+        if (seniors.length) {
+          const winner = pickBestScore(seniors, shift, g.dateStr);
+          assignCell(winner.id, g.shiftId, g.dateStr);
+          gapFixed.add(g);
+          report.repairs.push({ type: 'fillSeniorGap', dateStr: g.dateStr, shiftId: g.shiftId, replacedResidentId: junior.id, withResidentId: winner.id });
+          break;
+        }
+        assignCell(junior.id, g.shiftId, g.dateStr); // revert, try the next junior
+      }
+    }
+    report.seniorGaps = report.seniorGaps.filter(g => !gapFixed.has(g));
+  }
+
   // Three passes over the whole block: everything else at minimum coverage first, then Trauma
   // Day at minimum last ("filling in PGY-1 trauma day shifts should be the final step of the
   // schedule"), then every shift's optional headroom up to its maximum. Minimums across the
@@ -2916,6 +3170,7 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
   for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
   for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
   for (const ds of dates) fillDayPass(ds, () => true, 'optional');
+  if (repair) repairPass();
 
   report.underTarget = allResidents
     .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
@@ -2928,6 +3183,89 @@ function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = 
     }));
 
   return { schedule, report };
+}
+
+// Builds the input shape src/lib/scheduleQuality.js's computeQualityMetrics expects, from
+// the same primitives generateSchedule itself used (getShiftTarget/isNightOnlyResident/
+// getBlockWeekends) — keeps generator and quality-harness scoring inputs identical.
+export function buildQualityInput({ schedule, report, allResidents, block, appSettings = {}, eligOverrides = {} }) {
+  const dates = getBlockDates(block.startDate, block.endDate);
+  return {
+    schedule,
+    report,
+    residents: allResidents,
+    targets: Object.fromEntries(allResidents.map(r => [r.id, getShiftTarget(r, appSettings)])),
+    nightOnlyIds: new Set(allResidents.filter(r => isNightOnlyResident(r, eligOverrides)).map(r => r.id)),
+    nightRules: NIGHT_RULES,
+    weekendPairs: getBlockWeekends(dates),
+  };
+}
+
+// Scores one generateSchedule() result the same way for every attempt in generateScheduleBest —
+// (validateAll error count, export-blocking warning count, quality vector), the exact tuple
+// betterQuality compares lexicographically. Quality is computed from the WHOLE final schedule
+// (including any pre-existing kept cells) since those shift every resident's baseline counts —
+// excluding them would distort deficit/spread/night-shape ordering and could pick the wrong
+// winner (kept cells are identical across every attempt, so this never affects which attempt
+// wins, only the absolute magnitude).
+function scoreGenerationResult(res, args, rulePriority) {
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  const issues = validateAll(
+    args.allResidents, res.schedule, args.block, args.eligOverrides,
+    args.appSettings, args.dayRules, args.coverage, args.blocksHistory, args.ayConf
+  );
+  const errorCount = issues.filter(i => i.level === 'error').length;
+  const blockingWarnCount = issues.filter(i => EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length;
+  const qInput = buildQualityInput({
+    schedule: res.schedule, report: res.report, allResidents: args.allResidents,
+    block: args.block, appSettings: args.appSettings, eligOverrides: args.eligOverrides,
+  });
+  const metrics = computeQualityMetrics({
+    ...qInput,
+    dates,
+    coverage: args.coverage,
+    seniorGapCount: res.report.seniorGaps.length,
+    restCompromiseCount: res.report.restCompromises.length,
+  });
+  return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
+}
+
+// Best-of-N restart: runs generateSchedule `attempts` times with distinct seeds (generation is
+// nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
+// different schedules), scores each with scoreGenerationResult, and keeps the strictly best
+// result per betterQuality. One explicit baseSeed is generated per call (or accepted via opts)
+// and persisted on the winning report alongside the winning seed + attempt index, so any result
+// is replayable: `generateSchedule({...args, rng: mulberry32(report.seed)})` reproduces it.
+//
+// Repair runs once, AFTER selection: the winning seed is re-run with repair enabled (deterministic
+// rng reproduces the exact same pre-repair schedule, then repair mutates from there) and the
+// repaired result is adopted only on STRICT betterQuality improvement — a tie (or worse) keeps the
+// unrepaired winner, since repair could otherwise trade away something the quality vector doesn't
+// score for zero measured benefit.
+export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = true } = {}) {
+  const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  let best = null;
+
+  for (let i = 0; i < attempts; i++) {
+    const seed = (resolvedBaseSeed + i * 0x9E3779B9) >>> 0;
+    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false });
+    if (!res) return null;
+    const score = scoreGenerationResult(res, args, rulePriority);
+    if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
+  }
+
+  if (repair) {
+    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true });
+    const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
+    if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
+  }
+
+  best.result.report.attempts = attempts;
+  best.result.report.baseSeed = resolvedBaseSeed;
+  best.result.report.seed = best.seed;
+  best.result.report.qualityVector = best.score.qualityVector;
+  return best.result;
 }
 
 // Render-time summary of a generation report: group unfilled slots per shift, detect
@@ -7322,7 +7660,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   function runGenerate(clearFirst) {
     setConfirmRegen(false);
     setConfirmGenerate(null);
-    const res = generateSchedule({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory, ayConf });
+    const res = generateScheduleBest({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, clearFirst, blocksHistory, ayConf });
     if (!res) { showToast('Set block dates first', 'red'); return; }
     if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
     updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
@@ -7358,7 +7696,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       }
       workingSchedule[resId] = newRow;
     }
-    const res = generateSchedule({ allResidents, block: { ...block, schedule: workingSchedule }, coverage, eligOverrides, appSettings, dayRules, clearFirst: false, blocksHistory, ayConf });
+    const res = generateScheduleBest({ allResidents, block: { ...block, schedule: workingSchedule }, coverage, eligOverrides, appSettings, dayRules, clearFirst: false, blocksHistory, ayConf });
     if (!res) { showToast('Set block dates first', 'red'); return; }
     if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
     updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));

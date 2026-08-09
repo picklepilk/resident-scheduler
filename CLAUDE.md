@@ -244,11 +244,16 @@ silently ships fully open app to internet.
 npm run dev
 npm run build     # → dist/
 npm run preview
-npm test          # vitest — covers src/lib/*.js only (dates/shifts/coverage/parse), not
-                   # ResidentScheduler.jsx itself, which has no test suite (verify by running the app)
+npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality) plus
+                   # generator.{harness,baseline}.test.js, which import the generator/validateAll
+                   # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
+                   # import-safe — see "Generator quality harness" above). Everything else in that
+                   # file (UI, tabs, most business logic) still has no test suite.
 ```
-- No lint config exists (no ESLint config). `src/lib/` has vitest coverage; `ResidentScheduler.jsx`
-  does not — verify changes there by running `npm run dev` and generating/exporting a sample schedule.
+- No lint config exists (no ESLint config). `src/lib/` has vitest coverage, now including the
+  schedule-generator core inside `ResidentScheduler.jsx` via its named exports (see "Generator
+  quality harness" above) — the rest of that file (UI, tabs) does not; verify changes there by
+  running `npm run dev` and generating/exporting a sample schedule.
 - Netlify deploy (`netlify.toml`: build = `npm run build`, publish = `dist`, SPA redirect
   `/* → /index.html`).
 
@@ -389,6 +394,63 @@ names below rather than trusting offsets.
   `totalSlots`). `summarizeGenerationReport()` turns generator's report into grouped,
   human-readable recommendations for Violations tab, including "expected gap" detection for
   day-of-week rules (Trauma windows, GR Wednesday) and for PED-N (FM-3-exclusive — see below).
+- **Generator quality harness + best-of-N + repair pass** (`src/lib/rng.js`, `src/lib/
+  scheduleQuality.js`, `src/lib/generator.{harness,baseline}.test.js`,
+  `src/lib/__fixtures__/{syntheticRoster,qualityBaseline}.json`): `generateSchedule()` is greedy
+  and nondeterministic (`score()`'s trailing tie-break addend, now `rng()` not bare `Math.random()`
+  — an injectable `rng = Math.random` option, seeded via `src/lib/rng.js`'s `mulberry32`, threads
+  through unchanged since `score` is a closure inside `generateSchedule`). `generateScheduleBest()`
+  (exported alongside `generateSchedule`/`validateAll`/`buildQualityInput`, all now named exports
+  — the file was previously module-private beyond the default component) runs 20 attempts with
+  distinct derived seeds (`baseSeed + i*0x9E3779B9`), scores each via `src/lib/scheduleQuality.js`'s
+  `computeQualityMetrics`/`computeQualityVector` (schedule-derived: coverage misses, normalized
+  target-deficit/night/weekend spread across (category,pgy) groups, night-run-shape penalty with a
+  block-edge exemption matching the validator) and picks the strict best via `betterQuality` — a
+  **lexicographic** tuple `(validateAll error count, export-blocking warning count, quality
+  vector)`, never a weighted scalar (a scalar let a low-priority soft-rule count outrank a
+  high-priority one at large magnitudes — caught in review). The quality vector's own first three
+  slots are ordered by the chief's `rulePriority` (coverageMin/seniorComposition/postNightRest);
+  blocking-warning count is ranked *above* the whole vector on purpose — a schedule that can't be
+  exported is worse than one with marginally more unfilled slots. `runGenerate`/
+  `runPartialRegenerate` call `generateScheduleBest` now, not bare `generateSchedule` — no new UI,
+  the button is just doing 20 attempts internally. Report gains `attempts`/`baseSeed`/`seed`/
+  `qualityVector` fields (any result is replayable via `generateSchedule({...args, rng:
+  mulberry32(report.seed)})`).
+  A bounded **repair pass** (`repair:true` option, only ever invoked once — `generateScheduleBest`
+  re-runs the winning seed with it after selection, keeps the repaired result only on *strict*
+  `betterQuality` improvement) runs as a closure inside `generateSchedule`, after the three fill
+  passes: Phase 1 tries to fill remaining `unfilled` min-slots via same-day reassignment or a
+  cross-day swap that frees a genuinely-surplus cell; Phase 2 swaps a `restCompromises` violator
+  for a clean candidate if one now exists; Phase 3 swaps a `seniorGaps` junior for a senior.
+  Every move is transactional (unassign source/destination, run the same `candidatePool` closure
+  the fill passes used against that intermediate state, commit only if every touched shift/date
+  stays at/above its coverage min, else exact revert) and is additionally narrowed by
+  `narrowForSeniority`/`podStillSatisfied` — **not present in the original fill-pass filters**,
+  added after empirical testing showed repair could otherwise place a junior into a PGY-3-less POD
+  slot (destination side) or free a cell that was a shift's *only* qualifying PGY-3 even though its
+  headcount looked "surplus" (donor side) — both introduced a real hard `validateAll` error that
+  `generateScheduleBest`'s outer gate would have discarded anyway, but silently wasted the repair
+  attempt; the two narrowing checks let repair succeed instead of self-destructing. `keptCells`
+  (every non-empty cell in the incoming `block.schedule` at seed time — covers manual entries and
+  partial-regenerate's locked/out-of-range cells identically, since both arrive that way) are never
+  touched. Global 300-`poolFor`-call budget bounds worst-case cost. After all phases, `unfilled`/
+  `restCompromises`/`seniorGaps`/`filled`/`optionalFilled` are rebuilt from the final schedule —
+  report arrays are never trusted as still-accurate post-mutation — but **scoped to generated
+  (non-kept) cells only**, preserving the report's "generator choices" semantics (a manual cell's
+  pre-existing violation is `validateAll`'s domain, never toast-blamed on generation). The quality
+  *scorer*, by contrast, reads the **whole final schedule including kept cells** — those shift
+  every resident's baseline counts, so excluding them would distort spread/night-shape ordering
+  across attempts (kept cells are identical across every attempt regardless, so this never changes
+  *which* attempt wins, only the reported magnitude).
+  Test fixtures are synthetic only (`src/lib/__fixtures__/syntheticRoster.js`, fake names — public
+  repo) — `standard`/`understaffed`/`vacationHeavy` variants, real category/blockType ids read from
+  the actual constants, never invented. `qualityBaseline.json` is a committed regression floor
+  (`errors`/`quality` vector per variant at a fixed seed) — `UPDATE_QUALITY_BASELINE=1` (writes
+  fresh numbers; refuses to write anything worse than what's committed unless
+  `FORCE_QUALITY_BASELINE=1` is also set — so `npm test` can never silently launder a quality
+  regression into the baseline) vs. plain `npm test` (asserts non-regression). Baseline measures
+  `generateScheduleBest` itself (the production path), not bare `generateSchedule`, so a regression
+  anywhere in best-of-N/repair is caught, not just in the underlying greedy fill.
 - `HOOKS` — `useLocalStorage`.
 - tab components in order — `UI PRIMITIVES` (`Modal`, `SectionCard`, `CollapsibleCard`,
   `CollapsibleHeader`, `SubTabs` — segmented-control sub-view switcher, ported from sibling
@@ -736,6 +798,8 @@ existing chief customizations will silently mask the fix.
 ## When editing
 - Since nearly everything is in `ResidentScheduler.jsx`, grep before assuming helper unused —
   file has no module boundaries to enforce dead-code detection.
-- `ResidentScheduler.jsx` itself has no test suite (`src/lib/*.js` does, via `npm test`) —
-  verify changes there by running `npm run dev` and generating/exporting a sample schedule
-  (including Generate Schedule on Schedule tab where relevant).
+- `ResidentScheduler.jsx`'s generator core (`generateSchedule`/`generateScheduleBest`/`validateAll`
+  and friends) has vitest coverage via its named exports (see "Generator quality harness" above) —
+  the rest of the file (UI, tabs) does not; verify changes there by running `npm run dev` and
+  generating/exporting a sample schedule (including Generate Schedule on Schedule tab where
+  relevant).
