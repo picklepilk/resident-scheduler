@@ -245,7 +245,8 @@ npm run dev
 npm run build     # → dist/
 npm run preview
 npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality) plus
-                   # generator.{harness,baseline}.test.js, which import the generator/validateAll
+                   # generator.harness.test.js + generator.baseline.<variant>.test.js, which import
+                   # the generator/validateAll
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
                    # import-safe — see "Generator quality harness" above). Everything else in that
                    # file (UI, tabs, most business logic) still has no test suite.
@@ -395,7 +396,8 @@ names below rather than trusting offsets.
   human-readable recommendations for Violations tab, including "expected gap" detection for
   day-of-week rules (Trauma windows, GR Wednesday) and for PED-N (FM-3-exclusive — see below).
 - **Generator quality harness + best-of-N + repair pass** (`src/lib/rng.js`, `src/lib/
-  scheduleQuality.js`, `src/lib/generator.{harness,baseline}.test.js`,
+  scheduleQuality.js`, `src/lib/generator.harness.test.js`, `src/lib/baselineSuite.js` +
+  `src/lib/generator.baseline.<variant>.test.js`,
   `src/lib/__fixtures__/{syntheticRoster,qualityBaseline}.json`): `generateSchedule()` is greedy
   and nondeterministic (`score()`'s trailing tie-break addend, now `rng()` not bare `Math.random()`
   — an injectable `rng = Math.random` option, seeded via `src/lib/rng.js`'s `mulberry32`, threads
@@ -444,7 +446,7 @@ names below rather than trusting offsets.
   *which* attempt wins, only the reported magnitude).
   Test fixtures are synthetic only (`src/lib/__fixtures__/syntheticRoster.js`, fake names — public
   repo) — `standard`/`understaffed`/`vacationHeavy` variants, real category/blockType ids read from
-  the actual constants, never invented. `qualityBaseline.json` is a committed regression floor
+  the actual constants, never invented. `qualityBaseline.<variant>.json` is a committed regression floor
   (`errors`/`quality` vector per variant) — **now AVERAGED over 5 baseSeeds, not a single seed**.
   Every vector slot carries real seed-to-seed noise (measured: coverageMiss ±1.5, seniorGaps ±2,
   restCompromises ±1, slot 3 ±10), and a single-seed baseline could not distinguish a genuine
@@ -452,10 +454,16 @@ names below rather than trusting offsets.
   neutral-or-better in aggregate. `compareWithTolerance` in that file adds a residual per-slot
   margin (0.5 on the count slots, 1% on slot 3) on top of the averaging. **Verified to still catch
   a real regression** — zeroing `SCORE_WEIGHTS.nightCluster` moves slot 0 by +1.8 and slot 3 by
-  ~85, far outside the margins. Cost: the baseline test is ~35s (300 generations), which is why
-  `vitest.config.js` now sets `testTimeout`/`hookTimeout` to 120s — the work happens in a
-  `beforeAll`, and vitest's 10s hook default fails as a confusing "1 skipped" rather than a
-  timeout. `UPDATE_QUALITY_BASELINE=1` (writes
+  ~85, far outside the margins, and all three variants now fail independently rather than the run
+  bailing on the first. `vitest.config.js` sets `testTimeout`/`hookTimeout` to 120s — the work
+  happens in a `beforeAll`, and vitest's 10s hook default fails as a confusing "1 skipped" rather
+  than a timeout. **The gate is SPLIT ONE-FILE-PER-VARIANT** (`baselineSuite.js` holds the whole
+  body; each `generator.baseline.<variant>.test.js` is three lines calling `makeBaselineSuite`)
+  because vitest parallelizes across FILES, not within them — one combined file pinned 300
+  generations to a single worker while 15 cores idled (~40s suite; now ~15s). Each variant owns its
+  OWN baseline JSON for the same reason: three workers read-modify-writing one shared file under
+  `UPDATE_QUALITY_BASELINE=1` would silently clobber each other's variant. Don't recombine them.
+  `UPDATE_QUALITY_BASELINE=1` (writes
   fresh numbers; refuses to write anything worse than what's committed unless
   `FORCE_QUALITY_BASELINE=1` is also set — so `npm test` can never silently launder a quality
   regression into the baseline) vs. plain `npm test` (asserts non-regression). Baseline measures
