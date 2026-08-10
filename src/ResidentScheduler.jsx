@@ -1134,6 +1134,123 @@ export const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRest
 // Grand Rounds start hour, used to compute rest gap between a night shift's end and GR the
 // following morning for the postNightRest soft rule (GR itself is never a schedule entry).
 const GR_START_HOUR = 8;
+// ─── GENERATOR SCORE WEIGHTS ────────────────────────────────────────────────
+// Every weight used by generateSchedule's score() lives here rather than as inline literals, so
+// the relative magnitudes are auditable in one place and a new term can't be added without
+// declaring which tier it belongs to. Exported for src/lib/scoreWeights.test.js, which asserts the
+// tier invariant below — that test is the whole point of centralizing these.
+//
+// TIERS (this is the load-bearing distinction, not decoration):
+//   STRUCTURAL — changes whether a schedule is acceptable, not merely nicer: hitting shift target,
+//     night-run shape, jeopardy avoidance, seniority composition, rotation-mix minimums, streak
+//     trimming, not pairing two interns. These are ALLOWED to outrank each other by design (e.g.
+//     jeopardy avoidance at 50 deliberately beats half the deficit range) — the generator has
+//     always traded these off against one another and that behavior is intentional.
+//   PREFERENCE — pure tie-breaks expressing "nicer if possible" with no correctness content:
+//     day-of-week pairings, yearly load balancing, area nudges, BAMC/tox steering.
+//
+// MEASURED FINDING (Phase 0 audit — do not silently "fix" this without re-measuring):
+// The preference bands below EXCEED one shift's worth of `deficit`. deficit is
+// (target-assigned)/target, so one shift is worth deficitWeight/target — at the largest target
+// (20, EM_HOME_1) that is 5.0 points. The three preference groups band at 22 / 40 / 27 points, so
+// on paper a pure day-of-week or area preference can outrank being 4-8 shifts further from target.
+// The smallest structural weight (15) also sits BELOW the largest preference band (40).
+//
+// That arithmetic inversion is real. It does NOT, however, produce unfair target distribution in
+// practice, and this was measured rather than assumed: rescaling every preference weight down by
+// ~6x (so all three groups fit under 5.0) was A/B'd over 6 seeds x 3 fixtures and moved
+// `deficitSpread` not at all (.0623->.0640, .1073->.1073, .1008->.1020) while making coverageMiss
+// slightly worse. The rescale was therefore NOT adopted.
+//
+// The reason the inversion is inert: candidatePool's `allAtTarget` filter already restricts the
+// optional fill phase to residents still under their own target, so score() is never in a position
+// to push someone past target on preference. Target fairness is enforced UPSTREAM of score(), not
+// by score()'s weights. If that filter is ever loosened, this inversion becomes live and the
+// rescale should be revisited — that is precisely why the numbers are recorded here.
+//
+// What the test file guards is therefore a RATCHET, not the ideal: the bands may not grow beyond
+// what is recorded today. A new term must be classified into a tier, and cannot widen the sum.
+const SCORE_WEIGHTS = {
+  // ── STRUCTURAL ──
+  deficit: 100,             // distance from the resident's own shift target — the primary driver
+  nightCluster: 40,         // circadian night-run shaping (extend a run / don't strand a short one)
+  jeopardy: 50,            // avoid a jeopardy-call date under 'warn' policy
+  mixShare: 20,             // day/eve/night variety within a resident's own assignments
+  streakOver3: 15,          // trim consecutive-workday runs past 3
+  traumaDaySenior: 30,      // PGY-2/3 should aim for trauma NIGHTS, days only if necessary
+  pedsMixNeedsMore: 25,     // Peds/EM PGY-2 must reach PEDS_EM_MIX.min before other rotations sap slots
+  fm1OnPeds: 15,            // FM-1s default to POD; peds is fill-in PRN only
+  fm1OverPedsCap: 20,       // ...and harder once past the soft ~1/3-of-target peds ceiling
+  seniorAdj: 20,            // FLEX/POD senior composition boost / second-senior discourage
+  jcNearCap: 20,            // steer off a resident's 3rd (final) journal club this AY
+  weekendOffRisk: 18,       // don't spend a resident's last remaining free weekend
+  secondIntern: 35,         // no two EM interns on the same shift/team
+  pedNPgy1Deprioritize: 25, // PED-N: prefer PGY-2/3 or FM-3 over an EM Home PGY-1
+
+  // ── PREFERENCE ── (see PREFERENCE_KEYS / the invariant test)
+  traumaNightDowPref: 12,  // TRAUMA-N: PGY-2 on Fri/Sat, PGY-3 on Sun/Mon
+  traumaNightBalance: 2,  // ...mildly favor the senior with fewer trauma nights this AY (count clamped at 5)
+  generalPedsNudge: 10,    // non-peds-rotation PGY-2/3 should pick up a few peds shifts a block
+  pedsClassRepeat: 10,     // avoid stacking the same PGY class on consecutive peds days
+  bamcFlexPodPedsDay: 6,  // BAMC interns prefer Flex/POD/Peds DAY shifts
+  bamcWedBonus: 6,        // ...especially Wednesday
+  podPgy1SecondSlot: 15,   // POD's 2nd/3rd slot prefers an EM intern once a PGY-3 is present
+  toxPedsEvePref: 8,      // EM_TOX residents ideally land on Peds Evening specifically
+
+  // ── PREFERENCE (always-on) ── Phase 1 work-shape steering. Unlike every preference above,
+  // these can fire on ANY shift, so they stack with whichever shift-specific group applies and
+  // are banded separately (PREFERENCE_ALWAYS). Kept small for exactly that reason: they are paid
+  // on every slot in the block, so a large weight here would swamp the shift-specific tuning the
+  // chief has already dialled in. The matching retrospective metric is workShapePenalty in
+  // lib/scheduleQuality.js — this term steers the greedy fill, that one scores the result.
+  workContinuity: 3,      // prefer extending an existing worked run over creating a scattered single
+  areaContinuity: 1.5,    // ...and prefer staying in the same shift AREA across consecutive days
+  offAdjacency: 2,        // avoid working the day immediately before/after vacation or approved time off
+};
+
+// Preference terms grouped by which shifts they can actually fire on. Terms in DIFFERENT groups
+// are mutually exclusive for any single scored slot — TRAUMA-N is not a PED shift, PED is not POD —
+// so summing all of them would assert against a state that cannot occur and would force the
+// weights uselessly small. `bamc` terms fire on FLEX/POD/PED day shifts, so they're counted in
+// both the PED and POD groups. The invariant is checked per group, and the worst group wins.
+const PREFERENCE_GROUPS = {
+  traumaNight: ['traumaNightDowPref', 'traumaNightBalance'],
+  peds: ['generalPedsNudge', 'pedsClassRepeat', 'toxPedsEvePref', 'bamcFlexPodPedsDay', 'bamcWedBonus'],
+  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus'],
+};
+
+// Preference terms that can fire on ANY shift, so they stack on top of whichever group above
+// applies instead of being mutually exclusive with it. Banded and ratcheted separately — folding
+// them into each group would have forced the recorded per-shift ceilings upward and destroyed the
+// ratchet's meaning on its first use.
+const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency'];
+
+// Worst-case input multiplier per preference term. Most are 0/1 booleans; traumaNightBalance's
+// count is explicitly clamped to 5 inside score(), and areaContinuity can fire for BOTH the
+// previous and next adjacent day (max 2).
+const PREFERENCE_MAX_INPUT = { traumaNightBalance: 5, areaContinuity: 2 };
+
+// Largest shift target in the app — the BINDING case for the invariant, because a bigger target
+// makes each individual shift worth FEWER deficit points (deficit is a ratio), leaving the least
+// headroom above the preference band. Derived from the real constants rather than hardcoded so
+// adding a larger target can't silently invalidate the invariant. Both source maps are declared
+// far above this point, so there's no temporal-dead-zone hazard here (see CLAUDE.md).
+const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.values(BLOCK_TARGETS));
+
+// Recorded band ceilings as measured by the Phase 0 audit. These are a RATCHET: the test asserts
+// each group's band stays at or below its recorded value, so a newly-added preference term (or a
+// bumped weight) cannot quietly widen the sum further. They are deliberately NOT the ideal values —
+// see the MEASURED FINDING note above for why the ideal was measured, rejected, and recorded.
+// `always` covers PREFERENCE_ALWAYS (3 + 1.5*2 + 2 = 8). The three shift-specific ceilings are
+// unchanged from the Phase 0 audit on purpose — Phase 1 added its steering in a separately-banded
+// bucket rather than widening them.
+const PREFERENCE_BAND_CEILING = { traumaNight: 22, peds: 40, pod: 27, always: 8 };
+
+export const SCORE_TIERS = {
+  SCORE_WEIGHTS, PREFERENCE_GROUPS, PREFERENCE_ALWAYS, PREFERENCE_MAX_INPUT, MAX_SHIFT_TARGET,
+  PREFERENCE_BAND_CEILING,
+};
+
 // ─── SOFT RULE PRIORITY ─────────────────────────────────────────────────────
 // A small, ranked set of soft rules the generator breaks in reverse-priority order when it can't
 // satisfy all of them for a slot. Keep this list short and deliberate — it's not a general rules
@@ -1630,6 +1747,66 @@ function countCurrentBlockJC(residentId, block, schedule) {
     if (shiftOverlapsJC(rs[ds])) count++;
   }
   return count;
+}
+
+// ─── AY-to-date carryover (Phase 2) ────────────────────────────────────────
+// Per-resident totals accumulated across PUBLISHED saved blocks earlier in the same academic year,
+// so fairness can be measured over the year rather than resetting every block. Published-only,
+// matching countPublishedJC's convention above: an unpublished draft is work-in-progress and must
+// never move anyone's fairness math.
+//
+// Only the most recent AY_CARRYOVER_MAX_BLOCKS published blocks count. That cap is the recency
+// clamp — the same defensive move as score()'s traumaNightBalance clamp, whose comment records
+// that an uncapped accumulating term eventually swamped the tiers it was meant to tie-break. Late
+// in an academic year an uncapped sum would similarly dwarf anything the current block can change,
+// making the whole term inert (or, worse, permanently punitive toward one resident).
+const AY_CARRYOVER_MAX_BLOCKS = 6;
+// Published prior blocks needed before AY-to-date fairness is weighted at full strength. Below
+// this the metric is blended toward block-only fairness — see computeQualityMetrics. Deliberately
+// small: with "a few blocks, some published" (the real current state) the carryover should already
+// be doing something, just not dominating.
+const AY_CARRYOVER_FULL_AT = 3;
+
+// Returns { [residentId]: { nights, weekendDates, assigned, blocks } } for the given AY. A resident
+// absent from every published snapshot is simply absent from the map — callers MUST treat that as
+// "no history", never as zero. Zero would read as maximally under-worked and would systematically
+// hammer whoever is newest to the roster.
+function computeAyPriorTotals(ay, blocksHistory = [], excludeBlockId = null) {
+  const published = (blocksHistory || [])
+    .filter(snap => snap?.published && snap.id !== excludeBlockId)
+    .filter(snap => (snap.academicYear || snap.data?.academicYear) === ay)
+    // Most recent first, then capped — see AY_CARRYOVER_MAX_BLOCKS above.
+    .sort((a, b) => String(b.savedAt || '').localeCompare(String(a.savedAt || '')))
+    .slice(0, AY_CARRYOVER_MAX_BLOCKS);
+
+  const out = {};
+  for (const snap of published) {
+    const schedule = snap.data?.schedule || {};
+    const dates = getBlockDates(snap.startDate || snap.data?.startDate, snap.endDate || snap.data?.endDate);
+    for (const [rid, rs] of Object.entries(schedule)) {
+      if (!rs) continue;
+      let nights = 0, weekendDates = 0, assigned = 0, sawAny = false;
+      for (const ds of dates) {
+        const sid = rs[ds];
+        if (!sid) continue;
+        sawAny = true;
+        assigned++;
+        if (isNightShiftId(sid)) nights++;
+        const dow = parseDate(ds).getDay();
+        if (dow === 0 || dow === 6) weekendDates++;
+      }
+      // A resident present in the snapshot but with zero shifts in it (e.g. fully on vacation)
+      // still counts as history — they were on the roster for that block, so their low totals are
+      // real information, not missing data.
+      if (!sawAny && !(rid in schedule)) continue;
+      if (!out[rid]) out[rid] = { nights: 0, weekendDates: 0, assigned: 0, blocks: 0 };
+      out[rid].nights += nights;
+      out[rid].weekendDates += weekendDates;
+      out[rid].assigned += assigned;
+      out[rid].blocks += 1;
+    }
+  }
+  return out;
 }
 
 // ─── Generate-readiness checks ─────────────────────────────────────────────
@@ -2725,11 +2902,46 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Evening specifically (chief: "ideally only evening peds") — soft preference only, doesn't
     // touch eligibility, so they remain free to fill whatever else the gates already allow.
     const toxPedsEvePref = shift.id === 'PED-E' && r.blockType === 'EM_TOX' ? 1 : 0;
-    return 100 * deficit + 40 * nightCluster - 20 * mixShare - 15 * Math.max(0, streak - 3) - 50 * jeo
-      - 30 * traumaDaySenior + 25 * pedsMixNeedsMore - 15 * fm1OnPeds + 20 * seniorAdj - 20 * jcNearCap
-      + 12 * traumaNightDowPref - 2 * traumaNightBalance + 10 * generalPedsNudge - 10 * pedsClassRepeat
-      - 18 * weekendOffRisk - 35 * secondIntern - 20 * fm1OverPedsCap - 25 * pedNPgy1Deprioritize
-      + 6 * bamcFlexPodPedsDay + 6 * bamcWedBonus + 15 * podPgy1SecondSlot + 8 * toxPedsEvePref + rng();
+    // Work-shape steering (Phase 1). The retrospective counterpart is workShapePenalty in
+    // lib/scheduleQuality.js; this is the fill-time nudge so the greedy pass builds decent shape
+    // directly instead of relying on best-of-N to stumble into it. Deliberately blind to shift
+    // TYPE — nightCluster already owns night-run shaping at a far larger weight (40), and these
+    // terms must not second-guess it.
+    const prevDs = toDateStr(addDays(dsDate, -1));
+    const nextDs = toDateStr(addDays(dsDate, 1));
+    const prevSid = schedule[r.id][prevDs];
+    const nextSid = schedule[r.id][nextDs];
+    // Prefer extending an existing run over dropping an isolated shift into a gap. Binary, not a
+    // count: two adjacent worked days is a resident working straight through, which the streak
+    // penalty above already prices — this only distinguishes "attached to something" from "alone".
+    const workContinuity = (prevSid || nextSid) ? 1 : 0;
+    // Same AREA on an adjacent worked day. Counted per side (max 2), so a shift bridging two days
+    // of the same area scores higher than one that churns on both sides.
+    const areaContinuity =
+      ((prevSid && SHIFT_MAP[prevSid]?.area === shift.area) ? 1 : 0) +
+      ((nextSid && SHIFT_MAP[nextSid]?.area === shift.area) ? 1 : 0);
+    // Don't butt a shift against time off (travel/rest day on either side of vacation or an
+    // approved day off). Symmetric — no evidence yet that one side matters more.
+    const offAdjacency =
+      ((r.vacationDates || []).includes(prevDs) || (r.approvedDatesOff || []).includes(prevDs) ||
+       (r.vacationDates || []).includes(nextDs) || (r.approvedDatesOff || []).includes(nextDs)) ? 1 : 0;
+
+    // Weights come from SCORE_WEIGHTS (see its header for the STRUCTURAL/PREFERENCE tier split and
+    // the invariant asserted in scoreWeights.test.js). Signs stay here at the use site, since the
+    // sign is a property of how the term is applied, not of the weight's magnitude.
+    const W = SCORE_WEIGHTS;
+    return W.deficit * deficit + W.nightCluster * nightCluster - W.mixShare * mixShare
+      - W.streakOver3 * Math.max(0, streak - 3) - W.jeopardy * jeo
+      - W.traumaDaySenior * traumaDaySenior + W.pedsMixNeedsMore * pedsMixNeedsMore
+      - W.fm1OnPeds * fm1OnPeds + W.seniorAdj * seniorAdj - W.jcNearCap * jcNearCap
+      + W.traumaNightDowPref * traumaNightDowPref - W.traumaNightBalance * traumaNightBalance
+      + W.generalPedsNudge * generalPedsNudge - W.pedsClassRepeat * pedsClassRepeat
+      - W.weekendOffRisk * weekendOffRisk - W.secondIntern * secondIntern
+      - W.fm1OverPedsCap * fm1OverPedsCap - W.pedNPgy1Deprioritize * pedNPgy1Deprioritize
+      + W.bamcFlexPodPedsDay * bamcFlexPodPedsDay + W.bamcWedBonus * bamcWedBonus
+      + W.podPgy1SecondSlot * podPgy1SecondSlot + W.toxPedsEvePref * toxPedsEvePref
+      + W.workContinuity * workContinuity + W.areaContinuity * areaContinuity
+      - W.offAdjacency * offAdjacency + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -3188,8 +3400,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 // Builds the input shape src/lib/scheduleQuality.js's computeQualityMetrics expects, from
 // the same primitives generateSchedule itself used (getShiftTarget/isNightOnlyResident/
 // getBlockWeekends) — keeps generator and quality-harness scoring inputs identical.
-export function buildQualityInput({ schedule, report, allResidents, block, appSettings = {}, eligOverrides = {} }) {
+export function buildQualityInput({ schedule, report, allResidents, block, appSettings = {}, eligOverrides = {}, blocksHistory = [] }) {
   const dates = getBlockDates(block.startDate, block.endDate);
+  // AY-to-date carryover (Phase 2). Defaults to [] so every existing caller that doesn't pass
+  // blocksHistory keeps today's exact block-only behavior — an empty map makes the carryover a
+  // strict no-op inside computeQualityMetrics.
+  const ay = block.academicYear || getAcademicYearFor(block.startDate);
   return {
     schedule,
     report,
@@ -3198,6 +3414,12 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
     nightOnlyIds: new Set(allResidents.filter(r => isNightOnlyResident(r, eligOverrides)).map(r => r.id)),
     nightRules: NIGHT_RULES,
     weekendPairs: getBlockWeekends(dates),
+    // Passed rather than imported by scheduleQuality.js — see that module's header on why it must
+    // never import from this file. Keeps the shape scorer's fragmentation floor in step with the
+    // hard rule the generator and validateAll actually enforce.
+    maxConsecutiveWorkDays: MAX_CONSECUTIVE_WORK_DAYS,
+    ayPriorTotals: computeAyPriorTotals(ay, blocksHistory, block.id),
+    ayCarryoverFullAt: AY_CARRYOVER_FULL_AT,
   };
 }
 
@@ -3219,6 +3441,9 @@ function scoreGenerationResult(res, args, rulePriority) {
   const qInput = buildQualityInput({
     schedule: res.schedule, report: res.report, allResidents: args.allResidents,
     block: args.block, appSettings: args.appSettings, eligOverrides: args.eligOverrides,
+    // AY-to-date carryover (Phase 2). args.blocksHistory is already threaded here for validateAll
+    // above, so best-of-N selection now weighs year-to-date fairness with no new plumbing.
+    blocksHistory: args.blocksHistory,
   });
   const metrics = computeQualityMetrics({
     ...qInput,
@@ -8479,7 +8704,60 @@ function GenerationReportCard({ report, appSettings }) {
 // and DashboardTab's stat tiles) — passed in as a prop rather than re-run here, so editing
 // anything while this tab is open doesn't trigger a second full validateAll sweep for identical
 // output.
-function ValidationTab({ issues, block, appSettings }) {
+// Read-only "what you keep undoing" card (Phase 3). Reports only — it never infers a rule, never
+// tunes a weight, and nothing in the generator reads it. Auto-fitting score() weights to a few
+// dozen override events would overfit badly and would destroy the auditability that makes the
+// generator trustworthy in the first place; the deliverable here is a backlog for a human to read.
+function OverrideInsightsCard({ overrideLog, allResidents }) {
+  const rows = useMemo(() => {
+    const byId = Object.fromEntries((allResidents || []).map(r => [r.id, r]));
+    return summarizeOverrides(overrideLog || [], byId);
+  }, [overrideLog, allResidents]);
+
+  // Only a REPEATED override is signal; a one-off is just a normal edit.
+  const repeated = rows.filter(r => r.count > 1);
+  if (!rows.length) return null;
+
+  const label = sid => (sid ? (SHIFT_MAP[sid]?.label || sid) : 'nothing');
+
+  return (
+    <CollapsibleCard
+      title="Manual overrides — what you keep changing"
+      subtitle={`${rows.length} distinct change${rows.length !== 1 ? 's' : ''} since this block was generated`}
+      defaultOpen={false}
+    >
+      <p className="text-xs text-muted-foreground mb-3">
+        Every hand-edit made to the generated schedule. Repeated entries are the useful ones — they
+        point at a rule the generator doesn&apos;t know yet. Nothing here changes how schedules are
+        generated.
+      </p>
+      {repeated.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">
+          No repeated overrides yet — nothing has been changed more than once.
+        </p>
+      ) : (
+        <ul className="divide-y divide-border">
+          {repeated.slice(0, 15).map(r => (
+            <li key={r.key} className="py-2 flex items-start gap-2 text-sm">
+              <span className="mt-0.5 text-violet-500">•</span>
+              <div className="text-card-foreground">
+                <span className="font-medium">{r.residentName}</span>
+                {' — you changed '}<span className="font-medium">{label(r.from)}</span>
+                {' to '}<span className="font-medium">{label(r.to)}</span>
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  ({r.count}x: {r.dates.slice(0, 4).map(formatDisplayDate).join(', ')}
+                  {r.dates.length > 4 ? `, +${r.dates.length - 4} more` : ''})
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </CollapsibleCard>
+  );
+}
+
+function ValidationTab({ issues, block, appSettings, allResidents }) {
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
@@ -8492,6 +8770,7 @@ function ValidationTab({ issues, block, appSettings }) {
   if(!issues.length) return (
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
+      <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="text-center py-16">
         <CheckCircle size={48} className="mx-auto mb-3 text-green-500"/>
         <p className="text-gray-700 font-semibold">No rule violations</p>
@@ -8503,6 +8782,7 @@ function ValidationTab({ issues, block, appSettings }) {
   return (
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings}/>}
+      <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="flex gap-3 flex-wrap">
         {errors.length>0 && <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-2.5 text-sm text-destructive font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
         {warns.length>0 && <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-amber-700 font-medium"><AlertTriangle size={15}/>{warns.length} warning{warns.length!==1?'s':''}</div>}
@@ -9623,8 +9903,75 @@ function BlockContextBar({ block, blockSaveState, onSave, onSwitch }) {
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null,
+           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
+}
+
+// ─── OVERRIDE CAPTURE (Phase 3) ─────────────────────────────────────────────
+// Records every hand-edit made to a GENERATED schedule: which resident, which date, what the
+// generator chose, what the chief changed it to. The purpose is not to change any schedule — it is
+// to turn "the generator keeps doing something I don't like, but I can't articulate the rule" into
+// a countable list. Nothing reads this to make scheduling decisions; it feeds a read-only card.
+//
+// Rides inside the block object, so it persists through the existing block save/load/backup/sync
+// path with no new LS_BACKUP_KEYS entry and no syncBindings change — same convention as
+// offServiceResidents (see CLAUDE.md "Data model & conventions").
+const OVERRIDE_LOG_CAP = 500;
+
+// Diffs two schedules and returns one event per changed cell. `from`/`to` are shift ids or null.
+function diffScheduleCells(prevSchedule = {}, nextSchedule = {}) {
+  const events = [];
+  const residentIds = new Set([...Object.keys(prevSchedule), ...Object.keys(nextSchedule)]);
+  for (const rid of residentIds) {
+    const prevRow = prevSchedule[rid] || {};
+    const nextRow = nextSchedule[rid] || {};
+    for (const ds of new Set([...Object.keys(prevRow), ...Object.keys(nextRow)])) {
+      const from = prevRow[ds] || null;
+      const to = nextRow[ds] || null;
+      if (from !== to) events.push({ residentId: rid, date: ds, from, to });
+    }
+  }
+  return events;
+}
+
+// Returns `next` with any override events appended. Deliberately conservative about WHAT counts:
+//   - Nothing is logged unless the PREVIOUS schedule came from a generation (prev.generationReport),
+//     because an edit to a hand-built schedule isn't the generator being overridden.
+//   - A generation itself is skipped. runGenerate/runPartialRegenerate route through the same
+//     tracked updater and replace the whole schedule at once; without this guard the very act of
+//     generating would log hundreds of "overrides" against its own output. The discriminator is the
+//     report identity changing — a genuine hand-edit never touches generationReport.
+export function withOverrideEvents(prev, next) {
+  if (!prev?.generationReport) return next;
+  if (next?.generationReport !== prev.generationReport) return next;
+  const events = diffScheduleCells(prev.schedule, next.schedule);
+  if (!events.length) return next;
+  const at = new Date().toISOString();
+  const stamped = events.map(e => ({ ...e, at, generatedAt: prev.generationReport.generatedAt || null }));
+  const merged = [...(prev.overrideLog || []), ...stamped];
+  return { ...next, overrideLog: merged.slice(-OVERRIDE_LOG_CAP) };
+}
+
+// Groups an override log into "the generator keeps making this choice and you keep undoing it".
+// Pure, exported for tests. Sorted most-repeated first; ties broken by most recent.
+export function summarizeOverrides(overrideLog = [], residentsById = {}) {
+  const byKey = new Map();
+  for (const e of overrideLog) {
+    // Keyed by what the generator DID, not by the specific date — the point is to surface a repeated
+    // pattern ("kept putting this resident on TRAUMA-N"), which a per-date key would never reveal.
+    const key = `${e.residentId}|${e.from || 'none'}|${e.to || 'none'}`;
+    const existing = byKey.get(key);
+    if (existing) { existing.count++; existing.dates.push(e.date); if (e.at > existing.lastAt) existing.lastAt = e.at; }
+    else byKey.set(key, { key, residentId: e.residentId, from: e.from, to: e.to, count: 1, dates: [e.date], lastAt: e.at });
+  }
+  const rows = [...byKey.values()].map(r => ({
+    ...r,
+    residentName: residentsById[r.residentId]
+      ? `${residentsById[r.residentId].firstName || ''} ${residentsById[r.residentId].lastName || ''}`.trim()
+      : 'Unknown resident',
+  }));
+  rows.sort((a, b) => (b.count - a.count) || String(b.lastAt).localeCompare(String(a.lastAt)));
+  return rows;
 }
 
 // `viewer` ({email, userId, role}) is supplied by AppGate, which has already resolved the session
@@ -10076,7 +10423,14 @@ export default function ResidentScheduler({ viewer } = {}) {
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
-    updateBlock(fn);
+    // Override capture (Phase 3) wraps the update rather than sitting at each call site: this is
+    // the one choke point every schedule mutation already routes through, so a future mutator gets
+    // logged automatically instead of being silently missed. The diff runs against `prev` inside
+    // the updater — not the `block` closure — so it always sees the authoritative previous state.
+    setBlock(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : { ...prev, ...fn };
+      return withOverrideEvents(prev, next);
+    });
   }
 
   function undoSchedule() {
@@ -10159,7 +10513,10 @@ export default function ResidentScheduler({ viewer } = {}) {
       startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
-      conferences:d.conferences||{}, generationReport:d.generationReport||null });
+      conferences:d.conferences||{}, generationReport:d.generationReport||null,
+      // Untrusted shape (old snapshot, hand-edited storage, foreign backup) — guard with
+      // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
+      overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [] });
     setSwitchPending(null); setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
@@ -10470,7 +10827,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
-          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings}/>}
+          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}

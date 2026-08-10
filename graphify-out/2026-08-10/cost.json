@@ -1,0 +1,60 @@
+{
+  "runs": [
+    {
+      "date": "2026-07-24T22:44:57.429848+00:00",
+      "input_tokens": 179625,
+      "output_tokens": 0,
+      "files": 39
+    },
+    {
+      "date": "2026-07-29T15:58:54.781075+00:00",
+      "input_tokens": 0,
+      "output_tokens": 125483,
+      "files": 5
+    },
+    {
+      "date": "2026-07-29T16:47:11.732411+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 1
+    },
+    {
+      "date": "2026-07-29T18:46:17.282557+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 2
+    },
+    {
+      "date": "2026-07-29T22:21:47.025346+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 11
+    },
+    {
+      "date": "2026-07-30T01:11:00.514822+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 48
+    },
+    {
+      "date": "2026-07-30T03:58:24.461940+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 1
+    },
+    {
+      "date": "2026-08-09T06:57:26.702559+00:00",
+      "input_tokens": 149746,
+      "output_tokens": 0,
+      "files": 7
+    },
+    {
+      "date": "2026-08-09T08:52:19.991659+00:00",
+      "input_tokens": 163242,
+      "output_tokens": 0,
+      "files": 11
+    }
+  ],
+  "total_input_tokens": 492613,
+  "total_output_tokens": 125483
+}

@@ -210,3 +210,85 @@ describe('generator harness — repair pass safety', () => {
     expect(schedule[rC.id][manualDate]).toBe('TRAUMA-D');
   });
 });
+
+describe('generator harness — AY-to-date carryover wiring (Phase 2)', () => {
+  // Builds a saved-block snapshot in the shape saveBlock produces, with `nights` night shifts
+  // assigned to `residentId` starting at the snapshot's own start date.
+  function makeSnapshot({ id, published, academicYear, startDate, endDate, residentId, nights }) {
+    const dates = getBlockDates(startDate, endDate);
+    const schedule = { [residentId]: {} };
+    for (let i = 0; i < nights; i++) schedule[residentId][dates[i]] = 'POD-N';
+    return {
+      id, published, academicYear, startDate, endDate, savedAt: `${startDate}T00:00:00.000Z`,
+      data: { schedule, startDate, endDate, academicYear },
+    };
+  }
+
+  function nightSpreadFor(fixture, blocksHistory) {
+    const { schedule, report } = generateSchedule({ ...fixture, rng: mulberry32(11) });
+    const dates = getBlockDates(fixture.block.startDate, fixture.block.endDate);
+    const qInput = buildQualityInput({
+      schedule, report, allResidents: fixture.allResidents, block: fixture.block,
+      appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, blocksHistory,
+    });
+    return computeQualityMetrics({
+      ...qInput, dates, coverage: fixture.coverage,
+      seniorGapCount: report.seniorGaps.length, restCompromiseCount: report.restCompromises.length,
+    });
+  }
+
+  it('an UNPUBLISHED snapshot contributes nothing (published-only, matching countPublishedJC)', () => {
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const [rA, rB] = fixture.allResidents;
+    const draft = [
+      makeSnapshot({ id: 'prior1', published: false, academicYear: ay, startDate: '2026-06-01', endDate: '2026-06-28', residentId: rA.id, nights: 12 }),
+      makeSnapshot({ id: 'prior2', published: false, academicYear: ay, startDate: '2026-05-01', endDate: '2026-05-28', residentId: rB.id, nights: 0 }),
+    ];
+    const withDrafts = nightSpreadFor(fixture, draft);
+    const withNothing = nightSpreadFor(fixture, []);
+    expect(withDrafts.ayCarryoverConfidence).toBe(0);
+    expect(withDrafts.nightSpread).toBe(withNothing.nightSpread);
+  });
+
+  it('a snapshot from a DIFFERENT academic year contributes nothing', () => {
+    const fixture = makeFixture('standard');
+    const [rA, rB] = fixture.allResidents;
+    const otherAy = [
+      makeSnapshot({ id: 'old1', published: true, academicYear: 'AY99/00', startDate: '2026-06-01', endDate: '2026-06-28', residentId: rA.id, nights: 12 }),
+      makeSnapshot({ id: 'old2', published: true, academicYear: 'AY99/00', startDate: '2026-05-01', endDate: '2026-05-28', residentId: rB.id, nights: 0 }),
+    ];
+    expect(nightSpreadFor(fixture, otherAy).ayCarryoverConfidence).toBe(0);
+  });
+
+  it('published same-AY snapshots do feed the carryover', () => {
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const [rA, rB] = fixture.allResidents;
+    const history = [
+      makeSnapshot({ id: 'p1', published: true, academicYear: ay, startDate: '2026-06-01', endDate: '2026-06-28', residentId: rA.id, nights: 10 }),
+      makeSnapshot({ id: 'p2', published: true, academicYear: ay, startDate: '2026-06-01', endDate: '2026-06-28', residentId: rB.id, nights: 0 }),
+    ];
+    const m = nightSpreadFor(fixture, history);
+    // Two residents with history -> population is large enough, and 1 block each -> partial weight.
+    expect(m.ayCarryoverConfidence).toBeGreaterThan(0);
+    expect(m.ayCarryoverConfidence).toBeLessThanOrEqual(1);
+  });
+
+  it('never counts the CURRENT block as its own prior history', () => {
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const [rA] = fixture.allResidents;
+    // A published snapshot carrying the SAME id as the live block — saveBlock replaces snapshots by
+    // id, so a published-then-reopened block is exactly this case. Counting it would double-count
+    // the block against itself.
+    const selfHistory = [
+      makeSnapshot({
+        id: fixture.block.id, published: true, academicYear: ay,
+        startDate: fixture.block.startDate, endDate: fixture.block.endDate,
+        residentId: rA.id, nights: 12,
+      }),
+    ];
+    expect(nightSpreadFor(fixture, selfHistory).ayCarryoverConfidence).toBe(0);
+  });
+});

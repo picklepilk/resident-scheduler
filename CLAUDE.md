@@ -445,7 +445,17 @@ names below rather than trusting offsets.
   Test fixtures are synthetic only (`src/lib/__fixtures__/syntheticRoster.js`, fake names — public
   repo) — `standard`/`understaffed`/`vacationHeavy` variants, real category/blockType ids read from
   the actual constants, never invented. `qualityBaseline.json` is a committed regression floor
-  (`errors`/`quality` vector per variant at a fixed seed) — `UPDATE_QUALITY_BASELINE=1` (writes
+  (`errors`/`quality` vector per variant) — **now AVERAGED over 5 baseSeeds, not a single seed**.
+  Every vector slot carries real seed-to-seed noise (measured: coverageMiss ±1.5, seniorGaps ±2,
+  restCompromises ±1, slot 3 ±10), and a single-seed baseline could not distinguish a genuine
+  regression from that drift — it fired on noise twice for changes that were measurably
+  neutral-or-better in aggregate. `compareWithTolerance` in that file adds a residual per-slot
+  margin (0.5 on the count slots, 1% on slot 3) on top of the averaging. **Verified to still catch
+  a real regression** — zeroing `SCORE_WEIGHTS.nightCluster` moves slot 0 by +1.8 and slot 3 by
+  ~85, far outside the margins. Cost: the baseline test is ~35s (300 generations), which is why
+  `vitest.config.js` now sets `testTimeout`/`hookTimeout` to 120s — the work happens in a
+  `beforeAll`, and vitest's 10s hook default fails as a confusing "1 skipped" rather than a
+  timeout. `UPDATE_QUALITY_BASELINE=1` (writes
   fresh numbers; refuses to write anything worse than what's committed unless
   `FORCE_QUALITY_BASELINE=1` is also set — so `npm test` can never silently launder a quality
   regression into the baseline) vs. plain `npm test` (asserts non-regression). Baseline measures
@@ -511,6 +521,67 @@ names below rather than trusting offsets.
   does own session/role check rather than trusting caller, stays correct even
   though `AppGate` already established viewer is admin. Unlike `feedback`, not
   filtered out of `TABS` when unconfigured; renders own "not configured" message instead.
+- **Generator score() weight table + tier audit** (`SCORE_WEIGHTS`/`PREFERENCE_GROUPS`/
+  `PREFERENCE_ALWAYS`/`PREFERENCE_BAND_CEILING`/`SCORE_TIERS` near `SOFT_RULES`;
+  `src/lib/scoreWeights.test.js`): every weight `score()` uses lives in one exported table instead
+  of as inline literals, classified **STRUCTURAL** (changes whether a schedule is acceptable) or
+  **PREFERENCE** (pure tie-break). `score()` is a closure over generator state and can't be called
+  from a test, which is the whole reason the table is exported — the tests assert against it.
+  **Measured finding, recorded rather than "fixed":** the preference bands (22/40/27 per
+  mutually-exclusive shift group) EXCEED one shift's worth of `deficit` (5.0 points at the largest
+  target, 20), and the smallest structural weight (15) sits below the largest preference band (40).
+  On paper a day-of-week/area preference can outrank being 4-8 shifts further from target. It is
+  nonetheless **inert**, because `candidatePool`'s `allAtTarget` filter already restricts the
+  optional fill phase to residents under their own target — target fairness is enforced UPSTREAM of
+  `score()`, not by its weights. Rescaling all preference weights ~6x down was A/B'd over 6 seeds x
+  3 fixtures: `deficitSpread` did not move (.0623->.0640, .1073->.1073, .1008->.1020) and
+  coverageMiss got slightly worse, so **the rescale was rejected and the original weights kept**.
+  If that `allAtTarget` filter is ever loosened the inversion goes live — revisit then. What the
+  test file enforces is a **RATCHET**, not the ideal: bands may not grow past recorded ceilings, and
+  every weight must be classified into exactly one tier, so a new scoring term forces a deliberate
+  decision instead of silently widening a 20-term sum nobody is watching.
+- **Work-shape scoring** (`workShapePenalty` in `src/lib/scheduleQuality.js`;
+  `workContinuity`/`areaContinuity`/`offAdjacency` in `SCORE_WEIGHTS`): the general-purpose
+  complement to `nightShapePenalty`, which only ever saw night runs. Penalizes scattered single
+  shifts, day-to-day shift-AREA churn within a run, and a shift butted against vacation/approved
+  time off (symmetric — no evidence yet that one side matters more). **Fragmentation is
+  deliberately NOT scored the way nights are:** `MAX_CONSECUTIVE_WORK_DAYS` is 6, so an 18-shift
+  target REQUIRES >=3 runs — penalizing "every run beyond the first" (the night convention) would
+  punish legally-mandated structure. Runs are compared against `ceil(worked / maxConsecutiveWorkDays)`
+  and only the excess is charged. Same block-edge exemption as the night metric. Joins the EXISTING
+  last vector slot at coefficient 0.5, never a 5th slot — a new slot would rank sequence aesthetics
+  above coverage/seniority/rest. Measured effect (6 seeds x 3 fixtures): workShapePenalty
+  -5.9%/-1.3%/-6.0%, slot 3 better on all three, errors still 0.
+- **AY-to-date fairness carryover** (`computeAyPriorTotals`/`AY_CARRYOVER_MAX_BLOCKS`/
+  `AY_CARRYOVER_FULL_AT` above the readiness gate; blend inside `computeQualityMetrics`):
+  `deficitSpread`/`nightSpread`/`weekendSpread` are re-measured over (prior AY total + this block)
+  so a resident hammered last block doesn't start even again. Reads **published snapshots only**,
+  same convention as `countPublishedJC`, capped to the most recent `AY_CARRYOVER_MAX_BLOCKS` (6) —
+  that cap is the recency clamp, for the same reason `traumaNightBalance` is clamped (an uncapped
+  accumulating term eventually swamps the tiers it was meant to tie-break). Two load-bearing
+  properties, both tested: (1) **strict no-op on empty history** — no published prior blocks means
+  `confidence` 0 and every blended value is exactly the block-only value, which is why the
+  history-free baseline fixtures were unaffected; (2) **a resident with NO history is EXCLUDED from
+  the AY population, never zeroed** — zero would read as maximally under-worked and would
+  systematically hammer whoever is newest on the roster. Confidence ramps
+  `meanPriorBlocks / AY_CARRYOVER_FULL_AT` and needs >=2 residents with history. Metrics also
+  report `blockDeficitSpread`/`blockNightSpread`/`blockWeekendSpread`/`ayCarryoverConfidence` for
+  diagnostics. `buildQualityInput` takes an optional `blocksHistory` (defaults `[]`).
+- **Override capture** (`withOverrideEvents`/`diffScheduleCells`/`summarizeOverrides`/
+  `OVERRIDE_LOG_CAP` near `buildSnapData`; `OverrideInsightsCard` on the Validation tab;
+  `src/lib/overrideCapture.test.js`): records every hand-edit made to a GENERATED schedule
+  (`{residentId, date, from, to, at}`) into `block.overrideLog`, so "the generator keeps doing
+  something I can't articulate" becomes a countable list. Hooked into **`updateBlockTracked` only**
+  — the single choke point every schedule mutation already routes through, so a future mutator is
+  logged automatically rather than silently missed. Two guards, both tested, both easy to get
+  wrong: nothing is logged unless the PREVIOUS schedule came from a generation
+  (`prev.generationReport`), and a **generation itself is skipped** (detected by
+  `generationReport` identity changing) or the act of generating would log hundreds of "overrides"
+  against its own output. Rides inside the block object like `offServiceResidents` — **no new
+  `LS_BACKUP_KEYS` entry, no `syncBindings` change**; `doLoadBlock` guards the persisted value with
+  `Array.isArray` (untrusted shape). Capped at 500 events. The card **reports only** — it never
+  infers a rule, never tunes a weight, and nothing in the generator reads it; auto-fitting weights
+  to a few dozen events would overfit and destroy the auditability that makes output trustworthy.
 - **Pre-generation readiness gate** (`checkGenerateReadiness`, near Journal Club helpers):
   before Generate Schedule runs, warns — with "Generate Anyway" override — if block's manual
   dates look incomplete: `getMissingSpecialDayLists` flags any special-day list
