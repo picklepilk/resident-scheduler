@@ -30,7 +30,7 @@
     "semantic_hash": "65728877cd060f64b5337749f6e1927a"
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1786399600.6157584,
+    "mtime": 1786400684.0715013,
     "ast_hash": "d18b9fb753f82c9b42aec3d131bf233a",
     "semantic_hash": ""
   },
@@ -160,8 +160,8 @@
     "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
   },
   "CLAUDE.md": {
-    "mtime": 1786399700.9814777,
-    "ast_hash": "1dadd1e2a09bed7f3bebd84e13eace13",
+    "mtime": 1786400737.42504,
+    "ast_hash": "2bd4a23098decca658f25bdc5358fa86",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -235,13 +235,8 @@
     "semantic_hash": "1e1fe392b6ecdf002be4e0069b3a36d8"
   },
   "vitest.config.js": {
-    "mtime": 1786399600.6208198,
+    "mtime": 1786400178.0638323,
     "ast_hash": "cb8e6d62d100b024ea5e2c5e70258213",
-    "semantic_hash": ""
-  },
-  "src/lib/__fixtures__/qualityBaseline.json": {
-    "mtime": 1786399600.617048,
-    "ast_hash": "eeadc786b5029bea99cd511fa839222f",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/syntheticRoster.js": {
@@ -249,13 +244,8 @@
     "ast_hash": "c593fc72ea3556367895e77ae9418dc3",
     "semantic_hash": "c593fc72ea3556367895e77ae9418dc3"
   },
-  "src/lib/generator.baseline.test.js": {
-    "mtime": 1786399600.6175785,
-    "ast_hash": "b658cbf3fb3ae0d61abcf7cdc887999c",
-    "semantic_hash": ""
-  },
   "src/lib/generator.harness.test.js": {
-    "mtime": 1786399600.618618,
+    "mtime": 1786400178.061687,
     "ast_hash": "5eee8c852287f469547b19f1b65c1eb2",
     "semantic_hash": ""
   },
@@ -270,32 +260,67 @@
     "semantic_hash": "e4f3c534e1106a800420e2fd1c5a55a6"
   },
   "src/lib/scheduleQuality.js": {
-    "mtime": 1786399600.6191485,
+    "mtime": 1786400178.0627666,
     "ast_hash": "d8e06cb150f077bbf8acda2fa0fb74ca",
     "semantic_hash": ""
   },
   "src/lib/scheduleQuality.test.js": {
-    "mtime": 1786399600.6201973,
+    "mtime": 1786400178.0632963,
     "ast_hash": "9d2112a49137665933738f1b48b952cf",
     "semantic_hash": ""
   },
   "src/lib/overrideCapture.test.js": {
-    "mtime": 1786399600.685519,
+    "mtime": 1786400178.0622175,
     "ast_hash": "10fe72a66fb544e1608b58e3fcc7bb09",
     "semantic_hash": ""
   },
   "src/lib/scoreWeights.test.js": {
-    "mtime": 1786399600.6860547,
+    "mtime": 1786400178.0632963,
     "ast_hash": "63078a3b78e5501521c961fb9e498bf6",
     "semantic_hash": ""
   },
-  "PLAN-REVIEW-LOG.md": {
-    "mtime": 1786399726.3993068,
-    "ast_hash": "7132af3c96d0f618309e27e0a5e2c81d",
+  "src/lib/__fixtures__/qualityBaseline.standard.json": {
+    "mtime": 1786400700.156523,
+    "ast_hash": "04166842b6d5047c98876f06f3f9f6cb",
     "semantic_hash": ""
   },
-  "PLAN.md": {
-    "mtime": 1786399600.684486,
+  "src/lib/__fixtures__/qualityBaseline.understaffed.json": {
+    "mtime": 1786400696.7947598,
+    "ast_hash": "e7c6500ff72ea3765b6d2a0bdf4f3cdc",
+    "semantic_hash": ""
+  },
+  "src/lib/__fixtures__/qualityBaseline.vacationHeavy.json": {
+    "mtime": 1786400699.3445399,
+    "ast_hash": "3c54fec9a7b4dc1d73e2b70fe28cab2d",
+    "semantic_hash": ""
+  },
+  "src/lib/baselineSuite.js": {
+    "mtime": 1786400601.8068066,
+    "ast_hash": "41651bf2aa0af905605f37a9931c8e91",
+    "semantic_hash": ""
+  },
+  "src/lib/generator.baseline.standard.test.js": {
+    "mtime": 1786400616.701587,
+    "ast_hash": "39a0bde0af947770037115639062ca47",
+    "semantic_hash": ""
+  },
+  "src/lib/generator.baseline.understaffed.test.js": {
+    "mtime": 1786400616.7478828,
+    "ast_hash": "6cd5c160d399cef7e946004f3418860e",
+    "semantic_hash": ""
+  },
+  "src/lib/generator.baseline.vacationHeavy.test.js": {
+    "mtime": 1786400616.7956605,
+    "ast_hash": "ec0cbea4de9c71909bdee40f2ff3ce97",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md": {
+    "mtime": 1786400178.041396,
+    "ast_hash": "8ee620998aed59c46d3a80a2cf703b26",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md": {
+    "mtime": 1786400178.041396,
     "ast_hash": "e9380932bd9442dadd5c85fe5ae379d0",
     "semantic_hash": ""
   }
