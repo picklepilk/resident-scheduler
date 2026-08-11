@@ -7,7 +7,7 @@
 // access; window.__SUPABASE_URL__ reads are typeof-guarded). Do NOT extract generator code out
 // of the monolith to work around import issues; if a future dependency breaks this, fix via
 // vitest.config.js deps.inline/alias, not extraction (see plan's "Key decisions & tradeoffs").
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { generateSchedule, generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates, parseDate } from './dates.js';
 import { getCoverageFor } from './coverage.js';
@@ -155,41 +155,53 @@ describe('generator harness — block-edge night runs', () => {
 describe('generator harness — performance', () => {
   // CATASTROPHE SMOKE TEST, NOT A BENCHMARK.
   //
-  // This measures CPU TIME (process.cpuUsage() delta, user+system), NOT wall clock, and that
-  // distinction is the whole point. The quality baseline is split into three per-variant files
-  // that vitest runs in parallel workers (see baselineSuite.js), so this call competes with them
-  // for cores: measured on a 16-core machine, the same generation took ~2.4s wall solo but ~6.3s
-  // wall under that parallel load. CPU time does not move with contention — the work performed is
-  // identical, the worker just waits longer to be scheduled — so it lets the bar stay tight
-  // enough to catch a real regression without flaking on a busy or low-core CI runner. Do NOT
-  // switch this back to Date.now(): a wall-clock bar loose enough to survive contention (20s) is
-  // ~8x the solo runtime and would let a 3x generator slowdown ship green.
+  // Measures CPU TIME (process.cpuUsage delta, user+system), not wall clock. The quality baseline
+  // is split into three per-variant files vitest runs in parallel workers (see baselineSuite.js),
+  // and wall clock for this same call swings ~2.4s solo to ~6.3s under that load on a 16-core
+  // machine. CPU time is contention-invariant (same work performed; the worker just waits longer
+  // to be scheduled), so the bar can stay tight instead of the ~20s a wall-clock bar needs to
+  // survive contention — which would let a 3x slowdown ship green. Do NOT switch back to
+  // Date.now(). This does assume vitest's `pool: 'forks'`, now pinned in vitest.config.js —
+  // process.cpuUsage is process-wide, so under `threads` it would sum the parallel baseline
+  // workers too (measured: 12s, a hard failure that reads as a generator regression).
   //
-  // 8s is ~3x the measured single-threaded cost, headroom for a slower CPU while still failing on
-  // an order-of-magnitude blowup (an accidental O(n^2), a runaway repair loop) AND on a merely
-  // large one. The real number is always printed below, so drift is visible in the log even when
-  // it stays under the bar.
+  // 8000 is ~2.6x the measured single-threaded cost (~3.0s CPU) — headroom for a slower CPU while
+  // still failing on an order-of-magnitude blowup (an accidental O(n^2), a runaway repair loop)
+  // AND on a merely large one. The real number is printed below, so drift is visible in the log
+  // even when it stays under the bar.
   const MAX_CPU_MS = 8000;
-  // No `attempts` override: this must measure the PRODUCTION configuration, which is whatever
-  // default generateScheduleBest applies for runGenerate/runPartialRegenerate. Pinning a literal
-  // here would silently decouple the two if that default ever changes.
-  it(`one default-configuration generateScheduleBest call (+ repair) on the standard fixture stays under ${MAX_CPU_MS / 1000}s of CPU`, () => {
+
+  // One shared generation for both tests below — this is the suite's single most expensive call,
+  // and splitting the timing assertion from the shape assertions must not cost a second one.
+  // No `attempts` override: this measures whatever default generateScheduleBest applies for
+  // runGenerate/runPartialRegenerate, so a change to that default shows up here. (`baseSeed` IS
+  // pinned, for reproducibility — production passes no options at all. baselineSuite.js pins
+  // `attempts` too, deliberately; see the comment there.)
+  let res;
+  let cpuMs;
+  beforeAll(() => {
     const fixture = makeFixture('standard');
     const startCpu = process.cpuUsage();
-    const res = generateScheduleBest({ ...fixture }, { baseSeed: 100 });
+    res = generateScheduleBest({ ...fixture }, { baseSeed: 100 });
     const { user, system } = process.cpuUsage(startCpu);
-    const cpuMs = (user + system) / 1000;
+    cpuMs = (user + system) / 1000;
     // eslint-disable-next-line no-console
     console.log(`[perf] generateScheduleBest(attempts=${res?.report?.attempts}) on 'standard': ${cpuMs.toFixed(0)}ms CPU (threshold ${MAX_CPU_MS}ms)`);
+  });
 
-    // Guard the shape too — otherwise the only thing seconds of CPU buys is a timing number, and
-    // a generator that returned early with an unrepaired/undecorated result would read as green.
-    expect(res?.report?.attempts).toBeGreaterThanOrEqual(1);
+  it(`one default-configuration generateScheduleBest call (+ repair) on the standard fixture stays under ${MAX_CPU_MS / 1000}s of CPU`, () => {
+    expect(cpuMs).toBeLessThan(MAX_CPU_MS);
+  });
+
+  // Separate test, same call: otherwise the only thing seconds of CPU buys is a timing number, and
+  // a generator that returned early with an unrepaired/undecorated result would read as green —
+  // but a report-shape break must not be reported as a failure of the test named for the clock.
+  it('returns a fully decorated result from that same call', () => {
+    expect(res).not.toBeNull();
+    expect(res.report.attempts).toBeGreaterThanOrEqual(1);
     expect(Number.isInteger(res.report.seed)).toBe(true);
     expect(Array.isArray(res.report.qualityVector)).toBe(true);
     expect(Object.keys(res.schedule).length).toBeGreaterThan(0);
-
-    expect(cpuMs).toBeLessThan(MAX_CPU_MS);
   });
 });
 

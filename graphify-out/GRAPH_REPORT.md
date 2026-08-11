@@ -1,7 +1,7 @@
 # Graph Report - resident-scheduler  (2026-08-10)
 
 ## Corpus Check
-- 64 files · ~130,706 words
+- 64 files · ~130,911 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `88007121`
+- Built from commit: `0524d354`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 

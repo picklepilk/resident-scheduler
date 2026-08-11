@@ -235,8 +235,8 @@
     "semantic_hash": "1e1fe392b6ecdf002be4e0069b3a36d8"
   },
   "vitest.config.js": {
-    "mtime": 1786400178.0638323,
-    "ast_hash": "cb8e6d62d100b024ea5e2c5e70258213",
+    "mtime": 1786413266.0588915,
+    "ast_hash": "91fad8df4447d23728b6ea1dd7a07cd5",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/syntheticRoster.js": {
@@ -245,8 +245,8 @@
     "semantic_hash": "c593fc72ea3556367895e77ae9418dc3"
   },
   "src/lib/generator.harness.test.js": {
-    "mtime": 1786412671.7504752,
-    "ast_hash": "a8a81acb9f9be787c16f8531aee1a084",
+    "mtime": 1786413260.708078,
+    "ast_hash": "b2520cd75f0acc10d8a7beafbc81d64c",
     "semantic_hash": ""
   },
   "src/lib/rng.js": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "src/lib/baselineSuite.js": {
-    "mtime": 1786400792.1139739,
-    "ast_hash": "ebce0a73d90b2046690213cefeef4bb6",
+    "mtime": 1786413274.2381291,
+    "ast_hash": "83d0cae54f2da87638aab93a834f62d3",
     "semantic_hash": ""
   },
   "src/lib/generator.baseline.standard.test.js": {

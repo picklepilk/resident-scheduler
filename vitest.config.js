@@ -11,5 +11,11 @@ export default defineConfig({
     // Set here rather than passed as CLI flags so a plain `npm test` behaves correctly.
     testTimeout: 120000,
     hookTimeout: 120000,
+    // Pinned, not left to vitest's default: the perf smoke test in generator.harness.test.js
+    // gates on process.cpuUsage(), which is PROCESS-wide. Under `forks` each test file gets its
+    // own child process, so the delta measures only that generation. Under `threads` the three
+    // parallel baseline files share one process and their CPU folds into the measurement
+    // (measured: 12s against an 8s bar — a hard failure that reads as a generator regression).
+    pool: 'forks',
   },
 });

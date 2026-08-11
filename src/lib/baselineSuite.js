@@ -49,6 +49,11 @@ function errorCount(issues) {
 
 function captureOnce(variant, baseSeed) {
   const fixture = makeFixture(variant);
+  // `attempts` pinned ON PURPOSE here, unlike the perf smoke test in generator.harness.test.js,
+  // which deliberately tracks whatever default production uses. The committed baselines are a
+  // frozen measurement config: if generateScheduleBest's default ever moves, the recorded numbers
+  // must not silently shift underneath the non-regression assertion. Re-measure deliberately
+  // (UPDATE_QUALITY_BASELINE=1) instead.
   const { schedule, report } = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed });
   const issues = validateAll(
     fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
