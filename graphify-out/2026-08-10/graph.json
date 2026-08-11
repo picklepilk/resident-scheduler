@@ -162,8 +162,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "package",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "package.json"
     },
     {
@@ -173,8 +173,8 @@
       "source_location": "L2",
       "_origin": "ast",
       "id": "package_name",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "name"
     },
     {
@@ -184,8 +184,8 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "package_version",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "version"
     },
     {
@@ -195,8 +195,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "package_private",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "private"
     },
     {
@@ -206,8 +206,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "package_type",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "type"
     },
     {
@@ -217,8 +217,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "package_scripts",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "scripts"
     },
     {
@@ -228,8 +228,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "package_scripts_dev",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "dev"
     },
     {
@@ -239,8 +239,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "package_scripts_build",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "build"
     },
     {
@@ -250,8 +250,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "package_scripts_preview",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "preview"
     },
     {
@@ -261,8 +261,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "package_scripts_test",
-      "community": 2,
-      "community_name": "Package Dependencies",
+      "community": 21,
+      "community_name": "Coverage Min/Max Config",
       "norm_label": "test"
     },
     {
@@ -954,8 +954,8 @@
       "source_location": "L294",
       "_origin": "ast",
       "id": "src_residentscheduler_computecoveragebydate",
-      "community": 10,
-      "community_name": "Block Calendar Editor Components",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "computecoveragebydate()"
     },
     {
@@ -1152,8 +1152,8 @@
       "source_location": "L723",
       "_origin": "ast",
       "id": "src_residentscheduler_buildweekrows",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "buildweekrows()"
     },
     {
@@ -1229,8 +1229,8 @@
       "source_location": "L811",
       "_origin": "ast",
       "id": "src_residentscheduler_pgyexclusiverotationids",
-      "community": 17,
-      "community_name": "Roster/CSV Parsing",
+      "community": 33,
+      "community_name": "inferGroupPgy",
       "norm_label": "pgyexclusiverotationids()"
     },
     {
@@ -1240,8 +1240,8 @@
       "source_location": "L824",
       "_origin": "ast",
       "id": "src_residentscheduler_infergrouppgy",
-      "community": 17,
-      "community_name": "Roster/CSV Parsing",
+      "community": 33,
+      "community_name": "inferGroupPgy",
       "norm_label": "infergrouppgy()"
     },
     {
@@ -1570,8 +1570,8 @@
       "source_location": "L1431",
       "_origin": "ast",
       "id": "src_residentscheduler_countpublishedtraumanights",
-      "community": 0,
-      "community_name": "Core Scheduler Constants & UI",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "countpublishedtraumanights()"
     },
     {
@@ -1757,8 +1757,8 @@
       "source_location": "L1605",
       "_origin": "ast",
       "id": "src_residentscheduler_haspriorpedstrauma",
-      "community": 0,
-      "community_name": "Core Scheduler Constants & UI",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "haspriorpedstrauma()"
     },
     {
@@ -1823,8 +1823,8 @@
       "source_location": "L1651",
       "_origin": "ast",
       "id": "src_residentscheduler_getblockprogress",
-      "community": 12,
-      "community_name": "Generation Report & Rest Checks",
+      "community": 29,
+      "community_name": "Test Suite & Baseline Fixtures",
       "norm_label": "getblockprogress()"
     },
     {
@@ -1867,8 +1867,8 @@
       "source_location": "L1705",
       "_origin": "ast",
       "id": "src_residentscheduler_isfirsttuesday",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "isfirsttuesday()"
     },
     {
@@ -1933,8 +1933,8 @@
       "source_location": "L1828",
       "_origin": "ast",
       "id": "src_residentscheduler_getmissingspecialdaylists",
-      "community": 7,
-      "community_name": "Rules Tab & Cell Violations",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "getmissingspecialdaylists()"
     },
     {
@@ -1944,8 +1944,8 @@
       "source_location": "L1841",
       "_origin": "ast",
       "id": "src_residentscheduler_jcpresentersfor",
-      "community": 7,
-      "community_name": "Rules Tab & Cell Violations",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "jcpresentersfor()"
     },
     {
@@ -1955,8 +1955,8 @@
       "source_location": "L1846",
       "_origin": "ast",
       "id": "src_residentscheduler_getjcpresentergaps",
-      "community": 7,
-      "community_name": "Rules Tab & Cell Violations",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "getjcpresentergaps()"
     },
     {
@@ -1966,8 +1966,8 @@
       "source_location": "L1861",
       "_origin": "ast",
       "id": "src_residentscheduler_checkgeneratereadiness",
-      "community": 7,
-      "community_name": "Rules Tab & Cell Violations",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "checkgeneratereadiness()"
     },
     {
@@ -1977,8 +1977,8 @@
       "source_location": "L1873",
       "_origin": "ast",
       "id": "src_residentscheduler_getconferencesinblock",
-      "community": 12,
-      "community_name": "Generation Report & Rest Checks",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "getconferencesinblock()"
     },
     {
@@ -1988,8 +1988,8 @@
       "source_location": "L1895",
       "_origin": "ast",
       "id": "src_residentscheduler_isconferencecoveragedate",
-      "community": 10,
-      "community_name": "Block Calendar Editor Components",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "isconferencecoveragedate()"
     },
     {
@@ -2032,8 +2032,8 @@
       "source_location": "L1930",
       "_origin": "ast",
       "id": "src_residentscheduler_effectivechiefrole",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 36,
+      "community_name": "Roster Modal Tabs",
       "norm_label": "effectivechiefrole()"
     },
     {
@@ -2043,8 +2043,8 @@
       "source_location": "L1936",
       "_origin": "ast",
       "id": "src_residentscheduler_getshifttarget",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 36,
+      "community_name": "Roster Modal Tabs",
       "norm_label": "getshifttarget()"
     },
     {
@@ -2186,8 +2186,8 @@
       "source_location": "L3403",
       "_origin": "ast",
       "id": "src_residentscheduler_buildqualityinput",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
       "norm_label": "buildqualityinput()"
     },
     {
@@ -2197,8 +2197,8 @@
       "source_location": "L3433",
       "_origin": "ast",
       "id": "src_residentscheduler_scoregenerationresult",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
       "norm_label": "scoregenerationresult()"
     },
     {
@@ -2461,8 +2461,8 @@
       "source_location": "L3954",
       "_origin": "ast",
       "id": "src_residentscheduler_blockprogressbar",
-      "community": 12,
-      "community_name": "Generation Report & Rest Checks",
+      "community": 29,
+      "community_name": "Test Suite & Baseline Fixtures",
       "norm_label": "blockprogressbar()"
     },
     {
@@ -2703,8 +2703,8 @@
       "source_location": "L4746",
       "_origin": "ast",
       "id": "src_residentscheduler_dashboardtab",
-      "community": 12,
-      "community_name": "Generation Report & Rest Checks",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "dashboardtab()"
     },
     {
@@ -2912,8 +2912,8 @@
       "source_location": "L6108",
       "_origin": "ast",
       "id": "src_residentscheduler_parselectureimportdate",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 16,
+      "community_name": "Vacation/Lecture Import Parsing",
       "norm_label": "parselectureimportdate()"
     },
     {
@@ -2934,8 +2934,8 @@
       "source_location": "L6150",
       "_origin": "ast",
       "id": "src_residentscheduler_validatelectureimportdate",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "validatelectureimportdate()"
     },
     {
@@ -2945,8 +2945,8 @@
       "source_location": "L6173",
       "_origin": "ast",
       "id": "src_residentscheduler_parselectureimporttext",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 16,
+      "community_name": "Vacation/Lecture Import Parsing",
       "norm_label": "parselectureimporttext()"
     },
     {
@@ -3143,8 +3143,8 @@
       "source_location": "L8427",
       "_origin": "ast",
       "id": "src_residentscheduler_schedulecalendarview",
-      "community": 13,
-      "community_name": "Circadian & Streak Rule Helpers",
+      "community": 6,
+      "community_name": "Schedule Generator Core",
       "norm_label": "schedulecalendarview()"
     },
     {
@@ -3676,14 +3676,135 @@
       "norm_label": "makefixture()"
     },
     {
+      "label": "baselineSuite.js",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "baselinesuite.js"
+    },
+    {
+      "label": "__dirname",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L27",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_dirname",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "__dirname"
+    },
+    {
+      "label": "SEEDS",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L33",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_seeds",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "seeds"
+    },
+    {
+      "label": "SLOT_TOLERANCE",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L39",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_slot_tolerance",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "slot_tolerance"
+    },
+    {
+      "label": "baselinePath()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L42",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_baselinepath",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "baselinepath()"
+    },
+    {
+      "label": "errorCount()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L46",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_errorcount",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "errorcount()"
+    },
+    {
+      "label": "captureOnce()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L50",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_captureonce",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "captureonce()"
+    },
+    {
+      "label": "captureFor()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L75",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_capturefor",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "capturefor()"
+    },
+    {
+      "label": "compareWithTolerance()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L91",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_comparewithtolerance",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "comparewithtolerance()"
+    },
+    {
+      "label": "loadBaseline()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L103",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_loadbaseline",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "loadbaseline()"
+    },
+    {
+      "label": "makeBaselineSuite()",
+      "file_type": "code",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L110",
+      "_origin": "ast",
+      "id": "src_lib_baselinesuite_makebaselinesuite",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
+      "norm_label": "makebaselinesuite()"
+    },
+    {
       "label": "coverage.js",
       "file_type": "code",
       "source_file": "src/lib/coverage.js",
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_lib_coverage",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "coverage.js"
     },
     {
@@ -3693,8 +3814,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "src_lib_coverage_default_coverage_minmax",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "default_coverage_minmax"
     },
     {
@@ -3704,8 +3825,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "src_lib_coverage_default_coverage",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "default_coverage"
     },
     {
@@ -3715,8 +3836,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "src_lib_coverage_dow_coverage_max_override",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "dow_coverage_max_override"
     },
     {
@@ -3726,8 +3847,8 @@
       "source_location": "L58",
       "_origin": "ast",
       "id": "src_lib_coverage_trauma_solo_ids",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "trauma_solo_ids"
     },
     {
@@ -3737,8 +3858,8 @@
       "source_location": "L63",
       "_origin": "ast",
       "id": "src_lib_coverage_conf_suppressed_normal_ids",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "conf_suppressed_normal_ids"
     },
     {
@@ -3748,8 +3869,8 @@
       "source_location": "L64",
       "_origin": "ast",
       "id": "src_lib_coverage_conf_auto_swap_12h_ids",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "conf_auto_swap_12h_ids"
     },
     {
@@ -3759,8 +3880,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "src_lib_coverage_normalizecoverageentry",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "normalizecoverageentry()"
     },
     {
@@ -3770,8 +3891,8 @@
       "source_location": "L81",
       "_origin": "ast",
       "id": "src_lib_coverage_getcoveragefor",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "getcoveragefor()"
     },
     {
@@ -3781,8 +3902,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_lib_coverage_test",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "coverage.test.js"
     },
     {
@@ -3918,125 +4039,37 @@
       "norm_label": "dates.test.js"
     },
     {
-      "label": "generator.baseline.test.js",
+      "label": "generator.baseline.standard.test.js",
       "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
+      "source_file": "src/lib/generator.baseline.standard.test.js",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "src_lib_generator_baseline_test",
+      "id": "src_lib_generator_baseline_standard_test",
       "community": 1,
       "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "generator.baseline.test.js"
+      "norm_label": "generator.baseline.standard.test.js"
     },
     {
-      "label": "__dirname",
+      "label": "generator.baseline.understaffed.test.js",
       "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L21",
+      "source_file": "src/lib/generator.baseline.understaffed.test.js",
+      "source_location": "L1",
       "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_dirname",
+      "id": "src_lib_generator_baseline_understaffed_test",
       "community": 1,
       "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "__dirname"
+      "norm_label": "generator.baseline.understaffed.test.js"
     },
     {
-      "label": "BASELINE_PATH",
+      "label": "generator.baseline.vacationHeavy.test.js",
       "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L22",
+      "source_file": "src/lib/generator.baseline.vacationHeavy.test.js",
+      "source_location": "L1",
       "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_baseline_path",
+      "id": "src_lib_generator_baseline_vacationheavy_test",
       "community": 1,
       "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "baseline_path"
-    },
-    {
-      "label": "VARIANTS",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L23",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_variants",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "variants"
-    },
-    {
-      "label": "SEEDS",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L31",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_seeds",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "seeds"
-    },
-    {
-      "label": "SLOT_TOLERANCE",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L38",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_slot_tolerance",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "slot_tolerance"
-    },
-    {
-      "label": "errorCount()",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L41",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_errorcount",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "errorcount()"
-    },
-    {
-      "label": "captureOnce()",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L50",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_captureonce",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "captureonce()"
-    },
-    {
-      "label": "captureFor()",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L73",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_capturefor",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "capturefor()"
-    },
-    {
-      "label": "compareWithTolerance()",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L90",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_comparewithtolerance",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "comparewithtolerance()"
-    },
-    {
-      "label": "loadBaseline()",
-      "file_type": "code",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L102",
-      "_origin": "ast",
-      "id": "src_lib_generator_baseline_test_loadbaseline",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
-      "norm_label": "loadbaseline()"
+      "norm_label": "generator.baseline.vacationheavy.test.js"
     },
     {
       "label": "generator.harness.test.js",
@@ -4100,8 +4133,8 @@
       "source_location": "L227",
       "_origin": "ast",
       "id": "src_lib_generator_harness_test_nightspreadfor",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
       "norm_label": "nightspreadfor()"
     },
     {
@@ -4364,8 +4397,8 @@
       "source_location": "L59",
       "_origin": "ast",
       "id": "src_lib_schedulequality_computequalitymetrics",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 1,
+      "community_name": "Synthetic Test Fixture Roster",
       "norm_label": "computequalitymetrics()"
     },
     {
@@ -4529,8 +4562,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_lib_shifts",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shifts.js"
     },
     {
@@ -4540,8 +4573,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "src_lib_shifts_area_colors",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "area_colors"
     },
     {
@@ -4551,8 +4584,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "src_lib_shifts_shifts",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shifts"
     },
     {
@@ -4562,8 +4595,8 @@
       "source_location": "L67",
       "_origin": "ast",
       "id": "src_lib_shifts_shift_map",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shift_map"
     },
     {
@@ -4573,8 +4606,8 @@
       "source_location": "L68",
       "_origin": "ast",
       "id": "src_lib_shifts_shift_areas",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shift_areas"
     },
     {
@@ -4584,8 +4617,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "src_lib_shifts_shift_types",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shift_types"
     },
     {
@@ -4595,8 +4628,8 @@
       "source_location": "L73",
       "_origin": "ast",
       "id": "src_lib_shifts_shift_timing",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shift_timing"
     },
     {
@@ -4606,8 +4639,8 @@
       "source_location": "L102",
       "_origin": "ast",
       "id": "src_lib_shifts_shift_dow",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shift_dow"
     },
     {
@@ -4617,8 +4650,8 @@
       "source_location": "L105",
       "_origin": "ast",
       "id": "src_lib_shifts_shiftstartms",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shiftstartms()"
     },
     {
@@ -4628,8 +4661,8 @@
       "source_location": "L113",
       "_origin": "ast",
       "id": "src_lib_shifts_shiftendms",
-      "community": 6,
-      "community_name": "Schedule Generator Core",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shiftendms()"
     },
     {
@@ -4661,8 +4694,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_lib_shifts_rationale_7",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "note: area_colors is not in the original extraction spec's const list, but shift"
     },
     {
@@ -4672,8 +4705,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_lib_shifts_test",
-      "community": 1,
-      "community_name": "Synthetic Test Fixture Roster",
+      "community": 5,
+      "community_name": "Date Utilities",
       "norm_label": "shifts.test.js"
     },
     {
@@ -5524,267 +5557,267 @@
       "norm_label": "vitest.config.js"
     },
     {
-      "label": "PLAN-REVIEW-LOG.md",
+      "label": "2026-08-10-schedule-quality-phases-log.md",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "plan_review_log",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
-      "norm_label": "plan-review-log.md"
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
+      "norm_label": "2026-08-10-schedule-quality-phases-log.md"
     },
     {
       "label": "Plan Review Log: Close the schedule-quality gap blocking cutover",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "plan_review_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "plan review log: close the schedule-quality gap blocking cutover"
     },
     {
       "label": "Act 1 summary \u2014 what the grill settled",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L7",
       "_origin": "ast",
-      "id": "plan_review_log_act_1_summary_what_the_grill_settled",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_1_summary_what_the_grill_settled",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "act 1 summary \u2014 what the grill settled"
     },
     {
       "label": "Round 1 \u2014 Codex: BLOCKED (not a plan finding)",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L20",
       "_origin": "ast",
-      "id": "plan_review_log_round_1_codex_blocked_not_a_plan_finding",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_round_1_codex_blocked_not_a_plan_finding",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "round 1 \u2014 codex: blocked (not a plan finding)"
     },
     {
       "label": "Act 3 \u2014 Build (Claude; Codex review never ran)",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L35",
       "_origin": "ast",
-      "id": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "act 3 \u2014 build (claude; codex review never ran)"
     },
     {
       "label": "Phase 0 \u2014 score() priority audit \u2014 SHIPPED AS AUDIT ONLY, NO BEHAVIOR CHANGE",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L40",
       "_origin": "ast",
-      "id": "plan_review_log_phase_0_score_priority_audit_shipped_as_audit_only_no_behavior_change",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_0_score_priority_audit_shipped_as_audit_only_no_behavior_change",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "phase 0 \u2014 score() priority audit \u2014 shipped as audit only, no behavior change"
     },
     {
       "label": "Phase 1 \u2014 Generalized work-shape scoring \u2014 SHIPPED",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L57",
       "_origin": "ast",
-      "id": "plan_review_log_phase_1_generalized_work_shape_scoring_shipped",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_1_generalized_work_shape_scoring_shipped",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "phase 1 \u2014 generalized work-shape scoring \u2014 shipped"
     },
     {
       "label": "Phase 2 \u2014 AY-to-date fairness carryover \u2014 SHIPPED",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L67",
       "_origin": "ast",
-      "id": "plan_review_log_phase_2_ay_to_date_fairness_carryover_shipped",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_2_ay_to_date_fairness_carryover_shipped",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "phase 2 \u2014 ay-to-date fairness carryover \u2014 shipped"
     },
     {
       "label": "Phase 3 \u2014 Override capture \u2014 SHIPPED",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L75",
       "_origin": "ast",
-      "id": "plan_review_log_phase_3_override_capture_shipped",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_3_override_capture_shipped",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "phase 3 \u2014 override capture \u2014 shipped"
     },
     {
       "label": "Test-infrastructure change (not in the plan, forced by the work)",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L80",
       "_origin": "ast",
-      "id": "plan_review_log_test_infrastructure_change_not_in_the_plan_forced_by_the_work",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_test_infrastructure_change_not_in_the_plan_forced_by_the_work",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "test-infrastructure change (not in the plan, forced by the work)"
     },
     {
       "label": "Not verified",
       "file_type": "document",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L88",
       "_origin": "ast",
-      "id": "plan_review_log_not_verified",
-      "community": 21,
-      "community_name": "Coverage Min/Max Config",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_not_verified",
+      "community": 13,
+      "community_name": "Circadian & Streak Rule Helpers",
       "norm_label": "not verified"
     },
     {
-      "label": "PLAN.md",
+      "label": "2026-08-10-schedule-quality-phases.md",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "plan",
-      "community": 5,
-      "community_name": "Date Utilities",
-      "norm_label": "plan.md"
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
+      "norm_label": "2026-08-10-schedule-quality-phases.md"
     },
     {
       "label": "Plan: Close the schedule-quality gap blocking cutover",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L1",
       "_origin": "ast",
-      "id": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "plan: close the schedule-quality gap blocking cutover"
     },
     {
       "label": "Context",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L4",
       "_origin": "ast",
-      "id": "plan_context",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_context",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "context"
     },
     {
       "label": "What already exists (reuse, do not rebuild)",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L23",
       "_origin": "ast",
-      "id": "plan_what_already_exists_reuse_do_not_rebuild",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_what_already_exists_reuse_do_not_rebuild",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "what already exists (reuse, do not rebuild)"
     },
     {
       "label": "Approach",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L41",
       "_origin": "ast",
-      "id": "plan_approach",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "approach"
     },
     {
       "label": "Phase 0 \u2014 `score()` priority audit *(prerequisite, not a peer)*",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L46",
       "_origin": "ast",
-      "id": "plan_phase_0_score_priority_audit_prerequisite_not_a_peer",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_0_score_priority_audit_prerequisite_not_a_peer",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "phase 0 \u2014 `score()` priority audit *(prerequisite, not a peer)*"
     },
     {
       "label": "Phase 1 \u2014 Generalized shape scoring *(kills \"fixed bad sequences\")*",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L64",
       "_origin": "ast",
-      "id": "plan_phase_1_generalized_shape_scoring_kills_fixed_bad_sequences",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_1_generalized_shape_scoring_kills_fixed_bad_sequences",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "phase 1 \u2014 generalized shape scoring *(kills \"fixed bad sequences\")*"
     },
     {
       "label": "Phase 2 \u2014 AY-to-date fairness carryover *(kills \"rebalanced who got hammered\")*",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L85",
       "_origin": "ast",
-      "id": "plan_phase_2_ay_to_date_fairness_carryover_kills_rebalanced_who_got_hammered",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_2_ay_to_date_fairness_carryover_kills_rebalanced_who_got_hammered",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "phase 2 \u2014 ay-to-date fairness carryover *(kills \"rebalanced who got hammered\")*"
     },
     {
       "label": "Phase 3 \u2014 Override-capture loop *(attacks the root of \"moved shifts off specific residents\")*",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L104",
       "_origin": "ast",
-      "id": "plan_phase_3_override_capture_loop_attacks_the_root_of_moved_shifts_off_specific_residents",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_3_override_capture_loop_attacks_the_root_of_moved_shifts_off_specific_residents",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "phase 3 \u2014 override-capture loop *(attacks the root of \"moved shifts off specific residents\")*"
     },
     {
       "label": "Key decisions & tradeoffs",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L116",
       "_origin": "ast",
-      "id": "plan_key_decisions_tradeoffs",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_key_decisions_tradeoffs",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "key decisions & tradeoffs"
     },
     {
       "label": "Risks / open questions",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L132",
       "_origin": "ast",
-      "id": "plan_risks_open_questions",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_risks_open_questions",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "risks / open questions"
     },
     {
       "label": "Out of scope",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L143",
       "_origin": "ast",
-      "id": "plan_out_of_scope",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_out_of_scope",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "out of scope"
     },
     {
       "label": "Verification",
       "file_type": "document",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L149",
       "_origin": "ast",
-      "id": "plan_verification",
-      "community": 5,
-      "community_name": "Date Utilities",
+      "id": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_verification",
+      "community": 8,
+      "community_name": "Dashboard Block Calendar",
       "norm_label": "verification"
     },
     {
@@ -5799,8 +5832,8 @@
       "rationale": "Forces terse, fragment-style responses to cut filler/fluff and save tokens while keeping technical substance and code exact; auto-suspends for security warnings, irreversible actions, or user confusion, and never applies to code/commits/PRs.",
       "community": 51,
       "norm_label": "caveman terse-response mode (cline rule)",
-      "id": "_clinerules_caveman_caveman_mode",
-      "community_name": "Caveman Mode Rule (Cline)"
+      "community_name": "Caveman Mode Rule (Cline)",
+      "id": "_clinerules_caveman_caveman_mode"
     },
     {
       "label": "Caveman Terse-Response Mode (Copilot rule)",
@@ -5814,8 +5847,8 @@
       "rationale": "Same terse-response contract as the Cline/Windsurf/OpenCode/AGENTS variants, ported to GitHub Copilot's own instructions file so the behavior is consistent across every AI tool configured for this repo.",
       "community": 52,
       "norm_label": "caveman terse-response mode (copilot rule)",
-      "id": "_github_copilot_instructions_caveman_mode",
-      "community_name": "Caveman Mode Rule (Copilot)"
+      "community_name": "Caveman Mode Rule (Copilot)",
+      "id": "_github_copilot_instructions_caveman_mode"
     },
     {
       "label": "Caveman Terse-Response Mode (OpenCode rule)",
@@ -5829,8 +5862,8 @@
       "rationale": "Same terse-response contract ported to OpenCode's AGENTS.md convention.",
       "community": 53,
       "norm_label": "caveman terse-response mode (opencode rule)",
-      "id": "_opencode_agents_caveman_mode",
-      "community_name": "Caveman Mode Rule (OpenCode)"
+      "community_name": "Caveman Mode Rule (OpenCode)",
+      "id": "_opencode_agents_caveman_mode"
     },
     {
       "label": "Caveman Terse-Response Mode (Windsurf rule)",
@@ -5844,8 +5877,8 @@
       "rationale": "Same terse-response contract for Windsurf, marked with 'trigger: always_on' frontmatter so it applies to every session without manual activation.",
       "community": 54,
       "norm_label": "caveman terse-response mode (windsurf rule)",
-      "id": "_windsurf_rules_caveman_caveman_mode",
-      "community_name": "Caveman Mode Rule (Windsurf)"
+      "community_name": "Caveman Mode Rule (Windsurf)",
+      "id": "_windsurf_rules_caveman_caveman_mode"
     },
     {
       "label": "Caveman Terse-Response Mode (top-level AGENTS.md)",
@@ -5859,8 +5892,8 @@
       "rationale": "Same terse-response contract as the tool-specific variants, placed at repo root as the generic AGENTS.md convention.",
       "community": 55,
       "norm_label": "caveman terse-response mode (top-level agents.md)",
-      "id": "agents_caveman_mode",
-      "community_name": "Caveman Mode Rule (AGENTS.md)"
+      "community_name": "Caveman Mode Rule (AGENTS.md)",
+      "id": "agents_caveman_mode"
     },
     {
       "label": "Field-Ready Design System",
@@ -5874,8 +5907,8 @@
       "rationale": "Synced (not authored) from the sibling ems-inventory project so this app visually reads as one family with OMD Response and other UTHealth EM tools; must read instantly in sunlight or a dark cab, so the rule is 'quiet, chunky, high-contrast, utilitarian' with one bold element per screen.",
       "community": 38,
       "norm_label": "field-ready design system",
-      "id": "docs_design_field_ready_design_system",
-      "community_name": "OMD Response App Design System"
+      "community_name": "OMD Response App Design System",
+      "id": "docs_design_field_ready_design_system"
     },
     {
       "label": "OMD Response App",
@@ -5888,8 +5921,8 @@
       "contributor": null,
       "community": 38,
       "norm_label": "omd response app",
-      "id": "docs_design_omd_response_app",
-      "community_name": "OMD Response App Design System"
+      "community_name": "OMD Response App Design System",
+      "id": "docs_design_omd_response_app"
     },
     {
       "label": "Semantic Palette Tokens & Dark-Mode Constraint",
@@ -5903,8 +5936,8 @@
       "rationale": "Dark mode works by remapping a hard-coded list of literal Tailwind utilities in src/index.css; introducing a new literal palette family (zinc/slate/stone/etc.) would silently render light-mode colors in dark mode, so only 8 allowed families plus semantic tokens may be used.",
       "community": 38,
       "norm_label": "semantic palette tokens & dark-mode constraint",
-      "id": "docs_design_palette_tokens",
-      "community_name": "OMD Response App Design System"
+      "community_name": "OMD Response App Design System",
+      "id": "docs_design_palette_tokens"
     },
     {
       "label": "Typography System (Barlow / Barlow Condensed / JetBrains Mono)",
@@ -5918,8 +5951,8 @@
       "rationale": "font-mono reserved for all data readouts (counts, coverage, dates, shift times) so numeric fields read unambiguously at a glance; font-display reserved for titles/stats to keep hierarchy legible under field conditions.",
       "community": 38,
       "norm_label": "typography system (barlow / barlow condensed / jetbrains mono)",
-      "id": "docs_design_typography_system",
-      "community_name": "OMD Response App Design System"
+      "community_name": "OMD Response App Design System",
+      "id": "docs_design_typography_system"
     },
     {
       "label": "Accessibility Floor",
@@ -5933,8 +5966,8 @@
       "rationale": "Visible keyboard focus, WCAG-AA contrast on tinted status blocks, labeled form fields, aria-labels on icon-only buttons \u2014 non-negotiable baseline given the field-use context.",
       "community": 38,
       "norm_label": "accessibility floor",
-      "id": "docs_design_accessibility_floor",
-      "community_name": "OMD Response App Design System"
+      "community_name": "OMD Response App Design System",
+      "id": "docs_design_accessibility_floor"
     },
     {
       "label": "Resident Day-Off Request Implementation Plan",
@@ -5947,8 +5980,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "resident day-off request implementation plan",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_plan",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_plan"
     },
     {
       "label": "Task 1: Supabase Auth Client + Config Plumbing",
@@ -5961,8 +5994,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 1: supabase auth client + config plumbing",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task1_supabase_client",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task1_supabase_client"
     },
     {
       "label": "Task 2: profiles + day_off_requests Schema & RLS",
@@ -5976,8 +6009,8 @@
       "rationale": "BEFORE UPDATE triggers (enforce_resident_id_immutable, enforce_cancel_only_status) close gaps plain RLS WITH CHECK can't express, e.g. WITH CHECK alone can't guarantee 'no other column changed' during a cancel, and IS DISTINCT FROM (not =/!=) is required so NULL columns don't defeat the guard.",
       "community": 9,
       "norm_label": "task 2: profiles + day_off_requests schema & rls",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task2_db_schema",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task2_db_schema"
     },
     {
       "label": "Task 3: Server-Side Email-Domain Signup Restriction",
@@ -5991,8 +6024,8 @@
       "rationale": "A client-side-only domain check is trivially bypassed by calling Supabase's auth REST API directly with the public anon key (visible in this public repo's deployed bundle regardless), so enforcement must live in a Postgres 'Before User Created' Auth Hook.",
       "community": 9,
       "norm_label": "task 3: server-side email-domain signup restriction",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task3_auth_hook_domain_restriction",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task3_auth_hook_domain_restriction"
     },
     {
       "label": "Task 4: Block-Lookup Pure Helpers (blockLookup.js)",
@@ -6005,8 +6038,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 4: block-lookup pure helpers (blocklookup.js)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task4_block_lookup_helpers",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task4_block_lookup_helpers"
     },
     {
       "label": "Task 5: Resident App Shell, Routing & Magic-Link Login",
@@ -6019,8 +6052,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 5: resident app shell, routing & magic-link login",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task5_resident_app_shell",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task5_resident_app_shell"
     },
     {
       "label": "Task 6: Resident Name-Picker (First-Login Linking)",
@@ -6033,8 +6066,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 6: resident name-picker (first-login linking)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task6_resident_picker",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task6_resident_picker"
     },
     {
       "label": "Task 7: Request Submission Form (Cutoff Warning)",
@@ -6047,8 +6080,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 7: request submission form (cutoff warning)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task7_request_form",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task7_request_form"
     },
     {
       "label": "Task 8: Resident's Own Request List + Cancel",
@@ -6061,8 +6094,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 8: resident's own request list + cancel",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task8_request_list",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task8_request_list"
     },
     {
       "label": "Task 9: Chief-Side Requests Tab (Login/Role Gate)",
@@ -6076,8 +6109,8 @@
       "rationale": "ApprovalQueue is deliberately a separate component, not inlined into RequestsTab's conditional-return body, because placing its hooks after early returns that fire conditionally across renders would violate the Rules of Hooks.",
       "community": 9,
       "norm_label": "task 9: chief-side requests tab (login/role gate)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task9_requests_tab",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task9_requests_tab"
     },
     {
       "label": "Task 10: Chief Approve/Deny Actions (ApprovalQueue)",
@@ -6091,8 +6124,8 @@
       "rationale": "Approval writes straight into the resident's existing approvedDatesOff array, the exact field getEligibleShifts/the generator/the grid already treat as a hard block \u2014 so no changes to the eligibility/generator engine are needed.",
       "community": 9,
       "norm_label": "task 10: chief approve/deny actions (approvalqueue)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task10_approval_queue",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task10_approval_queue"
     },
     {
       "label": "Task 11: Pending-Request Grid Marker + Sidebar Badge",
@@ -6105,8 +6138,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 11: pending-request grid marker + sidebar badge",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task11_pending_badge",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task11_pending_badge"
     },
     {
       "label": "Task 12: Email Notifications (Resend Edge Function)",
@@ -6120,8 +6153,8 @@
       "rationale": "Fails soft \u2014 a Resend error is logged, not thrown, so a flaky email provider never blocks the underlying database write that triggered the webhook (fired after the write already committed).",
       "community": 9,
       "norm_label": "task 12: email notifications (resend edge function)",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task12_email_notify_function",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task12_email_notify_function"
     },
     {
       "label": "Task 13: End-to-End Verification Pass",
@@ -6134,8 +6167,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "task 13: end-to-end verification pass",
-      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task13_e2e_verification",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_plans_2026_07_18_resident_day_off_requests_task13_e2e_verification"
     },
     {
       "label": "User Feedback + Admin Portal Implementation Plan",
@@ -6148,8 +6181,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "user feedback + admin portal implementation plan",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_plan",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_plan"
     },
     {
       "label": "Task 1: feedback Schema, submitFeedback, app_version",
@@ -6163,8 +6196,8 @@
       "rationale": "prefer: 'return=minimal' is required on insert because Postgres RLS only returns an INSERT...RETURNING row if a SELECT policy also grants read access, and anon deliberately has none on this table.",
       "community": 14,
       "norm_label": "task 1: feedback schema, submitfeedback, app_version",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task1_schema_helper",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task1_schema_helper"
     },
     {
       "label": "Task 2: Floating Feedback Widget (Button + Modal)",
@@ -6177,8 +6210,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "task 2: floating feedback widget (button + modal)",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task2_widget",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task2_widget"
     },
     {
       "label": "Task 3: Crash Auto-Capture in main.jsx",
@@ -6191,8 +6224,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "task 3: crash auto-capture in main.jsx",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task3_crash_capture",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task3_crash_capture"
     },
     {
       "label": "Task 4: feedback-admin Netlify Function + netlify.toml",
@@ -6206,8 +6239,8 @@
       "rationale": "The /api/feedback-admin/* redirect must be placed before the SPA catch-all /* redirect in netlify.toml, since Netlify redirects are matched top-to-bottom; reversed order would serve index.html for every function call.",
       "community": 14,
       "norm_label": "task 4: feedback-admin netlify function + netlify.toml",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task4_admin_function",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task4_admin_function"
     },
     {
       "label": "Task 5: Feedback Admin Tab (Password-Gated Triage UI)",
@@ -6221,8 +6254,8 @@
       "rationale": "The 'feedback' entry stays a fixed member of the static TABS array (so reconcileTabOrder/backup-restore keep working unchanged) and is instead filtered out of SidebarNav's rendering when cloud sync is off, rather than being conditionally omitted from TABS itself.",
       "community": 14,
       "norm_label": "task 5: feedback admin tab (password-gated triage ui)",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task5_admin_tab",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task5_admin_tab"
     },
     {
       "label": "Task 6: Document Server-Only Feedback Env Vars",
@@ -6235,8 +6268,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "task 6: document server-only feedback env vars",
-      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task6_env_docs",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_plans_2026_07_18_user_feedback_plan_task6_env_docs"
     },
     {
       "label": "Resident Day-Off Request & Approval Workflow Design",
@@ -6249,8 +6282,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "resident day-off request & approval workflow design",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_workflow",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_workflow"
     },
     {
       "label": "profiles Table Design",
@@ -6263,8 +6296,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "profiles table design",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_profiles_table",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_profiles_table"
     },
     {
       "label": "day_off_requests Table Design",
@@ -6277,8 +6310,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "day_off_requests table design",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_day_off_requests_table",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_day_off_requests_table"
     },
     {
       "label": "RLS Policy Design (resident vs chief scoping)",
@@ -6292,8 +6325,8 @@
       "rationale": "Residents may only INSERT/SELECT their own resident_id rows and UPDATE status pending->cancelled; only a chief profile may SELECT all / decide any row \u2014 this is the app's first real per-user RLS, distinct from res_state's wide-open posture.",
       "community": 9,
       "norm_label": "rls policy design (resident vs chief scoping)",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_rls_policies",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_rls_policies"
     },
     {
       "label": "Magic-Link Auth with Domain Restriction",
@@ -6306,8 +6339,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "magic-link auth with domain restriction",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_auth_magic_link",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_auth_magic_link"
     },
     {
       "label": "Email Notifications (Resend via Edge Function)",
@@ -6320,8 +6353,8 @@
       "contributor": null,
       "community": 9,
       "norm_label": "email notifications (resend via edge function)",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_email_notifications",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_email_notifications"
     },
     {
       "label": "Known Limitation: 'Residents Never See Schedule' is UI-only",
@@ -6335,8 +6368,8 @@
       "rationale": "Consciously accepted, not a bug: /requests reads the same wide-open-RLS res_state row as the chief's cloud sync, so the entire schedule crosses the wire before the UI narrows it; the unauthenticated '/' route can also be visited directly. Closing this for real would need a narrow RLS-scoped view/Edge Function plus real auth on '/' \u2014 out of scope for this feature.",
       "community": 9,
       "norm_label": "known limitation: 'residents never see schedule' is ui-only",
-      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_known_limitation",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "docs_superpowers_specs_2026_07_18_resident_day_off_requests_design_known_limitation"
     },
     {
       "label": "User Feedback + Admin Portal Design",
@@ -6349,8 +6382,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "user feedback + admin portal design",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_design",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_design"
     },
     {
       "label": "feedback Table Schema",
@@ -6364,8 +6397,8 @@
       "rationale": "A brand-new table structurally unrelated to res_state's single-row document (needs many independent rows), so it deliberately does not reuse res_state's sync machinery; carries app_name so a future em-scheduler feedback feature on the same shared project can't collide.",
       "community": 14,
       "norm_label": "feedback table schema",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_table_schema",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_table_schema"
     },
     {
       "label": "Floating Feedback Widget (Bug/Crash/Idea)",
@@ -6378,8 +6411,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "floating feedback widget (bug/crash/idea)",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_widget",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_widget"
     },
     {
       "label": "Crash Auto-Capture (window.onerror/unhandledrejection)",
@@ -6393,8 +6426,8 @@
       "rationale": "Deduped per session via sessionStorage (message + first stack line) and capped at 5 auto-reports per session so a tight error loop can't flood the feedback table.",
       "community": 14,
       "norm_label": "crash auto-capture (window.onerror/unhandledrejection)",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_crash_auto_capture",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_crash_auto_capture"
     },
     {
       "label": "Feedback Admin Netlify Function",
@@ -6407,8 +6440,8 @@
       "contributor": null,
       "community": 14,
       "norm_label": "feedback admin netlify function",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_admin_function",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_feedback_admin_function"
     },
     {
       "label": "Track A: Shared-Password Admin Gating",
@@ -6422,8 +6455,8 @@
       "rationale": "This app has no auth system of its own (whoever has the URL/env vars has full read-write to res_state), so a shared server-checked password is the only viable admin gate \u2014 matches the same pattern used by sibling Kitchen Inventory and ecowater-pricing-app.",
       "community": 14,
       "norm_label": "track a: shared-password admin gating",
-      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_track_a_admin_gating",
-      "community_name": "Feedback Widget Implementation Plan"
+      "community_name": "Feedback Widget Implementation Plan",
+      "id": "docs_superpowers_specs_2026_07_18_user_feedback_design_track_a_admin_gating"
     },
     {
       "label": "Vite %VITE_*% HTML Token Injection into window globals",
@@ -6437,8 +6470,8 @@
       "rationale": "Env vars are injected via Vite's %VITE_*% HTML token substitution into window.__SUPABASE_URL__/__SUPABASE_ANON__/__ALLOWED_EMAIL_DOMAIN__ rather than import.meta.env directly, so client code must treat the literal unresolved '%VITE_...%' string (not empty string) as 'not configured'.",
       "community": 9,
       "norm_label": "vite %vite_*% html token injection into window globals",
-      "id": "index_vite_env_token_injection",
-      "community_name": "Day-Off Request Feature Plan"
+      "community_name": "Day-Off Request Feature Plan",
+      "id": "index_vite_env_token_injection"
     },
     {
       "label": "resident-scheduler (EM residency shift scheduler)",
@@ -6449,10 +6482,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "resident-scheduler (em residency shift scheduler)",
-      "id": "claude_resident_scheduler_repo",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_resident_scheduler_repo"
     },
     {
       "label": "demoCheckGenRef (probe generation counter)",
@@ -6465,8 +6498,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "democheckgenref (probe generation counter)",
-      "id": "claude_democheckgenref",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_democheckgenref"
     },
     {
       "label": "React 19",
@@ -6479,8 +6512,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "react 19",
-      "id": "claude_react_19",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_react_19"
     },
     {
       "label": "Vite 6",
@@ -6493,8 +6526,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "vite 6",
-      "id": "claude_vite_6",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_vite_6"
     },
     {
       "label": "lucide-react icons",
@@ -6507,8 +6540,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "lucide-react icons",
-      "id": "claude_lucide_react",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_lucide_react"
     },
     {
       "label": "jspdf",
@@ -6521,8 +6554,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "jspdf",
-      "id": "claude_jspdf",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_jspdf"
     },
     {
       "label": "jspdf-autotable@3.8.4",
@@ -6535,8 +6568,8 @@
       "contributor": null,
       "community": 40,
       "norm_label": "jspdf-autotable@3.8.4",
-      "id": "claude_jspdf_autotable",
-      "community_name": "PDF Export Library Quirk"
+      "community_name": "PDF Export Library Quirk",
+      "id": "claude_jspdf_autotable"
     },
     {
       "label": "jspdf-autotable default-export interop bug under esbuild/Rollup",
@@ -6549,8 +6582,8 @@
       "contributor": null,
       "community": 40,
       "norm_label": "jspdf-autotable default-export interop bug under esbuild/rollup",
-      "id": "claude_jspdf_autotable_import_bug",
-      "community_name": "PDF Export Library Quirk"
+      "community_name": "PDF Export Library Quirk",
+      "id": "claude_jspdf_autotable_import_bug"
     },
     {
       "label": "xlsx (SheetJS, pinned CDN tarball)",
@@ -6563,8 +6596,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "xlsx (sheetjs, pinned cdn tarball)",
-      "id": "claude_xlsx_sheetjs",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_xlsx_sheetjs"
     },
     {
       "label": "CDN-tarball-not-npm-registry rationale for xlsx (CVE fixes only in CDN builds)",
@@ -6577,8 +6610,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "cdn-tarball-not-npm-registry rationale for xlsx (cve fixes only in cdn builds)",
-      "id": "claude_xlsx_cdn_rationale",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_xlsx_cdn_rationale"
     },
     {
       "label": "ResidentScheduler.jsx (~8300 line scheduling engine)",
@@ -6591,8 +6624,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "residentscheduler.jsx (~8300 line scheduling engine)",
-      "id": "claude_residentscheduler_jsx",
-      "community_name": "Tech Stack & Dependency Rationale"
+      "community_name": "Tech Stack & Dependency Rationale",
+      "id": "claude_residentscheduler_jsx"
     },
     {
       "label": "main.jsx (route split)",
@@ -6605,8 +6638,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "main.jsx (route split)",
-      "id": "claude_main_jsx",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_main_jsx"
     },
     {
       "label": "AppGate.jsx (whole-app login/role gate)",
@@ -6619,8 +6652,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "appgate.jsx (whole-app login/role gate)",
-      "id": "claude_appgate_jsx",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_appgate_jsx"
     },
     {
       "label": "supabaseClient.js (AUTH_ENABLED, shared client)",
@@ -6633,8 +6666,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "supabaseclient.js (auth_enabled, shared client)",
-      "id": "claude_supabaseclient_js",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_supabaseclient_js"
     },
     {
       "label": "RequestsTab.jsx (admin approval queue + admin management)",
@@ -6647,8 +6680,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "requeststab.jsx (admin approval queue + admin management)",
-      "id": "claude_requeststab_jsx",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_requeststab_jsx"
     },
     {
       "label": "LoginScreen",
@@ -6661,8 +6694,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "loginscreen",
-      "id": "claude_loginscreen",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_loginscreen"
     },
     {
       "label": "ResidentPicker",
@@ -6675,8 +6708,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "residentpicker",
-      "id": "claude_residentpicker",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_residentpicker"
     },
     {
       "label": "RequestForm",
@@ -6689,8 +6722,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "requestform",
-      "id": "claude_requestform",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_requestform"
     },
     {
       "label": "RequestList",
@@ -6703,8 +6736,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "requestlist",
-      "id": "claude_requestlist",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_requestlist"
     },
     {
       "label": "ResidentRequestsApp",
@@ -6717,8 +6750,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "residentrequestsapp",
-      "id": "claude_residentrequestsapp",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_residentrequestsapp"
     },
     {
       "label": "blockLookup.js",
@@ -6731,8 +6764,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "blocklookup.js",
-      "id": "claude_blocklookup_js",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_blocklookup_js"
     },
     {
       "label": "residentRequests/ kept fully separate from ResidentScheduler.jsx (no imports either way)",
@@ -6745,8 +6778,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "residentrequests/ kept fully separate from residentscheduler.jsx (no imports either way)",
-      "id": "claude_residentrequests_separation_rationale",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_residentrequests_separation_rationale"
     },
     {
       "label": "SHIFTS (shift catalog)",
@@ -6759,8 +6792,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "shifts (shift catalog)",
-      "id": "claude_shifts_const",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_shifts_const"
     },
     {
       "label": "SHIFT_TIMING",
@@ -6773,8 +6806,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "shift_timing",
-      "id": "claude_shift_timing_const",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_shift_timing_const"
     },
     {
       "label": "SHIFT_MAP",
@@ -6787,8 +6820,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "shift_map",
-      "id": "claude_shift_map",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_shift_map"
     },
     {
       "label": "SHIFT_AREAS",
@@ -6801,8 +6834,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "shift_areas",
-      "id": "claude_shift_areas",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_shift_areas"
     },
     {
       "label": "SHIFT_TYPES",
@@ -6815,8 +6848,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "shift_types",
-      "id": "claude_shift_types",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_shift_types"
     },
     {
       "label": "PED-S (Peds Swing) shift",
@@ -6829,8 +6862,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "ped-s (peds swing) shift",
-      "id": "claude_ped_s_shift",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_ped_s_shift"
     },
     {
       "label": "SHIFT_DOW",
@@ -6843,8 +6876,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "shift_dow",
-      "id": "claude_shift_dow",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_shift_dow"
     },
     {
       "label": "getEligibleShifts()",
@@ -6857,8 +6890,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "geteligibleshifts()",
-      "id": "claude_geteligibleshifts",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_geteligibleshifts"
     },
     {
       "label": "useLocalStorage hook",
@@ -6871,8 +6904,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "uselocalstorage hook",
-      "id": "claude_uselocalstorage",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_uselocalstorage"
     },
     {
       "label": "LS_BACKUP_KEYS",
@@ -6885,8 +6918,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "ls_backup_keys",
-      "id": "claude_ls_backup_keys",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_ls_backup_keys"
     },
     {
       "label": "res_dark_mode (device-local, excluded from backup)",
@@ -6899,8 +6932,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "res_dark_mode (device-local, excluded from backup)",
-      "id": "claude_res_dark_mode",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_res_dark_mode"
     },
     {
       "label": "reconcileTabOrder()",
@@ -6913,8 +6946,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "reconciletaborder()",
-      "id": "claude_reconciletaborder",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_reconciletaborder"
     },
     {
       "label": "getCoverageFor()",
@@ -6927,8 +6960,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "getcoveragefor()",
-      "id": "claude_getcoveragefor",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_getcoveragefor"
     },
     {
       "label": "normalizeCoverageEntry()",
@@ -6941,8 +6974,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "normalizecoverageentry()",
-      "id": "claude_normalizecoverageentry",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_normalizecoverageentry"
     },
     {
       "label": "Treat all backup/cloud/hand-edited localStorage as untrusted shape",
@@ -6955,8 +6988,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "treat all backup/cloud/hand-edited localstorage as untrusted shape",
-      "id": "claude_untrusted_persisted_shape_rationale",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_untrusted_persisted_shape_rationale"
     },
     {
       "label": "sbFetch (hand-rolled PostgREST client)",
@@ -6969,8 +7002,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "sbfetch (hand-rolled postgrest client)",
-      "id": "claude_sbfetch",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_sbfetch"
     },
     {
       "label": "SUPABASE_ENABLED flag",
@@ -6983,8 +7016,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "supabase_enabled flag",
-      "id": "claude_supabase_enabled_flag",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_supabase_enabled_flag"
     },
     {
       "label": "res_state Supabase table",
@@ -6997,8 +7030,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "res_state supabase table",
-      "id": "claude_res_state_table",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_res_state_table"
     },
     {
       "label": "syncBindings map",
@@ -7011,8 +7044,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "syncbindings map",
-      "id": "claude_syncbindings",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_syncbindings"
     },
     {
       "label": "dbReady gate",
@@ -7025,8 +7058,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "dbready gate",
-      "id": "claude_dbready",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_dbready"
     },
     {
       "label": "sbLoadState()",
@@ -7039,8 +7072,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "sbloadstate()",
-      "id": "claude_sbloadstate",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_sbloadstate"
     },
     {
       "label": "sbSaveState()",
@@ -7053,8 +7086,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "sbsavestate()",
-      "id": "claude_sbsavestate",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_sbsavestate"
     },
     {
       "label": "sbDeleteState()",
@@ -7067,8 +7100,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "sbdeletestate()",
-      "id": "claude_sbdeletestate",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_sbdeletestate"
     },
     {
       "label": "syncSuspended flag",
@@ -7081,8 +7114,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "syncsuspended flag",
-      "id": "claude_syncsuspended",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_syncsuspended"
     },
     {
       "label": "saveCloudNow()",
@@ -7095,8 +7128,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "savecloudnow()",
-      "id": "claude_savecloudnow",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_savecloudnow"
     },
     {
       "label": "flushPendingCloudSave()",
@@ -7109,8 +7142,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "flushpendingcloudsave()",
-      "id": "claude_flushpendingcloudsave",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_flushpendingcloudsave"
     },
     {
       "label": "savePromiseRef",
@@ -7123,8 +7156,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "savepromiseref",
-      "id": "claude_savepromiseref",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_savepromiseref"
     },
     {
       "label": "SettingsTab.clearAll()",
@@ -7137,8 +7170,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "settingstab.clearall()",
-      "id": "claude_settingstab_clearall",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_settingstab_clearall"
     },
     {
       "label": "SettingsTab.importData()",
@@ -7151,8 +7184,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "settingstab.importdata()",
-      "id": "claude_settingstab_importdata",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_settingstab_importdata"
     },
     {
       "label": "Cloud-op-succeeds-before-local-wipe/write discipline (avoid stale mount overlay reverting)",
@@ -7165,8 +7198,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "cloud-op-succeeds-before-local-wipe/write discipline (avoid stale mount overlay reverting)",
-      "id": "claude_cloud_first_commit_rationale",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_cloud_first_commit_rationale"
     },
     {
       "label": "Last-write-wins / full-document-overwrite conflict handling (accepted tradeoff)",
@@ -7179,8 +7212,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "last-write-wins / full-document-overwrite conflict handling (accepted tradeoff)",
-      "id": "claude_last_write_wins_rationale",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_last_write_wins_rationale"
     },
     {
       "label": "em-scheduler (sibling app, same author/domain)",
@@ -7193,8 +7226,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "em-scheduler (sibling app, same author/domain)",
-      "id": "claude_em_scheduler_sibling_project",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_em_scheduler_sibling_project"
     },
     {
       "label": "Demo Sandbox feature",
@@ -7207,8 +7240,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "demo sandbox feature",
-      "id": "claude_demo_sandbox_feature",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_demo_sandbox_feature"
     },
     {
       "label": "physKey() / demoPhysKey()",
@@ -7221,8 +7254,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "physkey() / demophyskey()",
-      "id": "claude_physkey",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_physkey"
     },
     {
       "label": "RES_STATE_DEMO_ROW_ID",
@@ -7235,8 +7268,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "res_state_demo_row_id",
-      "id": "claude_res_state_demo_row_id",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_res_state_demo_row_id"
     },
     {
       "label": "DEMO_MODE_KEY (res_demo_mode)",
@@ -7249,8 +7282,8 @@
       "contributor": null,
       "community": 57,
       "norm_label": "demo_mode_key (res_demo_mode)",
-      "id": "claude_demo_mode_key",
-      "community_name": "Demo Mode Key Constant"
+      "community_name": "Demo Mode Key Constant",
+      "id": "claude_demo_mode_key"
     },
     {
       "label": "enterDemoFresh()",
@@ -7263,8 +7296,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "enterdemofresh()",
-      "id": "claude_enterdemofresh",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_enterdemofresh"
     },
     {
       "label": "enterDemoResume()",
@@ -7277,8 +7310,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "enterdemoresume()",
-      "id": "claude_enterdemoresume",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_enterdemoresume"
     },
     {
       "label": "exitDemo()",
@@ -7291,8 +7324,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "exitdemo()",
-      "id": "claude_exitdemo",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_exitdemo"
     },
     {
       "label": "deleteDemo()",
@@ -7305,8 +7338,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "deletedemo()",
-      "id": "claude_deletedemo",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_deletedemo"
     },
     {
       "label": "openDemoModal()",
@@ -7319,8 +7352,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "opendemomodal()",
-      "id": "claude_opendemomodal",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_opendemomodal"
     },
     {
       "label": "Physical-key isolation, not mode-check-in-shared-code (discipline enforced per call site)",
@@ -7333,8 +7366,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "physical-key isolation, not mode-check-in-shared-code (discipline enforced per call site)",
-      "id": "claude_demo_isolation_rationale",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_demo_isolation_rationale"
     },
     {
       "label": "submitFeedback()",
@@ -7347,8 +7380,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "submitfeedback()",
-      "id": "claude_submitfeedback",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_submitfeedback"
     },
     {
       "label": "feedback Supabase table",
@@ -7361,8 +7394,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "feedback supabase table",
-      "id": "claude_feedback_table",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_feedback_table"
     },
     {
       "label": "netlify/functions/feedback-admin.js",
@@ -7375,8 +7408,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "netlify/functions/feedback-admin.js",
-      "id": "claude_feedback_admin_function",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_feedback_admin_function"
     },
     {
       "label": "window.onerror / unhandledrejection crash listener",
@@ -7389,8 +7422,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "window.onerror / unhandledrejection crash listener",
-      "id": "claude_window_onerror_listener",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_window_onerror_listener"
     },
     {
       "label": "AUTH_ENABLED flag",
@@ -7403,8 +7436,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "auth_enabled flag",
-      "id": "claude_auth_enabled_flag",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_auth_enabled_flag"
     },
     {
       "label": "Dev-fallthrough vs production-fails-closed asymmetry for missing auth env vars",
@@ -7417,8 +7450,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "dev-fallthrough vs production-fails-closed asymmetry for missing auth env vars",
-      "id": "claude_fail_closed_prod_rationale",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_fail_closed_prod_rationale"
     },
     {
       "label": "profiles.role (pending/resident/admin)",
@@ -7431,8 +7464,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "profiles.role (pending/resident/admin)",
-      "id": "claude_profiles_role",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_profiles_role"
     },
     {
       "label": "migrate_chief_to_admin.sql",
@@ -7443,10 +7476,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "migrate_chief_to_admin.sql",
-      "id": "claude_migrate_chief_to_admin_sql",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_migrate_chief_to_admin_sql"
     },
     {
       "label": "profiles_insert_own policy",
@@ -7459,8 +7492,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "profiles_insert_own policy",
-      "id": "claude_profiles_insert_own",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_profiles_insert_own"
     },
     {
       "label": "enforce_profile_role_change_rules trigger",
@@ -7473,8 +7506,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "enforce_profile_role_change_rules trigger",
-      "id": "claude_enforce_profile_role_change_rules",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_enforce_profile_role_change_rules"
     },
     {
       "label": "Self-promotion impossible by construction",
@@ -7487,8 +7520,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "self-promotion impossible by construction",
-      "id": "claude_self_promotion_impossible_rationale",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_self_promotion_impossible_rationale"
     },
     {
       "label": "admin_email_allowlist table",
@@ -7499,10 +7532,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "admin_email_allowlist table",
-      "id": "claude_admin_email_allowlist",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_admin_email_allowlist"
     },
     {
       "label": "migrate_admin_email_allowlist.sql",
@@ -7513,10 +7546,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "migrate_admin_email_allowlist.sql",
-      "id": "claude_migrate_admin_email_allowlist_sql",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_migrate_admin_email_allowlist_sql"
     },
     {
       "label": "apply_admin_allowlist trigger",
@@ -7527,10 +7560,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "apply_admin_allowlist trigger",
-      "id": "claude_apply_admin_allowlist",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_apply_admin_allowlist"
     },
     {
       "label": "auth_hook_domain_restriction.sql",
@@ -7543,8 +7576,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "auth_hook_domain_restriction.sql",
-      "id": "claude_auth_hook_domain_restriction_sql",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_auth_hook_domain_restriction_sql"
     },
     {
       "label": "restrict_signup_domain(event) function",
@@ -7557,8 +7590,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "restrict_signup_domain(event) function",
-      "id": "claude_restrict_signup_domain",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_restrict_signup_domain"
     },
     {
       "label": "Domain restriction dashboard hook left unwired (unenforced) incident",
@@ -7571,8 +7604,8 @@
       "contributor": null,
       "community": 34,
       "norm_label": "domain restriction dashboard hook left unwired (unenforced) incident",
-      "id": "claude_domain_restriction_unwired_incident",
-      "community_name": "Auth Domain Restriction"
+      "community_name": "Auth Domain Restriction",
+      "id": "claude_domain_restriction_unwired_incident"
     },
     {
       "label": "is_admin() SECURITY DEFINER helper",
@@ -7585,8 +7618,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "is_admin() security definer helper",
-      "id": "claude_is_admin_fn",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_is_admin_fn"
     },
     {
       "label": "is_admin() helper avoids infinite-recursion in profiles RLS policy",
@@ -7599,8 +7632,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "is_admin() helper avoids infinite-recursion in profiles rls policy",
-      "id": "claude_rls_recursion_rationale",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_rls_recursion_rationale"
     },
     {
       "label": "enforce_cancel_only_status trigger",
@@ -7613,8 +7646,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "enforce_cancel_only_status trigger",
-      "id": "claude_enforce_cancel_only_status",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_enforce_cancel_only_status"
     },
     {
       "label": "enforce_request_identity_immutable trigger",
@@ -7627,8 +7660,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "enforce_request_identity_immutable trigger",
-      "id": "claude_enforce_request_identity_immutable",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_enforce_request_identity_immutable"
     },
     {
       "label": "enforce_resident_id_immutable trigger",
@@ -7641,8 +7674,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "enforce_resident_id_immutable trigger",
-      "id": "claude_enforce_resident_id_immutable",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_enforce_resident_id_immutable"
     },
     {
       "label": "Confirmed hole: pending role checked client-side only, enabled impersonation via /requests",
@@ -7655,8 +7688,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "confirmed hole: pending role checked client-side only, enabled impersonation via /requests",
-      "id": "claude_pending_impersonation_hole",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_pending_impersonation_hole"
     },
     {
       "label": "migrate_block_pending_account_access.sql",
@@ -7669,8 +7702,8 @@
       "contributor": null,
       "community": 19,
       "norm_label": "migrate_block_pending_account_access.sql",
-      "id": "claude_migrate_block_pending_account_access_sql",
-      "community_name": "Resident Request Portal Components"
+      "community_name": "Resident Request Portal Components",
+      "id": "claude_migrate_block_pending_account_access_sql"
     },
     {
       "label": "day_off_requests.sql (fresh-install baseline)",
@@ -7681,10 +7714,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "day_off_requests.sql (fresh-install baseline)",
-      "id": "claude_day_off_requests_sql",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_day_off_requests_sql"
     },
     {
       "label": "supabase/*.sql run-by-hand, not migration-tool-managed",
@@ -7695,10 +7728,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "supabase/*.sql run-by-hand, not migration-tool-managed",
-      "id": "claude_sql_run_by_hand_rationale",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_sql_run_by_hand_rationale"
     },
     {
       "label": "Known accepted gap: residents-never-see-schedule is UI-enforced only",
@@ -7711,8 +7744,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "known accepted gap: residents-never-see-schedule is ui-enforced only",
-      "id": "claude_blocklookup_gap_rationale",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_blocklookup_gap_rationale"
     },
     {
       "label": "npm run dev/build/preview/test",
@@ -7723,10 +7756,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "npm run dev/build/preview/test",
-      "id": "claude_npm_scripts",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_npm_scripts"
     },
     {
       "label": "vitest test runner",
@@ -7737,10 +7770,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "vitest test runner",
-      "id": "claude_vitest",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_vitest"
     },
     {
       "label": "netlify.toml",
@@ -7751,10 +7784,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "netlify.toml",
-      "id": "claude_netlify_toml",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_netlify_toml"
     },
     {
       "label": "NIGHT_RULES (minRun/idealRun/maxRun 4-6-6)",
@@ -7767,8 +7800,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "night_rules (minrun/idealrun/maxrun 4-6-6)",
-      "id": "claude_night_rules",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_night_rules"
     },
     {
       "label": "GR_START_HOUR (08:00)",
@@ -7781,8 +7814,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "gr_start_hour (08:00)",
-      "id": "claude_gr_start_hour",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_gr_start_hour"
     },
     {
       "label": "checkCircadianViolations()",
@@ -7795,8 +7828,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "checkcircadianviolations()",
-      "id": "claude_checkcircadianviolations",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_checkcircadianviolations"
     },
     {
       "label": "isNightOnlyResident() (FM-3 exemption)",
@@ -7809,8 +7842,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "isnightonlyresident() (fm-3 exemption)",
-      "id": "claude_isnightonlyresident",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_isnightonlyresident"
     },
     {
       "label": "grRestGapH()",
@@ -7823,8 +7856,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "grrestgaph()",
-      "id": "claude_grrestgaph",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_grrestgaph"
     },
     {
       "label": "isTraumaCapSubject() / getTraumaCap()",
@@ -7837,8 +7870,8 @@
       "contributor": null,
       "community": 58,
       "norm_label": "istraumacapsubject() / gettraumacap()",
-      "id": "claude_istraumacapsubject",
-      "community_name": "Trauma Cap Helper"
+      "community_name": "Trauma Cap Helper",
+      "id": "claude_istraumacapsubject"
     },
     {
       "label": "isSchedulable()",
@@ -7851,8 +7884,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "isschedulable()",
-      "id": "claude_isschedulable",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_isschedulable"
     },
     {
       "label": "traumaPedsHalf() / isTraumaPedsSplitResident()",
@@ -7865,8 +7898,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "traumapedshalf() / istraumapedssplitresident()",
-      "id": "claude_traumapedshalf",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_traumapedshalf"
     },
     {
       "label": "TRAUMA_PEDS_SPLIT (trauma:8, peds:11)",
@@ -7879,8 +7912,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "trauma_peds_split (trauma:8, peds:11)",
-      "id": "claude_trauma_peds_split",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_trauma_peds_split"
     },
     {
       "label": "SENIOR_COMPOSITION (FLEX/POD)",
@@ -7893,8 +7926,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "senior_composition (flex/pod)",
-      "id": "claude_senior_composition",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_senior_composition"
     },
     {
       "label": "isSeniorFor()",
@@ -7907,8 +7940,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "isseniorfor()",
-      "id": "claude_isseniorfor",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_isseniorfor"
     },
     {
       "label": "JC_MAX_PER_AY (3)",
@@ -7921,8 +7954,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "jc_max_per_ay (3)",
-      "id": "claude_jc_max_per_ay",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_jc_max_per_ay"
     },
     {
       "label": "shiftOverlapsJC(sid)",
@@ -7935,8 +7968,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "shiftoverlapsjc(sid)",
-      "id": "claude_shiftoverlapsjc",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_shiftoverlapsjc"
     },
     {
       "label": "ayWindowFor(ayString)",
@@ -7949,8 +7982,8 @@
       "contributor": null,
       "community": 56,
       "norm_label": "aywindowfor(aystring)",
-      "id": "claude_aywindowfor",
-      "community_name": "AY Window Helper"
+      "community_name": "AY Window Helper",
+      "id": "claude_aywindowfor"
     },
     {
       "label": "countPublishedJC() / countCurrentBlockJC()",
@@ -7963,8 +7996,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "countpublishedjc() / countcurrentblockjc()",
-      "id": "claude_countpublishedjc",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_countpublishedjc"
     },
     {
       "label": "validateAll()",
@@ -7977,8 +8010,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "validateall()",
-      "id": "claude_validateall",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_validateall"
     },
     {
       "label": "isStreakWorkDay() / grWorkDow / runLengthIfWorked()",
@@ -7991,8 +8024,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "isstreakworkday() / grworkdow / runlengthifworked()",
-      "id": "claude_isstreakworkday",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_isstreakworkday"
     },
     {
       "label": "prevBlockTailSchedules()",
@@ -8005,8 +8038,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "prevblocktailschedules()",
-      "id": "claude_prevblocktailschedules",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_prevblocktailschedules"
     },
     {
       "label": "MAX_CONSECUTIVE_WORK_DAYS = 6 (ACGME rule)",
@@ -8019,8 +8052,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "max_consecutive_work_days = 6 (acgme rule)",
-      "id": "claude_max_consecutive_work_days",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_max_consecutive_work_days"
     },
     {
       "label": "Real 8-day-straight scheduling bug from shift-less GR day counting as day off",
@@ -8033,8 +8066,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "real 8-day-straight scheduling bug from shift-less gr day counting as day off",
-      "id": "claude_eight_day_streak_bug",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_eight_day_streak_bug"
     },
     {
       "label": "generateSchedule()",
@@ -8047,8 +8080,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "generateschedule()",
-      "id": "claude_generateschedule",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_generateschedule"
     },
     {
       "label": "fillDayPass(ds, includeShift, phase)",
@@ -8061,8 +8094,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "filldaypass(ds, includeshift, phase)",
-      "id": "claude_filldaypass",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_filldaypass"
     },
     {
       "label": "summarizeGenerationReport()",
@@ -8075,8 +8108,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "summarizegenerationreport()",
-      "id": "claude_summarizegenerationreport",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_summarizegenerationreport"
     },
     {
       "label": "Cached candidate pool went stale mid-day, caused double-booking (fixed by recomputing per slot)",
@@ -8089,8 +8122,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "cached candidate pool went stale mid-day, caused double-booking (fixed by recomputing per slot)",
-      "id": "claude_stale_cache_bug_rationale",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_stale_cache_bug_rationale"
     },
     {
       "label": "src/lib/rng.js",
@@ -8103,8 +8136,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "src/lib/rng.js",
-      "id": "claude_rng_js",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_rng_js"
     },
     {
       "label": "mulberry32() seeded RNG",
@@ -8117,8 +8150,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "mulberry32() seeded rng",
-      "id": "claude_mulberry32",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_mulberry32"
     },
     {
       "label": "src/lib/scheduleQuality.js",
@@ -8131,8 +8164,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "src/lib/schedulequality.js",
-      "id": "claude_schedulequality_js",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_schedulequality_js"
     },
     {
       "label": "computeQualityMetrics() / computeQualityVector()",
@@ -8145,8 +8178,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "computequalitymetrics() / computequalityvector()",
-      "id": "claude_computequalitymetrics",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_computequalitymetrics"
     },
     {
       "label": "generator.harness.test.js",
@@ -8157,10 +8190,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "generator.harness.test.js",
-      "id": "claude_generator_harness_test_js",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_generator_harness_test_js"
     },
     {
       "label": "generator.baseline.test.js",
@@ -8171,10 +8204,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "generator.baseline.test.js",
-      "id": "claude_generator_baseline_test_js",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_generator_baseline_test_js"
     },
     {
       "label": "__fixtures__/syntheticRoster.json (synthetic, public-repo-safe)",
@@ -8185,10 +8218,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "__fixtures__/syntheticroster.json (synthetic, public-repo-safe)",
-      "id": "claude_syntheticroster_json",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_syntheticroster_json"
     },
     {
       "label": "__fixtures__/qualityBaseline.json (committed regression floor)",
@@ -8199,10 +8232,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "__fixtures__/qualitybaseline.json (committed regression floor)",
-      "id": "claude_qualitybaseline_json",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_qualitybaseline_json"
     },
     {
       "label": "generateScheduleBest() (20-attempt best-of-N)",
@@ -8215,8 +8248,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "generateschedulebest() (20-attempt best-of-n)",
-      "id": "claude_generateschedulebest",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_generateschedulebest"
     },
     {
       "label": "betterQuality() lexicographic comparator",
@@ -8229,8 +8262,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "betterquality() lexicographic comparator",
-      "id": "claude_betterquality",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_betterquality"
     },
     {
       "label": "Lexicographic tuple comparison chosen over weighted scalar (scalar let low-priority rule outrank high-priority at large magnitude)",
@@ -8243,8 +8276,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "lexicographic tuple comparison chosen over weighted scalar (scalar let low-priority rule outrank high-priority at large magnitude)",
-      "id": "claude_scalar_vs_lex_rationale",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_scalar_vs_lex_rationale"
     },
     {
       "label": "Bounded repair pass (repair:true option, 3 phases)",
@@ -8257,8 +8290,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "bounded repair pass (repair:true option, 3 phases)",
-      "id": "claude_repair_pass",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_repair_pass"
     },
     {
       "label": "narrowForSeniority() / podStillSatisfied()",
@@ -8271,8 +8304,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "narrowforseniority() / podstillsatisfied()",
-      "id": "claude_narrowforseniority",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_narrowforseniority"
     },
     {
       "label": "Empirical testing showed repair could place junior into PGY-3-less POD slot or free a shift's only qualifying PGY-3 without narrowing checks",
@@ -8285,8 +8318,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "empirical testing showed repair could place junior into pgy-3-less pod slot or free a shift's only qualifying pgy-3 without narrowing checks",
-      "id": "claude_repair_narrowing_bug_rationale",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_repair_narrowing_bug_rationale"
     },
     {
       "label": "runGenerate() / runPartialRegenerate()",
@@ -8299,8 +8332,8 @@
       "contributor": null,
       "community": 24,
       "norm_label": "rungenerate() / runpartialregenerate()",
-      "id": "claude_runGenerate_runPartialRegenerate",
-      "community_name": "Quality Harness Best-of-N & Repair"
+      "community_name": "Quality Harness Best-of-N & Repair",
+      "id": "claude_runGenerate_runPartialRegenerate"
     },
     {
       "label": "UPDATE_QUALITY_BASELINE / FORCE_QUALITY_BASELINE env flags",
@@ -8311,10 +8344,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 29,
+      "community": 20,
       "norm_label": "update_quality_baseline / force_quality_baseline env flags",
-      "id": "claude_update_quality_baseline_env",
-      "community_name": "Test Suite & Baseline Fixtures"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_update_quality_baseline_env"
     },
     {
       "label": "Modal / SectionCard / CollapsibleCard / SubTabs primitives",
@@ -8327,8 +8360,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "modal / sectioncard / collapsiblecard / subtabs primitives",
-      "id": "claude_modal_component",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_modal_component"
     },
     {
       "label": "StatCard component",
@@ -8341,8 +8374,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "statcard component",
-      "id": "claude_statcard_component",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_statcard_component"
     },
     {
       "label": "AutosaveIndicator pill",
@@ -8355,8 +8388,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "autosaveindicator pill",
-      "id": "claude_autosaveindicator",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_autosaveindicator"
     },
     {
       "label": "BlockCalendarSection (Dashboard year-timeline)",
@@ -8369,8 +8402,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "blockcalendarsection (dashboard year-timeline)",
-      "id": "claude_blockcalendarsection",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_blockcalendarsection"
     },
     {
       "label": "computeCoverageByDate()",
@@ -8383,8 +8416,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "computecoveragebydate()",
-      "id": "claude_computecoveragebydate",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_computecoveragebydate"
     },
     {
       "label": "JournalClubPlanner",
@@ -8397,8 +8430,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "journalclubplanner",
-      "id": "claude_journalclubplanner",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_journalclubplanner"
     },
     {
       "label": "checkGenerateReadiness()",
@@ -8411,8 +8444,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "checkgeneratereadiness()",
-      "id": "claude_checkgeneratereadiness",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_checkgeneratereadiness"
     },
     {
       "label": "ReadinessWarningPanel",
@@ -8425,8 +8458,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "readinesswarningpanel",
-      "id": "claude_readinesswarningpanel",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_readinesswarningpanel"
     },
     {
       "label": "exportMatrixPDF()",
@@ -8439,8 +8472,8 @@
       "contributor": null,
       "community": 40,
       "norm_label": "exportmatrixpdf()",
-      "id": "claude_exportmatrixpdf",
-      "community_name": "PDF Export Library Quirk"
+      "community_name": "PDF Export Library Quirk",
+      "id": "claude_exportmatrixpdf"
     },
     {
       "label": "exportResidentCalendarPDF()",
@@ -8453,8 +8486,8 @@
       "contributor": null,
       "community": 40,
       "norm_label": "exportresidentcalendarpdf()",
-      "id": "claude_exportresidentcalendarpdf",
-      "community_name": "PDF Export Library Quirk"
+      "community_name": "PDF Export Library Quirk",
+      "id": "claude_exportresidentcalendarpdf"
     },
     {
       "label": "Dark mode (index.css override sheet, not Tailwind dark: variants)",
@@ -8467,8 +8500,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "dark mode (index.css override sheet, not tailwind dark: variants)",
-      "id": "claude_darkmode_feature",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_darkmode_feature"
     },
     {
       "label": "Dashboard/Home merge (Home tab removed)",
@@ -8481,8 +8514,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "dashboard/home merge (home tab removed)",
-      "id": "claude_dashboard_home_merge",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_dashboard_home_merge"
     },
     {
       "label": "SidebarNav component",
@@ -8495,8 +8528,8 @@
       "contributor": null,
       "community": 4,
       "norm_label": "sidebarnav component",
-      "id": "claude_sidebarnav",
-      "community_name": "Demo Sandbox & Persistence Rationale"
+      "community_name": "Demo Sandbox & Persistence Rationale",
+      "id": "claude_sidebarnav"
     },
     {
       "label": "saveBlock() / loadBlock() / newBlock() / toggleBlockPublished()",
@@ -8509,8 +8542,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "saveblock() / loadblock() / newblock() / toggleblockpublished()",
-      "id": "claude_saveblock",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_saveblock"
     },
     {
       "label": "cellViolations() (shared picker + drag-drop aggregator)",
@@ -8523,8 +8556,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "cellviolations() (shared picker + drag-drop aggregator)",
-      "id": "claude_cellviolations",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_cellviolations"
     },
     {
       "label": "PED-N (Peds Night) eligibility rule",
@@ -8537,8 +8570,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "ped-n (peds night) eligibility rule",
-      "id": "claude_ped_n_shift",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_ped_n_shift"
     },
     {
       "label": "EM_HOME_2 EM/EMS<->EM/TOX weekday-window swap on 2026-08-01",
@@ -8549,10 +8582,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "em_home_2 em/ems<->em/tox weekday-window swap on 2026-08-01",
-      "id": "claude_em_home_2_swap",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_em_home_2_swap"
     },
     {
       "label": "Soft Rule Priority (appSettings.rulePriority)",
@@ -8565,8 +8598,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "soft rule priority (appsettings.rulepriority)",
-      "id": "claude_soft_rule_priority",
-      "community_name": "Soft Rule Priority & Circadian Comparator"
+      "community_name": "Soft Rule Priority & Circadian Comparator",
+      "id": "claude_soft_rule_priority"
     },
     {
       "label": "Journal Club rule (first-Tuesday, 3/AY cap, published-only counting)",
@@ -8579,8 +8612,8 @@
       "contributor": null,
       "community": 28,
       "norm_label": "journal club rule (first-tuesday, 3/ay cap, published-only counting)",
-      "id": "claude_journal_club_feature",
-      "community_name": "Journal Club Rules"
+      "community_name": "Journal Club Rules",
+      "id": "claude_journal_club_feature"
     },
     {
       "label": "Grand Rounds lecture dates rule",
@@ -8593,8 +8626,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "grand rounds lecture dates rule",
-      "id": "claude_grand_rounds_lecture_dates",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_grand_rounds_lecture_dates"
     },
     {
       "label": "FLEX soft / POD hard seniority rule",
@@ -8607,8 +8640,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "flex soft / pod hard seniority rule",
-      "id": "claude_flex_pod_seniority",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_flex_pod_seniority"
     },
     {
       "label": "Wellness Wednesdays rule",
@@ -8621,8 +8654,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "wellness wednesdays rule",
-      "id": "claude_wellness_wednesdays",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_wellness_wednesdays"
     },
     {
       "label": "Prior bug: Schedule grid cell-eligibility call omitted ctx, silently no-op'd Wellness Wednesday/Peds-Trauma split",
@@ -8635,8 +8668,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "prior bug: schedule grid cell-eligibility call omitted ctx, silently no-op'd wellness wednesday/peds-trauma split",
-      "id": "claude_ww_ctx_bug_rationale",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_ww_ctx_bug_rationale"
     },
     {
       "label": "Chief roles (chiefRole: academic/admin/scheduling)",
@@ -8649,8 +8682,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "chief roles (chiefrole: academic/admin/scheduling)",
-      "id": "claude_chief_roles",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_chief_roles"
     },
     {
       "label": "Peds Wednesdays off (advocacy feature removed)",
@@ -8663,8 +8696,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "peds wednesdays off (advocacy feature removed)",
-      "id": "claude_peds_wednesdays_off",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_peds_wednesdays_off"
     },
     {
       "label": "IM/TOX weekday tightening",
@@ -8675,10 +8708,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "im/tox weekday tightening",
-      "id": "claude_im_tox_weekday_tightening",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_im_tox_weekday_tightening"
     },
     {
       "label": "Vacation as distinct hard-off concept (vacationDates[])",
@@ -8691,8 +8724,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "vacation as distinct hard-off concept (vacationdates[])",
-      "id": "claude_vacation_concept",
-      "community_name": "ACGME Streak Rule & Generator Bugs"
+      "community_name": "ACGME Streak Rule & Generator Bugs",
+      "id": "claude_vacation_concept"
     },
     {
       "label": "QGenda CSV export (Start/End derived from SHIFT_TIMING)",
@@ -8705,8 +8738,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "qgenda csv export (start/end derived from shift_timing)",
-      "id": "claude_qgenda_csv_export",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_qgenda_csv_export"
     },
     {
       "label": "qgendaDate() formatter (src/lib/dates.js)",
@@ -8719,8 +8752,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "qgendadate() formatter (src/lib/dates.js)",
-      "id": "claude_qgendadate_fn",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_qgendadate_fn"
     },
     {
       "label": "prettyDate() formatter (UI display, 2-digit year)",
@@ -8733,8 +8766,8 @@
       "contributor": null,
       "community": 30,
       "norm_label": "prettydate() formatter (ui display, 2-digit year)",
-      "id": "claude_prettydate_fn",
-      "community_name": "Shift Catalog & QGenda Export"
+      "community_name": "Shift Catalog & QGenda Export",
+      "id": "claude_prettydate_fn"
     },
     {
       "label": "Resident Request Portal card (QR code, print view)",
@@ -8747,8 +8780,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "resident request portal card (qr code, print view)",
-      "id": "claude_resident_request_portal_card",
-      "community_name": "Auth RLS Policies & Triggers"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_resident_request_portal_card"
     },
     {
       "label": "BAMC residents schedulable by default (isSchedulable EM fallback)",
@@ -8761,8 +8794,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "bamc residents schedulable by default (isschedulable em fallback)",
-      "id": "claude_bamc_schedulable",
-      "community_name": "Seniority & Eligibility Rules"
+      "community_name": "Seniority & Eligibility Rules",
+      "id": "claude_bamc_schedulable"
     },
     {
       "label": "Off-service residents availability (isAvailableOnDate)",
@@ -8775,8 +8808,8 @@
       "contributor": null,
       "community": 35,
       "norm_label": "off-service residents availability (isavailableondate)",
-      "id": "claude_off_service_residents",
-      "community_name": "PED-N/PED-S Eligibility Rules"
+      "community_name": "PED-N/PED-S Eligibility Rules",
+      "id": "claude_off_service_residents"
     },
     {
       "label": "Public repo: never hardcode real resident names/PII/emails",
@@ -8787,10 +8820,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 20,
       "norm_label": "public repo: never hardcode real resident names/pii/emails",
-      "id": "claude_public_repo_pii_rule",
-      "community_name": "Admin Email Allowlist"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_public_repo_pii_rule"
     },
     {
       "label": "Temporal-dead-zone bug warning for top-level const ordering",
@@ -8803,8 +8836,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "temporal-dead-zone bug warning for top-level const ordering",
-      "id": "claude_temporal_dead_zone_warning",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_temporal_dead_zone_warning"
     },
     {
       "label": "RULE_NOTES prose constants",
@@ -8817,8 +8850,8 @@
       "contributor": null,
       "community": 32,
       "norm_label": "rule_notes prose constants",
-      "id": "claude_rule_notes_const",
-      "community_name": "Wellness Wednesdays & Trauma/Peds Split"
+      "community_name": "Wellness Wednesdays & Trauma/Peds Split",
+      "id": "claude_rule_notes_const"
     },
     {
       "label": "getEffectiveDayRules() / getEffectiveEligibility()",
@@ -8829,10 +8862,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "geteffectivedayrules() / geteffectiveeligibility()",
-      "id": "claude_geteffectivedayrules",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_geteffectivedayrules"
     },
     {
       "label": "LEGACY_DAY_RULE_DEFAULTS / LEGACY_ELIGIBILITY_DEFAULTS",
@@ -8843,10 +8876,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "legacy_day_rule_defaults / legacy_eligibility_defaults",
-      "id": "claude_legacy_day_rule_defaults",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_legacy_day_rule_defaults"
     },
     {
       "label": "DAY_RULE_DEFAULTS_CHANGED badge derivation",
@@ -8857,10 +8890,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "day_rule_defaults_changed badge derivation",
-      "id": "claude_day_rule_defaults_changed",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_day_rule_defaults_changed"
     },
     {
       "label": "Rule-default migration: prune saved overrides that deep-equal legacy pre-correction snapshots so fixes aren't masked",
@@ -8871,10 +8904,10 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 8,
+      "community": 20,
       "norm_label": "rule-default migration: prune saved overrides that deep-equal legacy pre-correction snapshots so fixes aren't masked",
-      "id": "claude_rule_default_migration_rationale",
-      "community_name": "Dashboard Block Calendar"
+      "community_name": "Auth RLS Policies & Triggers",
+      "id": "claude_rule_default_migration_rationale"
     }
   ],
   "links": [
@@ -10085,11 +10118,11 @@
       "relation": "imports_from",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L16",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_residentscheduler",
       "confidence_score": 1.0
     },
@@ -14399,11 +14432,11 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L16",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_residentscheduler_normalizerulepriority",
       "confidence_score": 1.0
     },
@@ -14411,11 +14444,11 @@
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L66",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L69",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
+      "source": "src_lib_baselinesuite_captureonce",
       "target": "src_residentscheduler_normalizerulepriority",
       "confidence_score": 1.0
     },
@@ -16667,11 +16700,11 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L16",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_residentscheduler_validateall",
       "confidence_score": 1.0
     },
@@ -16679,11 +16712,11 @@
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
+      "source_file": "src/lib/baselineSuite.js",
       "source_location": "L53",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
+      "source": "src_lib_baselinesuite_captureonce",
       "target": "src_residentscheduler_validateall",
       "confidence_score": 1.0
     },
@@ -16919,11 +16952,11 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L16",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_residentscheduler_buildqualityinput",
       "confidence_score": 1.0
     },
@@ -16931,11 +16964,11 @@
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
+      "source_file": "src/lib/baselineSuite.js",
       "source_location": "L58",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
+      "source": "src_lib_baselinesuite_captureonce",
       "target": "src_residentscheduler_buildqualityinput",
       "confidence_score": 1.0
     },
@@ -17063,11 +17096,11 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L16",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L22",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_residentscheduler_generateschedulebest",
       "confidence_score": 1.0
     },
@@ -17075,11 +17108,11 @@
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
+      "source_file": "src/lib/baselineSuite.js",
       "source_location": "L52",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
+      "source": "src_lib_baselinesuite_captureonce",
       "target": "src_residentscheduler_generateschedulebest",
       "confidence_score": 1.0
     },
@@ -18383,6 +18416,18 @@
       "relation": "imports_from",
       "context": "import",
       "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L25",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_fixtures_syntheticroster",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "src/lib/__fixtures__/syntheticRoster.js",
       "source_location": "L31",
       "weight": 1.0,
@@ -18524,18 +18569,6 @@
       "_origin": "ast",
       "source": "src_lib_fixtures_syntheticroster",
       "target": "src_lib_fixtures_syntheticroster_vacation_week",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L19",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_fixtures_syntheticroster",
       "confidence_score": 1.0
     },
     {
@@ -18686,11 +18719,11 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L19",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L25",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
+      "source": "src_lib_baselinesuite",
       "target": "src_lib_fixtures_syntheticroster_makefixture",
       "confidence_score": 1.0
     },
@@ -18698,11 +18731,11 @@
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
+      "source_file": "src/lib/baselineSuite.js",
       "source_location": "L51",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
+      "source": "src_lib_baselinesuite_captureonce",
       "target": "src_lib_fixtures_syntheticroster_makefixture",
       "confidence_score": 1.0
     },
@@ -18716,6 +18749,368 @@
       "_origin": "ast",
       "source": "src_lib_generator_harness_test",
       "target": "src_lib_fixtures_syntheticroster_makefixture",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L42",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_baselinepath",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L75",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_capturefor",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L50",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_captureonce",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L91",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_comparewithtolerance",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_dirname",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L46",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_errorcount",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L103",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_loadbaseline",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L110",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_makebaselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L33",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_seeds",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L39",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_baselinesuite_slot_tolerance",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L23",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_dates",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L23",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_dates_getblockdates",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_schedulequality",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_schedulequality_computequalitymetrics",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L24",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite",
+      "target": "src_lib_schedulequality_computequalityvector",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.standard.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_standard_test",
+      "target": "src_lib_baselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.understaffed.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_understaffed_test",
+      "target": "src_lib_baselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.vacationHeavy.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_vacationheavy_test",
+      "target": "src_lib_baselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L104",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_loadbaseline",
+      "target": "src_lib_baselinesuite_baselinepath",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L131",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_makebaselinesuite",
+      "target": "src_lib_baselinesuite_baselinepath",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L70",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_captureonce",
+      "target": "src_lib_baselinesuite_errorcount",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L76",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_capturefor",
+      "target": "src_lib_baselinesuite_captureonce",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L57",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_captureonce",
+      "target": "src_lib_dates_getblockdates",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L62",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_captureonce",
+      "target": "src_lib_schedulequality_computequalitymetrics",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L70",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_captureonce",
+      "target": "src_lib_schedulequality_computequalityvector",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L113",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_makebaselinesuite",
+      "target": "src_lib_baselinesuite_capturefor",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L120",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_makebaselinesuite",
+      "target": "src_lib_baselinesuite_comparewithtolerance",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/baselineSuite.js",
+      "source_location": "L117",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_baselinesuite_makebaselinesuite",
+      "target": "src_lib_baselinesuite_loadbaseline",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.standard.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_standard_test",
+      "target": "src_lib_baselinesuite_makebaselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.understaffed.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_understaffed_test",
+      "target": "src_lib_baselinesuite_makebaselinesuite",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/lib/generator.baseline.vacationHeavy.test.js",
+      "source_location": "L7",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_lib_generator_baseline_vacationheavy_test",
+      "target": "src_lib_baselinesuite_makebaselinesuite",
       "confidence_score": 1.0
     },
     {
@@ -19172,18 +19567,6 @@
       "relation": "imports_from",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L17",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_dates",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
       "source_file": "src/lib/generator.harness.test.js",
       "source_location": "L12",
       "weight": 1.0,
@@ -19616,30 +19999,6 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L17",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_dates_getblockdates",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L57",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
-      "target": "src_lib_dates_getblockdates",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
       "source_file": "src/lib/generator.harness.test.js",
       "source_location": "L12",
       "weight": 1.0,
@@ -19718,212 +20077,6 @@
       "_origin": "ast",
       "source": "src_lib_dates_test",
       "target": "src_lib_dates_aywindowfor",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L22",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_baseline_path",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L73",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_capturefor",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L50",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_captureonce",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L90",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_comparewithtolerance",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L21",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_dirname",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L41",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_errorcount",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L102",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_loadbaseline",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L31",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_seeds",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L38",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_slot_tolerance",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L23",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_generator_baseline_test_variants",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports_from",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L18",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_schedulequality",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L18",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_schedulequality_comparevectors",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L18",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_schedulequality_computequalitymetrics",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "imports",
-      "context": "import",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L18",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test",
-      "target": "src_lib_schedulequality_computequalityvector",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L67",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
-      "target": "src_lib_generator_baseline_test_errorcount",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L74",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_capturefor",
-      "target": "src_lib_generator_baseline_test_captureonce",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L59",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
-      "target": "src_lib_schedulequality_computequalitymetrics",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "src/lib/generator.baseline.test.js",
-      "source_location": "L67",
-      "weight": 1.0,
-      "_origin": "ast",
-      "source": "src_lib_generator_baseline_test_captureonce",
-      "target": "src_lib_schedulequality_computequalityvector",
       "confidence_score": 1.0
     },
     {
@@ -22357,243 +22510,243 @@
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L1",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log",
-      "target": "plan_review_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L7",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_review_log_act_1_summary_what_the_grill_settled",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_1_summary_what_the_grill_settled",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L35",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_review_log_act_3_build_claude_codex_review_never_ran",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L20",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_review_log_round_1_codex_blocked_not_a_plan_finding",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_plan_review_log_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_round_1_codex_blocked_not_a_plan_finding",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L88",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_not_verified",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_not_verified",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L40",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_phase_0_score_priority_audit_shipped_as_audit_only_no_behavior_change",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_0_score_priority_audit_shipped_as_audit_only_no_behavior_change",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L57",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_phase_1_generalized_work_shape_scoring_shipped",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_1_generalized_work_shape_scoring_shipped",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L67",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_phase_2_ay_to_date_fairness_carryover_shipped",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_2_ay_to_date_fairness_carryover_shipped",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L75",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_phase_3_override_capture_shipped",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_phase_3_override_capture_shipped",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN-REVIEW-LOG.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases-log.md",
       "source_location": "L80",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_review_log_act_3_build_claude_codex_review_never_ran",
-      "target": "plan_review_log_test_infrastructure_change_not_in_the_plan_forced_by_the_work",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_act_3_build_claude_codex_review_never_ran",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_log_test_infrastructure_change_not_in_the_plan_forced_by_the_work",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L1",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan",
-      "target": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L41",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_approach",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L4",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_context",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_context",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L116",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_key_decisions_tradeoffs",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_key_decisions_tradeoffs",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L143",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_out_of_scope",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_out_of_scope",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L132",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_risks_open_questions",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_risks_open_questions",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L149",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_plan_close_the_schedule_quality_gap_blocking_cutover",
-      "target": "plan_verification",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_plan_close_the_schedule_quality_gap_blocking_cutover",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_verification",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L23",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_context",
-      "target": "plan_what_already_exists_reuse_do_not_rebuild",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_context",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_what_already_exists_reuse_do_not_rebuild",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L46",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_approach",
-      "target": "plan_phase_0_score_priority_audit_prerequisite_not_a_peer",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_0_score_priority_audit_prerequisite_not_a_peer",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L64",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_approach",
-      "target": "plan_phase_1_generalized_shape_scoring_kills_fixed_bad_sequences",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_1_generalized_shape_scoring_kills_fixed_bad_sequences",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L85",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_approach",
-      "target": "plan_phase_2_ay_to_date_fairness_carryover_kills_rebalanced_who_got_hammered",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_2_ay_to_date_fairness_carryover_kills_rebalanced_who_got_hammered",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
-      "source_file": "PLAN.md",
+      "source_file": "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md",
       "source_location": "L104",
       "weight": 1.0,
       "_origin": "ast",
-      "source": "plan_approach",
-      "target": "plan_phase_3_override_capture_loop_attacks_the_root_of_moved_shifts_off_specific_residents",
+      "source": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_approach",
+      "target": "docs_superpowers_plans_2026_08_10_schedule_quality_phases_phase_3_override_capture_loop_attacks_the_root_of_moved_shifts_off_specific_residents",
       "confidence_score": 1.0
     },
     {
@@ -25408,5 +25561,5 @@
       "source_file": "docs/superpowers/plans/2026-07-18-user-feedback-plan.md"
     }
   ],
-  "built_at_commit": "77aa2d5d8cc3b03da7c80a28f0ff9523a498d23b"
+  "built_at_commit": "fbce9828fc05a1d6c6ddb2f5064da0e0953ae066"
 }

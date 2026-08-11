@@ -1,16 +1,16 @@
 # Graph Report - resident-scheduler  (2026-08-10)
 
 ## Corpus Check
-- 59 files · ~130,198 words
+- 64 files · ~130,410 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 735 nodes · 1453 edges · 65 communities (55 shown, 10 thin omitted)
+- 738 nodes · 1463 edges · 65 communities (53 shown, 12 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 20 edges (avg confidence: 0.68)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `77aa2d5d`
+- Built from commit: `fbce9828`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -48,10 +48,10 @@
 - Shift Catalog & QGenda Export
 - Requests Tab Admin UI
 - Wellness Wednesdays & Trauma/Peds Split
+- inferGroupPgy
 - Auth Domain Restriction
 - PED-N/PED-S Eligibility Rules
 - Roster Modal Tabs
-- Admin Email Allowlist
 - OMD Response App Design System
 - Chief-to-Admin Migration
 - PDF Export Library Quirk
@@ -105,19 +105,19 @@
 - **End-to-end day-off request flow: resident submission through chief approval into the schedule** — docs_superpowers_plans_2026_07_18_resident_day_off_requests_task7_request_form, docs_superpowers_plans_2026_07_18_resident_day_off_requests_task10_approval_queue, docs_superpowers_plans_2026_07_18_resident_day_off_requests_task11_pending_badge [INFERRED 0.85]
 - **Feedback capture-to-triage pipeline: widget/crash capture write, admin function/tab read** — docs_superpowers_plans_2026_07_18_user_feedback_plan_task1_schema_helper, docs_superpowers_plans_2026_07_18_user_feedback_plan_task2_widget, docs_superpowers_plans_2026_07_18_user_feedback_plan_task3_crash_capture, docs_superpowers_plans_2026_07_18_user_feedback_plan_task4_admin_function, docs_superpowers_plans_2026_07_18_user_feedback_plan_task5_admin_tab [INFERRED 0.85]
 
-## Communities (65 total, 10 thin omitted)
+## Communities (65 total, 12 thin omitted)
 
 ### Community 0 - "Core Scheduler Constants & UI"
 Cohesion: 0.02
-Nodes (56): RFC-5545, BASE_ELIGIBILITY, BLOCK_TARGETS, BLOCK_TYPE_MAP, BLOCK_TYPES_EM, BUTTON_SIZES, BUTTON_VARIANTS, CALENDAR_TIME_OF_DAY_LABEL (+48 more)
+Nodes (54): RFC-5545, BASE_ELIGIBILITY, BLOCK_TARGETS, BLOCK_TYPE_MAP, BLOCK_TYPES_EM, BUTTON_SIZES, BUTTON_VARIANTS, CALENDAR_TIME_OF_DAY_LABEL (+46 more)
 
 ### Community 1 - "Synthetic Test Fixture Roster"
-Cohesion: 0.06
-Nodes (46): CONF_AUTO_SWAP_12H_IDS, CONF_SUPPRESSED_NORMAL_IDS, DEFAULT_COVERAGE, DEFAULT_COVERAGE_MINMAX, DOW_COVERAGE_MAX_OVERRIDE, getCoverageFor(), normalizeCoverageEntry(), TRAUMA_SOLO_IDS (+38 more)
+Cohesion: 0.09
+Nodes (36): baselinePath(), captureFor(), captureOnce(), compareWithTolerance(), __dirname, errorCount(), loadBaseline(), makeBaselineSuite() (+28 more)
 
 ### Community 2 - "Package Dependencies"
-Cohesion: 0.09
-Nodes (22): autoprefixer, jsdom, devDependencies, autoprefixer, jsdom, postcss, vite, @vitejs/plugin-react (+14 more)
+Cohesion: 0.15
+Nodes (13): autoprefixer, jsdom, devDependencies, autoprefixer, jsdom, postcss, vite, @vitejs/plugin-react (+5 more)
 
 ### Community 3 - "App Gate & Auth Screens"
 Cohesion: 0.09
@@ -128,40 +128,40 @@ Cohesion: 0.05
 Nodes (45): AutosaveIndicator pill, BlockCalendarSection (Dashboard year-timeline), Known accepted gap: residents-never-see-schedule is UI-enforced only, blockLookup.js, Cloud-op-succeeds-before-local-wipe/write discipline (avoid stale mount overlay reverting), computeCoverageByDate(), Dark mode (index.css override sheet, not Tailwind dark: variants), Dashboard/Home merge (Home tab removed) (+37 more)
 
 ### Community 5 - "Date Utilities"
-Cohesion: 0.15
-Nodes (12): Approach, Context, Key decisions & tradeoffs, Out of scope, Phase 0 — `score()` priority audit *(prerequisite, not a peer)*, Phase 1 — Generalized shape scoring *(kills "fixed bad sequences")*, Phase 2 — AY-to-date fairness carryover *(kills "rebalanced who got hammered")*, Phase 3 — Override-capture loop *(attacks the root of "moved shifts off specific residents")* (+4 more)
+Cohesion: 0.18
+Nodes (18): CONF_AUTO_SWAP_12H_IDS, CONF_SUPPRESSED_NORMAL_IDS, DEFAULT_COVERAGE, DEFAULT_COVERAGE_MINMAX, DOW_COVERAGE_MAX_OVERRIDE, getCoverageFor(), normalizeCoverageEntry(), TRAUMA_SOLO_IDS (+10 more)
 
 ### Community 6 - "Schedule Generator Core"
-Cohesion: 0.08
-Nodes (76): addDays(), ayWindowFor(), formatAY(), getAcademicYearFor(), getBlockDates(), getBlockWeekends(), parseDate(), qgendaDate() (+68 more)
+Cohesion: 0.07
+Nodes (82): addDays(), ayWindowFor(), formatAY(), getAcademicYearFor(), getBlockDates(), getBlockWeekends(), parseDate(), qgendaDate() (+74 more)
 
 ### Community 7 - "Rules Tab & Cell Violations"
-Cohesion: 0.20
-Nodes (10): checkGenerateReadiness(), DAY_RULE_DEFAULTS_CHANGED, describeDayRules(), describeShiftGates(), eligKey(), getJCPresenterGaps(), getMissingSpecialDayLists(), jcPresentersFor() (+2 more)
+Cohesion: 0.33
+Nodes (6): DAY_RULE_DEFAULTS_CHANGED, describeDayRules(), describeShiftGates(), eligKey(), RulesTab(), SOFT_RULES
 
 ### Community 8 - "Dashboard Block Calendar"
-Cohesion: 0.25
-Nodes (9): day_off_requests.sql (fresh-install baseline), DAY_RULE_DEFAULTS_CHANGED badge derivation, EM_HOME_2 EM/EMS<->EM/TOX weekday-window swap on 2026-08-01, getEffectiveDayRules() / getEffectiveEligibility(), IM/TOX weekday tightening, LEGACY_DAY_RULE_DEFAULTS / LEGACY_ELIGIBILITY_DEFAULTS, migrate_chief_to_admin.sql, Rule-default migration: prune saved overrides that deep-equal legacy pre-correction snapshots so fixes aren't masked (+1 more)
+Cohesion: 0.15
+Nodes (12): Approach, Context, Key decisions & tradeoffs, Out of scope, Phase 0 — `score()` priority audit *(prerequisite, not a peer)*, Phase 1 — Generalized shape scoring *(kills "fixed bad sequences")*, Phase 2 — AY-to-date fairness carryover *(kills "rebalanced who got hammered")*, Phase 3 — Override-capture loop *(attacks the root of "moved shifts off specific residents")* (+4 more)
 
 ### Community 9 - "Day-Off Request Feature Plan"
 Cohesion: 0.16
 Nodes (22): Resident Day-Off Request Implementation Plan, Task 10: Chief Approve/Deny Actions (ApprovalQueue), Task 11: Pending-Request Grid Marker + Sidebar Badge, Task 12: Email Notifications (Resend Edge Function), Task 13: End-to-End Verification Pass, Task 1: Supabase Auth Client + Config Plumbing, Task 2: profiles + day_off_requests Schema & RLS, Task 3: Server-Side Email-Domain Signup Restriction (+14 more)
 
 ### Community 10 - "Block Calendar Editor Components"
-Cohesion: 0.20
-Nodes (11): AYConferenceEditor(), BlockCalendarRow(), BlockCalendarSection(), BlockContextBar(), BlockMonthGrid(), computeCoverageByDate(), coverageDayStatus(), getActiveCoverageShifts() (+3 more)
+Cohesion: 0.25
+Nodes (9): AYConferenceEditor(), BlockCalendarRow(), BlockCalendarSection(), BlockContextBar(), BlockMonthGrid(), coverageDayStatus(), getActiveCoverageShifts(), prettyDate() (+1 more)
 
 ### Community 11 - "Day-Off Request Schema & RLS"
 Cohesion: 0.20
 Nodes (15): admin_email_allowlist, day_off_requests, day_off_requests_cancel_guard, day_off_requests_identity_guard, profiles, profiles_admin_allowlist_promote, profiles_resident_id_immutable, profiles_role_change_guard (+7 more)
 
 ### Community 12 - "Generation Report & Rest Checks"
-Cohesion: 0.15
-Nodes (15): getAcademicYear(), AvailabilityRangesEditor(), BlockProgressBar(), DashboardTab(), DragConfirmModal(), formatDisplayDate(), GenerationReportCard(), getBlockProgress() (+7 more)
+Cohesion: 0.20
+Nodes (11): getAcademicYear(), AvailabilityRangesEditor(), DragConfirmModal(), formatDisplayDate(), GenerationReportCard(), ImportLecturesModal(), ImportVacationModal(), makeDefaultBlock() (+3 more)
 
 ### Community 13 - "Circadian & Streak Rule Helpers"
-Cohesion: 0.33
-Nodes (6): buildWeekRows(), isFirstTuesday(), parseLectureImportDate(), parseLectureImportText(), ScheduleCalendarView(), validateLectureImportDate()
+Cohesion: 0.18
+Nodes (10): Act 1 summary — what the grill settled, Act 3 — Build (Claude; Codex review never ran), Not verified, Phase 0 — score() priority audit — SHIPPED AS AUDIT ONLY, NO BEHAVIOR CHANGE, Phase 1 — Generalized work-shape scoring — SHIPPED, Phase 2 — AY-to-date fairness carryover — SHIPPED, Phase 3 — Override capture — SHIPPED, Plan Review Log: Close the schedule-quality gap blocking cutover (+2 more)
 
 ### Community 14 - "Feedback Widget Implementation Plan"
 Cohesion: 0.22
@@ -172,12 +172,12 @@ Cohesion: 0.09
 Nodes (32): @fontsource/barlow, @fontsource/barlow-condensed, @fontsource/jetbrains-mono, jspdf, jspdf-autotable, lucide-react, dependencies, @fontsource/barlow (+24 more)
 
 ### Community 16 - "Vacation/Lecture Import Parsing"
-Cohesion: 0.24
-Nodes (10): extractVacationDateCells(), findVacationSections(), matchLectureRosterName(), matchVacationRoster(), parseVacationDateRange(), parseVacationWorkbook(), stripVacationNameSuffix(), vacationGroupDatesColIdx() (+2 more)
+Cohesion: 0.20
+Nodes (12): extractVacationDateCells(), findVacationSections(), matchLectureRosterName(), matchVacationRoster(), parseLectureImportDate(), parseLectureImportText(), parseVacationDateRange(), parseVacationWorkbook() (+4 more)
 
 ### Community 17 - "Roster/CSV Parsing"
-Cohesion: 0.17
-Nodes (20): CAT_MAP, CATEGORIES, CATEGORY_SYNONYMS, matchCategory(), normalizeToken(), parseDateRangeInAY(), parseRosterText(), NOTE: CATEGORIES/CAT_MAP/normalizeToken/DATE_RANGE_RE are not in the original ex (+12 more)
+Cohesion: 0.20
+Nodes (18): CAT_MAP, CATEGORIES, CATEGORY_SYNONYMS, matchCategory(), normalizeToken(), parseDateRangeInAY(), parseRosterText(), NOTE: CATEGORIES/CAT_MAP/normalizeToken/DATE_RANGE_RE are not in the original ex (+10 more)
 
 ### Community 18 - "Root Scheduler State & Sync"
 Cohesion: 0.17
@@ -188,12 +188,12 @@ Cohesion: 0.22
 Nodes (11): AppGate.jsx (whole-app login/role gate), LoginScreen, main.jsx (route split), migrate_block_pending_account_access.sql, Confirmed hole: pending role checked client-side only, enabled impersonation via /requests, RequestForm, RequestList, ResidentPicker (+3 more)
 
 ### Community 20 - "Auth RLS Policies & Triggers"
-Cohesion: 0.20
-Nodes (11): enforce_cancel_only_status trigger, enforce_profile_role_change_rules trigger, enforce_request_identity_immutable trigger, enforce_resident_id_immutable trigger, is_admin() SECURITY DEFINER helper, profiles_insert_own policy, profiles.role (pending/resident/admin), RequestsTab.jsx (admin approval queue + admin management) (+3 more)
+Cohesion: 0.06
+Nodes (33): admin_email_allowlist table, apply_admin_allowlist trigger, day_off_requests.sql (fresh-install baseline), DAY_RULE_DEFAULTS_CHANGED badge derivation, EM_HOME_2 EM/EMS<->EM/TOX weekday-window swap on 2026-08-01, enforce_cancel_only_status trigger, enforce_profile_role_change_rules trigger, enforce_request_identity_immutable trigger (+25 more)
 
 ### Community 21 - "Coverage Min/Max Config"
-Cohesion: 0.18
-Nodes (10): Act 1 summary — what the grill settled, Act 3 — Build (Claude; Codex review never ran), Not verified, Phase 0 — score() priority audit — SHIPPED AS AUDIT ONLY, NO BEHAVIOR CHANGE, Phase 1 — Generalized work-shape scoring — SHIPPED, Phase 2 — AY-to-date fairness carryover — SHIPPED, Phase 3 — Override capture — SHIPPED, Plan Review Log: Close the schedule-quality gap blocking cutover (+2 more)
+Cohesion: 0.20
+Nodes (9): name, private, scripts, build, dev, preview, test, type (+1 more)
 
 ### Community 22 - "Crash Reporting & Error Boundary"
 Cohesion: 0.29
@@ -223,10 +223,6 @@ Nodes (8): betterQuality() lexicographic comparator, checkCircadianViolations(),
 Cohesion: 0.25
 Nodes (7): checkGenerateReadiness(), countPublishedJC() / countCurrentBlockJC(), JC_MAX_PER_AY (3), Journal Club rule (first-Tuesday, 3/AY cap, published-only counting), JournalClubPlanner, ReadinessWarningPanel, shiftOverlapsJC(sid)
 
-### Community 29 - "Test Suite & Baseline Fixtures"
-Cohesion: 0.29
-Nodes (7): generator.baseline.test.js, generator.harness.test.js, netlify.toml, npm run dev/build/preview/test, __fixtures__/qualityBaseline.json (committed regression floor), UPDATE_QUALITY_BASELINE / FORCE_QUALITY_BASELINE env flags, vitest test runner
-
 ### Community 30 - "Shift Catalog & QGenda Export"
 Cohesion: 0.25
 Nodes (8): prettyDate() formatter (UI display, 2-digit year), QGenda CSV export (Start/End derived from SHIFT_TIMING), qgendaDate() formatter (src/lib/dates.js), SHIFT_AREAS, SHIFT_MAP, SHIFT_TIMING, SHIFT_TYPES, SHIFTS (shift catalog)
@@ -248,12 +244,8 @@ Cohesion: 0.40
 Nodes (6): Chief roles (chiefRole: academic/admin/scheduling), getEligibleShifts(), Off-service residents availability (isAvailableOnDate), PED-N (Peds Night) eligibility rule, PED-S (Peds Swing) shift, SHIFT_DOW
 
 ### Community 36 - "Roster Modal Tabs"
-Cohesion: 0.50
-Nodes (4): AddResidentModal(), EMResidentsTab(), OffServiceTab(), uuid()
-
-### Community 37 - "Admin Email Allowlist"
-Cohesion: 0.33
-Nodes (6): admin_email_allowlist table, apply_admin_allowlist trigger, migrate_admin_email_allowlist.sql, Public repo: never hardcode real resident names/PII/emails, resident-scheduler (EM residency shift scheduler), __fixtures__/syntheticRoster.json (synthetic, public-repo-safe)
+Cohesion: 0.40
+Nodes (6): AddResidentModal(), effectiveChiefRole(), EMResidentsTab(), getShiftTarget(), OffServiceTab(), uuid()
 
 ### Community 38 - "OMD Response App Design System"
 Cohesion: 0.40
@@ -284,24 +276,24 @@ Cohesion: 0.67
 Nodes (3): reconcileTabOrder(), reorderIds(), SidebarNav()
 
 ## Knowledge Gaps
-- **149 isolated node(s):** `supabase`, `name`, `version`, `private`, `type` (+144 more)
+- **147 isolated node(s):** `supabase`, `name`, `version`, `private`, `type` (+142 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `dependencies` connect `PDF/ICS Export` to `Package Dependencies`?**
+- **Why does `dependencies` connect `PDF/ICS Export` to `Coverage Min/Max Config`?**
   _High betweenness centrality (0.334) - this node is a cross-community bridge._
-- **Why does `devDependencies` connect `Package Dependencies` to `Tech Stack & Dependency Rationale`?**
+- **Why does `devDependencies` connect `Package Dependencies` to `Tech Stack & Dependency Rationale`, `Coverage Min/Max Config`?**
   _High betweenness centrality (0.305) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `formatDisplayDate()` (e.g. with `exportMatrixPDF()` and `ImportVacationModal()`) actually correct?**
   _`formatDisplayDate()` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `supabase`, `name`, `version` to the rest of the system?**
-  _149 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _147 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Core Scheduler Constants & UI` be split into smaller, more focused modules?**
-  _Cohesion score 0.023529411764705882 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.024096385542168676 - nodes in this community are weakly interconnected._
 - **Should `Synthetic Test Fixture Roster` be split into smaller, more focused modules?**
-  _Cohesion score 0.06327683615819209 - nodes in this community are weakly interconnected._
-- **Should `Package Dependencies` be split into smaller, more focused modules?**
-  _Cohesion score 0.08695652173913043 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08788159111933395 - nodes in this community are weakly interconnected._
+- **Should `App Gate & Auth Screens` be split into smaller, more focused modules?**
+  _Cohesion score 0.08748114630467571 - nodes in this community are weakly interconnected._
