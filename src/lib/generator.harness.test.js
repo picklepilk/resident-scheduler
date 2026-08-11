@@ -153,29 +153,43 @@ describe('generator harness — block-edge night runs', () => {
 });
 
 describe('generator harness — performance', () => {
-  // CATASTROPHE SMOKE TEST, NOT A BENCHMARK — and the threshold is deliberately loose.
+  // CATASTROPHE SMOKE TEST, NOT A BENCHMARK.
   //
-  // This measures WALL CLOCK, and it no longer runs alone: the quality baseline is split into
-  // three per-variant files that vitest runs in parallel workers (see baselineSuite.js), so this
-  // call competes with them for CPU. Measured on a 16-core machine: ~2.4s running solo, ~6.3s
-  // under that parallel load. A 5s threshold was therefore failing on contention rather than on
-  // any regression in the generator.
+  // This measures CPU TIME (process.cpuUsage() delta, user+system), NOT wall clock, and that
+  // distinction is the whole point. The quality baseline is split into three per-variant files
+  // that vitest runs in parallel workers (see baselineSuite.js), so this call competes with them
+  // for cores: measured on a 16-core machine, the same generation took ~2.4s wall solo but ~6.3s
+  // wall under that parallel load. CPU time does not move with contention — the work performed is
+  // identical, the worker just waits longer to be scheduled — so it lets the bar stay tight
+  // enough to catch a real regression without flaking on a busy or low-core CI runner. Do NOT
+  // switch this back to Date.now(): a wall-clock bar loose enough to survive contention (20s) is
+  // ~8x the solo runtime and would let a 3x generator slowdown ship green.
   //
-  // 20s keeps the thing this test actually exists for — catching an order-of-magnitude blowup
-  // (an accidental O(n^2), a runaway repair loop) — while tolerating scheduling noise on a busy or
-  // slower machine. The real number is always printed below, so a genuine slowdown is visible in
-  // the log even when it stays under the bar. Do NOT tighten this back toward the solo timing
-  // unless the baseline files stop running in parallel.
-  const MAX_MS = 20000;
-  it(`one generateScheduleBest call (20 attempts + repair) on the standard fixture completes in under ${MAX_MS / 1000}s`, () => {
+  // 8s is ~3x the measured single-threaded cost, headroom for a slower CPU while still failing on
+  // an order-of-magnitude blowup (an accidental O(n^2), a runaway repair loop) AND on a merely
+  // large one. The real number is always printed below, so drift is visible in the log even when
+  // it stays under the bar.
+  const MAX_CPU_MS = 8000;
+  // No `attempts` override: this must measure the PRODUCTION configuration, which is whatever
+  // default generateScheduleBest applies for runGenerate/runPartialRegenerate. Pinning a literal
+  // here would silently decouple the two if that default ever changes.
+  it(`one default-configuration generateScheduleBest call (+ repair) on the standard fixture stays under ${MAX_CPU_MS / 1000}s of CPU`, () => {
     const fixture = makeFixture('standard');
-    const start = Date.now();
-    const res = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed: 100 });
-    const elapsedMs = Date.now() - start;
+    const startCpu = process.cpuUsage();
+    const res = generateScheduleBest({ ...fixture }, { baseSeed: 100 });
+    const { user, system } = process.cpuUsage(startCpu);
+    const cpuMs = (user + system) / 1000;
     // eslint-disable-next-line no-console
-    console.log(`[perf] generateScheduleBest(attempts=20) on 'standard': ${elapsedMs}ms (threshold ${MAX_MS}ms, shared CPU)`);
-    expect(res).not.toBeNull();
-    expect(elapsedMs).toBeLessThan(MAX_MS);
+    console.log(`[perf] generateScheduleBest(attempts=${res?.report?.attempts}) on 'standard': ${cpuMs.toFixed(0)}ms CPU (threshold ${MAX_CPU_MS}ms)`);
+
+    // Guard the shape too — otherwise the only thing seconds of CPU buys is a timing number, and
+    // a generator that returned early with an unrepaired/undecorated result would read as green.
+    expect(res?.report?.attempts).toBeGreaterThanOrEqual(1);
+    expect(Number.isInteger(res.report.seed)).toBe(true);
+    expect(Array.isArray(res.report.qualityVector)).toBe(true);
+    expect(Object.keys(res.schedule).length).toBeGreaterThan(0);
+
+    expect(cpuMs).toBeLessThan(MAX_CPU_MS);
   });
 });
 
