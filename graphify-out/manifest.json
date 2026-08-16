@@ -30,8 +30,8 @@
     "semantic_hash": "65728877cd060f64b5337749f6e1927a"
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1786902803.7543736,
-    "ast_hash": "0d704d33ff4c065d49e2880bb0cae77e",
+    "mtime": 1786903481.4764104,
+    "ast_hash": "3b22461989503ea1ddb411594778e460",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -160,8 +160,8 @@
     "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
   },
   "CLAUDE.md": {
-    "mtime": 1786902792.6623743,
-    "ast_hash": "e944476b4512a6cd33320eba5460b6ee",
+    "mtime": 1786903767.922295,
+    "ast_hash": "d101b4e3078b9f3d44480af6f5311786",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -335,8 +335,18 @@
     "semantic_hash": ""
   },
   "src/lib/eligibilityLegacy.test.js": {
-    "mtime": 1786902466.891773,
-    "ast_hash": "f239acc987a16447841bc15e473e2bc4",
+    "mtime": 1786903566.0227559,
+    "ast_hash": "fb3c14e80f7905286f8e103180f6c1a5",
+    "semantic_hash": ""
+  },
+  "src/lib/eligibilityOverrides.js": {
+    "mtime": 1786903371.843211,
+    "ast_hash": "6573c1fd4fdccb5c0c4d9bae074d8f2b",
+    "semantic_hash": ""
+  },
+  "src/lib/eligibilityOverrides.test.js": {
+    "mtime": 1786903457.476513,
+    "ast_hash": "45e44f9d03d9799bb6076eb10b66676b",
     "semantic_hash": ""
   }
 }

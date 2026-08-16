@@ -6,7 +6,6 @@
   "4": "Demo Sandbox & Persistence Rationale",
   "5": "Date Utilities",
   "6": "Schedule Generator Core",
-  "7": "Rules Tab & Cell Violations",
   "8": "Dashboard Block Calendar",
   "9": "Day-Off Request Feature Plan",
   "10": "Block Calendar Editor Components",
@@ -36,7 +35,6 @@
   "34": "Auth Domain Restriction",
   "35": "PED-N/PED-S Eligibility Rules",
   "36": "Roster Modal Tabs",
-  "37": "reconcileTabOrder",
   "38": "OMD Response App Design System",
   "39": "Chief-to-Admin Migration",
   "40": "PDF Export Library Quirk",
@@ -65,11 +63,7 @@
   "63": "Webhooks SQL",
   "64": "Tailwind Config",
   "65": "Vitest Config",
-  "66": "Demo Sandbox feature",
   "67": "em-scheduler (sibling app, same author/domain)",
-  "68": "dbReady gate",
   "69": "admin_email_allowlist table",
-  "70": "enterDemoFresh",
-  "71": "getEffectiveEligibility",
-  "72": "getBlockProgress"
+  "71": "getEffectiveEligibility"
 }

@@ -69,5 +69,7 @@
   "67": "em-scheduler (sibling app, same author/domain)",
   "68": "dbReady gate",
   "69": "admin_email_allowlist table",
-  "70": "enterDemoFresh"
+  "70": "enterDemoFresh",
+  "71": "getEffectiveEligibility",
+  "72": "getBlockProgress"
 }
