@@ -26,6 +26,7 @@ import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcad
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs } from './lib/shifts.js';
 import { getCoverageFor, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
+import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { mulberry32 } from './lib/rng.js';
@@ -1968,38 +1969,32 @@ function stripPedGuardedShifts(list, key) {
   });
 }
 
-// A chief-saved eligibility override is a WHOLESALE snapshot of the shift list, so a shift id added
-// to the app after that override was saved is invisible to it forever. That is not theoretical: the
-// chief set ACEP's dates correctly, the 9h POD/MT/FLEX shifts were suppressed for those dates as
-// designed, and the 12h replacements could never be assigned because his saved overrides — written
-// before those ids existed — didn't list them. Residents simply went unscheduled during ACEP, with
-// no error anywhere. LEGACY_ELIGIBILITY_DEFAULTS can't catch this: it only prunes overrides that
-// still deep-equal a recorded pre-change default, and it is keyed by CATEGORY_PGY, so per-ROTATION
-// overrides (CATEGORY_PGY__ROTATION, written by the Shift Matrix's expandable sub-rows) are never
-// reachable by it at all.
+// Chief-saved eligibility overrides are stored as a DIFF against the current defaults
+// ({added, removed}, see src/lib/eligibilityOverrides.js), not as a snapshot of the shift list.
 //
-// So backfill at READ time, conservatively — a 12h id is added only when BOTH:
-//   (a) the CURRENT BASE_ELIGIBILITY for that category grants it (never invent eligibility the app
-//       itself doesn't give — NEURO_1 is eligible for FLEX-D but deliberately not FLEX-D12, so a
-//       naive "9h implies 12h" rule would hand out a shift nobody intended), and
-//   (b) the override still lists that area's matching 9h shift (POD-D for POD-D12, POD-N for
-//       POD-N12) — so an area the chief deliberately removed stays removed.
-// Read-time only: nothing is written back, matching normalizeCoverageEntry/effectiveChiefRole.
-// If a future shift id is added that ISN'T a 12h variant, this helper won't cover it — see the
-// "Rule-default migration" section of CLAUDE.md before adding one.
-const TWELVE_H_SUFFIX = { 'D12': 'D', 'N12': 'N' };
-function backfillLaterAddedShiftIds(list, baseKey) {
-  const base = BASE_ELIGIBILITY[baseKey];
-  if (!base) return list;
-  const have = new Set(list);
-  const add = [];
-  for (const sid of base) {
-    if (have.has(sid)) continue;
-    const m = sid.match(/^(.+)-(D12|N12)$/);
-    if (!m) continue;
-    if (have.has(`${m[1]}-${TWELVE_H_SUFFIX[m[2]]}`)) add.push(sid);
-  }
-  return add.length ? [...list, ...add] : list;
+// The snapshot shape caused a real outage: the chief's saved overrides predated the 12h conference
+// shifts, so during ACEP the 9h POD/MT/FLEX shifts were suppressed as designed and the 12h
+// replacements could never be assigned — residents went unscheduled with no error anywhere.
+// LEGACY_ELIGIBILITY_DEFAULTS could not catch it (it only prunes overrides that still deep-equal a
+// recorded pre-change default, and it is keyed by CATEGORY_PGY, so per-ROTATION overrides are
+// unreachable by it entirely). A diff has no blind spot: anything added to BASE_ELIGIBILITY later
+// flows through unless the chief explicitly removed that exact id.
+//
+// Legacy array-shaped values are still accepted at read time forever (old JSON backup, cloud row
+// written by an older build, another device mid-upgrade) — normalizeEligibilityOverride converts
+// them, applying the 12h backfill FIRST so later-added ids aren't misread as deliberate removals.
+// A one-time mount migration in the root component rewrites stored arrays into diffs.
+//
+// eligBaseFor: the list a key's diff applies ON TOP OF. Category keys diff against
+// BASE_ELIGIBILITY; a rotation key (CATEGORY_PGY__ROTATION) diffs against its PARENT's effective
+// list, which preserves the existing inheritance — a category-level change still reaches every
+// rotation row that hasn't overridden that specific shift.
+function eligCategoryList(key, eligOverrides = {}) {
+  return resolveEligibilityList(eligOverrides[key], BASE_ELIGIBILITY[key] || []);
+}
+function eligBaseFor(key, eligOverrides = {}) {
+  const parent = key.includes('__') ? key.slice(0, key.indexOf('__')) : null;
+  return parent ? eligCategoryList(parent, eligOverrides) : (BASE_ELIGIBILITY[key] || []);
 }
 
 function getEffectiveEligibility(resident, eligOverrides = {}) {
@@ -2007,12 +2002,12 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
   const isEM = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
   if (isEM && resident.blockType) {
     const rotKey = `${key}__${resident.blockType}`;
-    // Rotation overrides backfill against the PARENT category's base — BASE_ELIGIBILITY has no
-    // per-rotation entries.
-    if (eligOverrides[rotKey]) return { list: stripPedGuardedShifts(backfillLaterAddedShiftIds(eligOverrides[rotKey], key), key), rotationSpecific: true };
+    if (eligOverrides[rotKey] != null) {
+      const list = resolveEligibilityList(eligOverrides[rotKey], eligCategoryList(key, eligOverrides));
+      return { list: stripPedGuardedShifts(list, key), rotationSpecific: true };
+    }
   }
-  if (eligOverrides[key]) return { list: stripPedGuardedShifts(backfillLaterAddedShiftIds(eligOverrides[key], key), key), rotationSpecific: false };
-  return { list: [...(BASE_ELIGIBILITY[key] || [])], rotationSpecific: false };
+  return { list: stripPedGuardedShifts(eligCategoryList(key, eligOverrides), key), rotationSpecific: false };
 }
 
 // ─── WHAT'S NEW ───────────────────────────────────────────────────────────────
@@ -7236,36 +7231,41 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // expanded: which EM Home rows show their per-rotation sub-rows
   const [expanded, setExpanded] = useState({});
 
-  // Must apply the same read-time backfill getEffectiveEligibility does, or this grid shows a 12h
-  // shift as UNCHECKED while the scheduler is happily assigning it — and the chief's first click
-  // would then "toggle" it off, writing the removal for real.
-  function effective(k) { return eligOverrides[k] ? backfillLaterAddedShiftIds(eligOverrides[k], k) : (BASE_ELIGIBILITY[k] ?? []); }
+  // Reads and writes go through the same diff helpers getEffectiveEligibility uses, so this grid
+  // can never show a different answer than the scheduler acts on. A toggle recomputes the whole
+  // diff from the resulting list, and a diff that ends up empty DELETES the key — so putting a row
+  // back to its default clears the override instead of leaving a no-op one behind (same convention
+  // as the Rules-tab coverage editor).
+  function baseFor(k) { return eligBaseFor(k, eligOverrides); }
+  function effective(k) { return resolveEligibilityList(eligOverrides[k], baseFor(k)); }
   function isElig(k,s) { return effective(k).includes(s); }
+  function writeList(k, list) {
+    const diff = eligibilityDiff(list, baseFor(k));
+    setEligOverrides(p => {
+      const n = { ...p };
+      if (isEligibilityDiffEmpty(diff)) delete n[k]; else n[k] = diff;
+      return n;
+    });
+  }
   function toggle(k,s) {
-    setEligOverrides(p=>{ const cur=[...effective(k)]; const next=cur.includes(s)?cur.filter(x=>x!==s):[...cur,s]; return {...p,[k]:next}; });
+    const cur = effective(k);
+    writeList(k, cur.includes(s) ? cur.filter(x=>x!==s) : [...cur, s]);
   }
   function isModified(k) { return JSON.stringify([...(BASE_ELIGIBILITY[k]||[])].sort()) !== JSON.stringify([...effective(k)].sort()); }
   function resetRow(k) { setEligOverrides(p=>{ const n={...p}; delete n[k]; return n; }); }
 
-  // Rotation sub-row helpers — key format: CATEGORY_PGY__ROTATION
+  // Rotation sub-row helpers — key format: CATEGORY_PGY__ROTATION. A rotation diff applies on top
+  // of its PARENT's effective list (eligBaseFor resolves that), which is what makes a category-level
+  // edit still reach every rotation row that hasn't overridden that specific shift.
   function subKey(parentKey, btId) { return `${parentKey}__${btId}`; }
   function subEffective(parentKey, btId) {
-    // Rotation overrides backfill against the PARENT key's base, same as getEffectiveEligibility.
-    const own = eligOverrides[subKey(parentKey, btId)];
-    return own ? backfillLaterAddedShiftIds(own, parentKey) : effective(parentKey);
-  }
-  function subHasOverride(parentKey, btId) { return !!eligOverrides[subKey(parentKey, btId)]; }
-  function subToggle(parentKey, btId, s) {
     const k = subKey(parentKey, btId);
-    setEligOverrides(p=>{
-      // Start from the BACKFILLED list, not the raw stored one — otherwise toggling any single
-      // shift rewrites the override from a list that's missing the later-added 12h ids and
-      // silently drops them again. Backfill `p[k]` (the fresh value in this updater), not the
-      // closed-over eligOverrides.
-      const cur = [...(p[k] ? backfillLaterAddedShiftIds(p[k], parentKey) : effective(parentKey))];
-      const next = cur.includes(s) ? cur.filter(x=>x!==s) : [...cur, s];
-      return { ...p, [k]: next };
-    });
+    return resolveEligibilityList(eligOverrides[k], effective(parentKey));
+  }
+  function subHasOverride(parentKey, btId) { return eligOverrides[subKey(parentKey, btId)] != null; }
+  function subToggle(parentKey, btId, s) {
+    const cur = subEffective(parentKey, btId);
+    writeList(subKey(parentKey, btId), cur.includes(s) ? cur.filter(x=>x!==s) : [...cur, s]);
   }
   function subReset(parentKey, btId) { resetRow(subKey(parentKey, btId)); }
 
@@ -7926,7 +7926,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         const rn = RULE_NOTES[row.key] || {};
         const dr = effectiveDr(row.key);
         const modified = isRowModified(row.key);
-        const effectiveShifts = eligOverrides[row.key] ?? BASE_ELIGIBILITY[row.key] ?? [];
+        const effectiveShifts = resolveEligibilityList(eligOverrides[row.key], BASE_ELIGIBILITY[row.key] || []);
         const isOpen = openKeys[row.key] === true; // default closed
         const targetOv = (appSettings?.targetOverrides||{})[row.key];
         const target = targetOv ?? SHIFT_TARGETS[row.key] ?? null;
@@ -10854,8 +10854,22 @@ export default function ResidentScheduler({ viewer } = {}) {
     setEligOverrides(prev => {
       let changed = false;
       const next = { ...prev };
+      // (1) Prune, exactly as before. Only legacy ARRAY-shaped values can deep-equal a recorded
+      // snapshot, so this has to run BEFORE the conversion below — converting first would turn an
+      // "equals the old default" override into a diff that deliberately pins the old behavior.
       for (const [key, legacyList] of Object.entries(LEGACY_ELIGIBILITY_DEFAULTS)) {
         if (key in next && legacyList.some(legacy => deepEqualNormalized(next[key], legacy))) { delete next[key]; changed = true; }
+      }
+      // (2) One-time migration: rewrite any surviving snapshot into a diff. Category keys first, so
+      // a rotation key's base (its parent's effective list) is already converted when we reach it.
+      // normalizeEligibilityOverride applies the 12h backfill before diffing, so a pre-12h snapshot
+      // does NOT migrate into "the chief removed all eight 12h shifts". A diff that comes out empty
+      // means the override matched the default anyway — drop it.
+      for (const key of Object.keys(next).sort((a, b) => (a.includes('__') ? 1 : 0) - (b.includes('__') ? 1 : 0))) {
+        if (!Array.isArray(next[key])) continue;
+        const diff = normalizeEligibilityOverride(next[key], eligBaseFor(key, next));
+        if (isEligibilityDiffEmpty(diff)) delete next[key]; else next[key] = diff;
+        changed = true;
       }
       return changed ? next : prev;
     });

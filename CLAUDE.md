@@ -954,28 +954,47 @@ array in `LEGACY_*_DEFAULTS`** (creating array if key new to it) **add its key t
 `DAY_RULE_DEFAULTS_CHANGED`** (latter derived automatically from two maps' keys) or
 existing chief customizations will silently mask the fix.
 
-**ADDING A NEW SHIFT ID IS THE DANGEROUS CASE, and `LEGACY_*_DEFAULTS` does NOT cover it.**
-An override is a wholesale snapshot of the shift LIST, so a shift id added later is invisible to it
-forever. Two gaps make this unfixable by the pruner: (1) an override the chief genuinely customized
-deep-equals no snapshot, so it is kept (amber badge only); (2) `LEGACY_ELIGIBILITY_DEFAULTS` is
-keyed by `CATEGORY_PGY`, so **per-ROTATION overrides (`CATEGORY_PGY__ROTATION`, written by the
-Shift Matrix's expandable sub-rows) are never reachable by it at all.**
-This shipped as a real, silent, chief-reported bug: ACEP dates were set correctly and the 9h
-POD/MT/FLEX shifts were suppressed for those dates as designed, but the 12h replacements could
-never be assigned because his saved rotation overrides predated those ids — residents simply went
-unscheduled during ACEP with no error anywhere.
-Mitigated by `backfillLaterAddedShiftIds(list, baseKey)` (read-time, next to
-`getEffectiveEligibility`; nothing is written back). It adds a 12h id only when BOTH the current
-`BASE_ELIGIBILITY[baseKey]` grants it AND the override still lists that area's matching 9h shift
-(`POD-D` for `POD-D12`, `POD-N` for `POD-N12`) — condition (a) stops it inventing eligibility the
-app never intended (NEURO_1 has `FLEX-D` but deliberately no `FLEX-D12`), condition (b) keeps an
-area the chief deliberately removed removed. Rotation keys backfill against the PARENT category's
-base. **`ShiftMatrixTab` applies the same backfill** in `effective`/`subEffective`/`subToggle` —
-otherwise the grid shows a 12h shift unchecked while the scheduler assigns it, and the chief's
-first click writes the removal for real. Regression coverage:
-`src/lib/eligibilityLegacy.test.js` (this is why `getEligibleShifts` is now a named export).
-**This helper only understands `-D12`/`-N12`. Add any other new shift id and you must extend it or
-repeat the outage** — a saved override will silently never grant the new shift.
+### Eligibility overrides are a DIFF, not a snapshot
+`res_eligibility_overrides` stores `{ added: string[], removed: string[] }` per key, against the
+current defaults — see `src/lib/eligibilityOverrides.js`. It used to store a wholesale snapshot of
+the shift LIST, which meant **a shift id added to the app later was invisible to that override
+forever**, and `LEGACY_*_DEFAULTS` could not save it: (1) an override the chief genuinely customized
+deep-equals no recorded snapshot, so the pruner keeps it (amber badge only); (2)
+`LEGACY_ELIGIBILITY_DEFAULTS` is keyed by `CATEGORY_PGY`, so **per-ROTATION overrides
+(`CATEGORY_PGY__ROTATION`, written by the Shift Matrix's expandable sub-rows) are unreachable by it
+entirely.** That shipped as a real, silent, chief-reported outage: ACEP dates were set correctly and
+the 9h POD/MT/FLEX shifts were suppressed for those dates as designed, but the 12h replacements
+could never be assigned because his saved rotation overrides predated those ids — residents went
+unscheduled during ACEP with no error anywhere. A diff has no blind spot: a new id isn't in
+`removed`, so it flows through automatically. **This is the reason the format exists — don't
+"simplify" it back to a list.**
+
+- **Both shapes are read forever.** `normalizeEligibilityOverride(value, base)` is the single door;
+  a legacy array (old JSON backup, cloud row from an older build, another device mid-upgrade) is
+  converted on read. Conversion applies `backfillLaterAddedShiftIds` FIRST — otherwise every pre-12h
+  snapshot would convert to "the chief deliberately removed all eight 12h shifts" and the outage
+  would be permanently baked in. The backfill restores a 12h id only when the CURRENT base grants it
+  AND the snapshot still lists that area's matching 9h shift (`POD-D`→`POD-D12`, `POD-N`→`POD-N12`),
+  so an area genuinely dropped stays dropped and eligibility the app never intended is never
+  invented (NEURO_1 really does have `FLEX-D` but no `FLEX-D12`).
+- **One-time mount migration** rewrites stored arrays into diffs, in the same effect as the legacy
+  prune. **Order is load-bearing: prune FIRST** (only an array can deep-equal a recorded snapshot;
+  converting first would turn "equals the old default" into a diff that pins the old behavior), then
+  convert **category keys before rotation keys** (a rotation key's base is its parent's *effective*
+  list). A diff that comes out empty deletes the key.
+- **`eligBaseFor(key, eligOverrides)`** is what a key's diff applies on top of: `BASE_ELIGIBILITY`
+  for a category key, the parent's effective list for a rotation key. That inheritance is a
+  deliberate improvement — a category-level edit now reaches every rotation row that hasn't
+  overridden that specific shift, which a frozen snapshot could never do. Migration round-trips, so
+  existing rotation overrides don't visibly change at upgrade time.
+- **`ShiftMatrixTab` uses the same helpers** (`baseFor`/`effective`/`writeList`), so the grid can't
+  disagree with the scheduler. A toggle recomputes the whole diff from the resulting list, and an
+  empty diff DELETES the key — putting a row back to default clears the override rather than leaving
+  a no-op behind (same convention as the Rules-tab coverage editor).
+- Coverage: `src/lib/eligibilityOverrides.test.js` (unit) and `src/lib/eligibilityLegacy.test.js`
+  (through the real generator/eligibility path — this is why `getEligibleShifts` is a named export).
+- Still true: `stripPedGuardedShifts` runs AFTER resolution, so PED-N/PED-S guards win over any
+  override.
 
 ## When editing
 - Since nearly everything is in `ResidentScheduler.jsx`, grep before assuming helper unused —

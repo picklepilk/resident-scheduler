@@ -94,3 +94,46 @@ describe('legacy eligibility overrides vs. later-added shift ids', () => {
     expect(elig).toContain('POD-D12');
   });
 });
+
+describe('diff-shaped overrides (the current storage format)', () => {
+  it('a diff resolves through getEligibleShifts the same as an equivalent snapshot', () => {
+    const f = acepFixture({ EM_HOME_2: { added: [], removed: ['MT-E'] } });
+    const em2 = f.allResidents.find(r => r.category === 'EM_HOME' && r.pgy === 2 && r.blockType === 'EM');
+    const elig = getEligibleShifts(
+      em2, f._conf.dates[0], f.block.specialDays || {}, f.eligOverrides,
+      f.appSettings, f.dayRules, { blockStart: f.block.startDate },
+    );
+    expect(elig).not.toContain('MT-E');
+    // Everything else the category grants is still there — a diff removes one id, not the world.
+    expect(elig.length).toBeGreaterThan(1);
+  });
+
+  it('a later-added shift id reaches a resident who already has a saved diff', () => {
+    // The entire point of the diff format. A shift id the chief never saw is not in `removed`, so
+    // it flows through — this is what a stored snapshot could never do.
+    const f = acepFixture({ EM_HOME_2: { added: [], removed: ['MT-E'] } });
+    const em2 = f.allResidents.find(r => r.category === 'EM_HOME' && r.pgy === 2 && r.blockType === 'EM');
+    const elig = getEligibleShifts(
+      em2, f._conf.dates[0], f.block.specialDays || {}, f.eligOverrides,
+      f.appSettings, f.dayRules, { blockStart: f.block.startDate, ayConf: f.ayConf },
+    );
+    expect(elig.some(s => TWELVE_H.test(s))).toBe(true);
+  });
+
+  it('a rotation diff inherits category-level changes (snapshots could not)', () => {
+    // Category drops MT-D; the rotation row overrides something unrelated. The rotation resident
+    // must still lose MT-D — with the old snapshot format the rotation row kept its own frozen copy
+    // and silently ignored the category edit.
+    const f = acepFixture({
+      EM_HOME_2: { added: [], removed: ['MT-D'] },
+      EM_HOME_2__EM: { added: [], removed: ['MT-N'] },
+    });
+    const em2 = f.allResidents.find(r => r.category === 'EM_HOME' && r.pgy === 2 && r.blockType === 'EM');
+    const elig = getEligibleShifts(
+      em2, f.block.startDate, f.block.specialDays || {}, f.eligOverrides,
+      f.appSettings, f.dayRules, { blockStart: f.block.startDate },
+    );
+    expect(elig).not.toContain('MT-D'); // inherited from the category diff
+    expect(elig).not.toContain('MT-N'); // the rotation's own removal
+  });
+});
