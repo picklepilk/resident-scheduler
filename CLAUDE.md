@@ -954,6 +954,29 @@ array in `LEGACY_*_DEFAULTS`** (creating array if key new to it) **add its key t
 `DAY_RULE_DEFAULTS_CHANGED`** (latter derived automatically from two maps' keys) or
 existing chief customizations will silently mask the fix.
 
+**ADDING A NEW SHIFT ID IS THE DANGEROUS CASE, and `LEGACY_*_DEFAULTS` does NOT cover it.**
+An override is a wholesale snapshot of the shift LIST, so a shift id added later is invisible to it
+forever. Two gaps make this unfixable by the pruner: (1) an override the chief genuinely customized
+deep-equals no snapshot, so it is kept (amber badge only); (2) `LEGACY_ELIGIBILITY_DEFAULTS` is
+keyed by `CATEGORY_PGY`, so **per-ROTATION overrides (`CATEGORY_PGY__ROTATION`, written by the
+Shift Matrix's expandable sub-rows) are never reachable by it at all.**
+This shipped as a real, silent, chief-reported bug: ACEP dates were set correctly and the 9h
+POD/MT/FLEX shifts were suppressed for those dates as designed, but the 12h replacements could
+never be assigned because his saved rotation overrides predated those ids — residents simply went
+unscheduled during ACEP with no error anywhere.
+Mitigated by `backfillLaterAddedShiftIds(list, baseKey)` (read-time, next to
+`getEffectiveEligibility`; nothing is written back). It adds a 12h id only when BOTH the current
+`BASE_ELIGIBILITY[baseKey]` grants it AND the override still lists that area's matching 9h shift
+(`POD-D` for `POD-D12`, `POD-N` for `POD-N12`) — condition (a) stops it inventing eligibility the
+app never intended (NEURO_1 has `FLEX-D` but deliberately no `FLEX-D12`), condition (b) keeps an
+area the chief deliberately removed removed. Rotation keys backfill against the PARENT category's
+base. **`ShiftMatrixTab` applies the same backfill** in `effective`/`subEffective`/`subToggle` —
+otherwise the grid shows a 12h shift unchecked while the scheduler assigns it, and the chief's
+first click writes the removal for real. Regression coverage:
+`src/lib/eligibilityLegacy.test.js` (this is why `getEligibleShifts` is now a named export).
+**This helper only understands `-D12`/`-N12`. Add any other new shift id and you must extend it or
+repeat the outage** — a saved override will silently never grant the new shift.
+
 ## When editing
 - Since nearly everything is in `ResidentScheduler.jsx`, grep before assuming helper unused —
   file has no module boundaries to enforce dead-code detection.

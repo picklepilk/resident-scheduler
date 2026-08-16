@@ -1968,14 +1968,50 @@ function stripPedGuardedShifts(list, key) {
   });
 }
 
+// A chief-saved eligibility override is a WHOLESALE snapshot of the shift list, so a shift id added
+// to the app after that override was saved is invisible to it forever. That is not theoretical: the
+// chief set ACEP's dates correctly, the 9h POD/MT/FLEX shifts were suppressed for those dates as
+// designed, and the 12h replacements could never be assigned because his saved overrides — written
+// before those ids existed — didn't list them. Residents simply went unscheduled during ACEP, with
+// no error anywhere. LEGACY_ELIGIBILITY_DEFAULTS can't catch this: it only prunes overrides that
+// still deep-equal a recorded pre-change default, and it is keyed by CATEGORY_PGY, so per-ROTATION
+// overrides (CATEGORY_PGY__ROTATION, written by the Shift Matrix's expandable sub-rows) are never
+// reachable by it at all.
+//
+// So backfill at READ time, conservatively — a 12h id is added only when BOTH:
+//   (a) the CURRENT BASE_ELIGIBILITY for that category grants it (never invent eligibility the app
+//       itself doesn't give — NEURO_1 is eligible for FLEX-D but deliberately not FLEX-D12, so a
+//       naive "9h implies 12h" rule would hand out a shift nobody intended), and
+//   (b) the override still lists that area's matching 9h shift (POD-D for POD-D12, POD-N for
+//       POD-N12) — so an area the chief deliberately removed stays removed.
+// Read-time only: nothing is written back, matching normalizeCoverageEntry/effectiveChiefRole.
+// If a future shift id is added that ISN'T a 12h variant, this helper won't cover it — see the
+// "Rule-default migration" section of CLAUDE.md before adding one.
+const TWELVE_H_SUFFIX = { 'D12': 'D', 'N12': 'N' };
+function backfillLaterAddedShiftIds(list, baseKey) {
+  const base = BASE_ELIGIBILITY[baseKey];
+  if (!base) return list;
+  const have = new Set(list);
+  const add = [];
+  for (const sid of base) {
+    if (have.has(sid)) continue;
+    const m = sid.match(/^(.+)-(D12|N12)$/);
+    if (!m) continue;
+    if (have.has(`${m[1]}-${TWELVE_H_SUFFIX[m[2]]}`)) add.push(sid);
+  }
+  return add.length ? [...list, ...add] : list;
+}
+
 function getEffectiveEligibility(resident, eligOverrides = {}) {
   const key = `${resident.category}_${resident.pgy}`;
   const isEM = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
   if (isEM && resident.blockType) {
     const rotKey = `${key}__${resident.blockType}`;
-    if (eligOverrides[rotKey]) return { list: stripPedGuardedShifts(eligOverrides[rotKey], key), rotationSpecific: true };
+    // Rotation overrides backfill against the PARENT category's base — BASE_ELIGIBILITY has no
+    // per-rotation entries.
+    if (eligOverrides[rotKey]) return { list: stripPedGuardedShifts(backfillLaterAddedShiftIds(eligOverrides[rotKey], key), key), rotationSpecific: true };
   }
-  if (eligOverrides[key]) return { list: stripPedGuardedShifts(eligOverrides[key], key), rotationSpecific: false };
+  if (eligOverrides[key]) return { list: stripPedGuardedShifts(backfillLaterAddedShiftIds(eligOverrides[key], key), key), rotationSpecific: false };
   return { list: [...(BASE_ELIGIBILITY[key] || [])], rotationSpecific: false };
 }
 
@@ -1999,6 +2035,7 @@ const CHANGELOG = [
       '12-hour shifts are no longer tied to conference weeks. Dashboard tab → **12-Hour Shift Windows** lets you set any date range, pick which areas (POD / MT / FLEX / PED) switch to 12h, choose whether the normal 9h shifts are replaced or kept alongside, and override staffing numbers per window.',
       'Your existing ACEP / AAEM / SAEM dates keep working with no setup — they appear as ready-made windows you can edit.',
       'The schedule grid now marks every 12h date with a **12h** badge, and the Dashboard says how many 12h days a block has — including saying plainly when there are none.',
+      '**Fixed the ACEP problem**: if you had ever customized shift eligibility (Shift Matrix tab, including a per-rotation row), your saved settings pre-dated the 12h shifts and never listed them — so during a conference the normal shifts were correctly switched off and the 12h ones could not be assigned, leaving residents unscheduled. Existing settings now pick up the 12h shifts automatically for any area they already cover.',
       'Fixed: every 12h shift was silently being counted as required staffing on ordinary, non-conference days, which inflated the unfilled-slot count on every schedule.',
     ],
   },
@@ -2081,7 +2118,7 @@ function gateActiveForBlock(activeWhen, blockStart) {
 // i.e. no swap — safe, zero-regression default. Note this caller's no-context behavior is
 // deliberately the OPPOSITE of getCoverageFor's: eligibility strips the swap ids when there is no
 // state, while getCoverageFor treats "no state" as "show the base numbers" for the Rules tab.
-function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, ctx = {}) {
+export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, ctx = {}) {
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
   if ((resident.approvedDatesOff || []).includes(dateStr)) return [];
@@ -7199,7 +7236,10 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // expanded: which EM Home rows show their per-rotation sub-rows
   const [expanded, setExpanded] = useState({});
 
-  function effective(k) { return eligOverrides[k] ?? BASE_ELIGIBILITY[k] ?? []; }
+  // Must apply the same read-time backfill getEffectiveEligibility does, or this grid shows a 12h
+  // shift as UNCHECKED while the scheduler is happily assigning it — and the chief's first click
+  // would then "toggle" it off, writing the removal for real.
+  function effective(k) { return eligOverrides[k] ? backfillLaterAddedShiftIds(eligOverrides[k], k) : (BASE_ELIGIBILITY[k] ?? []); }
   function isElig(k,s) { return effective(k).includes(s); }
   function toggle(k,s) {
     setEligOverrides(p=>{ const cur=[...effective(k)]; const next=cur.includes(s)?cur.filter(x=>x!==s):[...cur,s]; return {...p,[k]:next}; });
@@ -7210,13 +7250,19 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // Rotation sub-row helpers — key format: CATEGORY_PGY__ROTATION
   function subKey(parentKey, btId) { return `${parentKey}__${btId}`; }
   function subEffective(parentKey, btId) {
-    return eligOverrides[subKey(parentKey, btId)] ?? effective(parentKey);
+    // Rotation overrides backfill against the PARENT key's base, same as getEffectiveEligibility.
+    const own = eligOverrides[subKey(parentKey, btId)];
+    return own ? backfillLaterAddedShiftIds(own, parentKey) : effective(parentKey);
   }
   function subHasOverride(parentKey, btId) { return !!eligOverrides[subKey(parentKey, btId)]; }
   function subToggle(parentKey, btId, s) {
     const k = subKey(parentKey, btId);
     setEligOverrides(p=>{
-      const cur = [...(p[k] ?? effective(parentKey))];
+      // Start from the BACKFILLED list, not the raw stored one — otherwise toggling any single
+      // shift rewrites the override from a list that's missing the later-added 12h ids and
+      // silently drops them again. Backfill `p[k]` (the fresh value in this updater), not the
+      // closed-over eligOverrides.
+      const cur = [...(p[k] ? backfillLaterAddedShiftIds(p[k], parentKey) : effective(parentKey))];
       const next = cur.includes(s) ? cur.filter(x=>x!==s) : [...cur, s];
       return { ...p, [k]: next };
     });
