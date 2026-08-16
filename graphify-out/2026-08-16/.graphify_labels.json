@@ -36,7 +36,6 @@
   "34": "Auth Domain Restriction",
   "35": "PED-N/PED-S Eligibility Rules",
   "36": "Roster Modal Tabs",
-  "37": "reconcileTabOrder",
   "38": "OMD Response App Design System",
   "39": "Chief-to-Admin Migration",
   "40": "PDF Export Library Quirk",
@@ -64,10 +63,5 @@
   "62": "Pending Account Access Block Migration",
   "63": "Webhooks SQL",
   "64": "Tailwind Config",
-  "65": "Vitest Config",
-  "66": "Demo Sandbox feature",
-  "67": "em-scheduler (sibling app, same author/domain)",
-  "68": "dbReady gate",
-  "69": "admin_email_allowlist table",
-  "70": "enterDemoFresh"
+  "65": "Vitest Config"
 }
