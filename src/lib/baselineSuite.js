@@ -62,7 +62,7 @@ function captureOnce(variant, baseSeed) {
   const dates = getBlockDates(fixture.block.startDate, fixture.block.endDate);
   const qInput = buildQualityInput({
     schedule, report, allResidents: fixture.allResidents, block: fixture.block,
-    appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides,
+    appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, ayConf: fixture.ayConf,
   });
   const metrics = computeQualityMetrics({
     ...qInput,

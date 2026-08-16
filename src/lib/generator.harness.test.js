@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { generateSchedule, generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates, parseDate } from './dates.js';
-import { getCoverageFor } from './coverage.js';
+import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import { SHIFT_MAP } from './shifts.js';
 import { computeQualityMetrics, computeQualityVector, compareVectors } from './scheduleQuality.js';
 import { mulberry32 } from './rng.js';
@@ -64,8 +64,14 @@ describe('generator harness — accounting invariants', () => {
       const unfilledKeys = new Set(report.unfilled.map(u => `${u.dateStr}|${u.shiftId}`));
       for (const ds of dates) {
         const dow = parseDate(ds).getDay();
+        // 4th arg: resolve the same 12h-window state the generator saw for this date, or a 3-arg
+        // call here would see e.g. POD-D12's phantom DEFAULT_COVERAGE minimum (min:2) even though
+        // the generator (which does pass state) correctly resolved {0,0} for it — a spurious
+        // "unfilled but not reported" failure across every 12h id x date once the generator's own
+        // getCoverageFor calls carry ayConf/state (see coverage.js's state param contract).
+        const twelveHourState = twelveHourStateFor(ds, fixture.ayConf);
         for (const shiftId of Object.keys(SHIFT_MAP)) {
-          const { min, max } = getCoverageFor(shiftId, fixture.coverage, dow);
+          const { min, max } = getCoverageFor(shiftId, fixture.coverage, dow, twelveHourState);
           if (min <= 0) continue;
           let filled = 0;
           for (const r of fixture.allResidents) if (schedule[r.id]?.[ds] === shiftId) filled++;
@@ -82,7 +88,7 @@ describe('generator harness — accounting invariants', () => {
       // No resident above their own target (targets are generator-enforced, not just a report
       // artifact) — skip residents with no target (off-service / non-target-bearing). Reuse
       // buildQualityInput for the same targets map the generator itself computed from.
-      const qInput = buildQualityInput({ schedule, report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides });
+      const qInput = buildQualityInput({ schedule, report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, ayConf: fixture.ayConf });
       for (const r of fixture.allResidents) {
         const target = qInput.targets[r.id];
         if (target == null) continue;
@@ -135,7 +141,7 @@ describe('generator harness — block-edge night runs', () => {
     );
     expect(errorCount(issues)).toBe(0);
 
-    const qInput = buildQualityInput({ schedule, report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides });
+    const qInput = buildQualityInput({ schedule, report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, ayConf: fixture.ayConf });
     const metrics = computeQualityMetrics({
       ...qInput,
       dates,
@@ -216,7 +222,7 @@ describe('generator harness — repair pass safety', () => {
             fixture.allResidents, res.schedule, fixture.block, fixture.eligOverrides,
             fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
           );
-          const qInput = buildQualityInput({ schedule: res.schedule, report: res.report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides });
+          const qInput = buildQualityInput({ schedule: res.schedule, report: res.report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, ayConf: fixture.ayConf });
           const metrics = computeQualityMetrics({
             ...qInput, dates, coverage: fixture.coverage,
             seniorGapCount: res.report.seniorGaps.length, restCompromiseCount: res.report.restCompromises.length,
@@ -270,6 +276,7 @@ describe('generator harness — AY-to-date carryover wiring (Phase 2)', () => {
     const qInput = buildQualityInput({
       schedule, report, allResidents: fixture.allResidents, block: fixture.block,
       appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, blocksHistory,
+      ayConf: fixture.ayConf,
     });
     return computeQualityMetrics({
       ...qInput, dates, coverage: fixture.coverage,

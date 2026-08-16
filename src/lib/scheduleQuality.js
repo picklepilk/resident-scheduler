@@ -13,7 +13,7 @@
 
 import { SHIFT_MAP, isNightShiftId } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
-import { getCoverageFor } from './coverage.js';
+import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 
 // Population standard deviation (denominator = N, not N-1) — we're measuring spread within a
 // fixed, fully-known group (every resident in that category/pgy cohort on this block), not
@@ -78,14 +78,25 @@ export function computeQualityMetrics({
   // caller that doesn't supply it gets exactly today's block-only behavior.
   ayPriorTotals = {},
   ayCarryoverFullAt = 3,
+  // 12h-window context (chief-definable ACEP/AAEM/SAEM-style conference windows — see
+  // coverage.js's TWELVE_HOUR_IDS/twelveHourStateFor). The scorer must see EXACTLY the coverage
+  // the generator saw, or it permanently disagrees with the thing it's supposed to be scoring
+  // (every 12h shift's DEFAULT_COVERAGE minimum would count as a phantom miss on every ordinary
+  // date). This module can't import ResidentScheduler.jsx's ayConf state itself (circular — see
+  // file header), so the caller (buildQualityInput) must pass it through. Defaults to {} so an
+  // older/omitting caller still gets a resolvable (all-empty) state.
+  ayConf = {},
 }) {
   // coverageMiss: Σ over dates × every catalog shift of max(0, coverageMin - filledCount).
   let coverageMiss = 0;
   const scheduleResidentIds = Object.keys(schedule || {});
   for (const ds of dates) {
     const dow = parseDate(ds).getDay();
+    // Resolved once per date, not per shift — twelveHourStateFor re-walks every configured window
+    // on each call, and there are ~40 shift ids to check against the same date.
+    const twelveHourState = twelveHourStateFor(ds, ayConf);
     for (const shiftId of Object.keys(SHIFT_MAP)) {
-      const { min } = getCoverageFor(shiftId, coverage, dow);
+      const { min } = getCoverageFor(shiftId, coverage, dow, twelveHourState);
       if (min <= 0) continue;
       let filled = 0;
       for (const rid of scheduleResidentIds) {

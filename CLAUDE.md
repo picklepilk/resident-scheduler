@@ -322,7 +322,8 @@ names below rather than trusting offsets.
   both merge into this one field — M&M counts as a lecture for rule purposes, no rule-engine
   change needed since the lecture-day-before strip already keys off `grLectureDates` generically)
   and `jcPresentDates`; validates Lecture/M&M fall on the resident's `grWorkDow` and JC falls on a
-  first Tuesday, but doesn't hard-block a mismatched date — flags it in the preview instead.
+  Journal Club date for that date's own AY (`isJcDateAnyAy` — NOT the block's AY, since imported
+  dates can span years), but doesn't hard-block a mismatched date — flags it in the preview instead.
 - ~500–1060 `REST-PERIOD UTILITIES` / circadian engine — `checkRestViolations` (legal-rest-hour
   check only), then **`CIRCADIAN SCHEDULING RULES`**: `NIGHT_RULES` (`minRun`/`idealRun`/`maxRun`
   4-6-6, `postNightDayRestH` 24, `maxPerBlock` 6), `GR_START_HOUR` (08:00, Grand Rounds start used
@@ -490,9 +491,12 @@ names below rather than trusting offsets.
   `AYConferenceEditor` for the calendar's selected AY), then the `StatCard` row — schedulable
   residents, shifts filled vs minimum coverage, error/warning counts, days remaining — computed via
   `computeCoverageByDate` and root's consolidated `issues`/`issueCounts` memo, never a second
-  `validateAll` pass; also hosts `JournalClubPlanner` — read-only card listing every first Tuesday
-  of AY with each PGY-1/2/3 presenter slot from `jcPresentDates`, plus per-resident worked-JC
-  counts vs `JC_MAX_PER_AY` (presenter editing itself stays on resident profile), then Special
+  `validateAll` pass; also hosts `JournalClubPlanner` — card listing every Journal Club date of the
+  AY (`resolveJcDates`, see "Journal Club" below) with a per-PGY presenter **dropdown**, plus
+  per-resident worked-JC counts vs `JC_MAX_PER_AY`. Presenter assignment writes the same
+  `resident.jcPresentDates` the profile chip editor does, via a functional `setEmRoster(prev => …)`
+  matched by id (the card renders from the derived `allResidents` memo, so rebuilding the roster
+  from that would drop concurrent edits) — one source of truth, no new state. Then Special
   Days (Code Blue/Procedure/Anesthesia only now — **Peds Advocacy Days removed**, see "Data model"
   below). `RESIDENT FORM` (shared by Add/Edit modals, plus
   `ImportRosterModal` for bulk roster import — `jcPresentDates`/`grLectureDates`/`vacationDates`
@@ -595,7 +599,7 @@ names below rather than trusting offsets.
   dates look incomplete: `getMissingSpecialDayLists` flags any special-day list
   (`SPECIAL_DAY_META`: Code Blue/Advocacy/Procedure/Anesthesia) that's *relevant* to schedulable
   resident on this block (derived from each resident's effective `specialDayRules`, not
-  hardcoded) and still empty, `getJCPresenterGaps` flags any first Tuesday inside block's
+  hardcoded) and still empty, `getJCPresenterGaps` flags any Journal Club date inside block's
   own date range with no PGY-1/2/3 Journal Club presenter (`jcPresentersFor` — extracted from
   `JournalClubPlanner`'s inline filter so gate and planner card can't drift). Clear &
   Regenerate surfaces same `ReadinessWarningPanel` inside own confirm modal rather than
@@ -623,6 +627,17 @@ names below rather than trusting offsets.
   which pins `^5.0.7` and uses plain `import autoTable from 'jspdf-autotable'` + `autoTable(doc,
   opts)` form successfully), re-verify with same esbuild-bundle technique before switching
   call sites back.
+- **What's New banner** (`CHANGELOG`/`WHATS_NEW_KEY`/`unseenChangelog`/`WhatsNewModal`): release
+  notes shown once, automatically, the first time someone opens the app after it updates —
+  deploys are invisible to the chief, and the 12h-conference swap already shipped once and went
+  unnoticed for exactly that reason. Newest entry FIRST; everything above the stored `id` is shown,
+  so skipping two releases shows both, and dismissing stores only `CHANGELOG[0].id`. `id` must
+  change ONLY when there's something worth interrupting someone for. No stored id (new install, or
+  predates the feature) shows the full list once. `res_whats_new_seen` is device-local and
+  **deliberately excluded from `LS_BACKUP_KEYS`** — same posture as `res_dark_mode`/`res_demo_mode`:
+  restoring a colleague's backup must not mark it read for you. Entry text supports `**bold**` and
+  nothing else, on purpose (entries stay plain strings that can't inject markup). Re-openable any
+  time from Settings → What's New, since otherwise it's a one-shot.
 - **Dark mode** (`darkMode` state → `res_dark_mode`, Sun/Moon header toggle, `.dark` class on
   root div): override stylesheet in `index.css`, not Tailwind `dark:` variants — this file
   has thousands of class strings, variant-based approach would mean touching all of them.
@@ -678,6 +693,48 @@ names below rather than trusting offsets.
   Coverage intentionally NOT day-of-week-dependent (chief's call) — `PED-S` one
   shift that only exists on certain weekdays at all, handled via separate `SHIFT_DOW` map, not
   general per-day coverage feature.
+- **12-HOUR SHIFT WINDOWS** (`src/lib/coverage.js`, `ayData[AY].twelveHourWindows`): the 8 twelve-hour
+  shift ids (`POD/MT/FLEX/PED` × `-D12`/`-N12`) are only staffed inside a chief-defined WINDOW:
+  `{id, label, start, end, areas:['POD'|'MT'|'FLEX'|'PED'], mode:'replace'|'add', coverage?:{[sid]:{min,max}}}`.
+  Edited on the Dashboard AY band (`TwelveHourWindowsEditor`). **Backward compat is the whole
+  design**: `resolveTwelveHourWindows(ayConf)` returns the explicit list when
+  `Array.isArray(ayConf.twelveHourWindows)` (an explicit `[]` = no windows, no fallback), else
+  `implicitConferenceWindows(ayConf)` — one `mode:'replace'` POD/MT/FLEX window per ACEP/AAEM/SAEM
+  range, i.e. exactly what the old hardcoded `isConferenceCoverageDate` swap did. **ITE is excluded**
+  (single exam day, not a coverage scenario). An AY nobody has opened behaves identically to before
+  the feature; touching anything in the editor materializes the implicit windows as real rows.
+  `isConferenceCoverageDate` and the `CONF_*_IDS` swap arrays are GONE as a mechanism — don't
+  reintroduce a second answer to "does this date run 12h".
+  **`twelveHourStateFor(dateStr, ayConf)` NEVER returns null** — always
+  `{replaceAreas:Set, addAreas:Set, covOverride:{}}`, empty sets on an ordinary date. This is
+  load-bearing: `getCoverageFor`'s 4th param is now that state object (never a boolean), and it
+  reads `undefined` as "caller has no date context" → base numbers. A null return would therefore
+  fall through and make every 12h DEFAULT_COVERAGE minimum live on EVERY date of every block.
+  (That was a real latent bug: the old guard was `if (confActive != null)` and
+  `isConferenceCoverageDate` returned `undefined` for an `ayConf` of `{}`. Production escaped it
+  only because root passes `DEFAULT_AY_CONF`'s empty STRINGS; the test fixtures pass `{}`, so every
+  committed quality baseline had ~10 phantom minimums/day — fixing it dropped `coverageMiss` by
+  exactly 280 (10 × 28 days) in all three variants, every other vector slot unchanged.)
+  Resolution chain inside `getCoverageFor`, scoped to `TWELVE_HOUR_IDS` + normal ids of
+  `replaceAreas` (everything else keeps the untouched base path):
+  (1) normal id, area ∈ `replaceAreas` → `{0,0}` **returned immediately** (no TRAUMA clamp, no dow
+  max-raise — otherwise a suppressed POD-D on a conference Monday reports max 3 via
+  `DOW_COVERAGE_MAX_OVERRIDE`); (2) 12h id in neither set → `{0,0}`, **EXCEPT PED-D12/PED-N12**,
+  which fall through to the base path so PED's documented year-round coverage opt-in still works;
+  (3) 12h id in a window → `covOverride[sid]` → global `coverage[sid]` **if explicitly present**
+  (`normalizeCoverageEntry` returns null for absent but `{0,0}` for an explicit zero, and the
+  Rules-tab editor is sparse — it DELETES keys equal to the default — so this branch is live) →
+  `replace ? DEFAULT_COVERAGE[sid] : {0,0}`. The add-mode `{0,0}` default prevents POD+`add` from
+  demanding 2+2+2 nine-hour PLUS 2+2 twelve-hour = 10 bodies/day; putting it AFTER the explicit
+  global check prevents zeroing a chief's existing `PED-D12 {1,1}` on the very dates they enabled.
+  `twelveHourAllows(sid, state)` is shared by `getCoverageFor` and `getEligibleShifts` step 8 so
+  coverage and eligibility can't drift — but **each caller owns its own `state === undefined`
+  behavior**, and they are legitimately opposite (eligibility strips the swap ids with no state;
+  coverage shows base numbers, which is what the Rules-tab editor renders). The generator resolves
+  state once per date through a memoizing CLOSURE (`conf12For`), never a prebuilt map — a map miss
+  yields `undefined` and would silently restore the phantom minimums. Rules-tab totals EXCLUDE
+  `TWELVE_HOUR_IDS` (they inflated the headline by 10 min / 18 max on every ordinary day), and
+  those cells are labelled the **in-window** default, not an outside-window one.
 - **PED-N (Peds Night): FM-3 all eligible days, EM_HOME_1/2/3 Thu–Sun only** (opened up from
   FM-3-exclusive — chief wants EM residents able to cover PED-N outside FM-3's Mon/Tue/Wed window,
   PGY-1 soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`).
@@ -730,16 +787,39 @@ names below rather than trusting offsets.
   `generateSchedule`. `rulePriority` lives in `res_app_settings`, already covered by
   `LS_BACKUP_KEYS` — no new backup key or LEGACY migration needed (`normalizeRulePriority` handles
   old backup with no `rulePriority` field by falling back to default order).
-- **Journal Club**: first Tuesday of each month, 18:00-21:00; "worked" derived from
-  `SHIFT_TIMING` overlap (`shiftOverlapsJC`), not hand-maintained shift-id list, so
-  automatically covers PED-S and Trauma Night. Max 3 worked per academic year (July 1–July 1),
-  counted across **Published** saved blocks plus live block (`countPublishedJC`/
-  `countCurrentBlockJC`) — unpublished saved block does NOT count, so chief must mark
-  block Published once final for cap to track it correctly. Presenting dates
-  (`resident.jcPresentDates`) chief-set per resident on profile, validated to fall on
-  first Tuesday; presenter's own overlapping shifts hard-stripped from their eligibility that
-  day, generator additionally avoids placing late night shift that evening (manually
-  placeable, with Validation warning).
+- **Journal Club**: 18:00-21:00; "worked" derived from `SHIFT_TIMING` overlap (`shiftOverlapsJC`),
+  not hand-maintained shift-id list, so automatically covers PED-S and Trauma Night. Max 3 worked
+  per academic year (July 1–July 1), counted across **Published** saved blocks plus live block
+  (`countPublishedJC`/`countCurrentBlockJC`) — unpublished saved block does NOT count, so chief
+  must mark block Published once final for cap to track it correctly. Presenting dates
+  (`resident.jcPresentDates`) chief-set per resident on profile OR from the Journal Club card;
+  presenter's own overlapping shifts hard-stripped from their eligibility that day, generator
+  additionally avoids placing late night shift that evening (manually placeable, with Validation
+  warning).
+- **JC DATES ARE CHIEF-EDITABLE PER AY** (`src/lib/journalClub.js`, `ayData[AY].jcDates`):
+  Journal Club defaults to the first Tuesday of each month but isn't always — the chief moves one
+  occasionally, so the date list is now data. **Absent `jcDates` = derive first Tuesdays**, exactly
+  as before (zero migration; an explicitly-stored `[]` is honored as "no JC this year" and does NOT
+  re-derive). The Dashboard AY band's `JournalClubDatesEditor` materializes the whole derived list
+  on the FIRST edit before applying it, so removing one date can't silently drop the other eleven;
+  "Reset to first Tuesdays" **deletes the key** rather than storing the derived list.
+  `isFirstTuesday`/`getFirstTuesdaysInRange` **moved out of `ResidentScheduler.jsx` into
+  `lib/journalClub.js`** — mandatory, since a `lib` module may never import that file and the
+  resolvers need them. Every consumer goes through one of four helpers, never re-deriving:
+  `resolveJcDates(ay, ayConf, {fallbackDateStr})` / `jcDatesInRange(...)` /
+  `isJcDate(dateStr, ay, ayConf, opts)` (AY-scoped, hot paths) /
+  `isJcDateAnyAy(dateStr, ayData)` (profile + import validators, which legitimately see other AYs;
+  a missing `ayData[thatAy]` falls through to DERIVED dates, never to `[]`). Two non-obvious
+  requirements, both load-bearing: `ayWindowFor().end` is EXCLUSIVE (subtract a day before handing
+  it to the inclusive `getFirstTuesdaysInRange`), and a block with a blank/malformed
+  `academicYear` must fall back to `getAcademicYearFor(block.startDate)` — JC worked with no AY
+  before this change, and silently losing the cap/presenter-gap warnings would be a regression.
+  In `validateAll` the `jcPresentDates` loop is **scoped to this AY's window** before applying
+  `isJcDate`: those dates accumulate across years, and the old AY-agnostic `isFirstTuesday` let
+  prior-year entries pass. Note moving a date **retroactively** changes worked-JC counts for
+  already-published blocks (`countPublishedJC` recomputes against the current list) — accepted.
+  The generator hoists a JC-date `Set` once per run (`isJcDay`), since `isJcDate` otherwise lands
+  in `score()`, which runs per candidate per slot.
 - **Grand Rounds lecture dates** (`resident.grLectureDates`, EM_HOME + EM_BAMC): no evening/night
   shift day before lecture date — hard-stripped from eligibility (generator, manual
   picker both), `validateAll` errors if stale/imported schedule violates it. Validated to fall on

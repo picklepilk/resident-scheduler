@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { addDays, parseDate, toDateStr, getBlockDates } from './dates.js';
 import { SHIFTS } from './shifts.js';
-import { getCoverageFor } from './coverage.js';
+import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import {
   computeQualityMetrics,
   computeQualityVector,
@@ -214,6 +214,61 @@ describe('computeQualityMetrics — coverageMiss', () => {
       seniorGapCount: 0,
       restCompromiseCount: 0,
     });
+    expect(metrics.coverageMiss).toBe(2);
+  });
+});
+
+describe('computeQualityMetrics — coverageMiss and 12h windows (ayConf)', () => {
+  // Both tests zero out every catalog shift explicitly, then poke individual entries, so the
+  // only possible source of a nonzero coverageMiss is the shift(s) under test — no reliance on
+  // DEFAULT_COVERAGE_MINMAX's other baseline numbers.
+  function zeroedCoverage() {
+    return Object.fromEntries(SHIFTS.map(s => [s.id, { min: 0, max: 0 }]));
+  }
+  const dates = ['2026-01-05'];
+  const dow = parseDate(dates[0]).getDay();
+  const baseInput = {
+    schedule: {},
+    dates,
+    residents: [],
+    targets: {},
+    nightOnlyIds: new Set(),
+    nightRules: NIGHT_RULES,
+    weekendPairs: [],
+    seniorGapCount: 0,
+    restCompromiseCount: 0,
+  };
+
+  it('with ayConf: {} (no windows active), a 12h id contributes ZERO to coverageMiss even when explicitly given a nonzero min', () => {
+    const coverage = zeroedCoverage();
+    // Explicit chief-set POD-D12 minimum — with no active 12h window this must be ignored (hard
+    // zero), not read as a phantom unfilled minimum. This is exactly the bug being fixed: the old
+    // 3-arg getCoverageFor(shiftId, coverage, dow) call had no way to see "no window is active"
+    // and would have returned this {min:2,max:4} verbatim.
+    coverage['POD-D12'] = { min: 2, max: 4 };
+
+    // Sanity: getCoverageFor itself confirms POD-D12 hard-zeroes with a resolved-but-empty state.
+    const state = twelveHourStateFor(dates[0], {});
+    expect(getCoverageFor('POD-D12', coverage, dow, state)).toEqual({ min: 0, max: 0 });
+
+    const metrics = computeQualityMetrics({ ...baseInput, coverage, ayConf: {} });
+    expect(metrics.coverageMiss).toBe(0);
+  });
+
+  it('inside an ACEP window, the 12h id DOES contribute while its suppressed 9h sibling does not', () => {
+    const coverage = zeroedCoverage();
+    coverage['POD-D12'] = { min: 2, max: 4 }; // active (POD is in the ACEP window's areas)
+    coverage['POD-D'] = { min: 1, max: 1 };   // suppressed by the same window — must not count
+
+    const ayConf = { acepStart: dates[0], acepEnd: dates[0] };
+
+    // Sanity via getCoverageFor directly: POD-D12 active, POD-D hard-suppressed.
+    const state = twelveHourStateFor(dates[0], ayConf);
+    expect(getCoverageFor('POD-D12', coverage, dow, state)).toEqual({ min: 2, max: 4 });
+    expect(getCoverageFor('POD-D', coverage, dow, state)).toEqual({ min: 0, max: 0 });
+
+    const metrics = computeQualityMetrics({ ...baseInput, coverage, ayConf });
+    // Empty schedule: only POD-D12's min (2) is unmet; POD-D contributes 0 despite its own min.
     expect(metrics.coverageMiss).toBe(2);
   });
 });

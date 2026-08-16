@@ -9,7 +9,7 @@ import {
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
-  Archive, FlaskConical,
+  Archive, FlaskConical, Clock,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
@@ -24,15 +24,17 @@ import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs } from './lib/shifts.js';
-import { getCoverageFor, DEFAULT_COVERAGE, CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS } from './lib/coverage.js';
+import { getCoverageFor, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
+import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { mulberry32 } from './lib/rng.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
-// lib/shifts.js; CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS and the coverage
-// constants/helpers now live in lib/coverage.js; CATEGORIES/CAT_MAP now live in
+// lib/shifts.js; the 12h-window resolvers (resolveTwelveHourWindows/twelveHourStateFor/
+// twelveHourAllows) and the coverage constants/helpers now live in lib/coverage.js;
+// the Journal Club date resolvers live in lib/journalClub.js; CATEGORIES/CAT_MAP now live in
 // lib/parse.js (see that file's own header comment for why) — imported above.
 
 const BLOCK_TYPES_EM = [
@@ -295,13 +297,16 @@ function computeCoverageByDate(dates, sched, coverage, allResidents, ayConf) {
   const m = {};
   for (const ds of dates) {
     const dow = parseDate(ds).getDay();
-    const confActive = ayConf ? isConferenceCoverageDate(ds, ayConf) : false;
+    // Unconditional: twelveHourStateFor always returns a state object, and passing `undefined`
+    // instead would read as "no date context" and let every 12h shift's DEFAULT_COVERAGE minimum
+    // go live here — painting the calendar strips, stat tiles and coverage footer red.
+    const conf12 = twelveHourStateFor(ds, ayConf || {});
     let filled = 0, minTotal = 0;
     const perShift = {};
     const belowMin = [], aboveMax = [];
     for (const s of SHIFTS) {
       if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
-      const cov = getCoverageFor(s.id, coverage, dow, confActive);
+      const cov = getCoverageFor(s.id, coverage, dow, conf12);
       const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
       perShift[s.id] = { count, min: cov.min, max: cov.max };
       minTotal += cov.min;
@@ -545,7 +550,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day shift or Grand Rounds is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3, soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). Enforced by the generator (POD slot left unfilled and reported rather than staffed with the wrong PGY if no PGY-3 is available) and Validation.';
-const JC_RULE_NOTE = 'Journal Club: first Tuesday of the month, 18:00-21:00 (any shift overlapping that window counts as "worked," including PED Swing and Trauma Night). Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each month (set per-resident on the resident\'s profile); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
+const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
 // CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
@@ -1698,52 +1703,40 @@ function podWellnessSubstituteAllowed(ds, blockStart) {
 }
 
 // ─── Journal Club ───────────────────────────────────────────────────────────
-// First Tuesday of each calendar month, 18:00-21:00. A resident "works" Journal Club if assigned
-// any shift whose SHIFT_TIMING interval overlaps that window — derived from timing rather than a
-// hand-maintained shift-id list, so PED-S (11:00-20:00) and any future shift are covered for free.
+// Journal Club runs 18:00-21:00. Its DATES used to be derived-only (first Tuesday of each calendar
+// month); they are now chief-overridable per academic year via ayData[AY].jcDates, resolved through
+// lib/journalClub.js — an absent list still derives first Tuesdays, so nothing migrates. Every
+// consumer below goes through resolveJcDates/jcDatesInRange/isJcDate rather than re-deriving, so
+// the generator, the validator, the planner and the grid can't drift apart on what a JC date is.
+// A resident "works" Journal Club if assigned any shift whose SHIFT_TIMING interval overlaps that
+// window — derived from timing rather than a hand-maintained shift-id list, so PED-S (11:00-20:00)
+// and any future shift are covered for free.
 const JC_MAX_PER_AY = 3;
-function isFirstTuesday(dateStr) {
-  const d = parseDate(dateStr);
-  return d.getDay() === 2 && d.getDate() <= 7;
-}
-function getFirstTuesdaysInRange(startStr, endStr) {
-  if (!startStr || !endStr) return [];
-  const result = [];
-  const start = parseDate(startStr);
-  const end = parseDate(endStr);
-  let month = new Date(start.getFullYear(), start.getMonth(), 1);
-  const lastMonth = new Date(end.getFullYear(), end.getMonth(), 1);
-  while (month <= lastMonth) {
-    const d = new Date(month);
-    while (d.getDay() !== 2) d.setDate(d.getDate() + 1); // advance to Tuesday
-    if (d >= start && d <= end) result.push(toDateStr(d));
-    month.setMonth(month.getMonth() + 1);
-  }
-  return result;
-}
-// shiftOverlapsJC now lives in lib/shifts.js; ayWindowFor now lives in lib/dates.js (both
-// imported above).
+// isFirstTuesday/getFirstTuesdaysInRange now live in lib/journalClub.js (they had to move: a lib
+// module may never import this file, and the resolvers need them). shiftOverlapsJC lives in
+// lib/shifts.js; ayWindowFor in lib/dates.js — all imported above.
 // Counts JC-worked occurrences for a resident across PUBLISHED saved blocks in the given
 // academic year, excluding excludeBlockId (the live/current block, counted separately since it
 // isn't itself a saved snapshot). Defensive against untrusted/partial snapshot shapes.
-function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null) {
+function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null, ayConf = {}) {
   let count = 0;
   for (const snap of blocksHistory) {
     if (!snap?.published || snap.id === excludeBlockId) continue;
     if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
     const rs = snap.data?.schedule?.[residentId];
     if (!rs) continue;
-    for (const ds of getFirstTuesdaysInRange(snap.startDate || snap.data?.startDate, snap.endDate || snap.data?.endDate)) {
+    const snapStart = snap.startDate || snap.data?.startDate;
+    for (const ds of jcDatesInRange(snapStart, snap.endDate || snap.data?.endDate, ay, ayConf, { fallbackDateStr: snapStart })) {
       if (shiftOverlapsJC(rs[ds])) count++;
     }
   }
   return count;
 }
-function countCurrentBlockJC(residentId, block, schedule) {
+function countCurrentBlockJC(residentId, block, schedule, ayConf = {}) {
   const rs = schedule?.[residentId];
   if (!rs) return 0;
   let count = 0;
-  for (const ds of getFirstTuesdaysInRange(block.startDate, block.endDate)) {
+  for (const ds of jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })) {
     if (shiftOverlapsJC(rs[ds])) count++;
   }
   return count;
@@ -1842,11 +1835,11 @@ function jcPresentersFor(emHomeResidents, ds, pgy) {
   return emHomeResidents.filter(r => r.pgy === pgy && (r.jcPresentDates || []).includes(ds));
 }
 
-// First-Tuesday/PGY combinations inside this block's own date range with no presenter set.
-function getJCPresenterGaps(allResidents, block) {
+// Journal-Club-date/PGY combinations inside this block's own date range with no presenter set.
+function getJCPresenterGaps(allResidents, block, ayConf = {}) {
   const emHome = allResidents.filter(r => r.category === 'EM_HOME');
   const gaps = [];
-  for (const ds of getFirstTuesdaysInRange(block.startDate, block.endDate)) {
+  for (const ds of jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })) {
     for (const pgy of [1, 2, 3]) {
       if (jcPresentersFor(emHome, ds, pgy).length === 0) gaps.push({ dateStr: ds, pgy });
     }
@@ -1856,14 +1849,14 @@ function getJCPresenterGaps(allResidents, block) {
 
 // Human-readable readiness messages for the pre-Generate warning gate — empty array means ready.
 // Checks the manual, per-block dates a chief is expected to enter before generation: special-day
-// lists relevant to residents on this block, and Journal Club presenters for first Tuesdays that
-// fall within the block.
-function checkGenerateReadiness({ allResidents, block, dayRules }) {
+// lists relevant to residents on this block, and Journal Club presenters for the Journal Club
+// dates that fall within the block.
+function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {} }) {
   const messages = [];
   for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
     messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
   }
-  for (const g of getJCPresenterGaps(allResidents, block)) {
+  for (const g of getJCPresenterGaps(allResidents, block, ayConf)) {
     messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
   }
   return messages;
@@ -1888,16 +1881,17 @@ function getConferencesInBlock(startStr, endStr, ayConf = {}) {
   });
 }
 
-// True iff dateStr (YYYY-MM-DD) falls inclusively within any of the AY's ACEP/AAEM/SAEM ranges.
-// Plain string comparison is safe for YYYY-MM-DD (same idiom as activeWhen.blockStartOnOrAfter/
-// Before elsewhere in this file) — no Date object needed. ITE is deliberately excluded (a single
-// exam day for the whole EM Home roster, not a conference-coverage scenario).
-function isConferenceCoverageDate(dateStr, ayConf = {}) {
-  const inRange = (start, end) => start && dateStr >= start && dateStr <= (end || start);
-  return inRange(ayConf.acepStart, ayConf.acepEnd) || inRange(ayConf.aaemStart, ayConf.aaemEnd) || inRange(ayConf.saemStart, ayConf.saemEnd);
-}
+// The "which dates run 12h shifts" question now lives entirely in lib/coverage.js
+// (resolveTwelveHourWindows/twelveHourStateFor). An AY the chief has never edited still resolves
+// the ACEP/AAEM/SAEM ranges above into implicit POD/MT/FLEX windows, so this file no longer needs
+// its own conference-date predicate — deleting it keeps one answer rather than two that can drift.
 
 const DEFAULT_AY_CONF = { acepStart:'', acepEnd:'', iteDate:'', aaemStart:'', aaemEnd:'', saemStart:'', saemEnd:'' };
+// The conference DATE fields specifically. "Has this AY had its conferences entered?" has to test
+// these by name, not Object.values(conf).some(Boolean) — the same per-AY object now also carries
+// jcDates and twelveHourWindows, and an array is truthy even when empty, so the generic test would
+// report conferences as set the moment a chief edited a Journal Club date.
+const AY_CONF_DATE_FIELDS = ['acepStart','acepEnd','iteDate','aaemStart','aaemEnd','saemStart','saemEnd'];
 
 // App-level settings (persisted in res_app_settings)
 const DEFAULT_APP_SETTINGS = {
@@ -1985,6 +1979,46 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
   return { list: [...(BASE_ELIGIBILITY[key] || [])], rotationSpecific: false };
 }
 
+// ─── WHAT'S NEW ───────────────────────────────────────────────────────────────
+// Shown once per release, the first time someone opens the app after it updates. The chief and
+// the residents never see a deploy happen, so a feature that isn't announced is a feature nobody
+// finds — the 12h-shift swap already shipped once and went unnoticed for exactly that reason.
+//
+// `id` is what gets persisted as "seen", so it must be unique and must only change when there is
+// something new worth interrupting someone for. Newest entry FIRST — everything above the stored
+// id is shown, so a user who skips two releases gets both. Keep entries written for the chief
+// (what changed for them and where to click), not commit messages.
+const CHANGELOG = [
+  {
+    id: '2026-08-16-jc-dates-12h-windows',
+    date: '2026-08-16',
+    title: 'Journal Club dates you control, and 12-hour shifts on any dates you choose',
+    items: [
+      'Journal Club is no longer locked to the first Tuesday. Dashboard tab → the academic-year band → **Journal Club Dates** lets you move, add or remove any date for the year. Untouched years still default to first Tuesdays.',
+      'Journal Club presenters can now be assigned straight from the **Journal Club** card — one dropdown per PGY per date, showing who is already presenting and each resident\'s worked-JC count. The resident-profile date chips still work exactly as before.',
+      '12-hour shifts are no longer tied to conference weeks. Dashboard tab → **12-Hour Shift Windows** lets you set any date range, pick which areas (POD / MT / FLEX / PED) switch to 12h, choose whether the normal 9h shifts are replaced or kept alongside, and override staffing numbers per window.',
+      'Your existing ACEP / AAEM / SAEM dates keep working with no setup — they appear as ready-made windows you can edit.',
+      'The schedule grid now marks every 12h date with a **12h** badge, and the Dashboard says how many 12h days a block has — including saying plainly when there are none.',
+      'Fixed: every 12h shift was silently being counted as required staffing on ordinary, non-conference days, which inflated the unfilled-slot count on every schedule.',
+    ],
+  },
+];
+const WHATS_NEW_KEY = 'res_whats_new_seen';
+// Device-local, deliberately NOT in LS_BACKUP_KEYS — "have I read this yet" is per-person, and
+// restoring a colleague's backup or syncing another device must not mark it read for you. Same
+// posture as res_dark_mode / res_demo_mode.
+function unseenChangelog() {
+  try {
+    const seen = localStorage.getItem(WHATS_NEW_KEY);
+    // No stored id = either a brand-new install or someone who predates this feature. Both get the
+    // full list once; it's short, and the alternative (silently marking everything read) is how
+    // the last release went unnoticed.
+    if (!seen) return CHANGELOG;
+    const i = CHANGELOG.findIndex(e => e.id === seen);
+    return i === -1 ? CHANGELOG : CHANGELOG.slice(0, i);
+  } catch { return []; }                               // storage blocked — never block the app
+}
+
 function makeDefaultBlock() {
   return {
     id: `blk_${Date.now()}`, name: '', academicYear: getAcademicYear(),
@@ -2041,10 +2075,12 @@ function gateActiveForBlock(activeWhen, blockStart) {
 // ctx: { blockStart, forGenerator, ayConf } — blockStart is the block's start date string
 // (needed for the Peds/Trauma half-block split); forGenerator=true lets generator-only day-type
 // restrictions apply (chief picker still allows those shifts manually — see
-// dayTypeRestrictions[].scope); ayConf is the AY's conference-date config (ACEP/AAEM/SAEM ranges)
-// — when present, drives the conference-week POD/MT/FLEX 12h auto-swap (see
-// isConferenceCoverageDate/CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS); omitted at a call
-// site simply means confActive resolves to false, i.e. no swap — safe, zero-regression default.
+// dayTypeRestrictions[].scope); ayConf is the AY-level config, which now carries both the
+// conference dates and the chief's 12h windows — it drives the 12h swap via twelveHourStateFor /
+// twelveHourAllows (see lib/coverage.js). Omitting it at a call site means no window is active,
+// i.e. no swap — safe, zero-regression default. Note this caller's no-context behavior is
+// deliberately the OPPOSITE of getCoverageFor's: eligibility strips the swap ids when there is no
+// state, while getCoverageFor treats "no state" as "show the base numbers" for the Rules tab.
 function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, ctx = {}) {
   if (!isSchedulable(resident)) return [];
   // Approved days off — resident blocked entirely
@@ -2162,14 +2198,13 @@ function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverrides = 
     if (ctx.forGenerator) eligible = eligible.filter(s => SHIFT_MAP[s]?.type !== 'day');
   }
 
-  // 8. Conference-week 12h swap (POD/MT/FLEX) — see CONF_SUPPRESSED_NORMAL_IDS/
-  // CONF_AUTO_SWAP_12H_IDS. No-ops (confActive stays false) when the caller hasn't threaded
-  // ctx.ayConf through yet.
-  const confActive = ctx.ayConf ? isConferenceCoverageDate(dateStr, ctx.ayConf) : false;
-  eligible = eligible.filter(s =>
-    CONF_SUPPRESSED_NORMAL_IDS.includes(s) ? !confActive :
-    CONF_AUTO_SWAP_12H_IDS.includes(s)     ? confActive  : true
-  );
+  // 8. 12h window swap — chief-defined windows (or, for an AY the chief hasn't touched, the
+  // implicit ACEP/AAEM/SAEM ones) decide which areas run 12h on this date. ctx.twelveHourState
+  // lets a hot caller (the generator) hand in a state it already resolved for this date rather
+  // than re-resolving per resident. Note PED's 12h pair stays available year-round when no window
+  // names PED — that opt-in is gated by its coverage numbers, not by eligibility.
+  const conf12 = ctx.twelveHourState || twelveHourStateFor(dateStr, ctx.ayConf || {});
+  eligible = eligible.filter(s => twelveHourAllows(s, conf12));
 
   return eligible;
 }
@@ -2324,26 +2359,33 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
     // day-of protections, and sanity checks on jcPresentDates entries.
     if (resident.category === 'EM_HOME') {
-      const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id) + countCurrentBlockJC(resident.id, block, schedule);
+      const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: 'warn' });
 
+      // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
+      // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
+      // prior-year entries through. Fall back to the block's own start date when academicYear was
+      // never set, so a block with no AY doesn't silently lose the whole check (including the
+      // night-shift-after-JC warning below, which lives in the same loop and needs no AY).
+      const effectiveJcAy = ayWindowFor(block.academicYear) ? block.academicYear : getAcademicYearFor(block.startDate);
+      const ay = ayWindowFor(effectiveJcAy);
       for (const jcDate of resident.jcPresentDates || []) {
-        if (!isFirstTuesday(jcDate))
+        const inThisAy = ay ? (jcDate >= ay.start && jcDate < ay.end) : false;
+        if (inThisAy && !isJcDate(jcDate, effectiveJcAy, ayConf, { fallbackDateStr: block.startDate }))
           issues.push({ residentId: resident.id, name, dateStr: jcDate, shiftId: null,
-            message: `Journal Club presenting date isn't a first Tuesday: ${formatDisplayDate(jcDate)}`, level: 'warn' });
+            message: `Journal Club presenting date isn't a Journal Club date for ${effectiveJcAy}: ${formatDisplayDate(jcDate)}`, level: 'warn' });
         const nightSid = rs[jcDate];
         if (nightSid && SHIFT_MAP[nightSid]?.type === 'night')
           issues.push({ residentId: resident.id, name, dateStr: jcDate, shiftId: nightSid,
             message: `Presenter working a night shift after Journal Club (${formatDisplayDate(jcDate)})`, level: 'warn' });
       }
-      const ay = ayWindowFor(block.academicYear);
       if (ay) {
         const presentingInAy = (resident.jcPresentDates || []).filter(d => d >= ay.start && d < ay.end);
         if (presentingInAy.length > 1)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${presentingInAy.length} Journal Club presenting dates in ${block.academicYear} — each resident presents at most once/year`, level: 'warn' });
+            message: `${presentingInAy.length} Journal Club presenting dates in ${effectiveJcAy} — each resident presents at most once/year`, level: 'warn' });
       }
     }
 
@@ -2516,10 +2558,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
   }
   for (const ds of blockDates) {
     const dsDow = parseDate(ds).getDay();
-    const confActive = isConferenceCoverageDate(ds, ayConf);
+    const conf12 = twelveHourStateFor(ds, ayConf || {});
     for (const shift of SHIFTS) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
-      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
+      const cov = getCoverageFor(shift.id, coverage, dsDow, conf12);
       const count = countsByDateShift[`${ds}__${shift.id}`] || 0;
       if (cov.min > 0 && count < cov.min)
         issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
@@ -2560,7 +2602,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
   }
 
   // Journal Club: each month should have one presenter marked from each of EM Home PGY-1/2/3.
-  for (const jcDate of getFirstTuesdaysInRange(block.startDate, block.endDate)) {
+  for (const jcDate of jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })) {
     for (const pgy of [1, 2, 3]) {
       const hasPresenter = allResidents.some(r => r.category === 'EM_HOME' && r.pgy === pgy && (r.jcPresentDates || []).includes(jcDate));
       if (!hasPresenter)
@@ -2606,6 +2648,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
   const blockWeekends = getBlockWeekends(dates);
 
+  // Hoisted per-date lookups. isJcDate lands inside score(), which runs per candidate per slot, and
+  // twelveHourStateFor walks every window — both would otherwise be re-derived thousands of times.
+  // A memoizing CLOSURE, not a prebuilt map, on purpose: a prebuilt map missing a key would yield
+  // undefined, which getCoverageFor reads as "no date context" and would silently restore every
+  // 12h shift's default minimum. A closure can't miss.
+  const jcDateSet = new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate }));
+  const isJcDay = ds => jcDateSet.has(ds);
+  const conf12Cache = {};
+  const conf12For = ds => (conf12Cache[ds] ??= twelveHourStateFor(ds, ayConf || {}));
+
   const schedule = {};
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
 
@@ -2636,7 +2688,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // rather than double-walking the loop, since that helper already knows how to find first
     // Tuesdays for this exact block.
     jcCount[r.id] = r.category === 'EM_HOME'
-      ? countPublishedJC(r.id, block.academicYear, blocksHistory, block.id) + countCurrentBlockJC(r.id, block, schedule)
+      ? countPublishedJC(r.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(r.id, block, schedule, ayConf)
       : 0;
     for (const sid of Object.values(schedule[r.id])) {
       if (!sid) continue;
@@ -2672,7 +2724,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const eligCache = {};
   for (const r of allResidents) {
     eligCache[r.id] = {};
-    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf }));
+    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds) }));
   }
 
   const report = {
@@ -2738,7 +2790,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const maxBlockHours = (80 / 7) * dates.length;
     pool = pool.filter(r => hoursTotal[r.id] + (SHIFT_TIMING[shift.id]?.durationH || 0) <= maxBlockHours);
     if (!pool.length) return { candidates: [], reason: 'hoursCapped' };
-    if (isFirstTuesday(ds) && shiftOverlapsJC(shift.id)) {
+    if (isJcDay(ds) && shiftOverlapsJC(shift.id)) {
       pool = pool.filter(r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY);
       if (!pool.length) return { candidates: [], reason: 'jcCapped' };
     }
@@ -2868,7 +2920,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const podPgy1SecondSlot = shift.area === 'POD' && seniorFilled && isEmIntern(r) ? 1 : 0;
     // Mildly steer away from a resident's 3rd (final allowed) journal club this AY, once they're
     // already at 2 — candidatePool already hard-blocks a 4th.
-    const jcNearCap = r.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(shift.id) && jcCount[r.id] === 2 ? 1 : 0;
+    const jcNearCap = r.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(shift.id) && jcCount[r.id] === 2 ? 1 : 0;
     // Trauma nights: prefer PGY-2 on Fri/Sat, PGY-3 on Sun/Mon (trauma_n_window already allows
     // any PGY-2/3 on any of the four nights — this only breaks ties toward the preferred
     // pairing), and mildly favor whichever senior has worked fewer trauma nights this academic
@@ -2955,13 +3007,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     streakCache = {};
     const slots = [];
     const dsDow = parseDate(ds).getDay();
-    const confActive = isConferenceCoverageDate(ds, ayConf);
+    const conf12 = conf12For(ds);
     for (const shift of SHIFTS.filter(includeShift)) {
       if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
       // TRAUMA-D/TRAUMA-N are clamped to at most 1 inside getCoverageFor itself (single source of
       // truth shared with validateAll/computeCoverageByDate — see lib/coverage.js).
-      const cov = getCoverageFor(shift.id, coverage, dsDow, confActive);
+      const cov = getCoverageFor(shift.id, coverage, dsDow, conf12);
       if (phase === 'min') {
         // Count manual assignments that exceed configured coverage too, or totalSlots can end up
         // smaller than filled+keptManual (e.g. coverage set to 0 after a manual entry already
@@ -3123,7 +3175,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (slot.shift.area === 'PED') pedsCount[best.id]++;
       if (slot.shift.type === 'night') nightCount[best.id]++;
       if (slot.shift.id === 'TRAUMA-N') traumaNightYearly[best.id] = (traumaNightYearly[best.id] || 0) + 1;
-      if (best.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
+      if (best.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
       if (jeoPolicy === 'warn' && (best.jeopardyDates || []).includes(ds)) {
         report.jeopardyPlacements.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
       }
@@ -3153,7 +3205,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     function minFor(sid, ds) {
       const dow = parseDate(ds).getDay();
-      return getCoverageFor(sid, coverage, dow, isConferenceCoverageDate(ds, ayConf)).min;
+      return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
     }
     function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
 
@@ -3172,7 +3224,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh?.type === 'night') nightCount[rid]--;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
       const r = residentById.get(rid);
-      if (r?.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
+      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
       return sid;
     }
     function assignCell(rid, sid, ds) {
@@ -3186,7 +3238,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh?.type === 'night') nightCount[rid]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
       const r = residentById.get(rid);
-      if (r?.category === 'EM_HOME' && isFirstTuesday(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
+      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
     }
     // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
     // resets it first, since repair jumps between arbitrary dates, not one day at a time.
@@ -3400,7 +3452,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 // Builds the input shape src/lib/scheduleQuality.js's computeQualityMetrics expects, from
 // the same primitives generateSchedule itself used (getShiftTarget/isNightOnlyResident/
 // getBlockWeekends) — keeps generator and quality-harness scoring inputs identical.
-export function buildQualityInput({ schedule, report, allResidents, block, appSettings = {}, eligOverrides = {}, blocksHistory = [] }) {
+export function buildQualityInput({ schedule, report, allResidents, block, appSettings = {}, eligOverrides = {}, blocksHistory = [], ayConf = {} }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   // AY-to-date carryover (Phase 2). Defaults to [] so every existing caller that doesn't pass
   // blocksHistory keeps today's exact block-only behavior — an empty map makes the carryover a
@@ -3420,6 +3472,11 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
     maxConsecutiveWorkDays: MAX_CONSECUTIVE_WORK_DAYS,
     ayPriorTotals: computeAyPriorTotals(ay, blocksHistory, block.id),
     ayCarryoverFullAt: AY_CARRYOVER_FULL_AT,
+    // The scorer has to see the same coverage the generator saw. Without this it resolves every
+    // 12h shift's DEFAULT_COVERAGE minimum on every date (~10 phantom unfillable slots/day) and
+    // permanently disagrees with the generator it is scoring. Passed rather than imported for the
+    // same circular-import reason as maxConsecutiveWorkDays above.
+    ayConf,
   };
 }
 
@@ -3444,6 +3501,7 @@ function scoreGenerationResult(res, args, rulePriority) {
     // AY-to-date carryover (Phase 2). args.blocksHistory is already threaded here for validateAll
     // above, so best-of-N selection now weighs year-to-date fairness with no new plumbing.
     blocksHistory: args.blocksHistory,
+    ayConf: args.ayConf,
   });
   const metrics = computeQualityMetrics({
     ...qInput,
@@ -3861,6 +3919,46 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
+// Renders the CHANGELOG entries a viewer hasn't acknowledged yet. Dismissing stores only the
+// NEWEST id, so skipping three releases and reading them together still marks all three read.
+// **bold** is the only markup supported — deliberately, so entries stay plain strings that can't
+// inject markup into the page.
+function WhatsNewModal({ entries, onClose }) {
+  const renderText = text => text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    part.startsWith('**') && part.endsWith('**')
+      ? <strong key={i} className="font-semibold text-gray-800">{part.slice(2, -2)}</strong>
+      : <span key={i}>{part}</span>
+  );
+  return (
+    <Modal title="What's new" onClose={onClose} wide>
+      <div className="space-y-5">
+        {entries.map(e => (
+          <div key={e.id}>
+            <div className="flex items-baseline gap-2 mb-2">
+              <h3 className="text-sm font-semibold text-gray-800">{e.title}</h3>
+              <span className="text-xs text-gray-400">{formatDisplayDate(e.date)}</span>
+            </div>
+            <ul className="space-y-1.5">
+              {e.items.map((it, i) => (
+                <li key={i} className="flex gap-2 text-xs text-gray-600 leading-relaxed">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>{renderText(it)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        <div className="flex justify-end pt-1">
+          <button onClick={onClose}
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg font-medium transition-colors">
+            Got it
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // Button primitive — token-first, replaces the divergent hand-rolled "secondary button" looks
 // scattered across the file (header export buttons, schedule-grid toolbar, save-before-switch
 // modal). Existing call sites are NOT migrated yet (later work) — this just defines the primitive.
@@ -4215,11 +4313,13 @@ function AvailabilityRangesEditor({ ranges = [], onUpdate }) {
 
 // ─── DASHBOARD TAB ────────────────────────────────────────────────────────────
 
-// Read-only planning card: every first Tuesday of the academic year with its PGY-1/2/3 presenter
-// (set on each resident's profile — this view doesn't edit jcPresentDates), plus each EM Home
-// resident's worked-JC count against the 3/AY cap. Self-contained so promoting it to its own tab
-// later is just a TABS entry + routing line.
-function JournalClubPlanner({ allResidents, block, blocksHistory }) {
+// Planning card: every Journal Club date of the academic year with its PGY-1/2/3 presenter, plus
+// each EM Home resident's worked-JC count against the 3/AY cap. Presenters are assignable inline
+// here (the resident-profile chip editor still works too) — both write the same
+// resident.jcPresentDates field, so there is no second source of truth. Dates come from
+// resolveJcDates, so a chief-edited list and the derived first-Tuesday default look identical
+// here. Self-contained so promoting it to its own tab later is just a TABS entry + routing line.
+function JournalClubPlanner({ allResidents, block, blocksHistory, ayConf = {}, onAssignPresenter }) {
   const win = ayWindowFor(block.academicYear);
   const emHome = allResidents.filter(r => r.category === 'EM_HOME');
 
@@ -4231,14 +4331,17 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
     );
   }
 
-  // win.end is the AY's EXCLUSIVE next-July-1 cutoff — getFirstTuesdaysInRange is inclusive, so
-  // pass the day before to stay within this AY.
-  const winEndInclusive = toDateStr(addDays(parseDate(win.end), -1));
-  const tuesdays = getFirstTuesdaysInRange(win.start, winEndInclusive);
+  const jcDates = resolveJcDates(block.academicYear, ayConf, { fallbackDateStr: block.startDate });
   const today = toDateStr(new Date());
+  // How many dates each resident already presents this AY — surfaced in the dropdown so the chief
+  // can see who is already committed before creating the once-per-AY conflict validateAll warns on.
+  const presentingCount = {};
+  for (const r of emHome) presentingCount[r.id] = (r.jcPresentDates || []).filter(d => d >= win.start && d < win.end).length;
+  const workedCount = {};
+  for (const r of emHome) workedCount[r.id] = countPublishedJC(r.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(r.id, block, block.schedule || {}, ayConf);
 
   return (
-    <CollapsibleCard title="Journal Club" subtitle={`${block.academicYear} · first Tuesday, 18:00–21:00 · presenter dates are set on each resident's profile`}>
+    <CollapsibleCard title="Journal Club" subtitle={`${block.academicYear} · ${jcDates.length} date${jcDates.length === 1 ? '' : 's'}, 18:00–21:00 · dates are edited on the AY card above`}>
       <div className="space-y-4">
         <div className="overflow-x-auto">
           <table className="text-xs w-full">
@@ -4251,7 +4354,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
               </tr>
             </thead>
             <tbody>
-              {tuesdays.map(ds => {
+              {jcDates.map(ds => {
                 const inBlock = block.startDate && block.endDate && ds >= block.startDate && ds <= block.endDate;
                 const isPast = ds < today;
                 return (
@@ -4262,23 +4365,52 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
                     </td>
                     {[1,2,3].map(pgy => {
                       const presenters = jcPresentersFor(emHome, ds, pgy);
+                      const pool = emHome.filter(r => r.pgy === pgy);
+                      // More than one presenter for the same PGY can only arrive from the profile
+                      // editor (this select assigns exactly one). Keep surfacing it as the red
+                      // conflict validateAll already warns about rather than silently showing one.
+                      const conflicted = presenters.length > 1;
+                      const selected = presenters.length === 1 ? presenters[0].id : '';
+                      if (!onAssignPresenter) {
+                        return (
+                          <td key={pgy} className="py-1 pr-3">
+                            {presenters.length === 0 ? (
+                              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isPast ? 'bg-gray-100 text-gray-400' : 'bg-amber-50 text-amber-600'}`}>unassigned</span>
+                            ) : (
+                              <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${conflicted ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                                {presenters.map(p => `${p.lastName}, ${p.firstName}`).join(' + ')}
+                              </span>
+                            )}
+                          </td>
+                        );
+                      }
+                      const cls = conflicted ? 'border-red-300 bg-red-50 text-red-700'
+                        : presenters.length === 1 ? 'border-green-200 bg-green-50 text-green-700'
+                        : isPast ? 'border-gray-200 bg-gray-50 text-gray-400'
+                        : 'border-amber-200 bg-amber-50 text-amber-700';
                       return (
                         <td key={pgy} className="py-1 pr-3">
-                          {presenters.length === 0 ? (
-                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${isPast ? 'bg-gray-100 text-gray-400' : 'bg-amber-50 text-amber-600'}`}>unassigned</span>
-                          ) : (
-                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${presenters.length > 1 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
-                              {presenters.map(p => `${p.lastName}, ${p.firstName}`).join(' + ')}
-                            </span>
-                          )}
+                          <select value={conflicted ? '' : selected}
+                            onChange={e => onAssignPresenter(ds, pgy, e.target.value || null)}
+                            title={conflicted ? `${presenters.map(p => `${p.lastName}, ${p.firstName}`).join(' + ')} — more than one presenter set; choosing one here replaces them all` : undefined}
+                            className={`text-[10px] font-medium border rounded px-1 py-0.5 max-w-[11rem] focus:outline-none focus:ring-1 focus:ring-primary ${cls}`}>
+                            <option value="">{conflicted ? `⚠ ${presenters.length} presenters` : 'unassigned'}</option>
+                            {pool.map(r => (
+                              <option key={r.id} value={r.id}>
+                                {r.lastName}, {r.firstName}
+                                {presentingCount[r.id] > 0 && !presenters.some(p => p.id === r.id) ? ' · already presenting' : ''}
+                                {` · ${workedCount[r.id]}/${JC_MAX_PER_AY} worked`}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                       );
                     })}
                   </tr>
                 );
               })}
-              {tuesdays.length === 0 && (
-                <tr><td colSpan={4} className="py-2 text-gray-400 italic">No first Tuesdays fall within this academic year window.</td></tr>
+              {jcDates.length === 0 && (
+                <tr><td colSpan={4} className="py-2 text-gray-400 italic">No Journal Club dates set for this academic year.</td></tr>
               )}
             </tbody>
           </table>
@@ -4288,7 +4420,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory }) {
           <div className="text-xs font-semibold text-gray-500 mb-1.5">Worked Journal Clubs this AY (cap {JC_MAX_PER_AY})</div>
           <div className="flex flex-wrap gap-1.5">
             {emHome.map(r => {
-              const count = countPublishedJC(r.id, block.academicYear, blocksHistory, block.id) + countCurrentBlockJC(r.id, block, block.schedule || {});
+              const count = workedCount[r.id];
               const cls = count > JC_MAX_PER_AY ? 'bg-red-50 text-red-600' : count === JC_MAX_PER_AY ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600';
               return (
                 <span key={r.id} className={`text-[10px] font-medium px-2 py-1 rounded-full ${cls}`}>
@@ -4692,6 +4824,17 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
               conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
               onUpdate={conf => updateAyData(selectedAy, conf)}
             />
+            <JournalClubDatesEditor
+              ay={selectedAy}
+              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
+              onUpdate={conf => updateAyData(selectedAy, conf)}
+              blockStart={block.startDate}
+            />
+            <TwelveHourWindowsEditor
+              ay={selectedAy}
+              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
+              onUpdate={conf => updateAyData(selectedAy, conf)}
+            />
           </div>
         )}
         <div className="space-y-2">
@@ -4747,6 +4890,38 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
+  // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
+  // generator will act on, including the implicit conference windows an untouched AY still gets.
+  const twelveHourDaysInBlock = useMemo(() => {
+    const dates = getBlockDates(block.startDate, block.endDate);
+    if (!dates.length) return [];
+    return resolveTwelveHourWindows(ayConf).map(w => {
+      const days = dates.filter(ds => ds >= w.start && ds <= w.end);
+      return days.length ? { key: w.id, label: w.label || '12h window', start: days[0], end: days[days.length - 1],
+        days: days.length, areas: w.areas, mode: w.mode } : null;
+    }).filter(Boolean);
+  }, [block.startDate, block.endDate, ayConf]);
+  // Distinct dates, not the sum of window lengths — two windows can overlap the same day.
+  const twelveHourDayCount = useMemo(() => {
+    const dates = getBlockDates(block.startDate, block.endDate);
+    return dates.filter(ds => {
+      const st = twelveHourStateFor(ds, ayConf || {});
+      return st.replaceAreas.size > 0 || st.addAreas.size > 0;
+    }).length;
+  }, [block.startDate, block.endDate, ayConf]);
+  // Assigning a Journal Club presenter from the planner card writes the same
+  // resident.jcPresentDates field the profile chip editor does — one source of truth, no new
+  // state. Functional updater + id matching on purpose: this component renders from the derived
+  // allResidents memo, so building the next roster from that would drop concurrent roster edits.
+  const assignJcPresenter = (ds, pgy, residentId) => setEmRoster(prev => (prev || []).map(r => {
+    if (r.category !== 'EM_HOME' || r.pgy !== pgy) return r;
+    const has = (r.jcPresentDates || []).includes(ds);
+    const want = r.id === residentId;
+    if (has === want) return r;
+    return { ...r, jcPresentDates: want
+      ? [...(r.jcPresentDates || []), ds].sort()
+      : (r.jcPresentDates || []).filter(d => d !== ds) };
+  }));
   const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
   const sd           = block.specialDays || {};
   const schedule     = block.schedule || {};
@@ -4981,7 +5156,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         subtitle={confsInBlock.length === 0 ? 'No conferences fall within this block period.' : `${confsInBlock.length} conference${confsInBlock.length !== 1 ? 's' : ''} overlap this block — modified shift schedule applies to non-attending EM Home residents.`}>
         {confsInBlock.length === 0 ? (
           <p className="text-xs text-gray-400 italic">
-            {Object.values(ayConf).some(Boolean)
+            {AY_CONF_DATE_FIELDS.some(f => ayConf[f])
               ? 'All AY conferences fall outside this block period.'
               : 'No conference dates set for this academic year — add them in the Block Calendar above (select this AY, then Conference & ITE Dates).'}
           </p>
@@ -4998,8 +5173,33 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         )}
       </CollapsibleCard>
 
+      {/* 12h windows active in this block — the whole point is that an EMPTY list says so out loud,
+          rather than the chief generating a schedule and silently getting no 12h shifts. */}
+      <CollapsibleCard title="12-Hour Shift Days This Block"
+        subtitle={twelveHourDaysInBlock.length === 0
+          ? 'None — every day of this block runs the normal 9h shifts.'
+          : `${twelveHourDayCount} day${twelveHourDayCount === 1 ? '' : 's'} across ${twelveHourDaysInBlock.length} window${twelveHourDaysInBlock.length === 1 ? '' : 's'} run 12h shifts.`}>
+        {twelveHourDaysInBlock.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">
+            No 12h window covers this block. Set one in the Block Calendar above (select this AY, then
+            12-Hour Shift Windows) — conference dates seed them automatically.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {twelveHourDaysInBlock.map(g => (
+              <div key={g.key} className="flex flex-col px-3 py-2 rounded-xl border bg-indigo-50 border-indigo-200 text-indigo-700 text-sm font-medium">
+                <span className="font-bold">{g.label}</span>
+                <span className="text-xs opacity-75">{prettyDate(g.start)}{g.end !== g.start ? ` – ${prettyDate(g.end)}` : ''} · {g.days} day{g.days === 1 ? '' : 's'}</span>
+                <span className="text-xs opacity-75">{g.areas.join(', ')} · {g.mode === 'add' ? 'alongside 9h' : 'replacing 9h'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CollapsibleCard>
+
       {/* Journal Club presenter planning + worked-JC caps */}
-      <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}/>
+      <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}
+        ayConf={ayConf} onAssignPresenter={assignJcPresenter}/>
 
       {/* 1st Fridays */}
       {firstFridays.length > 0 && (
@@ -5339,9 +5539,217 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
+// Inline Journal Club date editor, in the same AY folder as the conference dates. JC used to be
+// hardcoded to "first Tuesday of the month"; the chief needs to move one occasionally. An absent
+// conf.jcDates keeps deriving first Tuesdays (zero migration), and the FIRST edit materializes the
+// whole derived list before applying the change — so removing one date can't silently discard the
+// other eleven. "Reset" deletes the key rather than storing the derived list, so a resident who
+// later corrects a date still inherits the default.
+function JournalClubDatesEditor({ ay, conf, onUpdate, blockStart }) {
+  const [open, setOpen] = useState(false);
+  const isCustom = Array.isArray(conf.jcDates);
+  const dates = resolveJcDates(ay, conf, { fallbackDateStr: blockStart });
+
+  const setDates = next => onUpdate({ ...conf, jcDates: [...new Set(next)].sort() });
+  const reset = () => { const c = { ...conf }; delete c.jcDates; onUpdate(c); };
+
+  return (
+    <div className="bg-primary/10 border-b border-primary/20">
+      <button onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-primary/10 transition-colors">
+        <div className="flex items-center gap-2 min-w-0">
+          <CalendarDays size={13} className="text-primary shrink-0"/>
+          <span className="text-xs font-semibold text-primary">Journal Club Dates</span>
+          <span className="text-xs text-primary truncate">
+            {dates.length} date{dates.length === 1 ? '' : 's'} · {isCustom ? 'customized' : 'first Tuesday of each month'}
+          </span>
+        </div>
+        <ChevronDown size={13} className={`text-primary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+
+      {open && (
+        <div className="px-4 py-3 space-y-2">
+          <SpecialDaysList
+            label={`Journal Club — ${ay}`}
+            hint="Defaults to the first Tuesday of each month. Editing any date pins the whole year's list; 18:00–21:00 either way."
+            dates={dates}
+            onUpdate={setDates}
+            chipClass="bg-violet-50 text-violet-700 border-violet-200"/>
+          <p className="text-xs text-gray-500">
+            Presenters are assigned on the Journal Club card below. Moving a date leaves any presenter
+            still marked for the old date — Validation flags those so nothing goes missing silently.
+            Worked-JC counts for already-published blocks are recomputed against this list.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            {isCustom && (
+              <button onClick={reset}
+                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
+                Reset to first Tuesdays
+              </button>
+            )}
+            <button onClick={() => setOpen(false)}
+              className="text-xs px-3 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors font-medium">
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Inline 12-hour-shift window editor. Before this existed, 12h shifts swapped in ONLY during the
+// AY's ACEP/AAEM/SAEM ranges, always for POD/MT/FLEX, always all-or-nothing. An AY the chief has
+// never opened here still behaves exactly that way (resolveTwelveHourWindows falls back to those
+// implicit windows); opening the editor and touching anything materializes them as real editable
+// rows. "Reset" deletes the key and returns to the implicit conference windows.
+function TwelveHourWindowsEditor({ ay, conf, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const isCustom = Array.isArray(conf.twelveHourWindows);
+  const windows = resolveTwelveHourWindows(conf);
+
+  const commit = next => onUpdate({ ...conf, twelveHourWindows: next });
+  const patch = (i, fields) => commit(windows.map((w, j) => j === i ? { ...w, ...fields } : w));
+  const reset = () => { const c = { ...conf }; delete c.twelveHourWindows; onUpdate(c); setExpanded(null); };
+  const addWindow = () => commit([...windows, { id: `w${windows.length + 1}_${ay}`, label: '', start: '', end: '', areas: ['POD','MT','FLEX'], mode: 'replace' }]);
+  const removeWindow = i => { commit(windows.filter((_, j) => j !== i)); setExpanded(null); };
+
+  const toggleArea = (i, area) => {
+    const cur = windows[i].areas || [];
+    patch(i, { areas: cur.includes(area) ? cur.filter(a => a !== area) : [...cur, area] });
+  };
+  const setOverride = (i, sid, field, raw) => {
+    const cov = { ...(windows[i].coverage || {}) };
+    const entry = { ...(cov[sid] || {}) };
+    if (raw === '') delete entry[field]; else entry[field] = Math.max(0, Number(raw) || 0);
+    // A half-filled override is meaningless to getCoverageFor (normalizeCoverageEntry needs both),
+    // so mirror the missing side rather than storing a partial entry.
+    if (entry.min == null && entry.max == null) delete cov[sid];
+    else cov[sid] = { min: entry.min ?? entry.max, max: entry.max ?? entry.min };
+    patch(i, { coverage: cov });
+  };
+
+  const summary = windows.length === 0
+    ? 'None — 12h shifts inactive this year'
+    : `${windows.length} window${windows.length === 1 ? '' : 's'} · ${windows.map(w => w.label || prettyDate(w.start)).join(', ')}`;
+
+  return (
+    <div className="bg-primary/10 border-b border-primary/20">
+      <button onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-primary/10 transition-colors">
+        <div className="flex items-center gap-2 min-w-0">
+          <Clock size={13} className="text-primary shrink-0"/>
+          <span className="text-xs font-semibold text-primary">12-Hour Shift Windows</span>
+          <span className={`text-xs truncate ${windows.length ? 'text-primary' : 'text-primary italic'}`}>{summary}</span>
+          {!isCustom && windows.length > 0 && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-white/70 text-primary shrink-0">from conference dates</span>}
+        </div>
+        <ChevronDown size={13} className={`text-primary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+
+      {open && (
+        <div className="px-4 py-3 space-y-2">
+          <p className="text-xs text-gray-500">
+            On these dates the chosen areas run 12h shifts. <span className="font-medium">Replace</span> swaps
+            the area's normal day/eve/night shifts out entirely (what conference weeks have always done);
+            <span className="font-medium"> add</span> leaves them in place and only opens the 12h shifts, which
+            stay at zero coverage until you set one below.
+          </p>
+
+          {windows.length === 0 && (
+            <p className="text-xs text-gray-400 italic">No windows — 12h shifts are inactive all year. Add one below, or set conference dates above.</p>
+          )}
+
+          {windows.map((w, i) => (
+            <div key={w.id || i} className="border border-gray-200 rounded-lg bg-white">
+              <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
+                <input type="text" value={w.label || ''} placeholder="Label" onChange={e => patch(i, { label: e.target.value })}
+                  className="text-xs border border-gray-300 rounded px-1.5 py-1 w-24 focus:outline-none focus:ring-1 focus:ring-primary"/>
+                <input type="date" value={w.start || ''} onChange={e => patch(i, { start: e.target.value })}
+                  className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
+                <span className="text-gray-400 text-xs">–</span>
+                <input type="date" value={w.end || ''} onChange={e => patch(i, { end: e.target.value })}
+                  className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
+                <div className="flex items-center gap-1 ml-1">
+                  {TWELVE_HOUR_AREAS.map(area => (
+                    <button key={area} onClick={() => toggleArea(i, area)}
+                      className={`text-[10px] font-medium px-1.5 py-1 rounded border transition-colors ${(w.areas || []).includes(area)
+                        ? 'bg-primary text-white border-primary'
+                        : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'}`}>
+                      {area}
+                    </button>
+                  ))}
+                </div>
+                <select value={w.mode || 'replace'} onChange={e => patch(i, { mode: e.target.value })}
+                  className="text-xs border border-gray-300 rounded px-1 py-1 focus:outline-none focus:ring-1 focus:ring-primary">
+                  <option value="replace">replace 9h</option>
+                  <option value="add">add alongside</option>
+                </select>
+                <button onClick={() => setExpanded(expanded === i ? null : i)}
+                  className={`text-[10px] px-1.5 py-1 rounded border transition-colors ${Object.keys(w.coverage || {}).length
+                    ? 'bg-amber-50 border-amber-300 text-amber-700'
+                    : 'bg-white border-gray-300 text-gray-500 hover:border-gray-400'}`}>
+                  coverage{Object.keys(w.coverage || {}).length ? ` (${Object.keys(w.coverage).length})` : ''}
+                </button>
+                <button onClick={() => removeWindow(i)} className="ml-auto text-gray-300 hover:text-red-500 transition-colors p-1">
+                  <X size={12}/>
+                </button>
+              </div>
+
+              {expanded === i && (
+                <div className="border-t border-gray-100 px-2 py-2 space-y-1">
+                  <p className="text-[10px] text-gray-500">
+                    Blank inherits the Rules-tab number{(w.mode || 'replace') === 'add' ? ' (and 12h shifts stay at 0 until set here)' : ''}.
+                  </p>
+                  {(w.areas || []).length === 0 && <p className="text-[10px] text-gray-400 italic">Pick an area first.</p>}
+                  {(w.areas || []).flatMap(area => {
+                    const ids = [`${area}-D12`, `${area}-N12`];
+                    if ((w.mode || 'replace') === 'add') ids.push(`${area}-D`, `${area}-E`, `${area}-N`);
+                    return ids.filter(sid => SHIFT_MAP[sid]);
+                  }).map(sid => {
+                    const ov = (w.coverage || {})[sid] || {};
+                    return (
+                      <div key={sid} className="flex items-center gap-2 text-xs">
+                        <span className="w-24 text-gray-600">{SHIFT_MAP[sid].label}</span>
+                        <label className="text-[10px] text-gray-400">min</label>
+                        <input type="number" min="0" value={ov.min ?? ''} onChange={e => setOverride(i, sid, 'min', e.target.value)}
+                          className="w-12 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary"/>
+                        <label className="text-[10px] text-gray-400">max</label>
+                        <input type="number" min="0" value={ov.max ?? ''} onChange={e => setOverride(i, sid, 'max', e.target.value)}
+                          className="w-12 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary"/>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={addWindow}
+              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors font-medium">
+              + Add window
+            </button>
+            {isCustom && (
+              <button onClick={reset}
+                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
+                Reset to conference dates
+              </button>
+            )}
+            <button onClick={() => setOpen(false)}
+              className="text-xs px-3 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors font-medium">
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── RESIDENT FORM (shared by Add + Edit modals) ─────────────────────────────
 
-function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persistentOnly = false, lockCategory = false, lockPgy = false }) {
+function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persistentOnly = false, lockCategory = false, lockPgy = false, ayData = {} }) {
   const availCats = persistentOnly
     ? CATEGORIES.filter(c => c.persistent)
     : CATEGORIES.filter(c => !c.persistent);
@@ -5373,7 +5781,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
   function addJcDate() {
     const d = newJcDate;
     if (!d) return;
-    if (!isFirstTuesday(d)) { setJcError('Journal Club is always the first Tuesday of the month'); return; }
+    if (!isJcDateAnyAy(d, ayData)) { setJcError('Not a Journal Club date for that academic year (defaults to the first Tuesday of the month; edit the list on the Dashboard tab)'); return; }
     setJcError('');
     if (!form.jcPresentDates.includes(d)) set('jcPresentDates', [...form.jcPresentDates, d].sort());
     setNewJcDate('');
@@ -5619,11 +6027,11 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
           </div>
         </div>
 
-        {/* Journal Club presenting dates (EM Home only — one per academic year, first Tuesdays) */}
+        {/* Journal Club presenting dates (EM Home only — one per academic year) */}
         {persistentOnly && (
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Journal Club Presenting Dates</label>
-            <p className="text-xs text-gray-400 mb-2">First-Tuesday dates this resident presents at Journal Club — max 3 worked/year still applies even when not presenting</p>
+            <p className="text-xs text-gray-400 mb-2">Journal Club dates this resident presents on — max 3 worked/year still applies even when not presenting. Dates default to the first Tuesday of each month; the year's list is edited on the Dashboard tab.</p>
             <div className="flex flex-wrap gap-1.5 mb-2 min-h-[22px]">
               {form.jcPresentDates.length === 0
                 ? <span className="text-xs text-gray-300 italic">None set</span>
@@ -5687,7 +6095,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
 }
 
 // Add wrapper — generates a new id on submit
-function AddResidentModal({ onClose, onAdd, persistentOnly = false, initialCategory, initialPgy }) {
+function AddResidentModal({ onClose, onAdd, persistentOnly = false, initialCategory, initialPgy, ayData = {} }) {
   const lockCategory = !!initialCategory;
   const lockPgy      = !!initialPgy;
   const cats = persistentOnly ? CATEGORIES.filter(c => c.persistent) : CATEGORIES.filter(c => !c.persistent);
@@ -5698,6 +6106,7 @@ function AddResidentModal({ onClose, onAdd, persistentOnly = false, initialCateg
     <ResidentForm
       title={persistentOnly ? 'Add EM Resident' : `Add ${CAT_MAP[startCat]?.label ?? 'Resident'}`}
       submitLabel="Add Resident"
+      ayData={ayData}
       persistentOnly={persistentOnly}
       lockCategory={lockCategory}
       lockPgy={lockPgy}
@@ -5709,11 +6118,12 @@ function AddResidentModal({ onClose, onAdd, persistentOnly = false, initialCateg
 }
 
 // Edit wrapper — pre-fills from existing resident
-function EditResidentModal({ resident, persistentOnly = false, onClose, onSave }) {
+function EditResidentModal({ resident, persistentOnly = false, onClose, onSave, ayData = {} }) {
   return (
     <ResidentForm
       title={`Edit — ${resident.firstName} ${resident.lastName}`}
       submitLabel="Save Changes"
+      ayData={ayData}
       persistentOnly={persistentOnly}
       lockCategory={!persistentOnly}   // off-service: category locked (don't reassign specialty mid-block)
       lockPgy={false}
@@ -6143,11 +6553,11 @@ function matchLectureRosterName(rawName, emRoster) {
 }
 
 // Per-date advisory checks, reusing the exact rules ResidentForm/validateAll already apply to
-// grLectureDates/jcPresentDates (grWorkDow, isFirstTuesday) plus one addition: an out-of-AY-range
+// grLectureDates/jcPresentDates (grWorkDow, isJcDateAnyAy) plus one addition: an out-of-AY-range
 // date most often means a plain year typo (e.g. a 2-digit year transcribed one year short), so it
 // gets its own actionable "did you mean <year+1>?" message rather than just failing the DOW check
 // silently. kind is 'lecture' | 'mm' | 'jc'.
-function validateLectureImportDate(dateStr, kind, resident, ayStartYear) {
+function validateLectureImportDate(dateStr, kind, resident, ayStartYear, ayData = {}) {
   const warnings = [];
   const ayStart = `${ayStartYear}-07-01`;
   const ayEnd = `${ayStartYear + 1}-07-01`;
@@ -6158,7 +6568,7 @@ function validateLectureImportDate(dateStr, kind, resident, ayStartYear) {
     warnings.push(`Falls after the ${ayStartYear}/${String(ayStartYear + 1).slice(2)} academic year ends`);
   }
   if (kind === 'jc') {
-    if (!isFirstTuesday(dateStr)) warnings.push('Journal Club is always the first Tuesday of the month');
+    if (!isJcDateAnyAy(dateStr, ayData)) warnings.push('Not a Journal Club date for that academic year (defaults to the first Tuesday of the month)');
   } else {
     const expectedDow = grWorkDow(resident);
     if (expectedDow == null || parseDate(dateStr).getDay() !== expectedDow)
@@ -6170,7 +6580,7 @@ function validateLectureImportDate(dateStr, kind, resident, ayStartYear) {
 // Parses the whole pasted block into { matched, unmatched } — matched/unmatched mirror the
 // modal's own preview categories 1:1, same convention as parseVacationWorkbook, so the standalone
 // verification script can exercise this exact function shape too.
-function parseLectureImportText(text, emRoster, ayStartYear) {
+function parseLectureImportText(text, emRoster, ayStartYear, ayData = {}) {
   const lines = String(text ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const matched = [], unmatched = [];
   for (const line of lines) {
@@ -6198,7 +6608,7 @@ function parseLectureImportText(text, emRoster, ayStartYear) {
       if (raw == null || raw === '') continue;
       const iso = parseLectureImportDate(raw);
       if (!iso) { dateEntries.push({ kind, raw, iso: null, warnings: [`Couldn't parse "${raw}" as a date (expected M/D/YY or M/D/YYYY)`] }); continue; }
-      dateEntries.push({ kind, raw, iso, warnings: validateLectureImportDate(iso, kind, resident, ayStartYear) });
+      dateEntries.push({ kind, raw, iso, warnings: validateLectureImportDate(iso, kind, resident, ayStartYear, ayData) });
     }
 
     matched.push({ residentId: resident.id, rosterName: `${resident.firstName} ${resident.lastName}`, rawName, matchTier: tier, dateEntries });
@@ -6206,12 +6616,12 @@ function parseLectureImportText(text, emRoster, ayStartYear) {
   return { matched, unmatched };
 }
 
-function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast }) {
+function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData = {} }) {
   const [text, setText] = useState('');
   const [ayStartYear, setAyStartYear] = useState(() => Number(getAcademicYear().slice(2, 4)) + 2000);
   const [preview, setPreview] = useState(null);
 
-  function parse() { setPreview(parseLectureImportText(text, emRoster, ayStartYear)); }
+  function parse() { setPreview(parseLectureImportText(text, emRoster, ayStartYear, ayData)); }
 
   function commit() {
     if (!preview || !preview.matched.length) return;
@@ -6353,7 +6763,7 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast }) {
 
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
-function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast }) {
+function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast, ayData = {} }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
   const [showImport, setShowImport]   = useState(false);
@@ -6549,14 +6959,14 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
       })}
 
       {showAdd && (
-        <AddResidentModal persistentOnly
+        <AddResidentModal persistentOnly ayData={ayData}
           initialCategory={showAdd.category}
           initialPgy={showAdd.pgy}
           onClose={() => setShowAdd(null)}
           onAdd={addRes}/>
       )}
       {editResident && (
-        <EditResidentModal persistentOnly resident={editResident}
+        <EditResidentModal persistentOnly ayData={ayData} resident={editResident}
           onClose={() => setEditResident(null)}
           onSave={saveEdit}/>
       )}
@@ -6583,7 +6993,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
           onClose={() => setShowImportVacation(false)}/>
       )}
       {showImportLectures && (
-        <ImportLecturesModal emRoster={emRoster} setEmRoster={setEmRoster} showToast={showToast}
+        <ImportLecturesModal emRoster={emRoster} setEmRoster={setEmRoster} showToast={showToast} ayData={ayData}
           onClose={() => setShowImportLectures(false)}/>
       )}
     </div>
@@ -7359,7 +7769,10 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
           </table>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          Minimum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).min, 0)}</strong> – maximum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + getCoverageFor(sh.id, coverage).max, 0)}</strong> resident-shifts per day.
+          {/* 12h ids are excluded on purpose. They only staff inside a 12h window, so counting them
+              here inflated an ordinary day's headline by 10 min / 18 max — a number that was never
+              true on any date, window or not. */}
+          Minimum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + (TWELVE_HOUR_IDS.includes(sh.id) ? 0 : getCoverageFor(sh.id, coverage).min), 0)}</strong> – maximum <strong className="text-gray-700">{SHIFTS.reduce((s, sh) => s + (TWELVE_HOUR_IDS.includes(sh.id) ? 0 : getCoverageFor(sh.id, coverage).max), 0)}</strong> resident-shifts per day on a normal (non-12h) day.
         </p>
         <div className="mt-2">
           <Collapsible title="How coverage works" defaultOpen={false}>
@@ -7370,7 +7783,10 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              12h shifts auto-activate only during ACEP/AAEM/SAEM conference-week dates for POD/MT/FLEX (their normal Day/Eve/Night coverage is suppressed those dates). PED's 12h shifts are opt-in — raise their coverage here any time you need them; PED's normal shifts stay active regardless.
+              12h shifts only staff inside a <strong>12-Hour Shift Window</strong> — set those per academic year on the Dashboard tab (Block Calendar → 12-Hour Shift Windows), where you choose the dates, which areas swap, and whether the 9h shifts are replaced or kept alongside. An academic year you've never opened there still behaves as before: ACEP/AAEM/SAEM dates automatically run POD/MT/FLEX on 12h and suppress their 9h shifts.
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              The 12h numbers below are the <strong>in-window default</strong> — what a window uses when it doesn't set its own override — so they take effect inside a window, not on ordinary days. PED is the exception: its 12h pair stays available year-round and is gated purely by the coverage you set here.
             </p>
           </Collapsible>
         </div>
@@ -7729,16 +8145,28 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
+  // Resolved once for the whole grid rather than per rendered day cell.
+  const jcDaySet = useMemo(
+    () => new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })),
+    [block.startDate, block.endDate, block.academicYear, ayConf]
+  );
+  const twelveHourDaySet = useMemo(() => {
+    const st = ds => twelveHourStateFor(ds, ayConf || {});
+    return new Set(getBlockDates(block.startDate, block.endDate).filter(ds => {
+      const s2 = st(ds);
+      return s2.replaceAreas.size > 0 || s2.addAreas.size > 0;
+    }));
+  }, [block.startDate, block.endDate, ayConf]);
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
   // Computed once per relevant state change (not on every re-render while the modal happens to be
-  // open) — checkGenerateReadiness scans every resident's day rules plus every first Tuesday in
+  // open) — checkGenerateReadiness scans every resident's day rules plus every Journal Club date in
   // the block for JC presenters, which isn't free to redo on an unrelated re-render (a toast
   // dismissing, a picker closing elsewhere).
   const regenReadiness = useMemo(
-    () => confirmRegen ? checkGenerateReadiness({ allResidents, block, dayRules }) : [],
-    [confirmRegen, allResidents, block, dayRules]
+    () => confirmRegen ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
+    [confirmRegen, allResidents, block, dayRules, ayConf]
   );
   // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
   // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
@@ -7746,8 +8174,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [rangeEnd, setRangeEnd] = useState('');
   const [confirmPartialRegen, setConfirmPartialRegen] = useState(null); // {kind:'unlocked'} | {kind:'range', start, end} | null
   const partialRegenReadiness = useMemo(
-    () => confirmPartialRegen ? checkGenerateReadiness({ allResidents, block, dayRules }) : [],
-    [confirmPartialRegen, allResidents, block, dayRules]
+    () => confirmPartialRegen ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
+    [confirmPartialRegen, allResidents, block, dayRules, ayConf]
   );
   const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
   const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
@@ -7877,7 +8305,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // Warns before generating if the block's manual per-block dates (special-day lists, JC
   // presenters) haven't been entered — chief can override and generate anyway.
   function requestGenerate() {
-    const issues = checkGenerateReadiness({ allResidents, block, dayRules });
+    const issues = checkGenerateReadiness({ allResidents, block, dayRules, ayConf });
     if (issues.length) setConfirmGenerate(issues);
     else runGenerate(false);
   }
@@ -8223,6 +8651,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                     className={`flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-gray-100':'bg-gray-50'}`}>
                     <span className={`text-xs font-bold ${isWed?'text-yellow-700':isWknd?'text-gray-500':'text-gray-500'}`}>{DOW[dow]}</span>
                     <span className={`text-xs ${isWed?'text-yellow-600':isWknd?'text-gray-400':'text-gray-400'}`}>{d.getMonth()+1}/{d.getDate()}</span>
+                    {/* Says out loud that this date runs 12h shifts — an unset window used to be a
+                        completely silent no-op, which is how "ACEP didn't work" gets reported. */}
+                    {twelveHourDaySet.has(ds) && (
+                      <span className="text-[8px] font-bold px-1 rounded bg-indigo-100 text-indigo-700 leading-tight" title="12-hour shifts active on this date">12h</span>
+                    )}
                   </div>
                 );
               })}
@@ -8309,7 +8742,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
       {view==='calendar' && (
         <ScheduleCalendarView dates={dates} residents={filtered} sched={sched} coverageByDate={coverageByDate}
-          areaFilter={areaFilter} onChipClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+          areaFilter={areaFilter} jcDaySet={jcDaySet} onChipClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
       {dropConfirm && (
@@ -8424,7 +8857,7 @@ function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, dayRul
 const CALENDAR_TIME_OF_DAY_ORDER = ['day','swing','eve','night'];
 const CALENDAR_TIME_OF_DAY_LABEL = { day:'D', swing:'S', eve:'E', night:'N' };
 
-function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick }) {
+function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick, jcDaySet }) {
   const weekRows = useMemo(()=>buildWeekRows(dates), [dates]);
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
@@ -8453,7 +8886,7 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
                   (byTimeOfDay[t] = byTimeOfDay[t] || []).push(a);
                 }
                 const grResidents = residents.filter(r => grWorkDow(r)===dow && !(r.vacationDates||[]).includes(ds) && !(r.approvedDatesOff||[]).includes(ds));
-                const isJCDay = isFirstTuesday(ds);
+                const isJCDay = jcDaySet?.has(ds) ?? false;
                 const jcPresenters = residents.filter(r => (r.jcPresentDates||[]).includes(ds));
                 const grLecturers = residents.filter(r => (r.grLectureDates||[]).includes(ds));
                 return (
@@ -8470,7 +8903,7 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
                     {(grResidents.length>0 || isJCDay || jcPresenters.length>0 || grLecturers.length>0) && (
                       <div className="flex flex-wrap gap-0.5 mb-1">
                         {grResidents.length>0 && <span className="text-[9px] font-bold px-1 rounded bg-yellow-100 text-yellow-700" title={`Grand Rounds day: ${grResidents.map(r=>r.lastName).join(', ')}`}>GR</span>}
-                        {isJCDay && <span className="text-[9px] font-bold px-1 rounded bg-primary/10 text-primary" title="Journal Club (first Tuesday)">JC</span>}
+                        {isJCDay && <span className="text-[9px] font-bold px-1 rounded bg-primary/10 text-primary" title="Journal Club">JC</span>}
                         {jcPresenters.map(r => (
                           <span key={`jc_${r.id}`} className="text-[9px] font-medium px-1 rounded bg-primary/10 text-primary truncate max-w-[90px]" title={`${r.lastName}, ${r.firstName} — Journal Club presenting`}>JC · {r.lastName}</span>
                         ))}
@@ -8981,7 +9414,7 @@ export const submitFeedback = async ({ type, message, contact, page, meta }) => 
 // (matches the sibling em-scheduler app, which excludes its own em_dark_mode the same way).
 const LS_BACKUP_KEYS = ['res_em_roster','res_current_block','res_blocks_history','res_eligibility_overrides','res_ay_data','res_app_settings','res_day_rules','res_coverage','res_tab_order'];
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady, onShowWhatsNew }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -9223,6 +9656,22 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               onChange={e=>updS('maxSavedBlocks', Math.max(1, Number(e.target.value) || 24))}
               className="w-16 text-sm border border-gray-300 rounded-lg px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-primary"/>
           </div>
+        </div>
+      </CollapsibleCard>
+
+      {/* Re-open the release notes. Without this the What's New modal is a one-shot: dismissed
+          once and gone, with no way back to it when someone half-reads it and closes the tab. */}
+      <CollapsibleCard title="What's New" subtitle="Release notes — shown automatically the first time you open the app after an update.">
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-gray-500 flex-1">
+            {CHANGELOG[0]
+              ? <>Latest: <span className="font-medium text-gray-700">{CHANGELOG[0].title}</span> ({formatDisplayDate(CHANGELOG[0].date)})</>
+              : 'No release notes yet.'}
+          </p>
+          <button onClick={onShowWhatsNew}
+            className="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors font-medium shrink-0">
+            View release notes
+          </button>
         </div>
       </CollapsibleCard>
 
@@ -10211,6 +10660,13 @@ export default function ResidentScheduler({ viewer } = {}) {
   // isolation design. Every action here ends in window.location.reload(): demoMode is only ever
   // decided once per mount, so flipping DEMO_MODE_KEY needs a real remount to take effect.
   const [demoModalOpen, setDemoModalOpen] = useState(false);
+  // Read once on mount (not live state) — same reason demoMode is: the answer can't change while
+  // the app is open, and re-reading storage on every render would be pointless work.
+  const [whatsNew, setWhatsNew] = useState(() => unseenChangelog());
+  const dismissWhatsNew = () => {
+    try { localStorage.setItem(WHATS_NEW_KEY, CHANGELOG[0]?.id || ''); } catch { /* storage blocked — just close */ }
+    setWhatsNew([]);
+  };
   const [demoExisting, setDemoExisting] = useState(false); // does a resumable demo already exist?
   const [demoCheckPending, setDemoCheckPending] = useState(true); // still checking local/cloud for an existing demo?
   const [demoCheckError, setDemoCheckError] = useState(false); // couldn't confirm either way — don't guess
@@ -10765,6 +11221,8 @@ export default function ResidentScheduler({ viewer } = {}) {
         </div>
       )}
 
+      {whatsNew.length > 0 && <WhatsNewModal entries={whatsNew} onClose={dismissWhatsNew}/>}
+
       {demoModalOpen && (
         <Modal title="Demo Sandbox" onClose={()=>setDemoModalOpen(false)}>
           <div className="space-y-3 text-sm text-gray-600">
@@ -10822,14 +11280,14 @@ export default function ResidentScheduler({ viewer } = {}) {
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}/>
           )}
-          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast}/>}
+          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setWhatsNew(CHANGELOG)}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
