@@ -30,8 +30,8 @@
     "semantic_hash": "65728877cd060f64b5337749f6e1927a"
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1786901990.6397684,
-    "ast_hash": "afc377232530c1bbd7f14531e9a4fddc",
+    "mtime": 1786902803.7543736,
+    "ast_hash": "0d704d33ff4c065d49e2880bb0cae77e",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -160,8 +160,8 @@
     "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
   },
   "CLAUDE.md": {
-    "mtime": 1786902164.9020247,
-    "ast_hash": "1441639915da759563e9ada1a6d6755f",
+    "mtime": 1786902792.6623743,
+    "ast_hash": "e944476b4512a6cd33320eba5460b6ee",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -332,6 +332,11 @@
   "src/lib/journalClub.test.js": {
     "mtime": 1786900269.386025,
     "ast_hash": "56f95d81afaee7a88146232becb7ddb8",
+    "semantic_hash": ""
+  },
+  "src/lib/eligibilityLegacy.test.js": {
+    "mtime": 1786902466.891773,
+    "ast_hash": "f239acc987a16447841bc15e473e2bc4",
     "semantic_hash": ""
   }
 }

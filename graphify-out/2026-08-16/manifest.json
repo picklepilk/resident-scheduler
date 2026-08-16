@@ -30,8 +30,8 @@
     "semantic_hash": "65728877cd060f64b5337749f6e1927a"
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1786400684.0715013,
-    "ast_hash": "d18b9fb753f82c9b42aec3d131bf233a",
+    "mtime": 1786901990.6397684,
+    "ast_hash": "afc377232530c1bbd7f14531e9a4fddc",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -160,8 +160,8 @@
     "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
   },
   "CLAUDE.md": {
-    "mtime": 1786400792.0899487,
-    "ast_hash": "2bd4a23098decca658f25bdc5358fa86",
+    "mtime": 1786902164.9020247,
+    "ast_hash": "1441639915da759563e9ada1a6d6755f",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -195,14 +195,14 @@
     "semantic_hash": "029fb0ce689571fabacb4f0cc07da031"
   },
   "src/lib/coverage.js": {
-    "mtime": 1786169878.3872104,
-    "ast_hash": "c558d937af88041251c89a3ba67103f1",
-    "semantic_hash": "c558d937af88041251c89a3ba67103f1"
+    "mtime": 1786900399.180218,
+    "ast_hash": "30ecac6f72c2acea15d2e4f3899e31af",
+    "semantic_hash": ""
   },
   "src/lib/coverage.test.js": {
-    "mtime": 1785363392.657054,
-    "ast_hash": "43bdf7bef2354fe914003c0b4e43379b",
-    "semantic_hash": "43bdf7bef2354fe914003c0b4e43379b"
+    "mtime": 1786900506.3463407,
+    "ast_hash": "ec791905ab20a9cafc6f4457885c3b2d",
+    "semantic_hash": ""
   },
   "src/lib/dates.js": {
     "mtime": 1786034233.6995442,
@@ -245,8 +245,8 @@
     "semantic_hash": "c593fc72ea3556367895e77ae9418dc3"
   },
   "src/lib/generator.harness.test.js": {
-    "mtime": 1786413260.708078,
-    "ast_hash": "b2520cd75f0acc10d8a7beafbc81d64c",
+    "mtime": 1786900700.8535955,
+    "ast_hash": "50e7ab8fa27510d2f03636e5b3419c93",
     "semantic_hash": ""
   },
   "src/lib/rng.js": {
@@ -260,13 +260,13 @@
     "semantic_hash": "e4f3c534e1106a800420e2fd1c5a55a6"
   },
   "src/lib/scheduleQuality.js": {
-    "mtime": 1786400178.0627666,
-    "ast_hash": "d8e06cb150f077bbf8acda2fa0fb74ca",
+    "mtime": 1786900632.925153,
+    "ast_hash": "8b0854c54e74bfc51f99f7d41765399e",
     "semantic_hash": ""
   },
   "src/lib/scheduleQuality.test.js": {
-    "mtime": 1786400178.0632963,
-    "ast_hash": "9d2112a49137665933738f1b48b952cf",
+    "mtime": 1786900758.9073515,
+    "ast_hash": "ab361a608cb4ef32ad2e90e8b4404e3c",
     "semantic_hash": ""
   },
   "src/lib/overrideCapture.test.js": {
@@ -280,23 +280,23 @@
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.standard.json": {
-    "mtime": 1786400792.1118646,
-    "ast_hash": "007d7191a9a00b21ae5ac32b6564b815",
+    "mtime": 1786901114.069577,
+    "ast_hash": "97373b2dd32823109a6a5846d353320c",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.understaffed.json": {
-    "mtime": 1786400792.112548,
-    "ast_hash": "0cc3a6a8c232b54e7a6550c43616f531",
+    "mtime": 1786901110.9504075,
+    "ast_hash": "e2a96a882fa891f755bb636bf16340cc",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.vacationHeavy.json": {
-    "mtime": 1786400792.113163,
-    "ast_hash": "b145428c81151f367feccfbfbdd483f2",
+    "mtime": 1786901113.6576076,
+    "ast_hash": "e953f8aac7c500ccc676573d7abbbf93",
     "semantic_hash": ""
   },
   "src/lib/baselineSuite.js": {
-    "mtime": 1786413274.2381291,
-    "ast_hash": "83d0cae54f2da87638aab93a834f62d3",
+    "mtime": 1786900636.740135,
+    "ast_hash": "4502846d92ace37707495d52aa8c1c51",
     "semantic_hash": ""
   },
   "src/lib/generator.baseline.standard.test.js": {
@@ -322,6 +322,16 @@
   "docs/superpowers/plans/2026-08-10-schedule-quality-phases.md": {
     "mtime": 1786400178.041396,
     "ast_hash": "e9380932bd9442dadd5c85fe5ae379d0",
+    "semantic_hash": ""
+  },
+  "src/lib/journalClub.js": {
+    "mtime": 1786900233.6279688,
+    "ast_hash": "2f84ca5c24b0b879814d01cf91463ee9",
+    "semantic_hash": ""
+  },
+  "src/lib/journalClub.test.js": {
+    "mtime": 1786900269.386025,
+    "ast_hash": "56f95d81afaee7a88146232becb7ddb8",
     "semantic_hash": ""
   }
 }
