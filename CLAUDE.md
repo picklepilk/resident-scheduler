@@ -245,7 +245,7 @@ npm run dev
 npm run build     # → dist/
 npm run preview
 npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality/
-                   # journalClub/eligibilityOverrides/qgenda/jeopardyLedger) plus
+                   # journalClub/eligibilityOverrides/qgenda/jeopardyLedger/coverageComposition) plus
                    # generator.harness.test.js + generator.baseline.<variant>.test.js, which import
                    # the generator/validateAll
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
@@ -528,10 +528,38 @@ names below rather than trusting offsets.
   with `cellViolations` against schedule with *other* side's stale date cleared first
   (`scheduleClearing`) so same-resident move can't false-positive against its own old cell;
   violations open `DragConfirmModal` for explicit override, matching picker's "Assign
-  Anyway" philosophy), `VALIDATION TAB` (violations list plus Generation Report — now also
+  Anyway" philosophy. **STICKY AXES**: the date header row and the coverage footer are
+  `sticky top-0`/`sticky bottom-0`, the name column is `.grid-sticky` — but that only works because
+  the scroll container is now `overflow-auto` with a bounded `maxHeight: calc(100vh - …)`. It used
+  to be `overflow-x-auto` with no height, so it never scrolled vertically and `top-0` never engaged
+  (vertical scroll happened on `<main>`, outside the sticky ancestor chain) — **don't remove that
+  height bound**. Z-ladder inside the grid: cells/badges 10 → header row + footer 20 → the two
+  corner cells 30, all below the app header (50) and toast (200). The corner cells set z via an
+  INLINE `zIndex`, not a Tailwind class: `.grid-sticky` is UNLAYERED css and beats `@layer
+  utilities` regardless of specificity, so a `z-30` class silently loses to its `z-index:10`.
+  A `fullscreen` state promotes the grid to `fixed inset-0 z-[60]` (Esc exits) — in-app overlay,
+  NOT `requestFullscreen()`. **CELL LOCKING**: `block.lockedCells[residentId][dateStr] = true`,
+  inside the block object, so it rides `res_current_block`/backup/cloud sync with no new key; undo
+  pairs `{schedule, lockedCells}` because a lock toggle changes only the latter. The generator knows
+  NOTHING about locks — `runPartialRegenerate` clears only unlocked cells and calls
+  `generateSchedule({clearFirst:false})`, whose `keptCells` protects whatever is already in
+  `block.schedule`. Beyond the per-cell toggle there are row/column/all bulk actions, a lock-paint
+  mode (click-drag; chip `draggable` is disabled while it's on, or HTML5 chip-drag fights it), and a
+  locked counter + Unlock all. **Every bulk action must be ONE functional `updateBlockTracked`** —
+  looping the per-cell `toggleLock` would push N undo entries), `VALIDATION TAB` (violations list plus Generation Report — now also
   shows `report.seniorGaps`/`report.restCompromises`; its post-night-day/eve-day pairwise check
   also delegates to `checkCircadianViolations` rather than re-deriving same rule),
-  `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `USER GUIDE TAB`. **Requests**
+  `COVERAGE TAB` (`CoverageTab` — birds-eye staffing COMPOSITION, the thing `computeCoverageByDate`
+  throws away: three `SubTabs` views — By Area (shift × date grid, category-colored dots), By Date
+  (one date's roster grouped by category+PGY bucket), Totals (per-bucket counts by shift type). All
+  arithmetic lives in the pure `src/lib/coverageComposition.js` (`composeCoverage`/`bucketLabel`/
+  `COVERAGE_GROUPS`) — a lib module may never import `ResidentScheduler.jsx`, which is exactly why
+  the math is there and only the markup is here. It reproduces `computeCoverageByDate`'s two
+  non-obvious guards: skip `SHIFT_DOW`-inactive shifts, and resolve `twelveHourStateFor` once per
+  date as `getCoverageFor`'s 4th arg. Buckets by `category`/`pgy`; there is NO `isOffService` flag —
+  `EM_HOME`→home, `EM_BAMC`→bamc, everything else→offservice),
+  `SETTINGS TAB` (backup/restore, `LS_BACKUP_KEYS`, jeopardy policy), `WHAT'S NEW TAB`
+  (`WhatsNewTab` — release-notes archive, see "What's New banner" below), `USER GUIDE TAB`. **Requests**
   tab only tab whose component lives outside this file (`src/RequestsTab.jsx`) —
   does own session/role check rather than trusting caller, stays correct even
   though `AppGate` already established viewer is admin. Unlike `feedback`, not
@@ -639,8 +667,16 @@ names below rather than trusting offsets.
   predates the feature) shows the full list once. `res_whats_new_seen` is device-local and
   **deliberately excluded from `LS_BACKUP_KEYS`** — same posture as `res_dark_mode`/`res_demo_mode`:
   restoring a colleague's backup must not mark it read for you. Entry text supports `**bold**` and
-  nothing else, on purpose (entries stay plain strings that can't inject markup). Re-openable any
-  time from Settings → What's New, since otherwise it's a one-shot.
+  nothing else, on purpose (entries stay plain strings that can't inject markup) — the splitter is
+  the module-level `renderChangelogText`, shared by the banner and the archive tab so the two can't
+  drift. **The archive is the `whatsnew` TAB** (`WhatsNewTab`): every entry, permanently, newest
+  first, unread ones badged **New** and counted on the sidebar. `unseenChangelogFor(seenId)` is the
+  pure slice both surfaces use; `unseenChangelog()` is just that plus the localStorage read. Root
+  holds `seenChangelogId` as STATE (not a per-render storage read) so the sidebar badge clears
+  reactively, and **`markChangelogSeen()` is the single writer** — banner dismiss and opening the
+  tab both go through it. `WhatsNewTab` FREEZES its unseen set at mount before calling
+  `onMarkSeen()`, so the **New** pills are still visible on the very visit that clears them.
+  Settings → What's New now navigates to that tab rather than re-opening the modal.
 - **Dark mode** (`darkMode` state → `res_dark_mode`, Sun/Moon header toggle, `.dark` class on
   root div): override stylesheet in `index.css`, not Tailwind `dark:` variants — this file
   has thousands of class strings, variant-based approach would mean touching all of them.
@@ -880,7 +916,18 @@ names below rather than trusting offsets.
   errored on) — while no PGY-3 (or WW-substitute PGY-2) is assigned, the candidate pool is
   restricted to residents satisfying the real requirement; if none are available even via the
   min-phase rest-priority fallback, the slot is left unfilled and reported with reason
-  `'pgy3Required'` rather than staffed with the wrong PGY. POD coverage is
+  `'pgy3Required'` rather than staffed with the wrong PGY. **WEDNESDAY DAY SHIFTS ARE EXEMPT FROM
+  BOTH RULES** (`seniorCompositionExempt(shift, ds)` = `shift.type==='day' && dow===3`, declared
+  right after `podWellnessSubstituteAllowed`): every EM Home PGY carries
+  `dayTypeRestrictions:[{days:[3],mode:'noDay'}]` for Grand Rounds, so a POD/FLEX DAY shift
+  structurally CANNOT have an EM senior on a Wednesday — the requirement was unsatisfiable, and the
+  generator responded by refusing to fill Wednesday POD-D at all. Chief-confirmed: Wednesday days
+  are covered by off-service residents and APPs while the seniors are at Grand Rounds, so no senior
+  is required. Wednesday EVE/NIGHT shifts keep the full rule, and coverage minimums are unchanged.
+  This is a DIFFERENT exception from the Wellness-Wednesday PGY-2 substitution — don't conflate
+  them. The helper is applied at FOUR call sites that must stay in lockstep (`validateAll`'s senior
+  loop, `fillDayPass`'s POD branch *and* its generic FLEX branch, `narrowForSeniority`,
+  `podStillSatisfied`); changing one alone makes the validator and the generator disagree. POD coverage is
   `{min:2,max:2}` all week, except Mon/Tue where max rises to 3 (`DOW_COVERAGE_MAX_OVERRIDE`,
   `getCoverageFor(shiftId, coverage, dow)`'s third `dow` param — the ONLY day-of-week-dependent
   coverage exception in the app; the Rules-tab coverage EDITOR stays simple/non-dow-aware, just

@@ -201,8 +201,13 @@ body {
   @apply w-full px-3 py-2 text-base sm:text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent bg-white;
 }
 
-/* Scrollbar styling */
-.schedule-scroll::-webkit-scrollbar { height: 6px; }
+/* Scrollbar styling — height AND width matter now: the grid's scroll container went from
+   overflow-x-auto (horizontal only) to overflow-auto (both axes) so the sticky date header/
+   coverage footer can actually engage (see ScheduleGrid). scrollbar-gutter reserves the vertical
+   scrollbar's width up front so a bounded-height grid whose content just barely overflows
+   doesn't shift the whole table left by a few px the instant the scrollbar appears. */
+.schedule-scroll { scrollbar-gutter: stable; }
+.schedule-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
 .schedule-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
 .schedule-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
 

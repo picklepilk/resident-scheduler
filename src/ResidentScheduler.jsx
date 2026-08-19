@@ -9,7 +9,7 @@ import {
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
-  Archive, FlaskConical, Clock,
+  Archive, FlaskConical, Clock, Maximize2, Minimize2, Sparkles,
 } from 'lucide-react';
 // xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
 // point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
@@ -30,6 +30,7 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { mulberry32 } from './lib/rng.js';
 import { qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS } from './lib/qgenda.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
+import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -569,7 +570,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift, or Grand Rounds, is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
-const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3, soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). Enforced by the generator (POD slot left unfilled and reported rather than staffed with the wrong PGY if no PGY-3 is available) and Validation.';
+const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3, soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (POD slot left unfilled and reported rather than staffed with the wrong PGY if no PGY-3 is available) and Validation.';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
@@ -1666,6 +1667,15 @@ const PEDS_EM_MIX = { min: 10, max: 12 };
 // candidate-pool restriction and score()'s seniorAdj term) — the wellness-Wednesday-only
 // restriction on when that fallback may actually satisfy the requirement lives in fillDayPass's
 // POD-specific branch and validateAll, not here.
+// Grand Rounds Wednesday exemption (seniorCompositionExempt, below podWellnessSubstituteAllowed):
+// both POD's hard rule and FLEX's soft rule are suspended entirely for type:'day' shifts on
+// Wednesdays, because every EM Home PGY's dayTypeRestrictions already carry a {days:[3],
+// mode:'noDay'} entry (Grand Rounds) — no EM senior is structurally available for a day shift that
+// day, so there is nothing to require. Distinct from the Wellness Wednesday substitution above:
+// that one is block-relative (one specific Wednesday per PGY, POD only, PGY-2-substitute allowed)
+// and covers all POD shift types that day; this one is calendar-Wednesday (every Wednesday, POD and
+// FLEX both) but day-type-only (POD-E/N and FLEX-E/N still need their senior on an ordinary
+// Wednesday).
 const SENIOR_COMPOSITION = { FLEX: { primary: 2, fallback: 3 }, POD: { primary: 3, fallback: 2 } };
 function isSeniorFor(area, resident) {
   const comp = SENIOR_COMPOSITION[area];
@@ -1721,13 +1731,26 @@ function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
   return toDateStr(addDays(start, delta + (ordinal - 1) * 7));
 }
 
-// POD's hard PGY-3 requirement (see SENIOR_COMPOSITION.POD) has exactly one exception: the
-// block's own PGY-3 Wellness Wednesday (3rd Wednesday on/after the block's start date — see
-// DEFAULT_DAY_RULES.EM_HOME_3's computedDayRules), when PGY-3s are off day/eve program-wide and a
-// PGY-2 substituting for the missing PGY-3 is explicitly allowed. Reuses nthWeekdayOnOrAfter
-// (ordinal 3, Wednesday) rather than reimplementing the same block-relative date math.
+// POD's hard PGY-3 requirement (see SENIOR_COMPOSITION.POD) has two independent exceptions. This
+// one is the block's own PGY-3 Wellness Wednesday (3rd Wednesday on/after the block's start date —
+// see DEFAULT_DAY_RULES.EM_HOME_3's computedDayRules), when PGY-3s are off day/eve program-wide and
+// a PGY-2 substituting for the missing PGY-3 is explicitly allowed. Reuses nthWeekdayOnOrAfter
+// (ordinal 3, Wednesday) rather than reimplementing the same block-relative date math. The other
+// exception, seniorCompositionExempt (below), is a different rule entirely — every Wednesday, not
+// just the block's own 3rd — and only ever waives the requirement outright rather than allowing a
+// PGY-2 substitute; don't conflate the two.
 function podWellnessSubstituteAllowed(ds, blockStart) {
   return ds === nthWeekdayOnOrAfter(blockStart, 3, 3);
+}
+
+// Grand Rounds Wednesday: every EM Home PGY is `noDay`-restricted on Wednesdays (DEFAULT_DAY_RULES,
+// see EM_HOME_1/2/3's dayTypeRestrictions), so a POD/FLEX DAY shift structurally cannot have an EM
+// senior on it that day. Chief-confirmed: Wednesday days are covered by off-service residents and
+// APPs while the EM seniors are at Grand Rounds, so no senior is required. Evening/night Wednesday
+// shifts keep the full rule — this only ever matches shift.type === 'day' (includes the 12h day
+// variants POD-D12/FLEX-D12, which are equally blocked by the same noDay restriction).
+function seniorCompositionExempt(shift, ds) {
+  return shift.type === 'day' && parseDate(ds).getDay() === 3;
 }
 
 // ─── Journal Club ───────────────────────────────────────────────────────────
@@ -2082,6 +2105,20 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
   {
+    id: '2026-08-19-grid-coverage-release-notes',
+    date: '2026-08-19',
+    title: 'A schedule grid that stays readable, easier shift locking, a new Coverage tab, and release notes you can go back to',
+    items: [
+      'On the Schedule grid, the **dates stay pinned at the top and the resident names stay pinned at the side** no matter how far you scroll — and the daily coverage totals stay pinned at the bottom. The grid now scrolls inside its own window instead of dragging the whole page.',
+      'New **Full screen** button on the Schedule grid, for when you want the whole monitor. Press Esc to come back.',
+      'Side-to-side scrolling got easier: **◀ / ▶ buttons jump one week at a time**, and a "Jump to date" picker takes you straight to any date in the block.',
+      'Locking shifts is much less fiddly. The per-cell lock is bigger and easier to hit; you can now **lock a whole resident\'s row, a whole date\'s column, or every assigned shift at once**; a **Lock mode** toggle lets you click or drag across cells to lock them in bulk; and the toolbar shows how many cells are locked with a one-click **Unlock all**. Locked shifts still survive "Regenerate Unlocked" exactly as before.',
+      'New **Coverage** tab: a birds-eye view of how the department is staffed. See, for any date and shift, **how many EM-Home PGY-1/2/3 vs BAMC vs off-service residents** are covering — by area across the whole block, one date at a time, or as block totals per group.',
+      '**Wednesday day shifts no longer demand a senior EM resident.** POD and FLEX day shifts on Wednesdays are exempt, because the EM seniors are at Grand Rounds and the department is covered by off-service residents and APPs. The generator will now staff those shifts instead of leaving them empty, and the false violations are gone. Wednesday evening and night shifts are unchanged.',
+      'New **What\'s New** tab in the sidebar keeps every release note permanently — this pop-up is no longer a one-shot. Anything you haven\'t read yet is badged **New**.',
+    ],
+  },
+  {
     id: '2026-08-18-jeopardy-ledger',
     date: '2026-08-18',
     title: 'Jeopardy & sick-call tracking, Peds Night split into two shifts, editable QGenda task names, and per-block target overrides',
@@ -2113,16 +2150,17 @@ const WHATS_NEW_KEY = 'res_whats_new_seen';
 // Device-local, deliberately NOT in LS_BACKUP_KEYS — "have I read this yet" is per-person, and
 // restoring a colleague's backup or syncing another device must not mark it read for you. Same
 // posture as res_dark_mode / res_demo_mode.
+function unseenChangelogFor(seenId) {
+  // No stored id = either a brand-new install or someone who predates this feature. Both get the
+  // full list once; it's short, and the alternative (silently marking everything read) is how
+  // the last release went unnoticed.
+  if (!seenId) return CHANGELOG;
+  const i = CHANGELOG.findIndex(e => e.id === seenId);
+  return i === -1 ? CHANGELOG : CHANGELOG.slice(0, i);
+}
 function unseenChangelog() {
-  try {
-    const seen = localStorage.getItem(WHATS_NEW_KEY);
-    // No stored id = either a brand-new install or someone who predates this feature. Both get the
-    // full list once; it's short, and the alternative (silently marking everything read) is how
-    // the last release went unnoticed.
-    if (!seen) return CHANGELOG;
-    const i = CHANGELOG.findIndex(e => e.id === seen);
-    return i === -1 ? CHANGELOG : CHANGELOG.slice(0, i);
-  } catch { return []; }                               // storage blocked — never block the app
+  try { return unseenChangelogFor(localStorage.getItem(WHATS_NEW_KEY)); }
+  catch { return []; }                               // storage blocked — never block the app
 }
 
 function makeDefaultBlock() {
@@ -2703,6 +2741,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       for (const shift of seniorShiftsByArea[area]) {
         const assignedHere = allResidents.filter(r => (schedule[r.id] || {})[ds] === shift.id);
         if (!assignedHere.length) continue;
+        if (seniorCompositionExempt(shift, ds)) continue; // Grand Rounds Wednesday — see seniorCompositionExempt
         if (area === 'POD') {
           const hasPgy3 = assignedHere.some(r => r.category === 'EM_HOME' && r.pgy === 3);
           if (hasPgy3) continue;
@@ -3226,7 +3265,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const seniorFilled = isPod
         ? allResidents.some(r => schedule[r.id][ds] === slot.shift.id && podSatisfies(r))
         : (SENIOR_COMPOSITION[slot.shift.area] ? hasSenior(slot.shift.id, ds) : null);
-      if (isPod && !seniorFilled) {
+      // Grand Rounds Wednesday exemption (seniorCompositionExempt): every EM Home PGY is noDay-
+      // restricted on Wednesdays, so a POD/FLEX DAY shift structurally can't have an EM senior on
+      // it that day — treated as if SENIOR_COMPOSITION had no entry for it at all.
+      const seniorCompExempt = seniorCompositionExempt(slot.shift, ds);
+      if (isPod && !seniorFilled && !seniorCompExempt) {
         const pgy3Pool = candidates.filter(podSatisfies);
         if (pgy3Pool.length) {
           candidates = pgy3Pool;
@@ -3250,7 +3293,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         } else {
           continue; // optional phase: max is a cap, not a requirement — same as other optional misses
         }
-      } else if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled) {
+      } else if (SENIOR_COMPOSITION[slot.shift.area] && !seniorFilled && !seniorCompExempt) {
         const seniorPool = candidates.filter(r => isSeniorFor(slot.shift.area, r));
         if (seniorPool.length) {
           candidates = seniorPool;
@@ -3397,6 +3440,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // exactly what fillDayPass would have recorded — scored honestly by the quality vector either
     // way, not a hard error).
     function narrowForSeniority(pool, shift, ds) {
+      if (seniorCompositionExempt(shift, ds)) return pool; // Grand Rounds Wednesday — see seniorCompositionExempt
       if (shift.area === 'POD') {
         const podWellnessOk = podWellnessSubstituteAllowed(ds, block.startDate);
         const satisfies = r => r.category === 'EM_HOME' && (r.pgy === 3 || (podWellnessOk && r.pgy === 2));
@@ -3418,6 +3462,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     function podStillSatisfied(shiftId, ds) {
       const shift = SHIFT_MAP[shiftId];
       if (shift?.area !== 'POD') return true;
+      if (seniorCompositionExempt(shift, ds)) return true; // Grand Rounds Wednesday — see seniorCompositionExempt
       const podWellnessOk = podWellnessSubstituteAllowed(ds, block.startDate);
       const satisfies = r => r.category === 'EM_HOME' && (r.pgy === 3 || (podWellnessOk && r.pgy === 2));
       return allResidents.some(r => schedule[r.id][ds] === shiftId && satisfies(r));
@@ -4080,16 +4125,20 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
-// Renders the CHANGELOG entries a viewer hasn't acknowledged yet. Dismissing stores only the
-// NEWEST id, so skipping three releases and reading them together still marks all three read.
 // **bold** is the only markup supported — deliberately, so entries stay plain strings that can't
-// inject markup into the page.
-function WhatsNewModal({ entries, onClose }) {
-  const renderText = text => text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+// inject markup into the page. Shared by WhatsNewModal and WhatsNewTab so the banner and the
+// archive can't drift on how a changelog item renders.
+function renderChangelogText(text) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
     part.startsWith('**') && part.endsWith('**')
       ? <strong key={i} className="font-semibold text-gray-800">{part.slice(2, -2)}</strong>
       : <span key={i}>{part}</span>
   );
+}
+
+// Renders the CHANGELOG entries a viewer hasn't acknowledged yet. Dismissing stores only the
+// NEWEST id, so skipping three releases and reading them together still marks all three read.
+function WhatsNewModal({ entries, onClose }) {
   return (
     <Modal title="What's new" onClose={onClose} wide>
       <div className="space-y-5">
@@ -4103,7 +4152,7 @@ function WhatsNewModal({ entries, onClose }) {
               {e.items.map((it, i) => (
                 <li key={i} className="flex gap-2 text-xs text-gray-600 leading-relaxed">
                   <span className="text-primary shrink-0 mt-0.5">•</span>
-                  <span>{renderText(it)}</span>
+                  <span>{renderChangelogText(it)}</span>
                 </li>
               ))}
             </ul>
@@ -8241,7 +8290,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), EM Home's own shift Thu-Sun. Trauma day-of-week limits still apply on top.
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
+              POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
             </p>
             <p className="text-xs text-gray-500 mt-1">
               12h shifts only staff inside a <strong>12-Hour Shift Window</strong> — set those per academic year on the Dashboard tab (Block Calendar → 12-Hour Shift Windows), where you choose the dates, which areas swap, and whether the 9h shifts are replaced or kept alongside. An academic year you've never opened there still behaves as before: ACEP/AAEM/SAEM dates automatically run POD/MT/FLEX on 12h and suppress their 9h shifts.
@@ -8645,6 +8694,38 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
   const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
   const [showInactive, setShowInactive] = useState({}); // per-category toggle for the not-schedulable divider row
+
+  // In-app full-screen overlay (not the browser Fullscreen API) — see CLAUDE.md scope note.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = e => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
+
+  // Ref on the grid's own scroll container — used by the week-scroll buttons and the
+  // jump-to-date select, and by nothing else (no drag-to-pan here, see CLAUDE.md scope note:
+  // the grid already uses HTML5 drag for shift chips and the two would fight).
+  const scrollRef = useRef(null);
+
+  // Lock-paint mode: while on, clicking (or clicking-and-dragging across) assigned cells toggles
+  // their lock state instead of opening the shift picker. paintValueRef holds the target value
+  // (true=lock, false=unlock) captured on mousedown so a drag can only ever push cells toward
+  // that one value, never flip them back and forth as the pointer re-crosses a cell.
+  const [lockMode, setLockMode] = useState(false);
+  const paintValueRef = useRef(null);
+  useEffect(() => {
+    if (!lockMode) return;
+    const release = () => { paintValueRef.current = null; };
+    window.addEventListener('mouseup', release);
+    window.addEventListener('mouseleave', release);
+    return () => {
+      window.removeEventListener('mouseup', release);
+      window.removeEventListener('mouseleave', release);
+    };
+  }, [lockMode]);
+
   const sched = block.schedule || {};
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
@@ -8688,7 +8769,84 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     });
   }
 
+  // Bulk lock/unlock — row (one resident, every date), column (one date, every resident), and
+  // whole-block affordances. Each is exactly ONE functional updateBlockTracked producing the
+  // whole next lockedCells map in one shot — looping the per-cell toggleLock above would push one
+  // undo entry per cell instead of one for the whole bulk action. Locking only ever protects a
+  // cell that actually HOLDS a shift (an empty cell has nothing to protect); unlocking is
+  // unconditional so a stray lock entry can still be found and cleared.
+  function lockRow(resId) {
+    updateBlockTracked(b => {
+      const row = (b.schedule || {})[resId] || {};
+      const resLocks = { ...(b.lockedCells?.[resId] || {}) };
+      for (const ds of Object.keys(row)) { if (row[ds]) resLocks[ds] = true; }
+      return { ...b, lockedCells: { ...(b.lockedCells || {}), [resId]: resLocks } };
+    });
+  }
+  function unlockRow(resId) {
+    updateBlockTracked(b => {
+      const next = { ...(b.lockedCells || {}) };
+      delete next[resId];
+      return { ...b, lockedCells: next };
+    });
+  }
+  function lockColumn(ds) {
+    updateBlockTracked(b => {
+      const sch = b.schedule || {};
+      const next = { ...(b.lockedCells || {}) };
+      for (const resId of Object.keys(sch)) {
+        if (!sch[resId]?.[ds]) continue;
+        next[resId] = { ...(next[resId] || {}), [ds]: true };
+      }
+      return { ...b, lockedCells: next };
+    });
+  }
+  function unlockColumn(ds) {
+    updateBlockTracked(b => {
+      const cur = b.lockedCells || {};
+      const next = {};
+      for (const resId of Object.keys(cur)) {
+        const row = { ...cur[resId] };
+        delete row[ds];
+        if (Object.keys(row).length) next[resId] = row;
+      }
+      return { ...b, lockedCells: next };
+    });
+  }
+  function lockAllAssigned() {
+    updateBlockTracked(b => {
+      const sch = b.schedule || {};
+      const next = {};
+      for (const resId of Object.keys(sch)) {
+        const row = sch[resId] || {};
+        const locks = {};
+        for (const ds of Object.keys(row)) { if (row[ds]) locks[ds] = true; }
+        if (Object.keys(locks).length) next[resId] = locks;
+      }
+      return { ...b, lockedCells: next };
+    });
+  }
+  function unlockAll() {
+    updateBlockTracked(b => ({ ...b, lockedCells: {} }));
+  }
+
   const totalAssigned = useMemo(()=>Object.values(sched).reduce((s,d)=>s+Object.values(d||{}).filter(Boolean).length,0),[sched]);
+
+  const lockedCount = useMemo(() => {
+    const lc = block.lockedCells || {};
+    let n = 0;
+    for (const resId of Object.keys(lc)) n += Object.keys(lc[resId] || {}).length;
+    return n;
+  }, [block.lockedCells]);
+  // Every date with at least one locked cell anywhere — drives the date-header lock icon's
+  // locked/unlocked display state (which then decides whether clicking it locks or unlocks that
+  // whole column).
+  const colLockedDates = useMemo(() => {
+    const s = new Set();
+    const lc = block.lockedCells || {};
+    for (const resId of Object.keys(lc)) for (const ds of Object.keys(lc[resId] || {})) s.add(ds);
+    return s;
+  }, [block.lockedCells]);
 
   // ── Drag-and-drop: drag payload lives in React state (not dataTransfer), mirroring
   // em-scheduler's handleSchedDrop pattern. Dropping on an empty cell moves; dropping on an
@@ -8855,9 +9013,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // CLAUDE.md "buy-down". delta comes from allResidents' denormalized targetDelta seam.
     const rowDelta=Number(res.targetDelta);
     const rowHasDelta=Number.isFinite(rowDelta)&&rowDelta!==0;
+    const rowLockedCells=block.lockedCells?.[res.id];
+    const rowLocked=!!(rowLockedCells && Object.keys(rowLockedCells).length>0);
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
-        <div className={`grid-sticky border-r border-gray-200 flex items-center px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
+        <div className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
           <div className="flex-1 min-w-0">
             <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
             <div className="flex items-center gap-1 mt-0.5">
@@ -8874,6 +9034,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               )}
             </div>
           </div>
+          <button type="button" onClick={()=>rowLocked?unlockRow(res.id):lockRow(res.id)}
+            title={rowLocked?`Unlock all of ${res.lastName}'s locked cells`:`Lock all of ${res.lastName}'s assigned cells`}
+            className={`shrink-0 rounded p-1 transition-opacity ${rowLocked?'text-indigo-600 opacity-100':'text-gray-300 opacity-0 group-hover:opacity-100 hover:text-gray-600'}`}>
+            {rowLocked?<Lock size={11}/>:<Unlock size={11}/>}
+          </button>
         </div>
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
@@ -8911,14 +9076,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           const dayMarkerText = isWW ? `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block)` : isJC ? 'JC presenting' : isGR ? 'Grand Rounds' : null;
           const cornerLabel = isWW ? 'WW' : isJC ? 'JC' : isGR ? 'GR' : null;
           const cornerColor = isWW ? 'text-violet-600 bg-violet-100' : isJC ? 'text-primary bg-primary/10' : 'text-yellow-600 bg-yellow-100';
+          // Lock-paint mode hijacks click/mousedown/mouseenter on this cell (only when it holds a
+          // shift — an empty cell has nothing to lock) instead of opening the picker; see CLAUDE.md
+          // "Locking UX" for why the origin cell's toggle happens on mousedown (not click) — a real
+          // drag ends its mouseup over a *different* cell than it started on, so click never fires
+          // on the origin cell at all.
+          const paintable = lockMode && !!sid;
           return (
             <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
-              onClick={()=>{ if(drag) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
+              onClick={()=>{ if(drag||lockMode) return; clickable&&setPicker({resident:res,dateStr:ds}); }}
+              onMouseDown={()=>{ if(!paintable) return; const target=!isLocked; paintValueRef.current=target; toggleLock(res.id, ds); }}
+              onMouseEnter={e=>{ if(!paintable||paintValueRef.current===null||e.buttons!==1) return; if(isLocked!==paintValueRef.current) toggleLock(res.id, ds); }}
               onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
               onDragLeave={e=>{ if(!e.currentTarget.contains(e.relatedTarget)) setDragOver(dOv=>(dOv&&dOv.resId===res.id&&dOv.ds===ds)?null:dOv); }}
               onDrop={e=>{ e.preventDefault(); handleDrop(res,ds); }}
-              title={isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':dayMarkerText?(shift?`${sid} — ${dayMarkerText}`:isWW?`${dayMarkerText} — no day/eve`:dayMarkerText):isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':''}
-              className={`relative border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              title={lockMode?(sid?(isLocked?'Locked — click/drag to unlock':'Click/drag to lock'):''):isApprovedOff?'Approved day off':isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':dayMarkerText?(shift?`${sid} — ${dayMarkerText}`:isWW?`${dayMarkerText} — no day/eve`:dayMarkerText):isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':''}
+              className={`relative group border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-orange-500">OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-teal-600">VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-purple-500">J</span></div>}
@@ -8926,7 +9099,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               {isJC&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-primary">JC</span></div>}
               {isGR&&!isWW&&!isJC&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs font-bold text-yellow-600">GR</span></div>}
               {shift && (
-                <div draggable={!isLocked}
+                <div draggable={!isLocked&&!lockMode}
                   onDragStart={e=>{ if(isLocked){e.preventDefault();return;} e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
                   onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
                   className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
@@ -8936,8 +9109,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               {shift && (
                 <button type="button" onClick={e=>{ e.stopPropagation(); toggleLock(res.id, ds); }}
                   title={isLocked?'Unlock cell (allow drag/regenerate/edit)':'Lock cell (protect from drag, regenerate, and manual edit)'}
-                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-0.5 ${isLocked?'bg-indigo-600 text-white':'bg-white/70 text-gray-400 hover:text-gray-700'}`}>
-                  {isLocked?<Lock size={9}/>:<Unlock size={9}/>}
+                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white':'bg-white/70 text-gray-400 opacity-60 group-hover:opacity-100 hover:text-gray-700'}`}>
+                  {isLocked?<Lock size={11}/>:<Unlock size={11}/>}
                 </button>
               )}
               {shift && cornerLabel && <span className={`absolute bottom-0 left-0 text-[9px] leading-none font-bold rounded-tr px-0.5 py-px z-10 ${cornerColor}`} title={dayMarkerText}>{cornerLabel}</span>}
@@ -8951,7 +9124,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   }
 
   return (
-    <div>
+    <div className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
@@ -8972,6 +9145,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             title="Clears every unlocked cell and regenerates it — locked cells are left untouched.">
             Regenerate Unlocked
           </Button>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground font-mono" title="Cells currently locked">
+            <Lock size={11}/> {lockedCount} locked
+          </span>
+          {lockedCount>0 && <Button variant="ghost" size="sm" onClick={unlockAll} title="Unlock every locked cell in the block">Unlock all</Button>}
           <span className="flex items-center gap-1">
             <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)}
               className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
@@ -8986,6 +9163,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
             title="Empties every assignment without regenerating.">
             Clear Schedule
+          </Button>
+          <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
+            title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
+            {fullscreen?'Exit Full Screen':'Full Screen'}
           </Button>
         </span>
       </div>
@@ -9024,6 +9205,30 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         </div>
       )}
 
+      {/* Grid-view-only navigation toolbar: week-scroll, jump-to-date, lock-paint mode toggle +
+          bulk "lock all assigned". Lives here (not the Generate-actions row above) since scrollRef
+          only targets the grid-view scroll container. */}
+      {view==='grid' && (
+        <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
+          <Button variant={lockMode?'primary':'ghost'} size="sm" icon={lockMode?Lock:Unlock} onClick={()=>setLockMode(m=>!m)}
+            title={lockMode?'Exit lock-paint mode':'Click, or click-and-drag across assigned cells, to lock/unlock them'}>
+            {lockMode?'Exit Lock Mode':'Lock Mode'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={lockAllAssigned} title="Lock every currently assigned cell in the block">
+            Lock all assigned
+          </Button>
+          <span className="w-px h-5 bg-border mx-0.5"/>
+          <Button variant="ghost" size="sm" onClick={()=>scrollRef.current?.scrollBy({left:-CELL_W*7, behavior:'smooth'})} title="Scroll back one week">◀</Button>
+          <select onChange={e=>{ const ds=e.target.value; if(!ds||!scrollRef.current) return; const idx=dates.indexOf(ds); if(idx>=0) scrollRef.current.scrollLeft=idx*CELL_W; e.target.value=''; }}
+            defaultValue="" title="Jump to date"
+            className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-primary">
+            <option value="">Jump to date…</option>
+            {dates.map(ds=><option key={ds} value={ds}>{formatDisplayDate(ds)}</option>)}
+          </select>
+          <Button variant="ghost" size="sm" onClick={()=>scrollRef.current?.scrollBy({left:CELL_W*7, behavior:'smooth'})} title="Scroll forward one week">▶</Button>
+        </div>
+      )}
+
       {/* Legend */}
       {view==='grid' && (
       <div className="flex items-center gap-2.5 mb-3 flex-wrap text-xs text-gray-400">
@@ -9037,6 +9242,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation</span>
       </div>
+      )}
+
+      {/* Lock-paint mode banner — unmistakable so nobody edits by accident while it's on. */}
+      {view==='grid' && lockMode && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-semibold flex items-center gap-2">
+          <Lock size={13}/> Lock mode is on — click, or click-and-drag, across assigned cells to lock/unlock them. Click "Exit Lock Mode" above when done.
+        </div>
       )}
 
       {/* Empty-schedule CTA */}
@@ -9055,7 +9267,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {confirmClear && (
         <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
           onConfirm={() => {
-            updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
+            // lockedCells must clear alongside schedule — otherwise a lock entry points at a cell
+            // that no longer exists, invisible with no UI to find or remove it (see CLAUDE.md).
+            updateBlock(b => ({ ...b, schedule: {}, generationReport: null, lockedCells: {} }));
             setConfirmClear(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -9112,18 +9326,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       )}
 
       {view==='grid' && (
-      <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto schedule-scroll">
+      <div className={`border rounded-xl overflow-hidden shadow-sm ${lockMode?'border-indigo-400 ring-4 ring-indigo-300':'border-gray-200'}`}>
+        {/* overflow-auto (not overflow-x-auto) + a bounded height is what makes the header row's
+            existing `sticky top-0` actually engage — previously this container had no height cap,
+            so the ancestor <main className="overflow-y-auto"> did all vertical scrolling and the
+            sticky header never had a scrolling ancestor of its own to stick within. Fullscreen uses
+            a shorter subtraction since the app header/page chrome around the grid is gone; both
+            values are viewport-relative on purpose rather than a flex `height:100%` chain, which
+            would require also re-plumbing every intermediate ancestor's own height — not verifiable
+            without a browser, so this was the more conservative call (see report). */}
+        <div ref={scrollRef} className="overflow-auto schedule-scroll" style={{maxHeight: fullscreen ? 'calc(100vh - 12rem)' : 'calc(100vh - 20rem)'}}>
           <div style={{minWidth:NAME_W+CELL_W*dates.length}}>
             <div className="flex bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
-              <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center px-3" style={{width:NAME_W,minWidth:NAME_W}}>
+              <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center px-3" style={{width:NAME_W,minWidth:NAME_W,zIndex:30}}>
                 <span className="font-display text-xs font-semibold text-gray-400 uppercase tracking-wide">Resident</span>
               </div>
               {dates.map(ds=>{
                 const d=parseDate(ds); const dow=d.getDay(); const isWed=dow===3; const isWknd=dow===0||dow===6;
+                const dsLocked=colLockedDates.has(ds);
                 return (
                   <div key={ds} style={{width:CELL_W,minWidth:CELL_W}}
-                    className={`flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-gray-100':'bg-gray-50'}`}>
+                    className={`relative group flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-gray-100':'bg-gray-50'}`}>
                     <span className={`text-xs font-bold ${isWed?'text-yellow-700':isWknd?'text-gray-500':'text-gray-500'}`}>{DOW[dow]}</span>
                     <span className={`text-xs ${isWed?'text-yellow-600':isWknd?'text-gray-400':'text-gray-400'}`}>{d.getMonth()+1}/{d.getDate()}</span>
                     {/* Says out loud that this date runs 12h shifts — an unset window used to be a
@@ -9131,6 +9354,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                     {twelveHourDaySet.has(ds) && (
                       <span className="text-[8px] font-bold px-1 rounded bg-indigo-100 text-indigo-700 leading-tight" title="12-hour shifts active on this date">12h</span>
                     )}
+                    <button type="button" onClick={()=>dsLocked?unlockColumn(ds):lockColumn(ds)}
+                      title={dsLocked?`Unlock all locked cells on ${formatDisplayDate(ds)}`:`Lock all assigned cells on ${formatDisplayDate(ds)}`}
+                      className={`absolute top-0 right-0 rounded-bl p-0.5 transition-opacity ${dsLocked?'text-indigo-600 opacity-100':'text-gray-400 opacity-0 group-hover:opacity-100 hover:text-gray-600'}`}>
+                      {dsLocked?<Lock size={9}/>:<Unlock size={9}/>}
+                    </button>
                   </div>
                 );
               })}
@@ -9167,10 +9395,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 Legacy light-print surface: kept token-first (auto-adapts in dark mode, always
                 reverts to light for print via the @media screen-scoped dark overrides), but the
                 red/amber/green status classes stay raw Tailwind literals — already remap-sheet
-                covered for dark mode, must not be tokenized (see CLAUDE.md). */}
-            <div className="flex bg-muted/60 border-t-2 border-border">
-              <div className="grid-sticky bg-muted/60 border-r border-border flex items-center gap-1 px-3 cursor-pointer hover:bg-muted"
-                style={{width:NAME_W,minWidth:NAME_W}} onClick={()=>setCovExpanded(p=>!p)}>
+                covered for dark mode, must not be tokenized (see CLAUDE.md).
+                Sticky to the bottom of the bounded scroll viewport so filled/min totals stay
+                visible while scrolling — bg-muted (opaque), not the original bg-muted/60, since a
+                translucent sticky row would let the rows scrolling underneath bleed through it.
+                The per-shift covExpanded breakdown rows below stay non-sticky on purpose (~20 of
+                them would eat the whole viewport). */}
+            <div className="flex bg-muted border-t-2 border-border sticky bottom-0 z-20">
+              <div className="grid-sticky bg-muted border-r border-border flex items-center gap-1 px-3 cursor-pointer hover:bg-accent"
+                style={{width:NAME_W,minWidth:NAME_W,zIndex:30}} onClick={()=>setCovExpanded(p=>!p)}>
                 <ChevronDown size={12} className={`text-muted-foreground transition-transform ${covExpanded?'':'-rotate-90'}`}/>
                 <span className="font-display uppercase text-[10px] tracking-wide text-muted-foreground">Coverage</span>
               </div>
@@ -10171,19 +10404,17 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         </div>
       </CollapsibleCard>
 
-      {/* Re-open the release notes. Without this the What's New modal is a one-shot: dismissed
-          once and gone, with no way back to it when someone half-reads it and closes the tab. */}
-      <CollapsibleCard title="What's New" subtitle="Release notes — shown automatically the first time you open the app after an update.">
+      {/* Pointer to the release-notes archive. The What's New banner is a one-shot — dismissed once
+          and gone — so the notes need a permanent home; this card is the second way to reach it,
+          for anyone who looks in Settings rather than the sidebar. */}
+      <CollapsibleCard title="What's New" subtitle="Release notes — shown automatically the first time you open the app after an update, and kept on the What's New tab.">
         <div className="flex items-center gap-3">
           <p className="text-xs text-gray-500 flex-1">
             {CHANGELOG[0]
               ? <>Latest: <span className="font-medium text-gray-700">{CHANGELOG[0].title}</span> ({formatDisplayDate(CHANGELOG[0].date)})</>
               : 'No release notes yet.'}
           </p>
-          <button onClick={onShowWhatsNew}
-            className="text-sm px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors font-medium shrink-0">
-            View release notes
-          </button>
+          <Button variant="secondary" size="sm" onClick={onShowWhatsNew}>Open release notes</Button>
         </div>
       </CollapsibleCard>
 
@@ -10293,6 +10524,46 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           <Button variant="danger" size="sm" icon={Trash2} onClick={()=>setClearConfirm(true)}>Clear All Data</Button>
         )}
       </CollapsibleCard>
+    </div>
+  );
+}
+
+// ─── WHAT'S NEW TAB ───────────────────────────────────────────────────────────
+// Permanent, browsable archive of CHANGELOG — the modal (WhatsNewModal above) is transient and
+// one-shot; this is the "I dismissed it and want it back" surface, plus a way to see releases
+// from before you ever opened the app. `unseenIds` (a Set of entry ids the viewer hasn't read)
+// is FROZEN at mount so "New" pills stay visible on the very visit that clears them — reading the
+// tab is what marks everything read, same convention as opening a notifications inbox.
+function WhatsNewTab({ unseenIds, onMarkSeen }) {
+  const [freshIds] = useState(() => unseenIds);
+  useEffect(() => { onMarkSeen(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div>
+        <h2 className="text-base font-semibold text-gray-800">What's New</h2>
+        <p className="text-xs text-gray-500 mt-0.5">Every release note, newest first.</p>
+      </div>
+
+      {CHANGELOG.length === 0 ? (
+        <p className="text-sm text-gray-500">No release notes yet.</p>
+      ) : (
+        CHANGELOG.map(e => (
+          <SectionCard key={e.id} title={e.title} subtitle={formatDisplayDate(e.date)}
+            action={freshIds.has(e.id) && (
+              <span className="bg-primary text-white text-[10px] px-1.5 py-0.5 rounded-full">New</span>
+            )}>
+            <ul className="space-y-1.5">
+              {e.items.map((it, i) => (
+                <li key={i} className="flex gap-2 text-xs text-gray-600 leading-relaxed">
+                  <span className="text-primary shrink-0 mt-0.5">•</span>
+                  <span>{renderChangelogText(it)}</span>
+                </li>
+              ))}
+            </ul>
+          </SectionCard>
+        ))
+      )}
     </div>
   );
 }
@@ -10440,7 +10711,7 @@ function UserGuideTab({ onNavigate }) {
       {show('generate') && <GuideSection {...sec('generate')}>
         <p>Set <strong>Daily Shift Coverage</strong> on the Scheduling Rules tab first — how many residents each shift (POD Day, Trauma Night, etc.) needs per day. Then, on the Schedule tab, click <strong>Generate Schedule</strong> to auto-fill every open slot for the whole block.</p>
         <ul className="list-disc space-y-1">
-          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, the EM PGY-2/3 trauma cap, the <strong>EM PGY-3 requirement on POD</strong>, and the <strong>max 6 consecutive work days</strong> rule (Grand Rounds and Journal Club presenting days count as worked too, and the count carries across the previous block's tail) — it never assigns a shift a resident couldn't legally work.</li>
+          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, the EM PGY-2/3 trauma cap, the <strong>EM PGY-3 requirement on POD</strong> (waived for day shifts on Wednesdays — Grand Rounds), and the <strong>max 6 consecutive work days</strong> rule (Grand Rounds and Journal Club presenting days count as worked too, and the count carries across the previous block's tail) — it never assigns a shift a resident couldn't legally work.</li>
           <li><strong>Trauma Day is filled last</strong>, after every other shift for the whole block, so PGY-1 trauma-day slots don't crowd out other coverage.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
           <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
@@ -10763,6 +11034,288 @@ function FeedbackAdminTab() {
   );
 }
 
+// ─── COVERAGE TAB (Department Coverage) ────────────────────────────────────────
+// Birds-eye view of WHO is covering each shift, not just how many bodies (that's
+// computeCoverageByDate/ScheduleGrid's coverage footer above). All aggregation is delegated to
+// composeCoverage (src/lib/coverageComposition.js, pure + independently tested) — this component
+// only lays it out. Never re-derive SHIFT_DOW/twelveHourStateFor here; consume composeCoverage's
+// output as-is so this view can't drift from the coverage footer's numbers.
+const COVERAGE_TAB_NAME_W = 92;   // px — sticky first-column width for the By Area grid
+const COVERAGE_TAB_CELL_W = 68;   // px — narrower than ScheduleGrid's CELL_W; no chip content here
+
+// Small solid-color dot for a resident's CATEGORY (never shift-area hue — src/lib/parse.js:13-15
+// documents these as deliberately separate color axes). Derived from CATEGORIES[].badge's own
+// `bg-*` token rather than a second hand-maintained color table, so a new category automatically
+// gets a dot color with no edit here.
+function CategoryDot({ categoryId, title }) {
+  const cat = CAT_MAP[categoryId];
+  const dotClass = cat ? cat.badge.split(' ')[0] : 'bg-muted-foreground';
+  return <span title={title} className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}/>;
+}
+
+// Adapts composeCoverage's per-date shift map ({total,min,max,...}) into computeCoverageByDate's
+// shape ({count,min,max}) so the existing getActiveCoverageShifts inert-shift filter can be reused
+// verbatim (same "worth a row" rule the coverage footer uses) instead of re-deriving it here.
+function toPerShiftCounts(composed, dates) {
+  const out = {};
+  for (const ds of dates) {
+    const perShift = {};
+    const byShift = composed[ds] || {};
+    for (const sid of Object.keys(byShift)) {
+      perShift[sid] = { count: byShift[sid].total, min: byShift[sid].min, max: byShift[sid].max };
+    }
+    out[ds] = { perShift };
+  }
+  return out;
+}
+
+// View 1 (default): rows grouped by shift area, one row per shift id, columns = dates. Mirrors
+// ScheduleGrid's bounded-scroll/sticky-axis pattern (schedule-scroll container, grid-sticky first
+// column) so this large grid behaves the same way under the mouse as the Schedule tab's grid.
+function CoverageByAreaView({ dates, composed, residentById }) {
+  const activeShifts = useMemo(() => getActiveCoverageShifts(dates, toPerShiftCounts(composed, dates)), [dates, composed]);
+  const areaGroups = useMemo(
+    () => SHIFT_AREAS.map(area => ({ area, shifts: activeShifts.filter(s => s.area === area) })).filter(g => g.shifts.length > 0),
+    [activeShifts]
+  );
+
+  if (areaGroups.length === 0) {
+    return <p className="text-sm text-muted-foreground">No shifts have coverage requirements or assignments in this block yet.</p>;
+  }
+
+  return (
+    <div className="border rounded-xl overflow-hidden shadow-sm border-border">
+      <div className="overflow-auto schedule-scroll" style={{ maxHeight: 'calc(100vh - 24rem)' }}>
+        <div style={{ minWidth: COVERAGE_TAB_NAME_W + COVERAGE_TAB_CELL_W * dates.length }}>
+          <div className="flex bg-muted border-b border-border sticky top-0 z-20">
+            <div className="grid-sticky bg-muted border-r border-border flex items-center px-2" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W, zIndex: 30 }}>
+              <span className="font-display text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Shift</span>
+            </div>
+            {dates.map(ds => {
+              const d = parseDate(ds); const dow = d.getDay(); const isWknd = dow === 0 || dow === 6;
+              return (
+                <div key={ds} style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W }}
+                  className={`flex flex-col items-center justify-center py-1 border-r border-border/40 ${isWknd ? 'bg-muted/70' : ''}`}>
+                  <span className="text-[10px] font-bold text-muted-foreground">{DOW[dow]}</span>
+                  <span className="text-[10px] text-muted-foreground">{d.getMonth() + 1}/{d.getDate()}</span>
+                </div>
+              );
+            })}
+          </div>
+          {areaGroups.map(({ area, shifts }) => (
+            <div key={area}>
+              <div className="flex bg-muted/40 border-b border-border/60">
+                <div className="grid-sticky bg-muted/40 border-r border-border flex items-center px-2 py-1" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W }}>
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{area}</span>
+                </div>
+                <div style={{ flex: 1 }}/>
+              </div>
+              {shifts.map(s => (
+                <div key={s.id} className="flex border-b border-border/30">
+                  <div className="grid-sticky bg-card border-r border-border flex items-center px-2 py-1.5" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W }}>
+                    <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                  </div>
+                  {dates.map(ds => {
+                    const info = composed[ds]?.[s.id];
+                    if (!info) {
+                      return <div key={ds} style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W, height: 34 }} className="border-r border-border/20"/>;
+                    }
+                    const status = shiftCellStatus({ count: info.total, min: info.min, max: info.max });
+                    const whoTitle = info.residentIds.map(rid => {
+                      const r = residentById[rid];
+                      return r ? `${r.lastName}, ${r.firstName} (${bucketLabel(`${r.category}_${r.pgy}`)})` : rid;
+                    }).join('; ') || 'Unfilled';
+                    return (
+                      <div key={ds} title={`${s.id} ${formatDisplayDate(ds)}: ${info.total}/${info.min} — ${whoTitle}`}
+                        style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W, height: 34 }}
+                        className={`flex flex-col items-center justify-center gap-0.5 border-r border-border/20 ${COVERAGE_DAY_BG[status]}`}>
+                        <span className="font-mono tabular-nums text-[11px] leading-none">{info.total}/{info.min}</span>
+                        {info.residentIds.length > 0 && (
+                          <span className="flex items-center gap-0.5 flex-wrap justify-center max-w-full px-0.5">
+                            {info.residentIds.map(rid => (
+                              <CategoryDot key={rid} categoryId={residentById[rid]?.category} title={residentById[rid] ? `${residentById[rid].lastName}, ${residentById[rid].firstName}` : rid}/>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// View 2: single-date drill-down — every active shift on the picked date, roster grouped by
+// bucket (bucketLabel), resident names shown out loud (composition-by-bucket is the whole point
+// of this view, unlike the dot-only By Area grid which is bounded on width).
+function CoverageByDateView({ dates, composed, residentById, selectedDate, onSelectDate }) {
+  const idx = dates.indexOf(selectedDate);
+  const dayComposed = composed[selectedDate] || {};
+  const shiftsForDate = useMemo(
+    () => SHIFTS.filter(s => { const info = dayComposed[s.id]; return info && (info.total > 0 || info.min > 0); }),
+    [dayComposed]
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <Button variant="secondary" size="sm" disabled={idx <= 0} onClick={() => onSelectDate(dates[idx - 1])}>Prev</Button>
+        <select value={selectedDate || ''} onChange={e => onSelectDate(e.target.value)}
+          className="text-sm border border-border rounded-lg px-2 py-1.5 bg-card text-card-foreground">
+          {dates.map(ds => <option key={ds} value={ds}>{formatDisplayDate(ds)}</option>)}
+        </select>
+        <Button variant="secondary" size="sm" disabled={idx === -1 || idx >= dates.length - 1} onClick={() => onSelectDate(dates[idx + 1])}>Next</Button>
+      </div>
+      {shiftsForDate.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No shifts with coverage requirements or assignments on this date.</p>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {shiftsForDate.map(s => {
+            const info = dayComposed[s.id];
+            const status = shiftCellStatus({ count: info.total, min: info.min, max: info.max });
+            const bucketKeys = Object.keys(info.buckets).sort();
+            return (
+              <div key={s.id} className={`rounded-lg border border-border p-3 ${COVERAGE_DAY_BG[status]}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                  <span className="font-mono tabular-nums text-xs">{info.total}/{info.min}{info.max !== info.min ? `–${info.max}` : ''}</span>
+                </div>
+                {info.total === 0 ? (
+                  <p className="text-xs text-muted-foreground">Unfilled</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {bucketKeys.map(bk => {
+                      const names = info.residentIds
+                        .filter(rid => `${residentById[rid]?.category}_${residentById[rid]?.pgy}` === bk)
+                        .map(rid => residentById[rid] ? `${residentById[rid].lastName}, ${residentById[rid].firstName}` : rid);
+                      return (
+                        <li key={bk} className="text-xs flex gap-1.5">
+                          <CategoryDot categoryId={bk.slice(0, bk.lastIndexOf('_'))}/>
+                          <span><span className="font-medium">{bucketLabel(bk)}</span>{': '}{names.join(', ')}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// View 3: per-bucket (category/PGY) shift counts across the WHOLE block, split by shift type —
+// the fairness-shaped rollup (day/eve/night/swing), distinct from Views 1-2's per-date snapshots.
+function CoverageTotalsView({ dates, composed }) {
+  const totals = useMemo(() => {
+    const t = {};
+    for (const ds of dates) {
+      const byShift = composed[ds] || {};
+      for (const s of SHIFTS) {
+        const info = byShift[s.id];
+        if (!info) continue;
+        for (const [bucketKey, count] of Object.entries(info.buckets)) {
+          if (!t[bucketKey]) t[bucketKey] = { day: 0, eve: 0, night: 0, swing: 0, total: 0 };
+          t[bucketKey][s.type] = (t[bucketKey][s.type] || 0) + count;
+          t[bucketKey].total += count;
+        }
+      }
+    }
+    return t;
+  }, [dates, composed]);
+  const bucketKeys = Object.keys(totals).sort();
+  const types = ['day', 'eve', 'night', 'swing'];
+
+  if (bucketKeys.length === 0) {
+    return <p className="text-sm text-muted-foreground">No shifts assigned in this block yet.</p>;
+  }
+
+  return (
+    <div className="overflow-x-auto schedule-scroll">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border">
+            <th className="py-2 pr-4 font-semibold">Group</th>
+            {types.map(t => <th key={t} className="py-2 px-3 text-right font-mono font-semibold">{t}</th>)}
+            <th className="py-2 pl-3 text-right font-mono font-semibold">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bucketKeys.map(bk => (
+            <tr key={bk} className="border-b border-border/40">
+              <td className="py-1.5 pr-4 font-medium flex items-center gap-1.5">
+                <CategoryDot categoryId={bk.slice(0, bk.lastIndexOf('_'))}/>{bucketLabel(bk)}
+              </td>
+              {types.map(t => <td key={t} className="py-1.5 px-3 text-right font-mono tabular-nums">{totals[bk][t] || 0}</td>)}
+              <td className="py-1.5 pl-3 text-right font-mono tabular-nums font-semibold">{totals[bk].total}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Root Coverage tab: birds-eye department-composition view. `block`/`allResidents`/`coverage`/
+// `ayConf` mirror the shapes ScheduleGrid/DashboardTab already consume (block.schedule,
+// root's allResidents memo, res_coverage, the current AY's ayData entry) — no new shapes
+// introduced. Handles a block with no dates (new/blank block) and an empty/unset schedule without
+// crashing, same guarantee composeCoverage itself already carries (see its own tests).
+function CoverageTab({ block, allResidents, coverage, ayConf }) {
+  const dates = useMemo(() => getBlockDates(block?.startDate, block?.endDate), [block?.startDate, block?.endDate]);
+  const schedule = block?.schedule || {};
+  const residents = allResidents || [];
+  const composed = useMemo(
+    () => composeCoverage({ dates, schedule, allResidents: residents, coverage, ayConf }),
+    [dates, schedule, residents, coverage, ayConf]
+  );
+  const residentById = useMemo(() => {
+    const m = {};
+    for (const r of residents) m[r.id] = r;
+    return m;
+  }, [residents]);
+
+  const [view, setView] = useState('byArea');
+  const [selectedDate, setSelectedDate] = useState(dates[0] || null);
+  // Guards against a stale selected date surviving a block switch (different date range) or a
+  // block with no dates yet — same "reconcile against fresh data" spirit as reconcileTabOrder.
+  useEffect(() => {
+    if (dates.length > 0 && !dates.includes(selectedDate)) setSelectedDate(dates[0]);
+    else if (dates.length === 0 && selectedDate !== null) setSelectedDate(null);
+  }, [dates, selectedDate]);
+
+  if (dates.length === 0) {
+    return (
+      <SectionCard title="Department Coverage" subtitle="Who is covering each shift, by category and PGY">
+        <p className="text-sm text-muted-foreground">This block has no start/end date set yet — add one on the Dashboard tab first.</p>
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard title="Department Coverage" subtitle="Who is covering each shift, by category and PGY">
+      <SubTabs value={view} onChange={setView} options={[
+        { id: 'byArea', label: 'By Area' },
+        { id: 'byDate', label: 'By Date' },
+        { id: 'totals', label: 'Totals' },
+      ]}/>
+      {view === 'byArea' && <CoverageByAreaView dates={dates} composed={composed} residentById={residentById}/>}
+      {view === 'byDate' && (
+        <CoverageByDateView dates={dates} composed={composed} residentById={residentById}
+          selectedDate={selectedDate} onSelectDate={setSelectedDate}/>
+      )}
+      {view === 'totals' && <CoverageTotalsView dates={dates} composed={composed}/>}
+    </SectionCard>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -10773,9 +11326,11 @@ const TABS = [
   { id: 'schedule',   label: 'Schedule',      icon: Calendar, blockScoped: true },
   { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen, global: true },
   { id: 'validation', label: 'Violations',    icon: AlertTriangle, blockScoped: true },
+  { id: 'coverage',   label: 'Coverage',      icon: Activity, blockScoped: true },
   { id: 'requests',   label: 'Requests',      icon: Inbox },
   { id: 'settings',   label: 'Settings',      icon: SettingsIcon, global: true },
   { id: 'feedback',   label: 'Feedback',      icon: MessageSquare },
+  { id: 'whatsnew',   label: "What's New",    icon: Sparkles },
   { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
 ];
 
@@ -10810,7 +11365,7 @@ function reorderIds(order, fromId, toId) {
 // plain static column exactly as before — the drawer classes are all breakpoint-scoped, so desktop
 // layout is untouched. Below `md` the 208px column would otherwise leave ~119px of usable content
 // width on a 375px phone.
-function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount, mobileOpen, onNavigate, viewer }) {
+function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedule, emResidentCount, offServiceCount, cloudEnabled, pendingRequestCount, unseenChangelogCount, mobileOpen, onNavigate, viewer }) {
   const [dragTabId, setDragTabId] = useState(null);
   const [dragOverTabId, setDragOverTabId] = useState(null);
   // The 'feedback' tab only ever renders when cloud sync is configured (it has nothing to
@@ -10874,6 +11429,13 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
               {isRequests && pendingRequestCount > 0 && (
                 <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-amber-400 text-black/80'}`}>
                   {pendingRequestCount}
+                </span>
+              )}
+              {/* Unread release notes. Primary, not amber — amber here means "needs action" (pending
+                  requests, warnings); unread notes are an FYI, not a queue to work through. */}
+              {t.id === 'whatsnew' && unseenChangelogCount > 0 && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full tabular-nums font-mono ${active?'bg-white/20 text-white':'bg-primary text-white'}`}>
+                  {unseenChangelogCount}
                 </span>
               )}
             </button>
@@ -11298,10 +11860,20 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Read once on mount (not live state) — same reason demoMode is: the answer can't change while
   // the app is open, and re-reading storage on every render would be pointless work.
   const [whatsNew, setWhatsNew] = useState(() => unseenChangelog());
-  const dismissWhatsNew = () => {
+  // Which id the viewer has acknowledged. Held as STATE (not re-read from storage per render) so the
+  // What's New tab's unread badge clears reactively the moment the archive is opened.
+  const [seenChangelogId, setSeenChangelogId] = useState(() => {
+    try { return localStorage.getItem(WHATS_NEW_KEY); } catch { return null; }
+  });
+  // One writer for "these are read", shared by the auto-banner's dismiss and by opening the archive
+  // tab — two entry points writing the same key separately is how they'd drift apart.
+  const markChangelogSeen = () => {
     try { localStorage.setItem(WHATS_NEW_KEY, CHANGELOG[0]?.id || ''); } catch { /* storage blocked — just close */ }
+    setSeenChangelogId(CHANGELOG[0]?.id || '');
     setWhatsNew([]);
   };
+  const unseenChangelogIds = useMemo(
+    () => new Set(unseenChangelogFor(seenChangelogId).map(e => e.id)), [seenChangelogId]);
   const [demoExisting, setDemoExisting] = useState(false); // does a resumable demo already exist?
   const [demoCheckPending, setDemoCheckPending] = useState(true); // still checking local/cloud for an existing demo?
   const [demoCheckError, setDemoCheckError] = useState(false); // couldn't confirm either way — don't guess
@@ -11991,7 +12563,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         </div>
       )}
 
-      {whatsNew.length > 0 && <WhatsNewModal entries={whatsNew} onClose={dismissWhatsNew}/>}
+      {whatsNew.length > 0 && <WhatsNewModal entries={whatsNew} onClose={markChangelogSeen}/>}
 
       {demoModalOpen && (
         <Modal title="Demo Sandbox" onClose={()=>setDemoModalOpen(false)}>
@@ -12037,6 +12609,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           issueCounts={issueCounts} hasSchedule={hasSchedule} emResidentCount={emRoster.length}
           offServiceCount={(block.offServiceResidents||[]).length} cloudEnabled={SUPABASE_ENABLED}
           pendingRequestCount={pendingRequests.length} viewer={viewer}
+          unseenChangelogCount={unseenChangelogIds.size}
           mobileOpen={navOpen} onNavigate={()=>setNavOpen(false)}/>
 
         {/* Main content */}
@@ -12057,8 +12630,10 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setWhatsNew(CHANGELOG)}/>}
+          {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
+          {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
       </div>
