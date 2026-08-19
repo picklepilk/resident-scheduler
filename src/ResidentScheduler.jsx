@@ -11,15 +11,13 @@ import {
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
   Archive, FlaskConical, Clock,
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import { jsPDF } from 'jspdf';
-// jspdf-autotable@3.x's default-export interop is broken under esbuild/Rollup bundling (import
-// autoTable from 'jspdf-autotable' resolves to the CJS namespace object, not the function, and
-// throws "is not a function" at call time — verified against the installed 3.8.4 via an esbuild
-// bundle, matching how Vite pre-bundles deps). A side-effect import instead runs the package's
-// own applyPlugin(jsPDF) call, which patches doc.autoTable(...) on as an instance method — use
-// that method form everywhere below, never the bare `autoTable(doc, opts)` function form.
-import 'jspdf-autotable';
+// xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
+// point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
+// statically here — this is the always-mounted root component, and both libs are only needed
+// inside a handful of handlers, so keeping them out of the top-level import list keeps them out
+// of the initial bundle. See exportMatrixPDF/exportResidentCalendarPDF for the jspdf-autotable
+// side-effect-import gotcha (still applies under dynamic import — the plugin patches the shared
+// jsPDF class regardless of which import site pulls jspdf-autotable in).
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
@@ -3849,7 +3847,7 @@ function demoFilenameSuffix(demoMode) {
 
 // Residents × dates matrix — the primary PDF deliverable. Landscape A3 since a ~28-day block's
 // date columns don't fit legibly on letter/A4.
-function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
+async function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
@@ -3869,6 +3867,17 @@ function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
       rowMeta.push({ isDivider: false, cells: dates.map(ds => rs[ds] || null) });
     }
   }
+
+  // jspdf-autotable@3.x's default-export interop is broken under esbuild/Rollup bundling (import
+  // autoTable from 'jspdf-autotable' resolves to the CJS namespace object, not the function, and
+  // throws "is not a function" at call time — verified against the installed 3.8.4 via an esbuild
+  // bundle, matching how Vite pre-bundles deps). A side-effect import instead runs the package's
+  // own applyPlugin(jsPDF) call, which patches doc.autoTable(...) on as an instance method — use
+  // that method form everywhere below, never the bare `autoTable(doc, opts)` function form. This
+  // still works dynamically: applyPlugin patches the jsPDF *class* (shared singleton module
+  // instance under Vite), not a particular doc instance, regardless of import timing/order.
+  const { jsPDF } = await import('jspdf');
+  await import('jspdf-autotable');
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
   const dateRange = block.startDate && block.endDate ? `${prettyDate(block.startDate)} to ${prettyDate(block.endDate)}` : '';
@@ -3914,12 +3923,16 @@ function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
 // carries the same OFF/jeopardy/JC-presenting/GR weekly attendance/GR-lecture/Wellness Wednesday
 // markers ResidentCardsView shows on screen. Portrait letter — simpler than a week-quadrant
 // calendar layout, and sufficient for a take-home schedule printout.
-function exportResidentCalendarPDF({ block, allResidents, schedule, demoMode, dayRules }) {
+async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMode, dayRules }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
   const schedulable = allResidents.filter(isSchedulable);
   if (!schedulable.length) return;
+
+  // See exportMatrixPDF above for why jspdf-autotable must be imported for its side effect only.
+  const { jsPDF } = await import('jspdf');
+  await import('jspdf-autotable');
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
 
@@ -5587,7 +5600,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
 // Home sheet's header row(s) start column 0 with "Resident" (true for both the PGY-section
 // format and the grouped-track fallback, since both open a header row that way); the Off-Service
 // sheet has a literal "Dept" header cell. Used only when name-regex matching fails on both sheets.
-function detectHomeAndOffSheetsByContent(wb) {
+function detectHomeAndOffSheetsByContent(wb, XLSX) {
   let homeSheetName, offSheetName;
   for (const name of wb.SheetNames) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
@@ -5623,10 +5636,11 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     setError('');
     setPreview(null);
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
+        const XLSX = await import('xlsx');
         const wb = XLSX.read(reader.result, { type: 'array' });
-        const detected = detectHomeAndOffSheetsByContent(wb);
+        const detected = detectHomeAndOffSheetsByContent(wb, XLSX);
         const homeSheetName = wb.SheetNames.find(n => /home/i.test(n)) || detected.homeSheetName || wb.SheetNames[0];
         const offSheetName  = wb.SheetNames.find(n => /off.?service/i.test(n)) || detected.offSheetName || wb.SheetNames[1] || wb.SheetNames[0];
         const homeRows = XLSX.utils.sheet_to_json(wb.Sheets[homeSheetName], { header: 1, raw: false, defval: '' });
@@ -6731,8 +6745,9 @@ function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast }) {
     setError('');
     setPreview(null);
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
+        const XLSX = await import('xlsx');
         const wb = XLSX.read(reader.result, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
         const result = parseVacationWorkbook(rows, ayStartYear, emRoster);
@@ -11812,7 +11827,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // `variant` only matters for kind==='qgenda' ('minimal' | 'withTimes' — see QGENDA_VARIANTS).
   // `kind` itself is always the plain string 'qgenda' regardless of variant — see the note by
   // exportVariant's declaration for why that's load-bearing for the demo guard below.
-  function runExport(kind, variant=null) {
+  async function runExport(kind, variant=null) {
     const demoSuffix = demoFilenameSuffix(demoMode);
     if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); setExportConfirm(null); setExportVariant(null); setExportUnmapped([]); return; }
     if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}${demoSuffix}.csv`, buildGridCSVRows(), { bom: true, quoteMode: 'always' });
@@ -11824,8 +11839,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     else if (kind==='ics') exportResidentICSFiles();
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
-        if (kind==='pdf-matrix') exportMatrixPDF({ block, allResidents, schedule: block.schedule, demoMode });
-        else exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, demoMode, dayRules });
+        if (kind==='pdf-matrix') await exportMatrixPDF({ block, allResidents, schedule: block.schedule, demoMode });
+        else await exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, demoMode, dayRules });
       } catch {
         // pdfSave() has nothing left to fall back to once it fails, so it propagates here —
         // surface it instead of leaving the chief thinking the export silently succeeded.
@@ -12041,7 +12056,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setWhatsNew(CHANGELOG)}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

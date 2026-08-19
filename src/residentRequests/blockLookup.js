@@ -12,6 +12,38 @@ export function findBlockForDate(dateStr, blocks) {
   return blocks.find(b => b.startDate && b.endDate && dateStr >= b.startDate && dateStr <= b.endDate) || null;
 }
 
+// Block label for a request: matched off its EARLIEST date (dates aren't submitted in sorted
+// order — RequestForm lets a resident add date fields in any order), so a multi-date request that
+// spans two blocks lands under the block its earliest date falls into, deterministically — not
+// whichever date happened to be first in the array. Shared by RequestList (resident-facing list,
+// admin's "view as" preview) and RequestsTab's ApprovalQueue — this file's whole purpose is to be
+// the one place this logic lives, see the header comment above.
+export function blockLabelFor(req, blocks) {
+  if (!req.dates.length) return 'Not yet scheduled';
+  const earliest = [...req.dates].sort()[0];
+  const block = findBlockForDate(earliest, blocks);
+  return block ? block.name : 'Not yet scheduled';
+}
+
+// Groups requests by block label — chronological by block startDate, "Not yet scheduled" last.
+// Requests within a group keep whatever order the caller's `requests` array already has (callers
+// that need a secondary sort, e.g. by resident name, sort their own copy before/after grouping).
+export function groupByBlock(requests, blocks) {
+  const byLabel = new Map();
+  for (const req of requests) {
+    const label = blockLabelFor(req, blocks);
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label).push(req);
+  }
+  const order = [...blocks].sort((a, b) => a.startDate.localeCompare(b.startDate)).map(b => b.name);
+  const labels = [...byLabel.keys()].sort((a, b) => {
+    if (a === 'Not yet scheduled') return 1;
+    if (b === 'Not yet scheduled') return -1;
+    return order.indexOf(a) - order.indexOf(b);
+  });
+  return labels.map(label => ({ label, requests: byLabel.get(label) }));
+}
+
 // "LastName, FirstName" — shared so the picker (ResidentPicker) and the chief queue (RequestsTab)
 // can't drift on how a resident's name is displayed.
 export function formatResidentName(resident) {

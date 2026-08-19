@@ -4,16 +4,24 @@ import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 import RequestForm from './residentRequests/RequestForm';
 import RequestList from './residentRequests/RequestList';
-import { findBlockForDate, formatResidentName } from './residentRequests/blockLookup';
+import { formatResidentName, groupByBlock } from './residentRequests/blockLookup';
 
 // Admin-only tab inside the main scheduler. AppGate has already established the viewer is an
 // admin before this ever mounts, so the session/role checks below are defence in depth rather
 // than the primary gate — kept deliberately, since this component is exported and a future caller
 // might mount it somewhere less protected. The profile-row upsert that used to live here is gone:
 // AppGate now owns first-login row creation, and doing it in both places raced.
-export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast, demoMode }) {
-  const [session, setSession] = useState(undefined);
-  const [role, setRole] = useState(undefined); // undefined = not fetched, null = no profile row
+//
+// `viewer` ({email, userId, role}, see ResidentScheduler.jsx) is AppGate's already-resolved
+// session/role — when present, session/role state is seeded from it directly and the
+// getSession()/profiles-role fetch below is skipped, since re-deriving what the caller already
+// resolved (on every mount of this tab) was pure waste. `session` is shaped as a
+// `{user:{id,email}}` stand-in so every existing `session.user.id`/`session.user.email` read below
+// keeps working unchanged. The fetch stays intact as a fallback for a caller that mounts this
+// component without the prop (see the header comment above).
+export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast, demoMode, viewer }) {
+  const [session, setSession] = useState(() => viewer ? { user: { id: viewer.userId, email: viewer.email } } : undefined);
+  const [role, setRole] = useState(() => viewer ? viewer.role : undefined); // undefined = not fetched, null = no profile row
   const [profiles, setProfiles] = useState([]);
   const [profilesError, setProfilesError] = useState(null);
   // Bumped whenever ViewAsPanel files a request on the resident's behalf, so the sibling
@@ -22,17 +30,19 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
   const [pendingRefreshSignal, setPendingRefreshSignal] = useState(0);
 
   useEffect(() => {
+    if (viewer) return; // already resolved by the caller — see header comment
     if (!AUTH_ENABLED) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => setSession(newSession));
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [viewer]);
 
   useEffect(() => {
+    if (viewer) return; // already resolved by the caller — see header comment
     if (!session) return;
     supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle()
       .then(({ data }) => setRole(data ? data.role : null));
-  }, [session]);
+  }, [session, viewer]);
 
   // Single lifted profiles fetch, shared by AdminManagement (full use) and ViewAsPanel (derives
   // its "who has a linked account" list from it) — previously each fetched its own copy, doubling
@@ -218,43 +228,17 @@ function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChan
   );
 }
 
-// Block label for a request: matched off its EARLIEST date (dates aren't submitted in sorted
-// order — RequestForm lets a resident add date fields in any order), so a multi-date request that
-// spans two blocks lands under the block its earliest date falls into, deterministically — not
-// whichever date happened to be first in the array.
-function blockLabelFor(req, blocks) {
-  if (!req.dates.length) return 'Not yet scheduled';
-  const earliest = [...req.dates].sort()[0];
-  const block = findBlockForDate(earliest, blocks);
-  return block ? block.name : 'Not yet scheduled';
-}
-
-// Groups requests by block label (design spec: "List of pending requests grouped by
-// resident/block") — chronological by block startDate, "Not yet scheduled" last, residents sorted
-// by name within each group so the admin can scan who's asking for what block at a glance.
-function groupByBlock(requests, blocks) {
-  const byLabel = new Map();
-  for (const req of requests) {
-    const label = blockLabelFor(req, blocks);
-    if (!byLabel.has(label)) byLabel.set(label, []);
-    byLabel.get(label).push(req);
-  }
-  const order = [...blocks].sort((a, b) => a.startDate.localeCompare(b.startDate)).map(b => b.name);
-  const labels = [...byLabel.keys()].sort((a, b) => {
-    if (a === 'Not yet scheduled') return 1;
-    if (b === 'Not yet scheduled') return -1;
-    return order.indexOf(a) - order.indexOf(b);
-  });
-  return labels.map(label => ({ label, requests: byLabel.get(label) }));
-}
-
+// blockLabelFor/groupByBlock (design spec: "List of pending requests grouped by resident/block")
+// now live in residentRequests/blockLookup.js — shared with RequestList.jsx so the two can't drift
+// on grouping logic. Residents are sorted by name within each group below so the admin can scan
+// who's asking for what block at a glance (groupByBlock itself preserves input order per group).
 function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal, demoMode, showToast }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
   const [error, setError] = useState(null);
 
   async function loadRequests() {
-    const { data } = await supabase.from('day_off_requests').select('*').order('submitted_at', { ascending: true });
+    const { data } = await supabase.from('day_off_requests').select('id, resident_id, dates, reason, status, decision_note, submitted_at').order('submitted_at', { ascending: true });
     setRequests(data || []);
   }
   // Reloads on mount AND whenever the parent bumps refreshSignal — the latter fires after
