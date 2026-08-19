@@ -8,8 +8,9 @@ import { SHIFTS, SHIFT_MAP } from './shifts.js';
 // every shift to its minimum first (a hard requirement — below-min surfaces as an unfilled
 // slot and a Validation warning), then optionally tops up toward the maximum only for residents
 // still under their own shift-count target. min:0 means the generator never auto-staffs that
-// shift (e.g. PED-N, which depends on an FM-3 Mon/Tue/Wed or an EM Home resident Thu/Sun being
-// available and willing — coverage stays min:0 either way, chief-directed "best-effort" shift).
+// shift (e.g. PED-N and PED-N-FM — PED-N is EM Home's 19:00–04:00 Peds night, Thu–Sun; PED-N-FM
+// is the separate FM-3-only 23:00–08:00 Peds night, Mon/Tue/Wed — coverage stays min:0 for both,
+// chief-directed "best-effort" shift, depends on the right resident being available and willing).
 // Chief edits are stored as a
 // sparse override object in localStorage (res_coverage) and merged over these defaults — same
 // idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (one narrow exception:
@@ -22,7 +23,10 @@ export const DEFAULT_COVERAGE_MINMAX = {
   // podWellnessSubstituteAllowed/SENIOR_COMPOSITION.POD).
   'POD-D': { min: 2, max: 2 }, 'POD-E': { min: 2, max: 2 }, 'POD-N': { min: 2, max: 2 },
   // PED-S: "no priority" per chief — best-effort fill only (min:0), same treatment as PED-N.
+  // PED-N-FM is the FM-3-only 23:00–08:00 Peds night split out of PED-N (see the comment on
+  // DEFAULT_COVERAGE_MINMAX above) — same best-effort min:0 treatment.
   'PED-D': { min: 1, max: 1 }, 'PED-E': { min: 1, max: 1 }, 'PED-N': { min: 0, max: 1 }, 'PED-S': { min: 0, max: 1 },
+  'PED-N-FM': { min: 0, max: 1 },
   'FLEX-D': { min: 2, max: 3 }, 'FLEX-E': { min: 2, max: 3 }, 'FLEX-N': { min: 2, max: 3 },
   'MT-D': { min: 1, max: 1 }, 'MT-E': { min: 1, max: 1 }, 'MT-N': { min: 1, max: 1 },
   'TRAUMA-D': { min: 1, max: 1 }, 'TRAUMA-N': { min: 1, max: 1 },
@@ -80,7 +84,9 @@ const TWELVE_HOUR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Each area's normal (non-12h, non-swing) shift ids — used to scope which coverage keys a window
 // is allowed to override (its own 12h pair, plus its area's 9h shifts so an 'add'-mode window can
-// also tune those without opening the door to editing an unrelated area's coverage).
+// also tune those without opening the door to editing an unrelated area's coverage). PED now has
+// a 4th normal id here, PED-N-FM (a 'night' type like PED-N, not 12h, not 'swing' like PED-S) —
+// intended: a PED 12h window can tune PED-N-FM's coverage the same as PED-D/PED-E/PED-N.
 const AREA_NORMAL_IDS = TWELVE_HOUR_AREAS.reduce((acc, area) => {
   acc[area] = SHIFTS.filter(s => s.area === area && !TWELVE_HOUR_IDS.includes(s.id) && s.type !== 'swing').map(s => s.id);
   return acc;

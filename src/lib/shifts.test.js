@@ -23,6 +23,16 @@ describe('shift catalog integrity', () => {
   });
 });
 
+describe('PED-N / PED-N-FM split', () => {
+  it('PED-N is retimed to 19:00-04:00 (9h)', () => {
+    expect(SHIFT_TIMING['PED-N']).toEqual({ startH: 19, durationH: 9 });
+  });
+
+  it('PED-N-FM keeps the original 23:00-08:00 (9h) timing', () => {
+    expect(SHIFT_TIMING['PED-N-FM']).toEqual({ startH: 23, durationH: 9 });
+  });
+});
+
 describe('SHIFT_DOW', () => {
   it('PED-S only exists Mon/Tue/Thu/Fri', () => {
     expect(SHIFT_DOW['PED-S']).toEqual([1, 2, 4, 5]);
@@ -93,5 +103,10 @@ describe('shiftOverlapsJC (Journal Club is 18:00-21:00)', () => {
 
   it('does not cover an unknown shift id', () => {
     expect(shiftOverlapsJC('NOT-A-SHIFT')).toBe(false);
+  });
+
+  it('retimed PED-N (19:00-04:00) now overlaps JC; PED-N-FM (23:00-08:00) still does not', () => {
+    expect(shiftOverlapsJC('PED-N')).toBe(true);
+    expect(shiftOverlapsJC('PED-N-FM')).toBe(false);
   });
 });

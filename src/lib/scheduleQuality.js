@@ -62,6 +62,18 @@ export function computeQualityMetrics({
   dates,
   residents,
   targets,
+  // UNDELTA'D per-resident target (see ResidentScheduler.jsx's getShiftTarget/buildQualityInput —
+  // "buy-down" feature). `targets` is the EFFECTIVE (delta'd) value used everywhere else in this
+  // module; the AY carryover blend below needs the baseline instead, or a single-block delta gets
+  // multiplied across every prior block in the AY (target 19, delta -2, 3 prior blocks would
+  // otherwise scale to 19-2=17 * 4 = 68 instead of the real 19+19+19+17 = 74 obligation, reading
+  // the resident as over-worked for the rest of the block). Per-resident `?? target` fallback is
+  // MANDATORY, not cosmetic: several existing callers (baselineSuite.js, generator.harness.test.js,
+  // most of scheduleQuality.test.js) never pass this map, and `undefined * n` is NaN — without the
+  // fallback `scaledTarget` silently collapses to 0 and ayDeficitSpread goes to 0 with no test
+  // failing loudly. Defaults to {} so an omitting caller's `baselineTargets[r.id]` reads
+  // undefined and the fallback engages for every resident.
+  baselineTargets = {},
   nightOnlyIds,
   nightRules,
   weekendPairs,
@@ -183,10 +195,12 @@ export function computeQualityMetrics({
     const ayDeficitSpread = groupedSpread(withHistory, r => {
       const target = targets[r.id];
       const prior = ayPriorTotals[r.id];
-      // Ratio against a target scaled by blocks worked, so a resident with more prior blocks isn't
-      // automatically "over target" — the comparison stays completion-rate-based, matching the
-      // block-only deficitSpread above.
-      const scaledTarget = target > 0 ? target * (prior.blocks + 1) : 0;
+      // Prior blocks are scaled by the UNDELTA'D baseline target (bt), not the current block's
+      // possibly-bought-down `target` — a one-block delta must not retroactively apply to blocks
+      // it never affected. This block's own contribution still uses the effective `target`, since
+      // that's what the resident was actually held to this block.
+      const bt = baselineTargets?.[r.id] ?? target;
+      const scaledTarget = bt > 0 ? bt * prior.blocks + target : 0;
       const total = prior.assigned + assignedCount(schedule, r.id, dates);
       return scaledTarget > 0 ? total / scaledTarget : 0;
     });

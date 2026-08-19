@@ -30,6 +30,8 @@ import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normaliz
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { mulberry32 } from './lib/rng.js';
+import { qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS } from './lib/qgenda.js';
+import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -37,6 +39,11 @@ import { mulberry32 } from './lib/rng.js';
 // twelveHourAllows) and the coverage constants/helpers now live in lib/coverage.js;
 // the Journal Club date resolvers live in lib/journalClub.js; CATEGORIES/CAT_MAP now live in
 // lib/parse.js (see that file's own header comment for why) — imported above.
+
+// Display labels for QGENDA_NAME_FORMATS, module-level (not local to one component) because both
+// the QGenda export picker modal and SettingsTab's "QGenda Task Names" card render the same
+// appSettings.qgendaNameFormat <select> — one label map, so the two can't drift apart.
+const QGENDA_NAME_FORMAT_LABEL = { lastFirstInitial: 'Last, F (e.g. Smith, J)', lastFirst: 'Last, First', firstLast: 'First Last' };
 
 const BLOCK_TYPES_EM = [
   { id: 'EM',          label: 'EM',           schedulable: true,  atUH: true  },
@@ -75,22 +82,24 @@ const EM_HOME_BLOCK_TYPES_BY_PGY = {
 
 // Base eligibility — most permissive per category+PGY.
 // Block-type & day-of-week restrictions are applied on top in getEligibleShifts.
-// PED-N (peds overnight): Mon/Tue/Wed stays FM-3-exclusive program-wide — no other category/PGY
-// may work it those three days, even via a rotation/matrix override (see getEligibleShifts'
-// half-block/FM-3 handling). Thu/Sun (0,4,5,6) is additionally open to all three EM Home PGYs
-// (chief-directed, AY26/27), confined to that window by each EM_HOME key's own overrideImmune
-// ped_n_em_window shiftGate below — coverage stays min:0/max:1 either way ("ideally filled, other
-// shifts take priority"), and a PGY-1 EM Home candidate is soft-deprioritized on it in the
-// generator's score() unless they've already done a Peds/Trauma-mix rotation this AY (see
-// hasPriorPedsTrauma).
+// Peds overnight is two separate single-owner shift ids (see PED_GUARD_LEGITIMATE_OWNER):
+// PED-N-FM (23:00-08:00) stays FM-3-exclusive program-wide, Mon/Tue/Wed only — no other
+// category/PGY may work it, even via a rotation/matrix override (see getEligibleShifts'
+// half-block/FM-3 handling). PED-N (19:00-04:00) is EM Home's own id, open to all three EM Home
+// PGYs Thu-Sun (0,4,5,6) (chief-directed, AY26/27), confined to that window by each EM_HOME key's
+// own overrideImmune ped_n_em_window shiftGate below — coverage stays min:0/max:1 either way
+// ("ideally filled, other shifts take priority"), and a PGY-1 EM Home candidate is
+// soft-deprioritized on PED-N in the generator's score() unless they've already done a
+// Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma).
 const BASE_ELIGIBILITY = {
   // EM Home PGY-1: all areas; TRAUMA-D only (no TRAUMA-N); Trauma further gated by block type.
   // PED-N included per the Thu-Sun EM Home window above (ped_n_em_window gate confines it).
   EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // EM Home PGY-2/3: all shifts including TRAUMA-N and (Thu-Sun) PED-N. PED-S (Peds Swing) is
   // further gated to only EM_TOX/EM_EMS rotations, Mon/Tue/Thu/Fri, via the ped_s_* shiftGates
-  // below — nobody else is ever eligible for it, same single-owner invariant PED-N used to be
-  // (PED-N's owner set is now {FM_3, EM_HOME_1/2/3} — see PED_GUARD_LEGITIMATE_OWNER).
+  // below — nobody else is ever eligible for it, same single-owner invariant PED-N now has too
+  // (PED-N's owner set is {EM_HOME_1/2/3}; FM-3's Mon/Tue/Wed grant is the separate PED-N-FM id —
+  // see PED_GUARD_LEGITIMATE_OWNER).
   EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // BAMC: no Trauma
@@ -102,8 +111,12 @@ const BASE_ELIGIBILITY = {
   // FM-1: POD default + PED-D/E as fill-in PRN (no PED nights — PED-N stays out of reach here too)
   FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','POD-D12','POD-N12','PED-D12'],
   // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
-  // PED-N those three days; EM Home additionally covers Thu-Sun (see BASE_ELIGIBILITY comment above).
-  FM_3:       ['PED-N','PED-N12'],
+  // PED-N-FM those three days; EM Home covers the separate PED-N id Thu-Sun (see BASE_ELIGIBILITY
+  // comment above). PED-N12 dropped deliberately: it's the 12h variant of PED-N's (EM) 19:00-07:00
+  // timing, never FM-3's own 23:00-08:00 window — FM-3 was never really eligible for it. Accepted
+  // tradeoff: if the chief ever defines a mode:'replace' PED 12-hour window, twelveHourAllows strips
+  // PED-N-FM (not a TWELVE_HOUR_IDS member) and FM-3 has zero eligibility those dates.
+  FM_3:       ['PED-N-FM'],
   // IM: POD + FLEX, no Peds/MT/Trauma
   IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
   // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D — verify exact matrix with chief. FLEX-D is
@@ -151,7 +164,7 @@ const DEFAULT_DAY_RULES = {
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
-      // PED-N (Peds Night) Thu/Sun window: EM Home gained PED-N in BASE_ELIGIBILITY (AY26/27
+      // PED-N (Peds Night) Thu-Sun window: EM Home gained PED-N in BASE_ELIGIBILITY (AY26/27
       // chief-directed change) but only Thu-Sun (0,4,5,6) — Mon/Tue/Wed stay FM-3-exclusive.
       // overrideImmune so a matrix override can't leak an EM Home resident onto PED-N outside
       // this window; FM-3's own eligibility/rules are untouched by this EM_HOME-scoped gate.
@@ -184,9 +197,10 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true,
         activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
       // PED-S (Peds Swing): only EM/TOX or EM/EMS, and only on its own Mon/Tue/Thu/Fri window —
-      // nobody else, ever (single-owner guard, same class PED-N used to be before it gained a
-      // second owner set — see PED_GUARD_LEGITIMATE_OWNER). The weekday pairing above already
-      // confines each rotation to its own two days, so PED-S naturally follows the swap.
+      // nobody else, ever (single-owner guard, same class PED-N/PED-N-FM belong to now that the
+      // shift was split into two single-owner ids — see PED_GUARD_LEGITIMATE_OWNER). The weekday
+      // pairing above already confines each rotation to its own two days, so PED-S naturally
+      // follows the swap.
       { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'],
         blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null,
@@ -196,7 +210,7 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
-      // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
+      // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
         allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
@@ -211,7 +225,7 @@ const DEFAULT_DAY_RULES = {
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
-      // PED-N (Peds Night) Thu/Sun window — see EM_HOME_1's ped_n_em_window comment above.
+      // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
         allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ],
@@ -362,7 +376,7 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ] },
     // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
-    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    // the live default immediately before EM Home gained Thu-Sun PED-N eligibility (AY26/27).
     { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }], shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
       { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
@@ -412,7 +426,7 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
     // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
-    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    // the live default immediately before EM Home gained Thu-Sun PED-N eligibility (AY26/27).
     { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }], shiftGates: [
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
       { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
@@ -440,7 +454,7 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
     // Pre-PED-N-Thu-Sun shape (Wellness Wednesday already added, no ped_n_em_window gate yet) —
-    // the live default immediately before EM Home gained Thu/Sun PED-N eligibility (AY26/27).
+    // the live default immediately before EM Home gained Thu-Sun PED-N eligibility (AY26/27).
     { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 3 }], shiftGates: [
       { id: 'trauma_d_window', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
@@ -460,7 +474,7 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
   EM_HOME_1: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
     // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
-    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    // gained Thu-Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
     // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
     // before the conference-week 12h shift feature was added.
@@ -471,7 +485,7 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-S shape (had TRAUMA-N but no PED-S) — the live default immediately before this pass.
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-PED-N-Thu-Sun shape (had PED-S, no PED-N) — the live default immediately before EM Home
-    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    // gained Thu-Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
     // before the conference-week 12h shift feature was added.
@@ -480,7 +494,7 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
   EM_HOME_3: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-PED-N-Thu-Sun shape (no PED-N at all) — the live default immediately before EM Home
-    // gained Thu/Sun PED-N eligibility (AY26/27 chief-directed change).
+    // gained Thu-Sun PED-N eligibility (AY26/27 chief-directed change).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
     // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
     // before the conference-week 12h shift feature was added.
@@ -511,8 +525,15 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     ['POD-D','POD-E','POD-N','PED-D','PED-E'],
   ],
   // Pre-12h-conference-shift shape — the live default immediately before the conference-week 12h
-  // shift feature was added (see the six entries below).
-  FM_3:    [['PED-N']],
+  // shift feature was added (see the six entries below), plus the pre-PED-N-FM-split shape (before
+  // FM-3's PED-N was renamed to its own PED-N-FM id and PED-N12 was dropped as never really FM-3's).
+  // BELT-AND-BRACES ONLY: the prune compares with deepEqualNormalized against these ARRAY literals,
+  // but the array->diff migration (renameDiffShiftIds in src/lib/eligibilityOverrides.js) already
+  // runs first, so a live store holds {added,removed} diff objects that can never deep-equal a bare
+  // array — this entry only fires for a stale JSON backup / un-upgraded device's cloud row / a
+  // hand-edited localStorage value that skipped the migration. The real mechanism is
+  // renameDiffShiftIds, not this list.
+  FM_3:    [['PED-N'], ['PED-N','PED-N12']],
   IM_2:    [['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N']],
   NEURO_1: [['POD-D','POD-E','POD-N','FLEX-D']],
   ANES_1:  [['POD-D','POD-E','POD-N','FLEX-D']],
@@ -549,7 +570,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
-const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day shift or Grand Rounds is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
+const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 4-6 (max 6) rather than isolated shifts; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift, or Grand Rounds, is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 (fallback PGY-3, soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). Enforced by the generator (POD slot left unfilled and reported rather than staffed with the wrong PGY if no PGY-3 is available) and Validation.';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
@@ -557,10 +578,12 @@ const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on th
 // CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
 // Academic Chief carries the extra Tuesday restriction below.
 const CHIEF_ROLE_NOTE = 'A PGY-3 EM Home resident may hold one of three distinct chief roles for the year — Academic, Admin, or Scheduling Chief (set on the EM Residents tab) — each worth a 16-shift target. The Academic Chief additionally gets no evening/night shifts on Tuesdays (hard — enforced by the generator and Validation).';
-// PED-N Thu/Sun EM Home window (AY26/27 chief-directed change) — Mon/Tue/Wed stays FM-3-exclusive
-// (unchanged). Coverage min stays 0 (best-effort, never required); PGY-1 candidates are
-// soft-deprioritized in the generator unless they've already done a Peds/Trauma-mix rotation this AY.
-const PED_N_EM_HOME_NOTE = 'Peds Night (PED-N): FM-3-exclusive Mon/Tue/Wed (unchanged); Thu/Sun open to all EM Home PGYs (enforced via the ped_n_em_window rule). Coverage stays min 0/max 1 either way — "ideally filled, other shifts take priority," not required. PGY-1 candidates are soft-deprioritized on it (generator only) unless already on/past a Peds/Trauma-mix rotation this academic year.';
+// Peds Night is now two separate single-owner shift ids (see PED_GUARD_LEGITIMATE_OWNER):
+// PED-N-FM (23:00-08:00) stays FM-3-exclusive Mon/Tue/Wed; PED-N (19:00-04:00) is EM Home's own
+// id, Thu-Sun (AY26/27 chief-directed change). Coverage min stays 0 (best-effort, never required)
+// on both; PGY-1 candidates are soft-deprioritized on PED-N in the generator unless they've
+// already done a Peds/Trauma-mix rotation this AY.
+const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (23:00-08:00) exclusively Mon/Tue/Wed; EM Home PGYs are eligible for PED-N (19:00-04:00) Thu-Sun (enforced via the ped_n_em_window rule). Coverage stays min 0/max 1 either way — "ideally filled, other shifts take priority," not required. PGY-1 candidates are soft-deprioritized on PED-N (generator only) unless already on/past a Peds/Trauma-mix rotation this academic year.';
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -601,16 +624,16 @@ const RULE_NOTES = {
     ],
   },
   PEDS_1: {
-    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night (PED-N) is FM-3 (Mon/Tue/Wed) and EM Home (Thu–Sun) only, program-wide — never eligible for Peds residents on any day.', 'Peds residents self-cover; app displays schedule only.'],
+    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night is FM-3\'s own PED-N-FM (Mon/Tue/Wed) or EM Home\'s own PED-N (Thu-Sun), program-wide — Peds residents are never eligible for either, on any day.', 'Peds residents self-cover; app displays schedule only.'],
   },
   PEDS_3: {
-    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night (PED-N) is FM-3 (Mon/Tue/Wed) and EM Home (Thu–Sun) only, program-wide — never eligible for Peds residents on any day.', 'Self-cover arrangement.'],
+    specialNotes: ['No Wednesdays at all (enforced) — replaces the old night-before-advocacy-day mechanic.', 'Peds Night is FM-3\'s own PED-N-FM (Mon/Tue/Wed) or EM Home\'s own PED-N (Thu-Sun), program-wide — Peds residents are never eligible for either, on any day.', 'Self-cover arrangement.'],
   },
   FM_1: {
     specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no Peds nights, no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.'],
   },
   FM_3: {
-    specialNotes: ['FM-3 ONLY works Peds nights (PED-N), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home may optionally cover PED-N Thu–Sun, min coverage 0, PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
+    specialNotes: ['FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home may optionally cover the separate PED-N shift (19:00-04:00) Thu-Sun, min coverage 0, PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
   },
   IM_2: {
     specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab.'],
@@ -1033,7 +1056,7 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
       const range = parseDateRangeInAY(row[c], ayStartYear);
       const pgyOptions = CAT_MAP[category].pgyOptions;
       let pgy = pgyOptions[0];
-      // FM_1/FM_3 eligibility is completely different (PED-N-only vs POD-default) — the sheet
+      // FM_1/FM_3 eligibility is completely different (PED-N-FM-only vs POD-default) — the sheet
       // gives no PGY, so this is a genuine guess that must be flagged, not silently assumed.
       if (category === 'FM' && pgyOptions.length > 1) {
         pgy = 1;
@@ -1191,7 +1214,7 @@ const SCORE_WEIGHTS = {
   jcNearCap: 20,            // steer off a resident's 3rd (final) journal club this AY
   weekendOffRisk: 18,       // don't spend a resident's last remaining free weekend
   secondIntern: 35,         // no two EM interns on the same shift/team
-  pedNPgy1Deprioritize: 25, // PED-N: prefer PGY-2/3 or FM-3 over an EM Home PGY-1
+  pedNPgy1Deprioritize: 25, // PED-N (the EM Home-only id, post-split): prefer PGY-2/3 over PGY-1
 
   // ── PREFERENCE ── (see PREFERENCE_KEYS / the invariant test)
   traumaNightDowPref: 12,  // TRAUMA-N: PGY-2 on Fri/Sat, PGY-3 on Sun/Mon
@@ -1289,7 +1312,7 @@ export function normalizeRulePriority(arr) {
 }
 function ruleRank(appSettings, id) { return normalizeRulePriority(appSettings?.rulePriority).indexOf(id); }
 // isNightShiftId now lives in lib/shifts.js (imported above).
-// Residents whose entire effective eligibility is night-only (today: FM-3/PED-N) are exempt from
+// Residents whose entire effective eligibility is night-only (today: FM-3/PED-N-FM) are exempt from
 // the block-wide night cap and the short-night-run warning — for FM-3 specifically, the Mon/Tue/
 // Wed-only day-rule already makes runs of 4+ structurally impossible, so those checks would be
 // pure noise for them.
@@ -1391,16 +1414,22 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     if (grViolation) violations.push(grViolation);
   }
 
-  if (newType === 'day') {
+  if (newType === 'day' || newType === 'eve') {
     // Look back up to 2 days for the most recent night shift and check the 24h rest preference
-    // before resuming days. Soft rule (rank: postNightRest).
+    // before resuming a day OR evening shift. Extended to 'eve' because PED-N now ends 04:00
+    // (retimed off the old 19:00-08:00 EM/FM shared shift) instead of 08:00 — a night shift
+    // ending 04:00 followed by an evening shift starting ~14:00-15:00 the next day is only
+    // 10-11h off, which clears checkRestViolations' plain gapH >= et.durationH hard check (an
+    // eve shift only requires ~9h rest) but is nowhere near the 24h post-night preference, and
+    // nothing else in this function caught a night->eve pair before this fix. Soft rule
+    // (rank: postNightRest) — same as the day case, not a new hard error.
     for (let offset = 1; offset <= 2; offset++) {
       const checkDs = toDateStr(addDays(parseDate(dateStr), -offset));
       const priorSid = rs[checkDs];
       if (!priorSid || !isNightShiftId(priorSid)) continue;
       const gapH = (shiftStartMs(newShiftId, dateStr) - shiftEndMs(priorSid, checkDs)) / 3_600_000;
       if (gapH < NIGHT_RULES.postNightDayRestH)
-        violations.push({ message: `Only ${gapH}h off after night shifts before this day shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest', gapH });
+        violations.push({ message: `Only ${gapH}h off after night shifts before this ${newType === 'eve' ? 'evening' : 'day'} shift — prefer ${NIGHT_RULES.postNightDayRestH}h`, level: 'warn', rule: 'postNightRest', gapH });
       break; // only the most recent night shift matters for this check
     }
   }
@@ -1599,7 +1628,7 @@ function isTraumaPedsSplitResident(resident, traumaBlocks) {
 // see the two-pass loop below) can never eat the trauma half's budget.
 const TRAUMA_PEDS_SPLIT = { trauma: 8, peds: 11 };
 
-// PED-N Thu/Sun EM-Home deprioritization support (see BASE_ELIGIBILITY/score()): true if resident
+// PED-N Thu-Sun EM-Home deprioritization support (see BASE_ELIGIBILITY/score()): true if resident
 // has already done — or is currently on — a Peds/Trauma-mix rotation (TRAUMA_BLOCKS: PEDS_TRAUMA/
 // TRAUMA_PEDS) this academic year, so a PGY-1 with real Peds exposure isn't penalized on PED-N
 // same as a PGY-1 with none. Checks the CURRENT block's own rotation first (resident.blockType is
@@ -1905,6 +1934,16 @@ const DEFAULT_APP_SETTINGS = {
   rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
   generalPedsMonthlyTarget: 2, // soft nudge: PGY-2/3 not on a dedicated peds rotation aim for this many peds shifts/block
   enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
+  // Jeopardy/sick-call incident log — one record per real-world sick-call/activation event, see
+  // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: sbSaveState's
+  // cloud write is a whole-column replace built fresh from THAT BUILD's own LS_BACKUP_KEYS, so a
+  // device still running an older bundle (with no 10th key) would upload a document missing the
+  // ledger entirely and silently wipe it from the shared cloud row — the exact record the
+  // buy-downs in emBlockAssignments are audited against. Living inside res_app_settings means
+  // setAppSettings(p => ({...p, ...})) spreads it through untouched even from an old bundle that
+  // has never heard of this field, same as targetOverrides/rulePriority above. Do not "clean this
+  // up" into its own key later without re-solving that problem.
+  jeopardyLog: [],
 };
 
 // Chief-role designation (roster-level, `resident.chiefRole` on emRoster — see CLAUDE.md "Chief
@@ -1927,17 +1966,39 @@ function effectiveChiefRole(resident) {
 }
 
 // Effective shift target for a resident, honoring Settings overrides, then rotation-specific
-// BLOCK_TARGETS (EM Home only), then the category-level SHIFT_TARGETS baseline.
+// BLOCK_TARGETS (EM Home only), then the category-level SHIFT_TARGETS baseline, then a chief-
+// entered per-block delta (`resident.targetDelta` — a one-block "buy-down"/"buy-up", denormalized
+// onto the resident object from `block.emBlockAssignments[id].targetDelta` by allResidents; see
+// CLAUDE.md "buy-down"). All four precedence branches feed ONE tail return so the delta is applied
+// uniformly — appending it only after the branches would silently no-op for a chief resident or
+// anyone with a Settings override, since those return early.
 export function getShiftTarget(resident, appSettings = {}) {
   const o = appSettings.targetOverrides || {};
-  if (effectiveChiefRole(resident)) return o.CHIEF ?? 16;
   const key = `${resident.category}_${resident.pgy}`;
-  if (o[key] != null) return o[key];
-  if (resident.category === 'EM_HOME' && resident.blockType) {
+  let base;
+  if (effectiveChiefRole(resident)) {
+    base = o.CHIEF ?? 16;
+  } else if (o[key] != null) {
+    base = o[key];
+  } else if (resident.category === 'EM_HOME' && resident.blockType) {
     const bt = BLOCK_TARGETS[`${key}__${resident.blockType}`];
-    if (bt != null) return bt;
+    base = bt != null ? bt : (SHIFT_TARGETS[key] ?? null);
+  } else {
+    base = SHIFT_TARGETS[key] ?? null;
   }
-  return SHIFT_TARGETS[key] ?? null;
+  if (base == null) return null; // self-cover; a delta must NEVER create a target
+  const d = Number(resident.targetDelta);
+  if (!Number.isFinite(d) || d === 0) return base;
+  const t = base + d;
+  // Return null, NEVER 0, when a delta zeros (or would go negative on) the target. Reason:
+  // scheduleQuality.js's targetBearing filter is `targets[r.id] != null`, and `0 != null` is
+  // TRUE — a target-0 resident would stay in the fairness population and deficitSpread would
+  // score them assigned/target -> 0, the maximal outlier against peers near 1.0, weighted x10 in
+  // the quality vector's slot 3 (same for nightSpread/weekendSpread). null is the correct
+  // semantic — a fully-bought-down resident is a fairness non-participant, exactly like an
+  // existing self-cover resident — and every downstream consumer (candidatePool,
+  // scoreGenerationResult, scheduleQuality) already handles null.
+  return t > 0 ? t : null;
 }
 
 // Resolve the eligibility list for a resident, most specific key first:
@@ -1947,20 +2008,22 @@ export function getShiftTarget(resident, appSettings = {}) {
 // rotationSpecific=true means the chief explicitly configured this rotation,
 // so built-in rotation shift-type filters (e.g. PGY-1 no-trauma-off-trauma-blocks)
 // are skipped — the override IS the rule. Day-of-week rules always still apply.
-// PED-N/PED-S may never become eligible for any category/PGY other than their legitimate
-// owner(s) (FM_3 + EM_HOME_1/2/3 for PED-N, EM_HOME_2 only for PED-S — see BASE_ELIGIBILITY
-// above) via a chief-saved override — a Shift Matrix override wholesale-replaces a key's
-// eligibility list, and the owner-specific overrideImmune shiftGates that further restrict each
-// shift (ped_n_em_window's Thu/Sun window, ped_s_*'s rotation/day window) never even get
+// PED-N/PED-N-FM/PED-S may never become eligible for any category/PGY other than their legitimate
+// owner(s) (EM_HOME_1/2/3 for PED-N, FM_3 alone for PED-N-FM, EM_HOME_2 only for PED-S — see
+// BASE_ELIGIBILITY above) via a chief-saved override — a Shift Matrix override wholesale-replaces
+// a key's eligibility list, and the owner-specific overrideImmune shiftGates that further restrict
+// each shift (ped_n_em_window's Thu-Sun window, ped_s_*'s rotation/day window) never even get
 // evaluated for a resident whose own category/PGY has no such gates defined (see CLAUDE.md: "no
 // other category/PGY may ever be eligible ... including via a Shift Matrix rotation override").
 // An owner's own overrides (category-level or rotation-specific) are left untouched, since
-// keeping PED-N/PED-S in an owner's own customized list is the intended use of the feature.
-// PED_GUARD_LEGITIMATE_OWNER values may be a single key (PED-S) or an array of keys (PED-N, which
-// has multiple legitimate owners since EM Home gained Thu/Sun PED-N eligibility, AY26/27) —
+// keeping PED-N/PED-N-FM/PED-S in an owner's own customized list is the intended use of the
+// feature. PED-N and PED-N-FM used to be one shift (bare 'PED-N') with a two-key owner set; now
+// that they're split ids with their own timing, each has its own single owner, but the key still
+// accepts an array (not just a string) for whichever id ever needs multiple owners again.
+// PED_GUARD_LEGITIMATE_OWNER values may be a single key (PED-N-FM, PED-S) or an array of keys —
 // stripPedGuardedShifts checks membership either way, so EM_BAMC_1 (never a PED-N owner, despite
 // once having it in a stale LEGACY_ELIGIBILITY_DEFAULTS snapshot) stays excluded.
-const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': ['FM_3', 'EM_HOME_1', 'EM_HOME_2', 'EM_HOME_3'], 'PED-S': 'EM_HOME_2' };
+const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': ['EM_HOME_1', 'EM_HOME_2', 'EM_HOME_3'], 'PED-N-FM': 'FM_3', 'PED-S': 'EM_HOME_2' };
 function stripPedGuardedShifts(list, key) {
   return list.filter(id => {
     const owner = PED_GUARD_LEGITIMATE_OWNER[id];
@@ -2021,6 +2084,19 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
   {
+    id: '2026-08-18-jeopardy-ledger',
+    date: '2026-08-18',
+    title: 'Jeopardy & sick-call tracking, Peds Night split into two shifts, editable QGenda task names, and per-block target overrides',
+    items: [
+      'New **Jeopardy & Sick Calls** card on the Dashboard tab: log every sick call and every jeopardy activation for the academic year — who called out, which shift, and who (if anyone) was pulled off jeopardy to cover. Each activation earns that resident a buy-down credit, tracked as earned/spent/remaining right on the card.',
+      'This is **advisory only** — logging an incident never changes a schedule or a target by itself. The chief spends an earned credit by hand, on the EM Residents tab\'s existing **Target Δ** field, checked **buy-down**. Nothing auto-applies.',
+      'The EM Residents tab now shows a compact sick-call/activation/credit line on any resident\'s tile who has one this academic year.',
+      'Peds Night is now two separate shifts with correct hours: FM-3 keeps its own **PED-N-FM** (23:00–08:00), exclusively Mon/Tue/Wed; EM Home residents get **PED-N** (19:00–04:00), open Thu–Sun.',
+      'QGenda export task names are now fully chief-editable — Settings → **QGenda Task Names** lets you set the exact task name QGenda expects per shift and preview the exported staff-name format, so a rejected import can be fixed without a redeploy.',
+      'Per-block shift-target overrides ("buy-downs" and their opposite) are now available on the EM Residents tab: a **Target Δ** field per resident adjusts that one resident\'s shift-count target for the current block only, with a reason note.',
+    ],
+  },
+  {
     id: '2026-08-16-jc-dates-12h-windows',
     date: '2026-08-16',
     title: 'Journal Club dates you control, and 12-hour shifts on any dates you choose',
@@ -2055,7 +2131,11 @@ function makeDefaultBlock() {
   return {
     id: `blk_${Date.now()}`, name: '', academicYear: getAcademicYear(),
     startDate: '', endDate: '',
-    emBlockAssignments: {},   // { [residentId]: { blockType, isChief } }
+    emBlockAssignments: {},   // { [residentId]: { blockType, isChief, targetDelta, targetNote, targetIsBuyDown } }
+                               // targetDelta/targetNote/targetIsBuyDown: a chief-entered ONE-BLOCK
+                               // shift-target adjustment ("buy-down"/"buy-up"), expressed as a delta
+                               // + reason note rather than an absolute number so it survives a
+                               // SHIFT_TARGETS change and stays self-documenting — see getShiftTarget.
     offServiceResidents: [],
     schedule: {},
     specialDays: { codeBlueDays: [], advocacyDays: [], procDays: [], anesDays: [] },
@@ -2322,9 +2402,18 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     const target = getShiftTarget(resident, appSettings);
     if (target != null) {
       const count = Object.values(rs).filter(Boolean).length;
-      if (count > target)
+      if (count > target) {
+        // Name the chief's own targetDelta override when it's the reason the number looks
+        // unusual — otherwise "Over target: 17/17" reads as a mystery when it's really the
+        // chief's own buy-down doing its job (target = base +/- delta).
+        const d = Number(resident.targetDelta);
+        const hasDelta = Number.isFinite(d) && d !== 0;
+        const overrideNote = hasDelta
+          ? ` (target ${target} = ${target - d} ${d < 0 ? '-' : '+'} ${Math.abs(d)}, ${resident.targetIsBuyDown ? 'buy-down' : (d < 0 ? 'reduction' : 'increase')})`
+          : '';
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Over target: ${count}/${target} shifts`, level: 'warn' });
+          message: `Over target: ${count}/${target} shifts${overrideNote}`, level: 'warn' });
+      }
     }
 
     // EM PGY-2/3 soft trauma cap (configurable in Settings; 0 disables)
@@ -2890,6 +2979,17 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // or FM-3 candidate win the slot when one is also available. Math.random() only breaks exact ties.
   function score(r, shift, ds, seniorFilled) {
     const t = target[r.id];
+    // t===0 can't reach this division — getShiftTarget never returns 0 (a delta that would zero
+    // the target returns null instead, see its own comment), and null targets are filtered out of
+    // every candidate BEFORE score() is ever called. Two of score()'s three call sites take only
+    // candidatePool() output (fillDayPass's own pick, and repairPass's pickBestScore over
+    // candidatePool candidates), so `target[r.id] != null` there is candidatePool's own
+    // `pool.filter(r => target[r.id] != null)` guarantee. The THIRD call site — repairPass's
+    // senior-gap juniors sort, `allResidents.filter(r => schedule[r.id][ds]===sid && movable(...))`
+    // — does NOT go through candidatePool at all; it is safe only because movable() excludes
+    // keptCells, so every resident it can select was placed by a PRIOR candidatePool call and
+    // therefore already had a non-null target at placement time. Different invariant — don't
+    // assume "candidatePool guarantees it" covers that call site too.
     const deficit = (t - assigned[r.id]) / t;
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
     const streak = streakBefore(r, ds);
@@ -2905,7 +3005,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const fm1OnPeds = shift.area === 'PED' && r.category === 'FM' && r.pgy === 1 ? 1 : 0;
     const fm1Cap = getFm1PedsCap(t);
     const fm1OverPedsCap = fm1OnPeds && fm1Cap != null && pedsCount[r.id] >= fm1Cap ? 1 : 0;
-    // PED-N Thu/Sun EM-Home opening (chief-directed, AY26/27): soft-deprioritize an EM Home PGY-1
+    // PED-N Thu-Sun EM-Home opening (chief-directed, AY26/27): soft-deprioritize an EM Home PGY-1
     // candidate — not blocked, just less likely to be picked over a PGY-2/3 or FM-3 — unless
     // they've already done a Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma/BASE_ELIGIBILITY).
     const pedNPgy1Deprioritize = shift.id === 'PED-N' && r.category === 'EM_HOME' && r.pgy === 1 && !priorPedsTrauma[r.id] ? 1 : 0;
@@ -3495,6 +3595,12 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
     report,
     residents: allResidents,
     targets: Object.fromEntries(allResidents.map(r => [r.id, getShiftTarget(r, appSettings)])),
+    // UNDELTA'D target per resident, for the AY carryover blend's scaledTarget (see
+    // scheduleQuality.js's own comment on this param) — a one-block buy-down/buy-up must not
+    // retroactively scale across prior blocks it never applied to. Computed by stripping
+    // targetDelta off the same resident object getShiftTarget above just used, so this is the
+    // exact base value that delta was added to/subtracted from.
+    baselineTargets: Object.fromEntries(allResidents.map(r => [r.id, getShiftTarget({ ...r, targetDelta: undefined }, appSettings)])),
     nightOnlyIds: new Set(allResidents.filter(r => isNightOnlyResident(r, eligOverrides)).map(r => r.id)),
     nightRules: NIGHT_RULES,
     weekendPairs: getBlockWeekends(dates),
@@ -3602,24 +3708,34 @@ function summarizeGenerationReport(report, appSettings = {}) {
     // and that subset is a strict subset of the block's weekdays — i.e. a day-of-week rule.
     const noElig = slots.filter(s => s.reason === 'noEligible');
     const gapDows = [...new Set(noElig.map(s => dow(s.dateStr)))].sort();
-    // PED-N: Mon/Tue/Wed (1,2,3) stays FM-3-exclusive — a noEligible gap on those days is always
-    // expected when no FM-3 is on the block, same as before this shift opened up. Thu-Sun (0,4,5,6)
-    // is now also open to EM Home (AY26/27), so a noEligible gap there means nobody at all — no
-    // FM-3 (structurally impossible Thu-Sun anyway) AND no EM Home resident eligible that day
-    // either — genuinely rarer, but still expected/non-issue given coverage stays min:0
-    // ("ideally filled, other shifts take priority", not a requirement).
-    const isPedNExpected = shiftId === 'PED-N' && noElig.length > 0 && noElig.length === slots.length;
+    // PED-N and PED-N-FM are now two separate single-owner ids (see PED_GUARD_LEGITIMATE_OWNER),
+    // each confined to its own day-of-week window — PED-N-FM to FM-3's Mon/Tue/Wed (onlyDays),
+    // PED-N to EM Home's Thu-Sun (ped_n_em_window). Re-derived from that data rather than
+    // hardcoded per-id, so this stays correct if either window ever changes. A noEligible gap
+    // INSIDE an id's own window is expected whenever its owning category isn't on this block or
+    // isn't eligible that specific day — coverage stays min:0 either way ("ideally filled, other
+    // shifts take priority," not required), so this whole path is only reachable at all after a
+    // chief coverage edit raises one of these mins above 0. A gap OUTSIDE the window is a
+    // different problem: the id is stripped to nothing for its owner (and everyone else) on that
+    // weekday, so no one could ever fill it there — a coverage-editor mistake, not an expected gap.
+    const PED_NIGHT_GAP_EXPECTED = {
+      'PED-N-FM': { dows: [1,2,3],   owner: 'FM-3'    },
+      'PED-N':    { dows: [0,4,5,6], owner: 'EM Home' },
+    };
+    const pedNightExpected = PED_NIGHT_GAP_EXPECTED[shiftId];
+    const isPedNExpected = !!pedNightExpected && noElig.length > 0 && noElig.length === slots.length;
     const structural = isPedNExpected || (noElig.length > 0 && noElig.length === slots.length && gapDows.length < 7 &&
       noElig.every(s => gapDows.includes(dow(s.dateStr))));
 
     const recs = [];
     const label = SHIFT_MAP[shiftId]?.label || shiftId;
     if (reasonCounts.noEligible) {
-      const pedNMonWedOnly = isPedNExpected && gapDows.every(d => [1,2,3].includes(d));
+      const pedNInWindow = isPedNExpected && gapDows.every(d => pedNightExpected.dows.includes(d));
+      const gapDaysStr = gapDows.map(d => DOW_NAMES[d]).join('/');
       recs.push(isPedNExpected
-        ? (pedNMonWedOnly
-            ? `${label} is FM-3-exclusive Mon/Tue/Wed — these gaps are expected whenever no FM-3 is on this block. Leave open or assign an FM-3 manually.`
-            : `${label} is FM-3-exclusive Mon/Tue/Wed and optional EM Home coverage Thu–Sun (coverage min stays 0 — "ideally filled, other shifts take priority," not required). These gaps have no FM-3 eligible Mon/Tue/Wed, or no FM-3/EM Home resident eligible Thu–Sun. Leave open or assign manually.`)
+        ? (pedNInWindow
+            ? `${label} is ${pedNightExpected.owner}-exclusive on ${gapDaysStr} — these gaps mean no ${pedNightExpected.owner} resident is on this block / eligible those days. Expected, coverage min is 0. Leave open or assign manually.`
+            : `${label} doesn't exist on ${gapDaysStr} at all — set its coverage minimum back to 0 or check the day rules.`)
         : structural
         ? `${label} had no eligible residents on ${gapDows.map(d=>DOW_NAMES[d]).join('/')} — a day-of-week rule blocks everyone (e.g. Trauma window, GR Wednesday, BAMC Thursday). If that's expected, no action needed; otherwise edit the rule on this tab.`
         : `No resident in this block is eligible for ${label} on those days — check the Shift Matrix and each resident's rotation (EM Residents tab).`);
@@ -4469,6 +4585,184 @@ function JournalClubPlanner({ allResidents, block, blocksHistory, ayConf = {}, o
   );
 }
 
+// Jeopardy/sick-call incident log + advisory buy-down ledger for this block's AY. ADVISORY ONLY:
+// this card displays earned/spent/remaining credits and nothing here writes to a target or
+// schedule — see src/lib/jeopardyLedger.js's own header for why (auto-applying would change
+// generator output without an explicit chief decision, the same restraint override capture takes
+// with block.overrideLog). The chief SPENDS an earned credit by hand, on the EM Residents tab's
+// existing Target Δ / buy-down fields (block.emBlockAssignments[id].targetDelta +
+// targetIsBuyDown) — computeBuyDownsApplied reads those back in, so this card and that editor can
+// never disagree about how many credits are left.
+//
+// Mirrors JournalClubPlanner's state-writing discipline directly above: writes go through a
+// FUNCTIONAL setAppSettings updater keyed by the incident's own id, never by reading
+// appSettings.jeopardyLog out of this render's own closure and rebuilding it — the same reason
+// JournalClubPlanner updates emRoster via a functional setter matched by resident id instead of
+// rebuilding from the derived allResidents memo. A stale closure here would silently drop a
+// concurrent add/delete.
+function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings, setAppSettings }) {
+  const ay = block.academicYear || (block.startDate ? getAcademicYearFor(block.startDate) : null);
+  const log = Array.isArray(appSettings?.jeopardyLog) ? appSettings.jeopardyLog : [];
+
+  const [date, setDate] = useState('');
+  const [shiftId, setShiftId] = useState('');
+  const [sickResidentId, setSickResidentId] = useState('');
+  const [activatedResidentId, setActivatedResidentId] = useState('');
+  const [note, setNote] = useState('');
+
+  const byId = useMemo(() => Object.fromEntries((allResidents || []).map(r => [r.id, r])), [allResidents]);
+  // Residents whose OWN jeopardyDates includes the chosen date — surfaced as a hint in the
+  // "pulled off jeopardy" select, never hard-validated: real life will have someone pulled who
+  // wasn't formally on the list, and this must never block logging that.
+  const onJeopardyThisDate = useMemo(() => {
+    if (!date) return new Set();
+    return new Set((allResidents || []).filter(r => (r.jeopardyDates || []).includes(date)).map(r => r.id));
+  }, [allResidents, date]);
+
+  // A residentId in the log may no longer be on the roster (departed, or an off-service resident
+  // who only ever existed inside an old block) — the incident is history and must survive a
+  // roster change rather than crash or silently vanish. Same "Unknown resident" spirit as
+  // summarizeOverrides above, but identifiable enough to still be useful in a long-lived ledger.
+  const residentLabel = (id) => {
+    const r = byId[id];
+    return r ? `${r.lastName}, ${r.firstName}` : `Former resident (${String(id).slice(0, 8)})`;
+  };
+
+  if (!ay) {
+    return (
+      <CollapsibleCard title="Jeopardy & Sick Calls">
+        <p className="text-xs text-gray-400 italic">Set this block's academic year (Settings) to track jeopardy activations.</p>
+      </CollapsibleCard>
+    );
+  }
+
+  const ledger = computeLedger(ay, log, block, blocksHistory);
+  const ayLog = log
+    .filter(rec => {
+      if (!rec || typeof rec.date !== 'string') return false;
+      let recAy;
+      try { recAy = getAcademicYearFor(rec.date); } catch { return false; }
+      return recAy === ay;
+    })
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.at || 0) - (a.at || 0));
+  const ledgerRows = Object.entries(ledger).sort((a, b) => residentLabel(a[0]).localeCompare(residentLabel(b[0])));
+
+  function addIncident() {
+    if (!date || !sickResidentId) return;
+    const rec = {
+      id: uuid(), date, shiftId: shiftId || null, sickResidentId,
+      activatedResidentId: activatedResidentId || null, note: note.trim(), at: Date.now(),
+    };
+    setAppSettings(p => ({ ...p, jeopardyLog: [...(Array.isArray(p.jeopardyLog) ? p.jeopardyLog : []), rec] }));
+    setDate(''); setShiftId(''); setSickResidentId(''); setActivatedResidentId(''); setNote('');
+  }
+
+  function removeIncident(id) {
+    setAppSettings(p => ({ ...p, jeopardyLog: (Array.isArray(p.jeopardyLog) ? p.jeopardyLog : []).filter(r => r.id !== id) }));
+  }
+
+  return (
+    <CollapsibleCard title="Jeopardy & Sick Calls"
+      subtitle={`${ay} · ${ayLog.length} incident${ayLog.length === 1 ? '' : 's'} · advisory only`}>
+      <div className="space-y-4">
+        <p className="text-xs text-gray-400">
+          Log every sick call and jeopardy activation here. Each activation earns the activated resident a
+          buy-down credit, tracked below — spend it later on the EM Residents tab's <strong>Target Δ</strong> field,
+          checked <strong>buy-down</strong>. Nothing here auto-applies to any target or schedule.
+        </p>
+
+        {/* Add-incident form */}
+        <div className="flex flex-wrap items-end gap-2 bg-gray-50 border border-gray-200 rounded-lg p-3">
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-1">Date</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-1">Shift (optional)</label>
+            <select value={shiftId} onChange={e => setShiftId(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary max-w-[9rem]">
+              <option value="">—</option>
+              {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-1">Called out sick</label>
+            <select value={sickResidentId} onChange={e => setSickResidentId(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary max-w-[11rem]">
+              <option value="">Select resident…</option>
+              {(allResidents || []).map(r => <option key={r.id} value={r.id}>{r.lastName}, {r.firstName}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-1">Pulled off jeopardy (optional)</label>
+            <select value={activatedResidentId} onChange={e => setActivatedResidentId(e.target.value)}
+              className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary max-w-[13rem]">
+              <option value="">Nobody / self-covered</option>
+              {(allResidents || []).map(r => (
+                <option key={r.id} value={r.id}>
+                  {r.lastName}, {r.firstName}{onJeopardyThisDate.has(r.id) ? ' · on jeopardy this date' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1 min-w-[10rem]">
+            <label className="block text-[10px] font-medium text-gray-500 mb-1">Note</label>
+            <input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder="Optional note"
+              className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
+          </div>
+          <button onClick={addIncident} disabled={!date || !sickResidentId}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-30 transition-colors">
+            <Plus size={11}/> Add
+          </button>
+        </div>
+
+        {/* Incident list, newest first */}
+        {ayLog.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">No incidents logged for {ay} yet.</p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {ayLog.map(rec => (
+              <li key={rec.id} className="py-2 flex items-start gap-2 text-xs">
+                <span className="text-gray-400 shrink-0 w-20">{formatDisplayDate(rec.date)}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium text-gray-700">{residentLabel(rec.sickResidentId)}</span> called out sick
+                  {rec.shiftId && <> on <span className="font-medium">{SHIFT_MAP[rec.shiftId]?.label || rec.shiftId}</span></>}
+                  {rec.activatedResidentId
+                    ? <> — <span className="font-medium text-teal-700">{residentLabel(rec.activatedResidentId)}</span> activated</>
+                    : <span className="text-gray-400"> — nobody activated</span>}
+                  {rec.note && <span className="block text-gray-400 mt-0.5">{rec.note}</span>}
+                </div>
+                <button onClick={() => removeIncident(rec.id)} title="Delete incident"
+                  className="p-1 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded transition-colors shrink-0">
+                  <Trash2 size={12}/>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Per-resident rollup */}
+        <div>
+          <div className="text-xs font-semibold text-gray-500 mb-1.5">Ledger this AY</div>
+          {ledgerRows.length === 0 ? (
+            <p className="text-xs text-gray-400 italic">Nothing logged yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {ledgerRows.map(([rid, l]) => (
+                <span key={rid} className="text-[10px] font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600"
+                  title={`Sick calls ${l.sickCalls} · Activations ${l.activations} · Buy-downs applied ${l.applied} · Remaining ${l.remaining}`}>
+                  {residentLabel(rid)} · sick {l.sickCalls} · act {l.activations} · applied {l.applied} · remaining {l.remaining}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </CollapsibleCard>
+  );
+}
+
 // Read-only fairness/equity card: per-schedulable-resident nights/weekends/hours/area-mix totals
 // for the current block's academic year. Combines PUBLISHED blocksHistory snapshots in that AY
 // (same iteration/guard pattern as countPublishedJC — skip unpublished, skip the live block's own
@@ -4919,7 +5213,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -5233,6 +5527,10 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
       <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}
         ayConf={ayConf} onAssignPresenter={assignJcPresenter}/>
 
+      {/* Jeopardy activations / sick-call log + advisory buy-down ledger */}
+      <JeopardySickCallsCard allResidents={allResidents} block={block} blocksHistory={blocksHistory}
+        appSettings={appSettings} setAppSettings={setAppSettings}/>
+
       {/* 1st Fridays */}
       {firstFridays.length > 0 && (
         <CollapsibleCard title="First Fridays This Block"
@@ -5386,10 +5684,16 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     const academicYear = formatAY(ayStartYear);
     const newSnaps = home.blocks.map((b, i) => {
       const name = `Block ${i + 1} (${prettyDate(b.start)}–${prettyDate(b.end)})`;
+      // Merge onto any existing snapshot's per-resident record (same import id, blk_import_<start>)
+      // rather than replacing it wholesale — a re-upload of the yearly Master Matrix only carries
+      // blockType per resident, so a wholesale replace silently wiped isChief/targetDelta/
+      // targetNote/targetIsBuyDown recorded on a prior import of this same block (letting a chief's
+      // buy-down be spent twice with no error). blockType itself is always freshly re-parsed.
+      const existingAssignments = blocksHistory.find(s => s.id === `blk_import_${b.start}`)?.data?.emBlockAssignments || {};
       const emBlockAssignments = {};
       for (const a of b.assignments) {
         const rid = findResidentId(a.firstName, a.lastName);
-        if (rid) emBlockAssignments[rid] = { blockType: a.blockTypeId };
+        if (rid) emBlockAssignments[rid] = { ...(existingAssignments[rid] || {}), blockType: a.blockTypeId };
       }
       const offServiceResidents = off.rows
         .filter(o => o.start <= b.end && o.end >= b.start)
@@ -5736,7 +6040,13 @@ function TwelveHourWindowsEditor({ ay, conf, onUpdate }) {
                   {(w.areas || []).length === 0 && <p className="text-[10px] text-gray-400 italic">Pick an area first.</p>}
                   {(w.areas || []).flatMap(area => {
                     const ids = [`${area}-D12`, `${area}-N12`];
-                    if ((w.mode || 'replace') === 'add') ids.push(`${area}-D`, `${area}-E`, `${area}-N`);
+                    // The add-case ids used to be `${area}-D`/`${area}-E`/`${area}-N` string
+                    // templates — that's the AREA-TYPE convention, which PED-N-FM and PED-S both
+                    // break (see CLAUDE.md), so those two ids could never appear here even though
+                    // getCoverageFor/twelveHourAllows treat them as normal PED ids that need an
+                    // editable override same as any other. Derive from the shift catalog instead
+                    // so every non-12h shift actually in this area gets a row, whatever its id.
+                    if ((w.mode || 'replace') === 'add') ids.push(...SHIFTS.filter(s => s.area === area && !TWELVE_HOUR_IDS.includes(s.id)).map(s => s.id));
                     return ids.filter(sid => SHIFT_MAP[sid]);
                   }).map(sid => {
                     const ov = (w.coverage || {})[sid] || {};
@@ -5800,6 +6110,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
     availabilityMode: initial?.availabilityMode ?? 'full',
     availableRanges:  initial?.availableRanges  ?? [],
     canWorkDates:     initial?.canWorkDates     ?? [],
+    qgendaStaffId:    initial?.qgendaStaffId    ?? '',
   });
 
   const [newOffDate, setNewOffDate] = useState('');
@@ -5890,6 +6201,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
       availabilityMode: form.availabilityMode,
       availableRanges:  form.availableRanges,
       canWorkDates:     form.canWorkDates,
+      qgendaStaffId:    form.qgendaStaffId.trim() || undefined,
     });
   }
 
@@ -6116,6 +6428,16 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
             {grError && <p className="text-xs text-red-600 mt-1">{grError}</p>}
           </div>
         )}
+
+        {/* QGenda Staff ID — escape hatch for a resident QGenda matches by an internal
+            abbreviation/id the name-format select can't guess (see src/lib/qgenda.js's
+            qgendaName, which honors this verbatim ahead of any format). Optional; leaving it
+            blank exports under the name-format chosen in Settings → QGenda Task Names. */}
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">QGenda Staff ID</label>
+          <input className="input-field" value={form.qgendaStaffId} onChange={e => set('qgendaStaffId', e.target.value)} placeholder="e.g. SMITHJ"/>
+          <p className="text-xs text-gray-400 mt-1">Optional — overrides the exported name for QGenda only. Leave blank to use the name format chosen in Settings → QGenda Task Names.</p>
+        </div>
 
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
@@ -6795,7 +7117,7 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData
 
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
-function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast, ayData = {} }) {
+function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast, ayData = {}, blocksHistory = [] }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
   const [showImport, setShowImport]   = useState(false);
@@ -6805,6 +7127,16 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
   const [confirmRemove, setConfirmRemove] = useState(null);
   const assign = block.emBlockAssignments || {};
   const sched  = block.schedule || {};
+
+  // Jeopardy/sick-call ledger for this block's AY — same derivation as everywhere else in the
+  // file (block.academicYear, falling back to deriving it from startDate). Advisory-only figures
+  // (see src/lib/jeopardyLedger.js): nothing here reads or feeds the generator/scorer.
+  const jeopardyAy = block.academicYear || (block.startDate ? getAcademicYearFor(block.startDate) : null);
+  const jeopardyLedger = useMemo(() => {
+    if (!jeopardyAy) return {};
+    const log = Array.isArray(appSettings?.jeopardyLog) ? appSettings.jeopardyLog : [];
+    return computeLedger(jeopardyAy, log, block, blocksHistory);
+  }, [jeopardyAy, appSettings?.jeopardyLog, block, blocksHistory]);
 
   function addRes(r)  { setEmRoster(p => [...p, r]); }
 
@@ -6830,7 +7162,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
   }
 
   function shiftCount(id) { return Object.values(sched[id] || {}).filter(Boolean).length; }
-  function target(r) { const ba = assign[r.id] || {}; return getShiftTarget({ ...r, isChief: !!ba.isChief, blockType: ba.blockType ?? 'EM' }, appSettings); }
+  function target(r) { const ba = assign[r.id] || {}; return getShiftTarget({ ...r, isChief: !!ba.isChief, blockType: ba.blockType ?? 'EM', targetDelta: ba.targetDelta }, appSettings); }
 
   const byPGY = [1, 2, 3].map(pgy => ({ pgy, list: emRoster.filter(r => r.pgy === pgy) })).filter(g => g.list.length);
   const [collapsed, setCollapsed] = useState({});
@@ -6899,6 +7231,8 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
               const cnt     = shiftCount(res.id);
               const tgt     = target(res);
               const over    = tgt != null && cnt > tgt;
+              const delta   = Number(ba.targetDelta);
+              const hasDelta = Number.isFinite(delta) && delta !== 0;
               const cat     = CAT_MAP[res.category];
               const chiefRole = effectiveChiefRole({ ...res, isChief: !!ba.isChief });
               return (
@@ -6927,6 +7261,19 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                           {(res.jeopardyDates || []).map(d => (
                             <span key={`j${d}`} className="text-xs px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 border border-purple-200 font-medium">J: {formatDisplayDate(d)}</span>
                           ))}
+                        </div>
+                      )}
+                      {/* Advisory-only jeopardy/sick-call rollup for this AY (see D3 card on the
+                          Dashboard for the incident log itself) — shown only when this resident
+                          has a non-zero figure so ordinary tiles stay clean. */}
+                      {jeopardyLedger[res.id] && (
+                        <div className="text-xs text-gray-400 mt-1">
+                          Sick {jeopardyLedger[res.id].sickCalls} · Activations {jeopardyLedger[res.id].activations}
+                          {jeopardyLedger[res.id].remaining !== 0 && (
+                            jeopardyLedger[res.id].remaining < 0
+                              ? ` · ${Math.abs(jeopardyLedger[res.id].remaining)} credit${Math.abs(jeopardyLedger[res.id].remaining) === 1 ? '' : 's'} over-spent`
+                              : ` · ${jeopardyLedger[res.id].remaining} credit${jeopardyLedger[res.id].remaining === 1 ? '' : 's'} left`
+                          )}
                         </div>
                       )}
                     </div>
@@ -6971,13 +7318,49 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                         <span className="text-xs text-gray-400">(16 shifts)</span>
                       </div>
                     )}
+                    {/* One-block target adjustment ("buy-down"/"buy-up") — a delta + reason note,
+                        never an absolute number, so it survives a future SHIFT_TARGETS change and
+                        stays self-documenting. Written via setBA, same merge-on-write path as
+                        blockType/isChief above. */}
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-xs text-gray-500 shrink-0" title="One-block shift-target adjustment, e.g. a buy-down earned by covering jeopardy — expressed as a delta so it survives future target changes">Target Δ:</label>
+                      <input type="number" step="1" value={ba.targetDelta ?? ''}
+                        onChange={e => { const v = e.target.value; setBA(res.id, 'targetDelta', v === '' ? undefined : Number(v)); }}
+                        placeholder="0"
+                        className="w-14 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
+                      {hasDelta && (
+                        <>
+                          <input type="text" value={ba.targetNote ?? ''} onChange={e => setBA(res.id, 'targetNote', e.target.value)}
+                            placeholder="Reason (e.g. covered jeopardy 3x)"
+                            className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary flex-1 min-w-[9rem]"/>
+                          <label className="flex items-center gap-1 text-xs text-gray-500 shrink-0" title="Marks this as a buy-down — the jeopardy ledger reads this flag">
+                            <input type="checkbox" checked={!!ba.targetIsBuyDown} onChange={e => setBA(res.id, 'targetIsBuyDown', e.target.checked)}/>
+                            buy-down
+                          </label>
+                        </>
+                      )}
+                    </div>
                     {tgt != null && sched_ok && (
                       <div className="flex items-center gap-1.5 ml-auto">
+                        {hasDelta && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${ba.targetIsBuyDown ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-indigo-100 text-indigo-700 border border-indigo-200'}`}
+                            title={ba.targetNote || (delta < 0 ? 'Target reduced this block' : 'Target increased this block')}>
+                            {delta > 0 ? `+${delta}` : delta}{ba.targetIsBuyDown ? ' buy-down' : ''}
+                          </span>
+                        )}
                         <span className={`text-xs font-medium ${over ? 'text-red-500' : 'text-gray-400'}`}>{cnt}/{tgt}</span>
                         <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${over ? 'bg-red-500' : cnt >= tgt ? 'bg-green-500' : 'bg-primary'}`}
                             style={{ width: `${Math.min(100, tgt ? cnt / tgt * 100 : 0)}%` }}/>
                         </div>
+                      </div>
+                    )}
+                    {tgt == null && hasDelta && sched_ok && (
+                      <div className="flex items-center gap-1.5 ml-auto">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-teal-100 text-teal-700 border border-teal-200"
+                          title={ba.targetNote || 'Fully bought down — no shift-count target this block'}>
+                          Bought down — {cnt} shift{cnt !== 1 ? 's' : ''} worked
+                        </span>
                       </div>
                     )}
                   </div>
@@ -7326,7 +7709,10 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                 <th className="sticky left-0 z-10 bg-gray-50 border-b border-r border-gray-200"/>
                 {SHIFTS.map(s=>(
                   <th key={s.id} className="border-b border-r border-gray-100 px-1 py-1.5 text-center" title={s.hours}>
-                    <span className={`text-xs px-1 py-0.5 rounded font-bold ${s.chip}`}>{s.type[0].toUpperCase()}</span>
+                    {/* s.short (e.g. PED-N-FM's 'NF') disambiguates same-type shifts that would
+                        otherwise render identical single-letter headers — see s.type[0] fallback
+                        for every shift without one. */}
+                    <span className={`text-xs px-1 py-0.5 rounded font-bold ${s.chip}`}>{s.short ?? s.type[0].toUpperCase()}</span>
                   </th>
                 ))}
                 <th className="bg-gray-50 border-b border-gray-200"/>
@@ -7721,7 +8107,15 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
       const covered = areaShifts.filter(id=>shiftIds.includes(id));
       if (covered.length === 0) return null;
       if (covered.length === areaShifts.length) return area;
-      return `${area} (${covered.map(id=>SHIFT_MAP[id].type[0].toUpperCase()).join('')})`;
+      // Optional chaining + filter: shiftIds (an eligibility override diff) can carry an id this
+      // bundle doesn't know yet after a version-skewed cross-device sync — skip it instead of
+      // throwing on SHIFT_MAP[id].type, rather than crashing the whole Rules tab.
+      // s.short (e.g. PED-N-FM's 'NF') keeps same-type shifts distinguishable in this summary too
+      // — join with a separator only when a multi-char token is present, so every other area's
+      // summary renders byte-identical to before (single-char tokens, joined with '').
+      const tokens = covered.map(id=>SHIFT_MAP[id]?.short ?? SHIFT_MAP[id]?.type?.[0]?.toUpperCase()).filter(Boolean);
+      const sep = tokens.some(t => t.length > 1) ? '·' : '';
+      return `${area} (${tokens.join(sep)})`;
     }).filter(Boolean);
     return parts.length ? `Eligible: ${parts.join(', ')}.` : 'No shifts configured.';
   }
@@ -7759,6 +8153,11 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                 {SHIFT_TYPES.map(t => <th key={t} className="text-center font-medium px-3 pb-2 capitalize">{t === 'eve' ? 'Evening' : t}</th>)}
                 <th className="text-center font-medium px-3 pb-2">Day 12h</th>
                 <th className="text-center font-medium px-3 pb-2">Night 12h</th>
+                {/* This grid is fixed area×type — it can only ever show ONE shift per (area, type)
+                    cell, via SHIFT_TYPES.map below. PED-N-FM shares type:'night' with PED-N, so it
+                    needs its own explicit column rather than fitting the grid; a per-shift-id
+                    renderer (not per area×type) would be the real fix here, deliberately deferred. */}
+                <th className="text-center font-medium px-3 pb-2">Night (FM)</th>
               </tr>
             </thead>
             <tbody>
@@ -7808,6 +8207,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                     {SHIFT_TYPES.map(t => renderCoverageCell(t, SHIFTS.find(s => s.area === area && s.type === t)))}
                     {renderCoverageCell('d12', SHIFTS.find(s => s.id === `${area}-D12`))}
                     {renderCoverageCell('n12', SHIFTS.find(s => s.id === `${area}-N12`))}
+                    {renderCoverageCell('nfm', SHIFTS.find(s => s.id === `${area}-N-FM`))}
                   </tr>
                 );
               })}
@@ -7823,7 +8223,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         <div className="mt-2">
           <Collapsible title="How coverage works" defaultOpen={false}>
             <p className="text-xs text-gray-500">
-              The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — PED Night defaults to 0/1: FM-3 covers Mon/Tue/Wed, EM Home may optionally cover Thu/Sun, and it stays best-effort (not required) either way. Trauma day-of-week limits still apply on top.
+              The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), EM Home's own shift Thu-Sun. Trauma day-of-week limits still apply on top.
             </p>
             <p className="text-xs text-gray-500 mt-1">
               POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing.
@@ -8155,6 +8555,10 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         <div className="grid grid-cols-2 gap-2 mb-3">
           {eligible.map(sid=>{
             const s=SHIFT_MAP[sid]; const active=pending===sid;
+            // eligible can carry an id an eligibility override diff granted that this bundle
+            // doesn't know yet (version-skewed cross-device sync) — skip rendering it rather than
+            // crash on s.chip/s.hours below.
+            if (!s) return null;
             return (
               <button key={sid} onClick={()=>setPending(active?null:sid)}
                 className={`flex flex-col items-start px-3 py-2.5 rounded-lg border-2 text-left transition-all ${active?'border-primary bg-primary/10':'border-gray-200 hover:border-primary'}`}>
@@ -8432,6 +8836,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const tgt=getShiftTarget(res, appSettings);
     const over=tgt!=null&&cnt>tgt;
     const chiefRole=effectiveChiefRole(res);
+    // Buy-down/buy-up badge: an unusual target must never be invisible while editing — see
+    // CLAUDE.md "buy-down". delta comes from allResidents' denormalized targetDelta seam.
+    const rowDelta=Number(res.targetDelta);
+    const rowHasDelta=Number.isFinite(rowDelta)&&rowDelta!==0;
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
         <div className={`grid-sticky border-r border-gray-200 flex items-center px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}}>
@@ -8443,6 +8851,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
               )}
               {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
+              {rowHasDelta && (
+                <span title={res.targetNote || (rowDelta<0?'Target reduced this block':'Target increased this block')}
+                  className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
+                  {rowDelta>0?`+${rowDelta}`:rowDelta}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -8992,6 +9406,9 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
   const tgt = getShiftTarget(res, appSettings);
   const over = tgt != null && cnt > tgt;
   const chiefRole = effectiveChiefRole(res);
+  // Buy-down/buy-up badge — see renderResidentRow's identical treatment on the Schedule grid.
+  const cardDelta = Number(res.targetDelta);
+  const cardHasDelta = Number.isFinite(cardDelta) && cardDelta !== 0;
   const violCount = Object.entries(violMap)
     .filter(([k]) => k.startsWith(`${res.id}_`))
     .reduce((s,[,v]) => s + v.length, 0);
@@ -9041,7 +9458,15 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
           )}
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          {tgt != null && <span className={`text-xs font-semibold ${over?'text-red-500':'text-gray-500'}`}>{cnt}/{tgt}</span>}
+          <div className="flex items-center gap-1">
+            {cardHasDelta && (
+              <span title={res.targetNote || (cardDelta<0?'Target reduced this block':'Target increased this block')}
+                className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
+                {cardDelta>0?`+${cardDelta}`:cardDelta}
+              </span>
+            )}
+            {tgt != null && <span className={`text-xs font-semibold ${over?'text-red-500':'text-gray-500'}`}>{cnt}/{tgt}</span>}
+          </div>
           {violCount > 0 && <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-red-100 text-red-600">{violCount} issue{violCount!==1?'s':''}</span>}
         </div>
       </div>
@@ -9476,6 +9901,32 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     });
   }
 
+  // The value that would be used for this shift id if no override existed — a plain string
+  // default from QGENDA_TASKS, or (for the 12h ids, deliberately absent from QGENDA_TASKS) the
+  // fallback SHIFT_MAP label qgendaTaskFor itself falls back to. TRAUMA-D's default is a
+  // PGY-dependent FUNCTION, not one string, so there's no single value to collapse an override
+  // against — returns null, and updQgendaTask below only clears TRAUMA-D on a blank input.
+  function qgendaDefaultForCompare(shiftId) {
+    const entry = QGENDA_TASKS[shiftId];
+    if (typeof entry === 'function') return null;
+    if (typeof entry === 'string') return entry;
+    return SHIFT_MAP[shiftId]?.label ?? shiftId;
+  }
+
+  // Sparse write, same convention as updTarget/the Rules-tab coverage editor/Shift Matrix: blank,
+  // whitespace-only, or exactly-the-default input DELETES the override key instead of storing a
+  // no-op string. Reading a stale key back would otherwise look like a deliberate chief override
+  // forever, even after the input is cleared.
+  function updQgendaTask(shiftId, raw) {
+    setAppSettings(p => {
+      const o = { ...(p.qgendaTaskOverrides || {}) };
+      const trimmed = raw.trim();
+      const def = qgendaDefaultForCompare(shiftId);
+      if (!trimmed || trimmed === def) delete o[shiftId]; else o[shiftId] = trimmed;
+      return { ...p, qgendaTaskOverrides: o };
+    });
+  }
+
   function exportData() {
     if (SUPABASE_ENABLED && demoMode && !dbReady) {
       showToast('Demo data is still loading from the cloud — wait a moment and try again.', 'amber');
@@ -9721,6 +10172,74 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         </div>
       </CollapsibleCard>
 
+      {/* QGenda task names — chief's own escape hatch for a rejected/mis-mapped QGenda import,
+          per this app's whole design bias here: the chief has NO QGenda admin access and cannot
+          trial-run an upload, so a wrong task name or staff-name format must be fixable from this
+          screen, with no redeploy. Reads/writes appSettings.qgendaTaskOverrides/qgendaNameFormat —
+          res_app_settings is already in LS_BACKUP_KEYS and syncBindings (see those maps above), so
+          this whole card rides backup/restore, cloud sync, and demo-sandbox isolation for free;
+          NO new storage key was added for it. */}
+      <CollapsibleCard title="QGenda Task Names" subtitle="What each shift is called in QGenda, and how staff names export — fix these yourself if an import is rejected or shifts land under the wrong name.">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Staff name format</label>
+            <select value={appSettings.qgendaNameFormat ?? 'lastFirstInitial'}
+              onChange={e=>updS('qgendaNameFormat', e.target.value)}
+              className="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary">
+              {QGENDA_NAME_FORMATS.map(f => (
+                <option key={f} value={f}>{QGENDA_NAME_FORMAT_LABEL[f] || f}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-400 mt-1">
+              Preview: {qgendaName({ firstName: 'Jane', lastName: 'Doe' }, appSettings.qgendaNameFormat ?? 'lastFirstInitial')}
+              {' '}(a real resident's own "QGenda Staff ID" field on their profile, if set, always overrides this format for that one person.)
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Task names by shift</label>
+            <p className="text-xs text-gray-400 mb-3">Blank uses the default shown as placeholder. Fields marked <span className="text-amber-600 font-medium">amber</span> have no confirmed QGenda name yet — the export falls back to our own on-screen shift label for those until you set one.</p>
+            <div className="space-y-4">
+              {SHIFT_AREAS.map(area => (
+                <div key={area}>
+                  <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">{area}</div>
+                  <div className="space-y-1.5">
+                    {SHIFTS.filter(s => s.area === area).map(s => {
+                      const entry = QGENDA_TASKS[s.id];
+                      const isPgyFn = typeof entry === 'function';
+                      const isUnmapped = entry == null; // the eight 12h ids
+                      const placeholder = isPgyFn
+                        ? 'Trauma Day-Intern (PGY-1) / Trauma Day (PGY-2+)'
+                        : (isUnmapped ? (SHIFT_MAP[s.id]?.label ?? s.id) : entry);
+                      const override = (appSettings.qgendaTaskOverrides || {})[s.id] ?? '';
+                      return (
+                        <div key={s.id}>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs w-28 shrink-0 truncate ${isUnmapped ? 'text-amber-600 font-medium' : 'text-gray-600'}`} title={s.label}>
+                              {s.label}
+                            </span>
+                            <input value={override} onChange={e=>updQgendaTask(s.id, e.target.value)} placeholder={placeholder}
+                              className={`flex-1 min-w-0 text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary ${
+                                override ? 'border-primary bg-primary/10 font-medium' : (isUnmapped ? 'border-amber-300 bg-amber-50' : 'border-gray-200')
+                              }`}/>
+                            {override && (
+                              <button onClick={()=>updQgendaTask(s.id, '')} title="Reset to default" className="text-gray-300 hover:text-primary shrink-0"><RefreshCw size={10}/></button>
+                            )}
+                          </div>
+                          {isPgyFn && (
+                            <p className="text-[11px] text-gray-400 mt-0.5 ml-[7.5rem]">Entering a name here collapses the PGY-1/PGY-2+ split above into one name for everyone.</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CollapsibleCard>
+
       {/* Data management */}
       <CollapsibleCard title="Data Management" subtitle={SUPABASE_ENABLED
         ? "Data syncs automatically across your devices. Use these for a manual, offline point-in-time backup — a safety net if cloud sync is ever unavailable."
@@ -9790,13 +10309,13 @@ const GUIDE_SECTIONS = [
   { id: 'quickstart', title: 'Monthly Workflow — Quick Start', keywords: 'workflow steps new block start month save export' },
   { id: 'dashboard',  title: 'Dashboard — Blocks, Academic Years & Block at a Glance', goTab: 'dashboard', keywords: 'save load block academic year AY folder conference ITE dates block calendar progress code blue procedure US days first friday anesthesia social checklist' },
   { id: 'residents',  title: 'Residents — Profiles, Days Off & Jeopardy', goTab: 'em', keywords: 'roster intern graduate rotation off-service visiting BAMC days off jeopardy backup call CCU pencil edit import upload csv paste bulk availability date ranges specific days can-work' },
-  { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset PED-N FM-3' },
+  { id: 'matrix',     title: 'Shift Matrix — Who Can Work What', goTab: 'matrix', keywords: 'eligibility matrix toggle rotation override EMS tox peds trauma reset PED-N PED-N-FM FM-3' },
   { id: 'generate',   title: 'Generate Schedule — Auto-Fill', goTab: 'rules', keywords: 'generate auto generate coverage fill regenerate clear wand button 6 day streak 1 in 7 consecutive trauma cap peds em mix' },
   { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds JC journal club lecture off jeopardy red ring gray picker rest period filter chips targets generate' },
   { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
   { id: 'rules',      title: 'Violations & Generation Report', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count generation report unfilled recommendations' },
   { id: 'export',     title: 'Exporting to QGenda', keywords: 'export CSV QGenda download grid import migrate' },
-  { id: 'settings',   title: 'Settings & Data Safety', goTab: 'settings', keywords: 'backup restore import localStorage sync computers jeopardy policy rest rule trauma cap shift targets data' },
+  { id: 'settings',   title: 'Settings & Data Safety', goTab: 'settings', keywords: 'backup restore import localStorage sync computers jeopardy policy rest rule trauma cap shift targets data qgenda task names staff id name format' },
   { id: 'faq',        title: 'FAQ & Troubleshooting', keywords: 'faq help troubleshooting gray cell missing data disappeared export button assign anyway sync' },
 ];
 
@@ -9866,7 +10385,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Scheduling Rules tab</strong> — set daily shift coverage (how many residents each shift needs), then click <strong>Generate Schedule</strong> on the Schedule tab to auto-fill the whole block.</li>
           <li><strong>Schedule tab</strong> — review the generated schedule, or click any cell to assign/adjust a shift manually. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
           <li><strong>Violations tab</strong> — review the Generation Report and any remaining errors/warnings before finalizing.</li>
-          <li><strong>Dashboard tab</strong> — click <strong>Save Block</strong> to archive it, then use the <strong>QGenda CSV</strong> button (header) to migrate the schedule into QGenda.</li>
+          <li><strong>Dashboard tab</strong> — click <strong>Save Block</strong> to archive it, then use the header's <strong>Export</strong> menu → <strong>QGenda CSV…</strong> to migrate the schedule into QGenda.</li>
         </ol>
       </GuideSection>}
 
@@ -9910,7 +10429,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Trauma Day is filled last</strong>, after every other shift for the whole block, so PGY-1 trauma-day slots don't crowd out other coverage.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
           <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
-          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed; optional EM Home Thu/Sun) gaps are marked "Expected" when no one eligible is on the block those days.</li>
+          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed; optional EM Home Thu-Sun) gaps are marked "Expected" when no one eligible is on the block those days.</li>
         </ul>
       </GuideSection>}
 
@@ -9966,18 +10485,21 @@ function UserGuideTab({ onNavigate }) {
       </GuideSection>}
 
       {show('export') && <GuideSection {...sec('export')}>
-        <p>Two CSV buttons live in the header once a block has a start date:</p>
+        <p>The header's <strong>Export</strong> menu (visible once the current block has a start date) offers:</p>
         <ul className="list-disc space-y-1">
           <li><strong>Grid CSV</strong> — the same resident × date matrix shown on the Schedule tab, raw shift codes only. Best for your own visual cross-check, not for importing anywhere.</li>
-          <li><strong>QGenda CSV</strong> — one row per assignment (resident, date, shift, real start/end time, hours, plus an end date for shifts that cross midnight) instead of one column per date. This removes the manual date-column transposition step — check it against QGenda's import format before relying on it fully.</li>
+          <li><strong>QGenda CSV…</strong> — opens a picker for the staff-name format and a UTF-8 BOM toggle, then one of two layouts: <strong>Minimal</strong> (Staff, Date, Task — smallest surface area if QGenda's importer is picky about extra columns) or <strong>With times</strong> (adds EndDate, StartTime, EndTime, for an importer that needs explicit shift times instead of inferring them from the Task name).</li>
+          <li><strong>PDF…</strong> and <strong>ICS Calendar</strong> — a printable matrix or per-resident PDF, and one .ics file per resident for Outlook/Google/Apple Calendar.</li>
         </ul>
-        <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations), either export will ask you to confirm before downloading.</p>
+        <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations) — or, for QGenda specifically, any shift whose task name isn't yet confirmed — export will ask you to confirm before downloading.</p>
+        <p><strong>If QGenda rejects the file, or the shifts land under the wrong name, you can fix it yourself — no developer needed.</strong> <strong>Settings tab → QGenda Task Names</strong> lets you set the exact task name QGenda expects for each shift (leave a field blank to use the best-guess default shown as its placeholder), change the exported staff-name format, and toggle the UTF-8 BOM. If QGenda matches a particular resident by an internal abbreviation rather than by name, set that resident's own <strong>QGenda Staff ID</strong> on their profile (Edit Resident) — it overrides the name format for that one person.</p>
       </GuideSection>}
 
       {show('settings') && <GuideSection {...sec('settings')}>
         <ul className="list-disc space-y-1">
           <li><strong>Rule Enforcement</strong> — jeopardy policy, rest-period rule on/off, PGY-2 trauma cap.</li>
           <li><strong>Shift Targets</strong> — override shifts-per-block for any residency/year (incl. Chief).</li>
+          <li><strong>QGenda Task Names</strong> — the exact task name QGenda expects per shift, the exported staff-name format, and a live preview. See "Exporting to QGenda" above.</li>
           <li><strong>Data Management</strong> — everything is stored in this browser only (localStorage). It does <em>not</em> sync between computers. <strong>Export a backup</strong> regularly; Import restores it on any machine.</li>
         </ul>
       </GuideSection>}
@@ -9987,7 +10509,8 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day — a clinic day, day-of-week restriction (e.g. EMS Mon/Tue), GR Wednesday, or a non-schedulable rotation. Check the Shift Matrix and Scheduling Rules tabs to see why.</li>
           <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> in the picker to override — it will be flagged in Violations so you can track it.</li>
           <li><strong>My schedule disappeared on another computer.</strong> Data lives in the browser's localStorage and does <em>not</em> sync between machines. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
-          <li><strong>The CSV export buttons are missing.</strong> They appear in the header only once the current block has a start date set (Dashboard tab).</li>
+          <li><strong>The Export button is missing.</strong> It appears in the header only once the current block has a start date set (Dashboard tab).</li>
+          <li><strong>QGenda says the file is unreadable, or shifts import under the wrong name.</strong> Fix it yourself in <strong>Settings → QGenda Task Names</strong> — set the exact task name for the shift in question, try the other column layout (Minimal vs. With times) in the QGenda CSV picker, or toggle the UTF-8 BOM. No redeploy needed.</li>
           <li><strong>A resident shows the wrong shifts in the picker.</strong> Check their rotation for this block (EM Residents tab) and any rotation override in the Shift Matrix — dimmed checks inherit, solid checks are overrides.</li>
           <li><strong>I saved a block by mistake.</strong> Re-saving the same block just updates its snapshot; you can also Load any earlier saved block from the Block Calendar on the Dashboard tab.</li>
         </ul>
@@ -10469,6 +10992,49 @@ export function summarizeOverrides(overrideLog = [], residentsById = {}) {
   return rows;
 }
 
+// ─── PED-N -> PED-N-FM ASSIGNMENT MIGRATION ────────────────────────────────
+// PED-N used to be one shift shared by FM-3 (23:00-08:00, Mon/Tue/Wed) and EM Home
+// (19:00-04:00, Thu-Sun). It was split into two single-owner shift ids, and FM-3's own
+// eligibility moved wholesale to the new PED-N-FM id (BASE_ELIGIBILITY.FM_3 = ['PED-N-FM'];
+// PED_GUARD_LEGITIMATE_OWNER['PED-N'] no longer lists FM_3). Nothing rewrote already-assigned
+// cells when that split landed — every FM-3 resident's existing PED-N cell, in the live block AND
+// every saved blocksHistory snapshot, is now an assignment `validateAll` recomputes eligibility for
+// and flags as a hard 'error' ("Shift not eligible for this resident on this day") with no
+// indication why it suddenly broke. Those cells also now resolve through SHIFT_TIMING['PED-N']
+// (19:00 start) instead of the FM shift's real 23:00 start, skewing rest-period math and
+// countPublishedJC's history reads. generateScheduleBest ranks lexicographically on validateAll
+// error count, so a kept stale cell injects a constant error floor into every one of its 20
+// attempts. This is a one-shot mount migration (see PED_N_FM_MIGRATION_KEY below) that rewrites
+// PED-N -> PED-N-FM for exactly the residents who could only ever have been assigned it as the
+// FM-3 shift.
+//
+// Pure transform, exported for tests. `categoryForId(residentId)` resolves a resident's category
+// from whatever roster the caller has on hand; a cell whose resident can't be resolved, or whose
+// category isn't 'FM', is left untouched on purpose — an unmigrated PED-N cell then surfaces as a
+// visible, actionable validateAll error, which beats silently guessing.
+// Device-local one-shot marker, in the same res_*-key-read-directly spirit as WHATS_NEW_KEY /
+// DEMO_MODE_KEY — deliberately NOT in LS_BACKUP_KEYS (it's "has this device already migrated its
+// local data", not scheduling data itself).
+const PED_N_FM_MIGRATION_KEY = 'res_pednfm_migrated';
+export function migratePedNightAssignments(schedule, categoryForId) {
+  if (!schedule || typeof schedule !== 'object') return schedule;
+  let scheduleChanged = false;
+  const nextSchedule = {};
+  for (const [residentId, row] of Object.entries(schedule)) {
+    if (!row || typeof row !== 'object') { nextSchedule[residentId] = row; continue; }
+    if (categoryForId(residentId) !== 'FM') { nextSchedule[residentId] = row; continue; }
+    let rowChanged = false;
+    const nextRow = {};
+    for (const [ds, sid] of Object.entries(row)) {
+      if (sid === 'PED-N') { nextRow[ds] = 'PED-N-FM'; rowChanged = true; }
+      else nextRow[ds] = sid;
+    }
+    if (rowChanged) { nextSchedule[residentId] = nextRow; scheduleChanged = true; }
+    else nextSchedule[residentId] = row;
+  }
+  return scheduleChanged ? nextSchedule : schedule;
+}
+
 // `viewer` ({email, userId, role}) is supplied by AppGate, which has already resolved the session
 // and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
 // session at all, and the header simply omits the identity chip in that case.
@@ -10482,7 +11048,15 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [toast, setToast] = useState(null);
   const [switchPending, setSwitchPending] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
+  // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
+  // any) had no confirmed QGenda task and fell back to their on-screen label. exportConfirm itself
+  // stays a plain 'qgenda' string (never 'qgenda-minimal'/'qgenda-withTimes') on purpose — the two
+  // demo-mode guards below key off `kind==='qgenda'` by equality, and a second kind string per
+  // variant would silently stop being caught by them.
+  const [exportVariant, setExportVariant] = useState(null);
+  const [exportUnmapped, setExportUnmapped] = useState([]);
   const [pdfPicker, setPdfPicker] = useState(false);
+  const [qgendaPicker, setQgendaPicker] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
@@ -10876,6 +11450,61 @@ export default function ResidentScheduler({ viewer } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // One-time mount migration: rewrite stale PED-N assignments belonging to FM-3 residents to the
+  // new PED-N-FM id (see migratePedNightAssignments above for why this exists). Gated on a stored
+  // marker so a re-run can never touch a cell the chief has since deliberately set to PED-N — the
+  // marker is set even when zero cells needed changing, so this only ever runs once per device.
+  useEffect(() => {
+    // MUST run after the mount-time cloud overlay has applied, hence the dbReady gate rather than
+    // a bare []. The overlay resolves in a promise callback, so a []-deps effect body runs FIRST,
+    // against the pre-overlay localStorage copy; it would migrate that, write its one-shot marker,
+    // and then be overwritten wholesale by the cloud row's still-unmigrated res_current_block /
+    // res_blocks_history — permanently, because the marker stops it ever running again. dbReady is
+    // set synchronously when cloud sync isn't configured, so a local-only install just runs this
+    // one render later. A cloud load that FAILED leaves dbReady false forever by design: no
+    // migration and no marker, so a later reload retries it cleanly against real data. Running
+    // after the overlay also means the rewritten values differ from cloudBaselineRef, so the
+    // debounced save heals the shared cloud row too instead of only this device.
+    if (!dbReady) return;
+    let alreadyRan = false;
+    try { alreadyRan = localStorage.getItem(PED_N_FM_MIGRATION_KEY) === 'true'; } catch { /* storage blocked */ }
+    if (alreadyRan) return;
+
+    // emRoster never contains FM residents (FM is a non-persistent, off-service-only category —
+    // see CATEGORIES in lib/parse.js), so this is really only a fallback for persistent categories;
+    // the real lookup for every PED-N-relevant resident is each block/snapshot's OWN
+    // offServiceResidents list, since that roster is per-block, not global.
+    const rosterCategoryById = new Map(emRoster.map(r => [r.id, r.category]));
+    function categoryForIdIn(offServiceResidents) {
+      const offById = new Map(
+        (Array.isArray(offServiceResidents) ? offServiceResidents : []).map(r => [r.id, r.category])
+      );
+      return residentId => offById.get(residentId) ?? rosterCategoryById.get(residentId);
+    }
+
+    setBlock(prev => {
+      if (!prev || typeof prev !== 'object') return prev;
+      const nextSchedule = migratePedNightAssignments(prev.schedule, categoryForIdIn(prev.offServiceResidents));
+      return nextSchedule === prev.schedule ? prev : { ...prev, schedule: nextSchedule };
+    });
+
+    setBlocksHistory(prev => {
+      if (!Array.isArray(prev)) return prev;
+      let changed = false;
+      const next = prev.map(snap => {
+        if (!snap || typeof snap !== 'object' || !snap.data || typeof snap.data !== 'object') return snap;
+        const nextSchedule = migratePedNightAssignments(snap.data.schedule, categoryForIdIn(snap.data.offServiceResidents));
+        if (nextSchedule === snap.data.schedule) return snap;
+        changed = true;
+        return { ...snap, data: { ...snap.data, schedule: nextSchedule } };
+      });
+      return changed ? next : prev;
+    });
+
+    try { localStorage.setItem(PED_N_FM_MIGRATION_KEY, 'true'); } catch { /* storage blocked */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dbReady]);
+
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
   }
@@ -10890,6 +11519,13 @@ export default function ResidentScheduler({ viewer } = {}) {
       ...r,
       blockType: block.emBlockAssignments?.[r.id]?.blockType ?? 'EM',
       isChief:   !!(block.emBlockAssignments?.[r.id]?.isChief),
+      // Buy-down seam: denormalizes onto the runtime resident object exactly like blockType/
+      // isChief above, so every getShiftTarget call site (generator, buildQualityInput,
+      // validateAll, grid/card display) picks it up with no signature change. targetDelta is left
+      // as-is (undefined when absent) — getShiftTarget's own Number.isFinite guard handles that.
+      targetDelta: block.emBlockAssignments?.[r.id]?.targetDelta,
+      targetNote: block.emBlockAssignments?.[r.id]?.targetNote,
+      targetIsBuyDown: !!(block.emBlockAssignments?.[r.id]?.targetIsBuyDown),
     }));
     return [...em,...(block.offServiceResidents||[])];
   },[emRoster,block.emBlockAssignments,block.offServiceResidents]);
@@ -11053,9 +11689,24 @@ export default function ResidentScheduler({ viewer } = {}) {
     showToast('Block reset','amber');
   }
 
-  function downloadCSV(filename, rows) {
-    const csv=rows.map(row=>row.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\n');
-    const blob=new Blob([csv],{type:'text/csv'});
+  // quoteMode 'always' force-quotes every cell (grid CSV — humans eyeballing it in Excel);
+  // 'minimal' quotes only when the raw value would otherwise corrupt the row (contains a comma,
+  // double-quote, CR/LF, or leading/trailing whitespace) — some machine importers (QGenda
+  // included, unconfirmed either way since there's no admin access to trial it) reject a quoted
+  // plain value like `"7/6/2026"` where they expect `7/6/2026`. Embedded `"` is always escaped as
+  // `""` regardless of mode. CRLF line endings + a trailing terminator per RFC 4180 for every CSV
+  // this app exports — every consumer that accepts LF also accepts CRLF, so there's no reason to
+  // keep two line-ending conventions in one app. `bom` is per-call, not global: ON by default for
+  // the human-facing grid CSV (helps Excel's UTF-8 detection for accented names), OFF for QGenda
+  // (a BOM turns the first header cell into an invisible-prefixed "Staff", which a strict importer can reject).
+  function downloadCSV(filename, rows, { bom = false, quoteMode = 'always' } = {}) {
+    const escapeCell = c => {
+      const s = String(c ?? '');
+      const needsQuote = quoteMode === 'always' || /[",\r\n]|^\s|\s$/.test(s);
+      return needsQuote ? `"${s.replace(/"/g,'""')}"` : s;
+    };
+    const csv = rows.map(row=>row.map(escapeCell).join(',')).join('\r\n') + '\r\n';
+    const blob=new Blob([bom ? String.fromCharCode(0xFEFF) : '', csv],{type:'text/csv'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download=filename;a.click();
     URL.revokeObjectURL(url);
@@ -11076,19 +11727,33 @@ export default function ResidentScheduler({ viewer } = {}) {
     return [header,...rows];
   }
 
-  // QGenda CSV: tidy/long format — one row per assignment, with real shift times, for bulk import.
-  // Start/End/EndDate are derived from SHIFT_TIMING's numeric startH/durationH (the same source
-  // rest-period math uses), not the display `hours` label — handles midnight rollover correctly.
-  function buildQGendaCSVRows() {
+  // QGenda CSV: tidy/long format — one row per assignment, columns driven entirely by
+  // QGENDA_VARIANTS[variant].columns (src/lib/qgenda.js) rather than hardcoded here, since we
+  // cannot verify QGenda's expected header names without admin access to trial an import — a
+  // wrong header is meant to be a one-line data fix in that file, not an edit here.
+  // Start/EndDate/StartTime/EndTime are derived from SHIFT_TIMING's numeric startH/durationH (the
+  // same source rest-period math uses), not a display label string — handles midnight rollover
+  // correctly. Date/EndDate use qgendaDate() (4-digit year) — NEVER prettyDate, which QGenda's
+  // importer rejects (2-digit year).
+  // Returns { rows, unmapped, count }: `rows` includes the header row, ready for downloadCSV.
+  // `unmapped` collects the shift id of every assignment whose QGENDA task fell back to its
+  // on-screen label (qgendaTaskFor's source==='fallback') — one entry per occurrence, so its
+  // length is directly "how many assignments would export with an unconfirmed task name", and the
+  // caller de-dupes for display. `count` is the total number of assignment rows (independent of
+  // unmapped), for any caller that wants a plain "N shifts will export" figure.
+  function buildQGendaCSVRows(variant) {
+    const v = QGENDA_VARIANTS[variant] ? variant : 'minimal';
+    const columns = QGENDA_VARIANTS[v].columns;
     const dates=getBlockDates(block.startDate,block.endDate);
     const fmtHM = h => { const hh=Math.floor(h)%24, mm=Math.round((h-Math.floor(h))*60); return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`; };
-    const header=['Resident','Category','PGY','Rotation','Date','EndDate','DayOfWeek','ShiftId','ShiftLabel','Area','Start','End','Hours'];
-    const rows=[];
+    const nameFormat = appSettings.qgendaNameFormat ?? 'lastFirstInitial';
+    const overrides = appSettings.qgendaTaskOverrides ?? {};
+    const unmapped=[];
+    const dataRows=[];
     for (const r of allResidents) {
       for (const d of dates) {
         const sid=block.schedule?.[r.id]?.[d];
         if (!sid) continue;
-        const s=SHIFT_MAP[sid];
         const t=SHIFT_TIMING[sid];
         const startH=t?.startH;
         const durationH=t?.durationH;
@@ -11096,14 +11761,20 @@ export default function ResidentScheduler({ viewer } = {}) {
         const startStr = startH!=null ? fmtHM(startH) : '';
         const endStr = (startH!=null && durationH!=null) ? fmtHM(startH + durationH) : '';
         const endDate = rollsOver ? toDateStr(addDays(parseDate(d), 1)) : d;
-        rows.push([
-          `${r.lastName}, ${r.firstName}`, CAT_MAP[r.category]?.label||r.category, `PGY-${r.pgy}`, r.blockType||'—',
-          qgendaDate(d), qgendaDate(endDate), DOW[parseDate(d).getDay()], sid, s?.label||sid, s?.area||'',
-          startStr, endStr, durationH ?? '',
-        ]);
+        const { task, source } = qgendaTaskFor(sid, r, overrides);
+        if (source === 'fallback') unmapped.push(sid);
+        const valuesByColumn = {
+          Staff: qgendaName(r, nameFormat),
+          Date: qgendaDate(d),
+          EndDate: qgendaDate(endDate),
+          Task: task,
+          StartTime: startStr,
+          EndTime: endStr,
+        };
+        dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
       }
     }
-    return [header, ...rows];
+    return { rows: [columns, ...dataRows], unmapped, count: dataRows.length };
   }
 
   function downloadICS(filename, contents) {
@@ -11138,11 +11809,18 @@ export default function ResidentScheduler({ viewer } = {}) {
     return issueCounts.restWarns;
   }
 
-  function runExport(kind) {
+  // `variant` only matters for kind==='qgenda' ('minimal' | 'withTimes' — see QGENDA_VARIANTS).
+  // `kind` itself is always the plain string 'qgenda' regardless of variant — see the note by
+  // exportVariant's declaration for why that's load-bearing for the demo guard below.
+  function runExport(kind, variant=null) {
     const demoSuffix = demoFilenameSuffix(demoMode);
-    if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); setExportConfirm(null); return; }
-    if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}${demoSuffix}.csv`, buildGridCSVRows());
-    else if (kind==='qgenda') downloadCSV(`qgenda_${block.startDate||'block'}${demoSuffix}.csv`, buildQGendaCSVRows());
+    if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); setExportConfirm(null); setExportVariant(null); setExportUnmapped([]); return; }
+    if (kind==='grid') downloadCSV(`schedule_${block.startDate||'block'}${demoSuffix}.csv`, buildGridCSVRows(), { bom: true, quoteMode: 'always' });
+    else if (kind==='qgenda') {
+      const v = QGENDA_VARIANTS[variant] ? variant : 'minimal';
+      const { rows } = buildQGendaCSVRows(v);
+      downloadCSV(`qgenda_${v}_${block.startDate||'block'}${demoSuffix}.csv`, rows, { bom: appSettings.qgendaBom ?? false, quoteMode: 'minimal' });
+    }
     else if (kind==='ics') exportResidentICSFiles();
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
@@ -11156,16 +11834,29 @@ export default function ResidentScheduler({ viewer } = {}) {
         return;
       }
     }
-    setExportConfirm(null);
+    setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);
   }
 
-  function requestExport(kind) {
+  function requestExport(kind, variant=null) {
     if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); return; }
+    if (kind==='qgenda') {
+      // Gate on BOTH the usual validateAll issues AND any assignment whose task name is an
+      // unconfirmed fallback (see buildQGendaCSVRows) — a fallback task is the prime suspect for
+      // "nothing imports" if QGenda rejects an unrecognized task string, so the chief needs the
+      // chance to bail out and fix it in Settings before the file leaves the browser.
+      const { unmapped } = buildQGendaCSVRows(variant || 'minimal');
+      if (unmapped.length > 0 || pendingErrorCount() > 0 || pendingRestWarnCount() > 0) {
+        setExportConfirm(kind); setExportVariant(variant); setExportUnmapped(unmapped); return;
+      }
+      runExport(kind, variant);
+      return;
+    }
     if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0) { setExportConfirm(kind); return; }
     runExport(kind);
   }
 
   const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
+  // QGENDA_NAME_FORMAT_LABEL is module-level now — shared with SettingsTab's "QGenda Task Names" card.
 
   const isSwitchNew = switchPending==='__new__';
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
@@ -11246,10 +11937,14 @@ export default function ResidentScheduler({ viewer } = {}) {
                         className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
                         Grid CSV
                       </button>
-                      <button role="menuitem" onClick={()=>{setExportMenuOpen(false); requestExport('qgenda');}}
-                        title="One row per shift with real start/end times — for QGenda import"
+                      <button role="menuitem" onClick={()=>{
+                          setExportMenuOpen(false);
+                          if (demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); return; }
+                          setQgendaPicker(true);
+                        }}
+                        title="One row per shift, for QGenda import"
                         className="block w-full text-left px-3 py-1.5 text-xs hover:bg-accent">
-                        QGenda CSV
+                        QGenda CSV…
                       </button>
                       <button role="menuitem" onClick={()=>{setExportMenuOpen(false); setPdfPicker(true);}}
                         title="Printable PDF — matrix or per-resident pages"
@@ -11336,11 +12031,11 @@ export default function ResidentScheduler({ viewer } = {}) {
               ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
               loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} deleteBlockSnapshot={deleteBlockSnapshot} setTab={setTab}
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
-              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings}
+              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}/>
           )}
-          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData}/>}
+          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
@@ -11377,20 +12072,33 @@ export default function ResidentScheduler({ viewer } = {}) {
         </ConfirmDialog>
       )}
 
-      {/* Pre-export validation gate */}
+      {/* Pre-export validation gate. For kind==='qgenda' this also gates on exportUnmapped (shift
+          ids whose QGenda task fell back to an on-screen label — see requestExport) alongside the
+          usual validateAll issues, but reuses this same dialog rather than a second mechanism. */}
       {exportConfirm && (
         <ConfirmDialog icon={AlertTriangle} tone="danger" title="Unresolved issues in this schedule"
           actions={
             <>
-              <Button variant="ghost" size="sm" onClick={()=>setExportConfirm(null)}>Cancel</Button>
-              <Button variant="danger" size="sm" onClick={()=>runExport(exportConfirm)}>Export Anyway</Button>
+              <Button variant="ghost" size="sm" onClick={()=>{setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);}}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={()=>runExport(exportConfirm, exportVariant)}>Export Anyway</Button>
             </>
           }>
-          <p>
-            {[
-              pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
-              pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
-            ].filter(Boolean).join(' and ')} — see the Violations tab. Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount())===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
+          {(pendingErrorCount() > 0 || pendingRestWarnCount() > 0) && (
+            <p>
+              {[
+                pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
+                pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
+              ].filter(Boolean).join(' and ')} — see the Violations tab.
+            </p>
+          )}
+          {exportConfirm==='qgenda' && exportUnmapped.length > 0 && (
+            <p className={(pendingErrorCount() > 0 || pendingRestWarnCount() > 0) ? 'mt-2' : ''}>
+              {exportUnmapped.length} assignment{exportUnmapped.length!==1?'s':''} use shift{exportUnmapped.length!==1?'s':''} with no confirmed QGenda task
+              ({[...new Set(exportUnmapped)].join(', ')}) — they will export under their on-screen shift label. Set task names in Settings → QGenda.
+            </p>
+          )}
+          <p className="mt-2">
+            Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount()+(exportConfirm==='qgenda'?exportUnmapped.length:0))===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
           </p>
         </ConfirmDialog>
       )}
@@ -11408,6 +12116,49 @@ export default function ResidentScheduler({ viewer } = {}) {
               <div className="text-sm font-semibold text-gray-800">Per-resident pages</div>
               <div className="text-xs text-gray-500 mt-0.5">One page per schedulable resident, with date/shift/notes rows — good for a take-home printout.</div>
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {qgendaPicker && (
+        <Modal title="Export QGenda CSV" onClose={()=>setQgendaPicker(false)}>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 mb-1">Staff name format</label>
+              <select value={appSettings.qgendaNameFormat ?? 'lastFirstInitial'}
+                onChange={e=>setAppSettings(s=>({...s, qgendaNameFormat: e.target.value}))}
+                className="w-full text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary">
+                {QGENDA_NAME_FORMATS.map(f => (
+                  <option key={f} value={f}>{QGENDA_NAME_FORMAT_LABEL[f] || f}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                Preview: {(() => {
+                  const previewResident = allResidents.find(isSchedulable);
+                  return previewResident ? qgendaName(previewResident, appSettings.qgendaNameFormat ?? 'lastFirstInitial') : '— (no schedulable residents yet)';
+                })()}
+              </p>
+            </div>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={!!appSettings.qgendaBom}
+                onChange={e=>setAppSettings(s=>({...s, qgendaBom: e.target.checked}))} className="rounded mt-0.5"/>
+              <span>
+                <span className="block text-xs font-semibold text-gray-700">Add UTF-8 BOM</span>
+                <span className="block text-xs text-gray-400">Leave off unless QGenda's importer garbles accented names — a BOM makes the very first header cell unreadable to some strict importers, so only turn this on if a plain file failed for that specific reason.</span>
+              </span>
+            </label>
+            <div className="space-y-3 pt-1">
+              <button onClick={()=>{setQgendaPicker(false); requestExport('qgenda', 'minimal');}}
+                className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-primary hover:bg-primary/10 transition-colors">
+                <div className="text-sm font-semibold text-gray-800">Minimal</div>
+                <div className="text-xs text-gray-500 mt-0.5">Staff, Date, Task — smallest surface area if QGenda's importer is picky about extra or unexpected columns.</div>
+              </button>
+              <button onClick={()=>{setQgendaPicker(false); requestExport('qgenda', 'withTimes');}}
+                className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-primary hover:bg-primary/10 transition-colors">
+                <div className="text-sm font-semibold text-gray-800">With times</div>
+                <div className="text-xs text-gray-500 mt-0.5">Adds EndDate, StartTime, EndTime — use if QGenda needs explicit shift times rather than inferring them from the Task.</div>
+              </button>
+            </div>
           </div>
         </Modal>
       )}

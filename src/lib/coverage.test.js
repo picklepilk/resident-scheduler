@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeCoverageEntry, getCoverageFor,
-  DEFAULT_COVERAGE, DOW_COVERAGE_MAX_OVERRIDE,
+  DEFAULT_COVERAGE, DEFAULT_COVERAGE_MINMAX, DOW_COVERAGE_MAX_OVERRIDE,
   CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS,
   TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS,
   normalizeTwelveHourWindow, implicitConferenceWindows,
   resolveTwelveHourWindows, twelveHourStateFor, twelveHourAllows,
 } from './coverage.js';
+import { SHIFTS } from './shifts.js';
 
 describe('normalizeCoverageEntry', () => {
   it('converts a legacy single-number shape to {min,max} with equal values', () => {
@@ -34,6 +35,24 @@ describe('normalizeCoverageEntry', () => {
     expect(normalizeCoverageEntry('nonsense')).toBeNull();
     expect(normalizeCoverageEntry(null)).toBeNull();
     expect(normalizeCoverageEntry(undefined)).toBeNull();
+  });
+});
+
+describe('DEFAULT_COVERAGE_MINMAX catalog integrity', () => {
+  // Regression guard for the exact bug class this repo has been bitten by before (see CLAUDE.md's
+  // 12h-window phantom-minimum incident): DEFAULT_COVERAGE falls back to {min:1,max:1} for any
+  // SHIFTS id absent from DEFAULT_COVERAGE_MINMAX, silently making it "1 required body every
+  // day" instead of a deliberate default. A per-id assertion (e.g. just for PED-N-FM) would do
+  // nothing for the NEXT shift id someone adds -- this walks the whole catalog instead.
+  it('every SHIFTS id has an explicit DEFAULT_COVERAGE_MINMAX entry', () => {
+    for (const s of SHIFTS) {
+      expect(DEFAULT_COVERAGE_MINMAX[s.id], `missing DEFAULT_COVERAGE_MINMAX for ${s.id}`).toBeDefined();
+    }
+  });
+
+  it('PED-N-FM is explicit min:0/max:1, best-effort like PED-N', () => {
+    expect(DEFAULT_COVERAGE_MINMAX['PED-N-FM']).toEqual({ min: 0, max: 1 });
+    expect(DEFAULT_COVERAGE['PED-N-FM']).toEqual({ min: 0, max: 1 });
   });
 });
 

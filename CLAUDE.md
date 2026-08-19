@@ -244,7 +244,8 @@ silently ships fully open app to internet.
 npm run dev
 npm run build     # → dist/
 npm run preview
-npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality) plus
+npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality/
+                   # journalClub/eligibilityOverrides/qgenda/jeopardyLedger) plus
                    # generator.harness.test.js + generator.baseline.<variant>.test.js, which import
                    # the generator/validateAll
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
@@ -266,7 +267,9 @@ names below rather than trusting offsets.
   otherwise deliberately NOT day-of-week-dependent), `CATEGORIES`, block types (`BLOCK_TYPES_EM`,
   `TRAUMA_BLOCKS`, `EM_HOME_BLOCK_TYPES_BY_PGY`), `BASE_ELIGIBILITY`, `DEFAULT_DAY_RULES`,
   `SHIFT_TARGETS`/`BLOCK_TARGETS` (rotation-specific target overrides, e.g. US/EM = 5 shifts,
-  EM/Res/VAC = 13 — see `getShiftTarget`), `DEFAULT_COVERAGE_MINMAX`/`DEFAULT_COVERAGE`/
+  EM/Res/VAC = 13 — see `getShiftTarget`, and "Per-block target overrides" below for the
+  `targetDelta` step that now runs AFTER all four of its resolution branches),
+  `DEFAULT_COVERAGE_MINMAX`/`DEFAULT_COVERAGE`/
   `getCoverageFor`/`normalizeCoverageEntry` (per-shift daily `{min,max}` staffing used by
   generator — see "Coverage is min/max, not single number" below), `LEGACY_DAY_RULE_DEFAULTS`/
   `LEGACY_ELIGIBILITY_DEFAULTS`/`DAY_RULE_DEFAULTS_CHANGED` (see "Rule-default migration" below).
@@ -674,14 +677,18 @@ names below rather than trusting offsets.
 
 ## Data model & conventions
 - Shift IDs follow `AREA-TYPE` (e.g. `POD-D`, `MT-N`, `TRAUMA-D` — note TRAUMA has no evening shift;
-  `PED-S` one exception to `AREA-TYPE` = `AREA-first-letter-of-type` convention reading
-  cleanly, since its type is `'swing'`). Keep this convention adding areas/shifts so lookups
-  via `SHIFT_MAP` keep working.
+  `PED-S` and `PED-N-FM` are the TWO exceptions — `PED-S` is `AREA-first-letter-of-type`, reading
+  cleanly since its type is `'swing'`; `PED-N-FM` is `AREA-TYPE-QUALIFIER`). Nothing parses a shift
+  id by splitting on `-` (the only two regexes match `D12|N12`) — don't introduce one. Keep this
+  convention adding areas/shifts so lookups via `SHIFT_MAP` keep working.
 - `SHIFT_TIMING` start/duration hours used to compute rest periods across midnight — add
   shift, add its timing entry too, or rest-period validation silently skips it. `DEFAULT_COVERAGE`
   needs no manual update for shift already in `DEFAULT_COVERAGE_MINMAX` — shift missing from that
   map falls back to `{min:1,max:1}` in `DEFAULT_COVERAGE`, `{min:0,max:0}` only if isn't in
-  `SHIFTS` at all (can't happen for one just added there).
+  `SHIFTS` at all (can't happen for one just added there). **A `SHIFTS` entry with no explicit
+  `DEFAULT_COVERAGE_MINMAX` entry therefore silently demands 1 body EVERY day (~28 phantom
+  unfilled slots/block) — `coverage.test.js` now enforces the catalog-wide invariant that every
+  `SHIFTS` id has one, so this can't recur.**
 - **Coverage is min/max, not single number.** `getCoverageFor(shiftId, coverage)` returns
   `{min,max}` — generator fills every shift to `min` first (hard: below-min is `unfilled`
   slot, Validation warning), then optionally tops up toward `max` only for residents still
@@ -735,14 +742,45 @@ names below rather than trusting offsets.
   yields `undefined` and would silently restore the phantom minimums. Rules-tab totals EXCLUDE
   `TWELVE_HOUR_IDS` (they inflated the headline by 10 min / 18 max on every ordinary day), and
   those cells are labelled the **in-window** default, not an outside-window one.
-- **PED-N (Peds Night): FM-3 all eligible days, EM_HOME_1/2/3 Thu–Sun only** (opened up from
-  FM-3-exclusive — chief wants EM residents able to cover PED-N outside FM-3's Mon/Tue/Wed window,
-  PGY-1 soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`).
-  EM_HOME's Thu–Sun window is a dedicated `overrideImmune` shiftGate (`ped_n_em_window`) per
-  EM_HOME PGY key — Mon/Tue/Wed stays FM-3-only. `PED_GUARD_LEGITIMATE_OWNER['PED-N']` is now an
-  ARRAY (`['FM_3','EM_HOME_1','EM_HOME_2','EM_HOME_3']`, not a bare string) — `stripPedGuardedShifts`
-  checks array-membership; **coverage stays `{min:0,max:1}`** (best-effort fill, not required —
-  chief's own words: "does not HAVE to be someone scheduled"). **PED-S (Peds Swing) is still
+- **PED-N SPLIT INTO TWO SHIFT IDS (2026-08-18).** One `PED-N` used to model two different
+  real-world shifts, at the wrong hours for one of them. They are now separate:
+  - **`PED-N` "Peds Night", 19:00–04:00, EM_HOME_1/2/3 only, Thu–Sun.** Confined by the
+    `overrideImmune` `ped_n_em_window` shiftGate (`allowedDays: [0,4,5,6]` — Sun/Thu/Fri/Sat, i.e.
+    Thu-through-Sun; the gate ALSO stops an EM resident being placed on it Mon/Tue/Wed, when the
+    19:00 shift does not exist at all, which is why the gate is still needed post-split). PGY-1 is
+    soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`.
+  - **`PED-N-FM` "Peds Night (FM Only)", 23:00–08:00, FM_3 only, Mon/Tue/Wed.** `BASE_ELIGIBILITY.FM_3`
+    is now `['PED-N-FM']` — `PED-N12` was dropped (19:00–07:00, the 12h variant of the *EM* timing,
+    never FM's). Accepted tradeoff: under a `mode:'replace'` PED 12h window, `twelveHourAllows`
+    strips `PED-N-FM` and FM-3 has zero eligibility those dates.
+  Both stay `{min:0,max:1}` (best-effort, not required — chief: "does not HAVE to be someone
+  scheduled"), both stay `type:'night'` (FM-3's `isNightOnlyResident` exemption depends on it), and
+  `PED_GUARD_LEGITIMATE_OWNER` is now `{'PED-N': ['EM_HOME_1','EM_HOME_2','EM_HOME_3'],
+  'PED-N-FM': 'FM_3', 'PED-S': 'EM_HOME_2'}` — back to single-owner for the FM shift.
+  **Three non-obvious consequences of the split, all load-bearing:**
+  1. **`shiftOverlapsJC('PED-N')` flipped false→true** (it is `startH < 21 && startH+durationH > 18`;
+     false at 23:00, true at 19:00). Currently **LATENT** — `ped_n_em_window` confines PED-N to
+     Thu–Sun and Journal Club defaults to first Tuesdays, so an EM resident can't be on it on a
+     default JC date. It goes live the moment the chief moves a JC date onto a Thu–Sun. Don't
+     promise changed JC counts.
+  2. **Ending at 04:00 made night→evening-next-day legal for the first time** — `checkRestViolations`
+     passes (10–11h ≥ the 9h `durationH`) and the circadian hard rules only covered eve→day/day→eve.
+     `checkCircadianViolations`' backward `postNightRest` scan was widened from `newType === 'day'`
+     to `'day' || 'eve'` to close it. Keep it a soft `rule:'postNightRest'` warn, under `rulePriority`.
+  3. **Legacy eligibility overrides need a RENAME, not just a backfill** — see
+     `LEGACY_SHIFT_ID_RENAMES`/`applyLegacyShiftIdRenames`/`renameDiffShiftIds` in
+     `src/lib/eligibilityOverrides.js`, and the one-shot `migratePedNightAssignments` mount effect
+     in `ResidentScheduler.jsx` that rewrites existing FM `PED-N` cells in `block.schedule` AND
+     every `blocksHistory` snapshot (skipping resident ids it can't resolve rather than guessing).
+     Without the latter, every FM-3 peds-night cell already on disk becomes a hard `validateAll`
+     "not eligible" error and poisons `generateScheduleBest`'s error-count ranking. That effect is
+     gated on **`dbReady`, not `[]`** — it writes a one-shot device-local marker
+     (`res_pednfm_migrated`), so running before the mount-time cloud overlay resolves would migrate
+     the pre-overlay localStorage copy, burn the marker, and then be silently overwritten by the
+     cloud row's still-unmigrated `res_current_block`/`res_blocks_history` with no second chance.
+     Any future one-shot-marker migration needs the same gate; the `LEGACY_*_DEFAULTS` prune effect
+     above it does NOT, because it stores no marker and simply re-runs on the next mount.
+  **PED-S (Peds Swing) is still
   EM-Home-PGY-2-on-EM/TOX-or-EM/EMS-only program-wide** — no other category/PGY ever eligible,
   including via Shift Matrix rotation override (`overrideImmune: true`); PED-S coverage is now
   `{min:0,max:1}` too (chief: "no priority for peds swing shift to be filled"). Add a new
@@ -754,7 +792,10 @@ names below rather than trusting offsets.
   rule — don't try to "clean up" this into single gate.
 - **Circadian rules** (see `NIGHT_RULES`): nights should cluster into one run of 4-6 (max 6, hard);
   evening shift can never be immediately followed by day shift next day, or vice versa
-  (hard, even when plain rest-hour math would otherwise clear it); max 6 total night shifts per
+  (hard, even when plain rest-hour math would otherwise clear it); **the backward `postNightRest`
+  scan covers a following DAY *or EVENING* shift** — widened from day-only when `PED-N` was retimed
+  to end at 04:00, which made night→eve-next-day pass `checkRestViolations` (10-11h ≥ the 9h
+  `durationH`) while no circadian arm looked at it at all; max 6 total night shifts per
   block, except residents whose entire eligibility is night-only (today: FM-3) — `isNightOnlyResident`
   exempts them from both per-block cap and short-run warning, since FM-3's Mon/Tue/Wed-only
   day rule makes 4+-night run structurally impossible anyway. **≥24h off after night run before
@@ -880,7 +921,80 @@ names below rather than trusting offsets.
   identically in `getEligibleShifts`/`validateAll` (early-return empty pool / hard conflict
   error). Kept distinct so imports/exports/UI can label vacation vs. approved-off differently
   ("VAC" teal marker vs. "OFF" orange marker, same grid/cards/PDF/legend sites as OFF).
-- **QGenda CSV `Start`/`End` are now derived from `SHIFT_TIMING[sid].startH/durationH`**
+- **Per-block target overrides ("buy-downs")** — `block.emBlockAssignments[id]` gained
+  `{targetDelta, targetNote, targetIsBuyDown}` alongside `{blockType, isChief}`. A **DELTA**, never
+  an absolute number, so it survives a `SHIFT_TARGETS` change and is self-documenting. It reaches
+  the generator/validator/quality scorer through the EXISTING `allResidents` denormalization seam
+  (same line that already carries `blockType`/`isChief`), so **`getShiftTarget`'s signature never
+  changed** and `buildSnapData` needs no edit. Three things that are easy to get wrong:
+  1. **`getShiftTarget` had FOUR early returns and is now a single tail return.** Appending the
+     delta step after the branches would be dead code for chief residents and for any category with
+     a Settings `targetOverrides` entry — the buy-down would be silently ignored for them.
+  2. **A delta that zeroes the target returns `null`, NOT `0`.** `targetBearing` in
+     `scheduleQuality.js` is `targets[r.id] != null`, and `0 != null` is TRUE — a target-0 resident
+     would stay in the fairness population scoring `assigned/target` = 0, the maximal outlier,
+     weighted ×10 in vector slot 3, swamping their whole cohort's spread. `null` = fairness
+     non-participant, exactly like a self-cover resident, and every consumer already handles it.
+  3. **`computeQualityMetrics` takes a second `baselineTargets` map** because
+     `scaledTarget = target * (prior.blocks + 1)` would otherwise multiply a ONE-BLOCK delta across
+     the whole AY carryover. It is `(baselineTargets?.[r.id] ?? target) * prior.blocks + target` —
+     **the per-resident `?? target` fallback is mandatory**, since the baseline suite and ~34 test
+     calls never pass the map and `undefined * n` would silently collapse `ayDeficitSpread` to 0
+     with no test failing loudly.
+  `ImportMatrixModal` now MERGES per-resident assignment records instead of replacing them, or a
+  Master Matrix re-upload would wipe the deltas (and `isChief`, which it already did).
+  Off-service residents carry `targetDelta` directly on the resident object inside the block —
+  they're per-block by construction, so they need no seam.
+- **Jeopardy & sick-call ledger** (`appSettings.jeopardyLog`, `src/lib/jeopardyLedger.js`,
+  `JeopardySickCallsCard` on the Dashboard): ONE incident record per real event —
+  `{id, date, shiftId, sickResidentId, activatedResidentId, note, at}` — with both the sick-call
+  count and the activation count DERIVED from it, so they can never disagree. `activatedResidentId`
+  is nullable (shift ran short / self-covered → nobody earns a credit). Activations earn buy-down
+  credits; `targetIsBuyDown` deltas spend them; the card shows earned/spent/remaining and
+  **nothing auto-applies to any target** (same restraint as override capture — auto-applying would
+  move generator output without an explicit decision). `remaining` is NOT clamped: negative means
+  the chief over-spent and needs to see it.
+  **It lives in `appSettings`, NOT its own `res_*` key, and that is load-bearing.** The cloud write
+  is a whole-column replace (`sbSaveState` posts a `data` document built fresh from *that build's
+  own* `LS_BACKUP_KEYS`), so a device on an older bundle would write a document lacking a 10th key
+  and **silently drop the ledger from the shared row** — permanent loss of the record the buy-downs
+  are audited against. `setAppSettings(p => ({...p, …}))` spreads, so an old bundle round-trips
+  `res_app_settings` opaquely and preserves a sub-key it has never heard of. **A future "cleanup"
+  promoting this to its own key would reintroduce that bug.**
+  `computeBuyDownsApplied` deliberately counts **published AND unpublished** snapshots — unlike
+  `countPublishedJC`/`computeAyPriorTotals`, which are published-only because they feed generator
+  scoring. This is an advisory count of an administrative promise: a buy-down entered on a draft
+  block is genuinely spent, and published-only would show phantom credits and invite double-spending.
+  It `continue`s on `snap.id === block.id` and adds the live block separately — that guard is what
+  stops a block being counted against its own snapshot.
+- **QGenda CSV REWORKED (2026-08-18) — two lean variants, chief-editable task names.** The chief
+  reported "nothing imports, unreadable" and has **no QGenda admin rights, so he cannot trial-run**.
+  Every choice here is therefore biased toward *he can fix it himself without a redeploy*:
+  - `src/lib/qgenda.js` (pure, must never import `ResidentScheduler.jsx`) owns `QGENDA_TASKS`
+    (our shift id → his REAL QGenda task name: `POD-*` → "MC Team …", `FLEX-*` → "Flex Team …",
+    `MT-*` → "Midtrack …", `PED-N-FM` → "Peds Night (FM Only)", `TRAUMA-N` → "Trauma Night-PGY2+3";
+    **`TRAUMA-D` is a FUNCTION** — "Trauma Day-Intern" for PGY-1 else "Trauma Day"), plus
+    `qgendaTaskFor()`, `qgendaName()`, and `QGENDA_VARIANTS`.
+  - **The eight 12h ids are deliberately absent** from `QGENDA_TASKS` and fall back to our own
+    label with `source:'fallback'`, which raises a pre-export warning through the EXISTING
+    `exportConfirm` dialog. Never blank (most likely to fail the whole import), never a silent
+    skip (a skipped row is a resident who doesn't exist in QGenda — nobody notices until someone
+    doesn't show up). `source` makes flipping to skip-with-warning a one-line change.
+  - **Column NAMES live in `QGENDA_VARIANTS[*].columns` as DATA** (`minimal`: `Staff,Date,Task`;
+    `withTimes`: `+EndDate,StartTime,EndTime`) precisely because we can't verify what QGenda
+    expects — a wrong header must stay a one-line fix.
+  - Chief overrides: `appSettings.qgendaTaskOverrides` (sparse — the Settings editor DELETES a key
+    that is blank or equals the default), `qgendaNameFormat`, `qgendaBom`, plus a per-resident
+    `resident.qgendaStaffId` escape hatch that `qgendaName()` honours ahead of every format.
+    **No new storage key** — `res_app_settings` already rides `LS_BACKUP_KEYS`/`syncBindings`.
+  - `downloadCSV(filename, rows, {bom, quoteMode})`: **CRLF + trailing terminator for ALL CSV
+    exports** (RFC 4180). BOM defaults ON for the human-facing Grid CSV, OFF for QGenda (a BOM
+    makes the first header cell literally `﻿Staff`). `quoteMode:'minimal'` for QGenda —
+    `"Smith, J"` contains a comma, so quoting is a live variable worth being able to change.
+  - **The demo guards test `kind === 'qgenda'` by EQUALITY**, so the variant is threaded as a
+    SECOND argument (`requestExport(kind, variant)`) and never folded into the kind string —
+    folding it in would silently stop guarding and let the sandbox emit real resident names.
+- **QGenda CSV `Start`/`End` are derived from `SHIFT_TIMING[sid].startH/durationH`**
   (numeric source of truth), not by splitting the shift's DISPLAY label string on an en-dash —
   the old approach broke silently if a label's formatting ever changed and had no
   midnight-rollover handling. New `EndDate` column added (`= Date` unless

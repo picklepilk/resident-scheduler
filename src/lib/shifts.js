@@ -29,13 +29,24 @@ export const AREA_COLORS = {
             tint: 'text-red-700 bg-red-50 border-red-200',        pdfLight: [254, 226, 226] },
 };
 
+// PED-N-FM is a SECOND exception to the AREA-TYPE shift-id convention (PED-S was the first) —
+// it's AREA-TYPE-QUALIFIER, not plain AREA-TYPE. Nothing currently parses shift ids by splitting
+// on '-', but the convention itself is documented in this repo's CLAUDE.md, so note the exception
+// here too. The `short` field on PED-N-FM is an optional display abbreviation consumed by the
+// Shift Matrix header, which otherwise derives a column label from `type[0].toUpperCase()` — with
+// two 'night' shifts in the PED area that would render two indistinguishable 'N' columns.
+// Retiming PED-N's startH from 23 to 19 (below, in SHIFT_TIMING) flips shiftOverlapsJC('PED-N')
+// from false to true (shiftOverlapsJC is `startH < 21 && startH + durationH > 18`) — that's an
+// intended consequence of the split, not a bug: the new 19:00 PED-N genuinely overlaps Journal
+// Club's 18:00-21:00 window, while PED-N-FM (still 23:00) does not.
 export const SHIFTS = [
   { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
   { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.POD.chip.eve },
   { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
   { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
   { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.PED.chip.eve },
-  { id: 'PED-N',    label: 'PED Night',    area: 'PED',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
+  { id: 'PED-N',    label: 'Peds Night',   area: 'PED',    hours: '19:00–04:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
+  { id: 'PED-N-FM', label: 'Peds Night (FM Only)', area: 'PED', hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.PED.chip.night, short: 'NF' },
   { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
   { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: AREA_COLORS.FLEX.chip.eve },
   { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
@@ -76,7 +87,8 @@ export const SHIFT_TIMING = {
   'POD-N':    { startH: 23, durationH: 9  },   // 23:00 – 08:00 (+1 day)
   'PED-D':    { startH: 7,  durationH: 9  },
   'PED-E':    { startH: 15, durationH: 9  },
-  'PED-N':    { startH: 23, durationH: 9  },
+  'PED-N':    { startH: 19, durationH: 9  },   // 19:00 – 04:00 (+1 day)
+  'PED-N-FM': { startH: 23, durationH: 9  },   // 23:00 – 08:00 (+1 day)
   'FLEX-D':   { startH: 6,  durationH: 9  },   // 06:00 – 15:00
   'FLEX-E':   { startH: 14, durationH: 9  },   // 14:00 – 23:00
   'FLEX-N':   { startH: 22, durationH: 9  },   // 22:00 – 07:00 (+1 day)

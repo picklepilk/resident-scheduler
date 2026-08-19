@@ -465,4 +465,47 @@ describe('computeQualityMetrics — AY-to-date carryover (Phase 2)', () => {
     expect(mThin.nightSpread).toBeGreaterThan(mThin.blockNightSpread);
     expect(mThin.nightSpread).toBeLessThan(mThick.nightSpread);
   });
+
+  // C5 fix: AY scaling must use the UNDELTA'D baseline target, not the effective (possibly
+  // buy-down'd) target — see ResidentScheduler.jsx's buildQualityInput / CLAUDE.md "buy-down".
+  it('AY scaling uses baselineTargets, not the effective target, when they differ (the delta-path)', () => {
+    // `a` has a one-block buy-down this block: base 19 -> effective 17 (delta -2). `b` has no
+    // delta at all, base === effective === 19 for both targets and baselineTargets.
+    const targets = { a: 17, b: 19 };
+    const baselineTargets = { a: 19, b: 19 };
+    const ayPriorTotals = {
+      a: { nights: 0, weekendDates: 0, assigned: 55, blocks: 3 },
+      b: { nights: 0, weekendDates: 0, assigned: 55, blocks: 3 },
+    };
+    const withCorrectBaseline = computeQualityMetrics({ ...base, targets, baselineTargets, schedule, ayPriorTotals, ayCarryoverFullAt: 3 });
+    // Omitting baselineTargets makes the `?? target` fallback use the EFFECTIVE (delta'd) target
+    // as the scaling base for `a` — reproducing the exact pre-fix bug for contrast.
+    const withoutBaseline = computeQualityMetrics({ ...base, targets, schedule, ayPriorTotals, ayCarryoverFullAt: 3 });
+
+    expect(withCorrectBaseline.ayCarryoverConfidence).toBeCloseTo(1, 5);
+    // The two must diverge: passing the real baseline changes `a`'s scaled AY target from
+    // 17*3+17=68 (buggy) to 19*3+17=74 (correct), which measurably moves the group's spread.
+    expect(withCorrectBaseline.deficitSpread).not.toBeCloseTo(withoutBaseline.deficitSpread, 5);
+  });
+
+  it('omitting baselineTargets is a safe no-op when no resident has a delta (the omitted-map path)', () => {
+    // Neither resident has a buy-down here, so an explicit baselineTargets map equal to `targets`
+    // must produce IDENTICAL output to omitting the param entirely — proving the mandatory
+    // per-resident `?? target` fallback works, and does not NaN/collapse scaledTarget to 0 (the
+    // regression this test guards: without the fallback, an omitted map makes `bt` undefined,
+    // `bt * prior.blocks + target` is NaN, `NaN > 0` is false, scaledTarget silently becomes 0,
+    // and ayDeficitSpread reads exactly 0 — indistinguishable from "no imbalance" — with no test
+    // failing loudly anywhere else).
+    const targets = { a: 19, b: 19 };
+    const ayPriorTotals = {
+      a: { nights: 0, weekendDates: 0, assigned: 55, blocks: 3 },
+      b: { nights: 0, weekendDates: 0, assigned: 55, blocks: 3 },
+    };
+    const withExplicitEqual = computeQualityMetrics({ ...base, targets, baselineTargets: { a: 19, b: 19 }, schedule, ayPriorTotals, ayCarryoverFullAt: 3 });
+    const withOmitted = computeQualityMetrics({ ...base, targets, schedule, ayPriorTotals, ayCarryoverFullAt: 3 });
+
+    expect(withOmitted.ayCarryoverConfidence).toBeCloseTo(1, 5);
+    expect(Number.isFinite(withOmitted.deficitSpread)).toBe(true);
+    expect(withOmitted.deficitSpread).toBeCloseTo(withExplicitEqual.deficitSpread, 10);
+  });
 });

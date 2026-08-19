@@ -21,6 +21,26 @@
 // removed all eight 12h shifts" and the outage would be baked in permanently rather than fixed.
 const TWELVE_H_SUFFIX = { D12: 'D', N12: 'N' };
 
+// A shift id can also be RENAMED/SPLIT outright (not just gain a new sibling id) -- e.g. PED-N was
+// split so FM-3's grant becomes PED-N-FM while PED-N itself goes EM-Home-only. Unlike the 12h
+// backfill above (which only ever ADDS an id the old snapshot couldn't have known about), a rename
+// must also DROP the old id(s): if the stored override still names PED-N/PED-N12 against the new
+// base, those ids simply don't match anything anymore and go inert -- silently, with no error --
+// which for a `removed` entry means the chief's revocation is lost and the resident REGAINS a grant
+// they explicitly took away. That's the same class of silent outage the diff format itself exists to
+// prevent (see file header), just triggered by a rename instead of a new id.
+//
+// This list is scoped by BASE membership (`to` granted, `from` not), not by CATEGORY_PGY key, and
+// that's deliberate: `LEGACY_ELIGIBILITY_DEFAULTS` is keyed by CATEGORY_PGY and can never reach a
+// CATEGORY_PGY__ROTATION override written by the Shift Matrix's per-rotation sub-rows. That exact
+// blind spot is what caused the real ACEP outage documented in the file header -- a rotation-level
+// override predated the 12h ids and had no key any category-keyed migration could match. A
+// base-driven rule has no such blind spot: it reaches rotation-key overrides for free, because it
+// only ever looks at the resolved shift list being normalized, never at which key it came from.
+const LEGACY_SHIFT_ID_RENAMES = [
+  { from: 'PED-N', to: 'PED-N-FM', alsoDrop: ['PED-N12'] },
+];
+
 // Adds a base shift id that a legacy snapshot could not have known about: a 12h id is restored only
 // when the snapshot still lists that area's matching 9h shift (POD-D for POD-D12, POD-N for
 // POD-N12), so an area the chief genuinely dropped stays dropped. Returns `list` unchanged when
@@ -36,6 +56,61 @@ export function backfillLaterAddedShiftIds(list, base) {
     if (have.has(`${m[1]}-${TWELVE_H_SUFFIX[m[2]]}`)) add.push(sid);
   }
   return add.length ? [...list, ...add] : list;
+}
+
+// Legacy-array counterpart of renameDiffShiftIds below. For each rename rule: the scope guard
+// (`base` must grant `to` and must NOT grant `from`) skips rules that don't apply to this base at
+// all, AND guards against a future base that legitimately grants both ids at once (nothing to
+// rename in that case -- both names are live). When the list still names the old id, drop it plus
+// any `alsoDrop` id that the CURRENT base doesn't grant directly (an alsoDrop id the base still
+// grants on its own, independent of the rename, must survive), then append the new id if the list
+// doesn't already have it. Returns `list` unchanged (same reference) when no rule applies, matching
+// backfillLaterAddedShiftIds's convention. Guards non-array inputs the same way.
+export function applyLegacyShiftIdRenames(list, base) {
+  if (!Array.isArray(list) || !Array.isArray(base)) return list;
+  let out = list;
+  let changed = false;
+  for (const rule of LEGACY_SHIFT_ID_RENAMES) {
+    if (!base.includes(rule.to) || base.includes(rule.from)) continue;
+    if (!out.includes(rule.from)) continue;
+    const dropIds = new Set([rule.from, ...(rule.alsoDrop || []).filter(id => !base.includes(id))]);
+    const next = out.filter(id => !dropIds.has(id));
+    if (!next.includes(rule.to)) next.push(rule.to);
+    out = next;
+    changed = true;
+  }
+  return changed ? out : list;
+}
+
+// Diff counterpart of applyLegacyShiftIdRenames -- this is the one that matters in practice, since
+// the array->diff migration already shipped and ran, so every stored override is already a diff.
+// A diff written against the OLD base still names the old id in `added`/`removed`; against the new
+// base neither entry matches anything, so it goes inert. For `removed` that's not a no-op, it's a
+// silent regression: a chief who explicitly revoked FM-3's peds night (`removed: ['PED-N','PED-N12']`)
+// would see FM-3 silently REGAIN that grant, because nothing in the new base is named 'PED-N' or
+// 'PED-N12' anymore for the diff to subtract. Applies the same per-rule scope guard as the array
+// version, and drops/renames within EACH of `added` and `removed` independently, so a diff that
+// only touched one side is only rewritten on that side. Returns `diff` unchanged (same reference)
+// when nothing applies.
+export function renameDiffShiftIds(diff, base) {
+  if (!diff || !Array.isArray(base)) return diff;
+  const addedIn = Array.isArray(diff.added) ? diff.added : [];
+  const removedIn = Array.isArray(diff.removed) ? diff.removed : [];
+  let added = addedIn;
+  let removed = removedIn;
+  for (const rule of LEGACY_SHIFT_ID_RENAMES) {
+    if (!base.includes(rule.to) || base.includes(rule.from)) continue;
+    const dropIds = new Set([rule.from, ...(rule.alsoDrop || []).filter(id => !base.includes(id))]);
+    const rename = arr => {
+      if (!arr.includes(rule.from)) return arr;
+      const next = arr.filter(id => !dropIds.has(id));
+      if (!next.includes(rule.to)) next.push(rule.to);
+      return next;
+    };
+    added = rename(added);
+    removed = rename(removed);
+  }
+  return (added === addedIn && removed === removedIn) ? diff : { added, removed };
 }
 
 export function isEligibilityDiff(v) {
@@ -79,11 +154,13 @@ export function applyEligibilityDiff(base, diff) {
 export function normalizeEligibilityOverride(value, base) {
   if (value == null) return null;
   if (isEligibilityDiff(value)) {
-    return { added: cleanIds(value.added), removed: cleanIds(value.removed) };
+    return renameDiffShiftIds({ added: cleanIds(value.added), removed: cleanIds(value.removed) }, base);
   }
   if (Array.isArray(value)) {
-    // Legacy snapshot. Backfill FIRST so later-added ids aren't misread as deliberate removals.
-    return eligibilityDiff(backfillLaterAddedShiftIds(cleanIds(value), base), base);
+    // Legacy snapshot. Rename FIRST (an old id must stop meaning what it used to before backfill
+    // runs), then backfill so later-added ids aren't misread as deliberate removals, then diff.
+    const renamed = applyLegacyShiftIdRenames(cleanIds(value), base);
+    return eligibilityDiff(backfillLaterAddedShiftIds(renamed, base), base);
   }
   return null;
 }
