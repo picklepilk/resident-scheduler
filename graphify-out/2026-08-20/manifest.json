@@ -30,8 +30,8 @@
     "semantic_hash": ""
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1787236811.0227647,
-    "ast_hash": "c3ad2cde20d01f554aa9622f9cc72281",
+    "mtime": 1787201316.4724965,
+    "ast_hash": "3c6a92e023382720aa33275fc197cff5",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -195,13 +195,13 @@
     "semantic_hash": ""
   },
   "src/lib/coverage.js": {
-    "mtime": 1787232973.7629573,
-    "ast_hash": "47728ba59711a5d7ab22e89b3a053611",
+    "mtime": 1787144122.2582154,
+    "ast_hash": "6b0f537e50e30483b21651c4208bc06a",
     "semantic_hash": ""
   },
   "src/lib/coverage.test.js": {
-    "mtime": 1787233045.7179973,
-    "ast_hash": "f93e94dc3c7fc3750397ec0ed6c6a780",
+    "mtime": 1787169321.4605844,
+    "ast_hash": "3a6d25f7aeeeb4c56a550a42c0d8ab78",
     "semantic_hash": ""
   },
   "src/lib/dates.js": {
@@ -280,18 +280,18 @@
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.standard.json": {
-    "mtime": 1787235054.5030441,
-    "ast_hash": "7370fefd82bc11c72530583673cc4d5a",
+    "mtime": 1787199450.8172264,
+    "ast_hash": "d49dda9aa798e1755890e5be3a56af65",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.understaffed.json": {
-    "mtime": 1787235048.7397027,
-    "ast_hash": "a30f3392cd5d28e61c0f4b2242b57a5b",
+    "mtime": 1787199445.4472759,
+    "ast_hash": "07c163db839a7c0b2f9b30dddc037639",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.vacationHeavy.json": {
-    "mtime": 1787235053.5711513,
-    "ast_hash": "b9c5c5c794b980604b686e9109dcbd99",
+    "mtime": 1787199450.1226816,
+    "ast_hash": "047c316956da43c4786d94eaa45d28b4",
     "semantic_hash": ""
   },
   "src/lib/baselineSuite.js": {
@@ -395,8 +395,8 @@
     "semantic_hash": ""
   },
   "src/lib/seniorityTargets.test.js": {
-    "mtime": 1787233848.4206364,
-    "ast_hash": "651e36dc34ab254ba7e53a5cde4bfb07",
+    "mtime": 1787200022.8700001,
+    "ast_hash": "f1248a973e450d16d262cf758e38afad",
     "semantic_hash": ""
   },
   "src/lib/availabilityFeatures.test.js": {
@@ -477,41 +477,6 @@
   "src/lib/uiPrefsHook.test.js": {
     "mtime": 1787197780.327417,
     "ast_hash": "99dec781d2294b7619a4165186ceecce",
-    "semantic_hash": ""
-  },
-  "src/lib/generationReport.test.js": {
-    "mtime": 1787233145.8314574,
-    "ast_hash": "9b6be1e459ad2f408429efff3929c9f9",
-    "semantic_hash": ""
-  },
-  "src/lib/generatorHardFilters.test.js": {
-    "mtime": 1787235522.0135107,
-    "ast_hash": "e3b19e3981db08fd2f65af7497a866c1",
-    "semantic_hash": ""
-  },
-  "src/lib/nightAreaDiversity.test.js": {
-    "mtime": 1787235178.1629682,
-    "ast_hash": "2019af7db0f1bde9539b9d1d35ec81d0",
-    "semantic_hash": ""
-  },
-  "src/lib/optimizerSweep.js": {
-    "mtime": 1787236602.5855877,
-    "ast_hash": "dbecde35d1347391ecdd6762473ddcaa",
-    "semantic_hash": ""
-  },
-  "src/lib/optimizerSweep.test.js": {
-    "mtime": 1787236627.0515673,
-    "ast_hash": "6808b3c53f65f3a7410fb84dc6c425ae",
-    "semantic_hash": ""
-  },
-  "src/lib/rollingWindowHours.test.js": {
-    "mtime": 1787235159.4324696,
-    "ast_hash": "c1130322a83a0fb02d5442813d621371",
-    "semantic_hash": ""
-  },
-  "src/lib/supplyDemand.test.js": {
-    "mtime": 1787235292.2031956,
-    "ast_hash": "36111036179655748f63970b3043d871",
     "semantic_hash": ""
   }
 }

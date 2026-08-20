@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeCoverageEntry, getCoverageFor,
-  DEFAULT_COVERAGE, DEFAULT_COVERAGE_MINMAX, DOW_COVERAGE_MAX_OVERRIDE,
+  DEFAULT_COVERAGE, DEFAULT_COVERAGE_MINMAX, DOW_COVERAGE_MAX_OVERRIDE, DOW_COVERAGE_OVERRIDE,
   CONF_SUPPRESSED_NORMAL_IDS, CONF_AUTO_SWAP_12H_IDS,
   TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS,
   normalizeTwelveHourWindow, implicitConferenceWindows,
@@ -83,8 +83,12 @@ describe('getCoverageFor: DOW_COVERAGE_MAX_OVERRIDE (POD Mon/Tue bump)', () => {
     expect(getCoverageFor('POD-D', {}, 2)).toEqual({ min: 2, max: 3 });
   });
 
-  it('does not raise POD-D max on Wednesday (dow=3)', () => {
-    expect(getCoverageFor('POD-D', {}, 3)).toEqual({ min: 2, max: 2 });
+  it('does not raise POD-D max via DOW_COVERAGE_MAX_OVERRIDE on Wednesday (dow=3 has no entry there)', () => {
+    // Wednesday DOES change POD-D's coverage, but via the separate DOW_COVERAGE_OVERRIDE
+    // (Grand Rounds/APP-coverage rule) -- see the "DOW_COVERAGE_OVERRIDE" describe block below,
+    // not this raise-only mechanism. {min:2,max:2} would be the answer with that rule absent.
+    expect(DOW_COVERAGE_MAX_OVERRIDE['POD-D'][3]).toBeUndefined();
+    expect(getCoverageFor('POD-D', {}, 3)).toEqual({ min: 1, max: 2 });
   });
 
   it('never lowers a chief-customized max already above the override', () => {
@@ -97,6 +101,69 @@ describe('getCoverageFor: DOW_COVERAGE_MAX_OVERRIDE (POD Mon/Tue bump)', () => {
 
   it('min is never touched by dow', () => {
     expect(getCoverageFor('POD-D', {}, 1).min).toBe(DEFAULT_COVERAGE['POD-D'].min);
+  });
+});
+
+describe('getCoverageFor: DOW_COVERAGE_OVERRIDE (POD-D/FLEX-D Wednesday GR+APP drop)', () => {
+  it('drops POD-D to min:1/max:2 on Wednesday (dow=3)', () => {
+    expect(getCoverageFor('POD-D', {}, 3)).toEqual({ min: 1, max: 2 });
+  });
+
+  it('drops FLEX-D to min:1/max:2 on Wednesday (dow=3)', () => {
+    expect(getCoverageFor('FLEX-D', {}, 3)).toEqual({ min: 1, max: 2 });
+  });
+
+  it('does not affect FLEX-D on any other day of the week (FLEX-D has no other dow override)', () => {
+    for (const dow of [0, 1, 2, 4, 5, 6]) {
+      expect(getCoverageFor('FLEX-D', {}, dow)).toEqual(DEFAULT_COVERAGE['FLEX-D']);
+    }
+  });
+
+  it('does not affect POD-D on Sun/Thu/Fri/Sat -- Mon/Tue keep their own separate raise (DOW_COVERAGE_MAX_OVERRIDE), untouched by this rule', () => {
+    for (const dow of [0, 4, 5, 6]) {
+      expect(getCoverageFor('POD-D', {}, dow)).toEqual(DEFAULT_COVERAGE['POD-D']);
+    }
+    expect(getCoverageFor('POD-D', {}, 1)).toEqual({ min: 2, max: 3 });
+    expect(getCoverageFor('POD-D', {}, 2)).toEqual({ min: 2, max: 3 });
+  });
+
+  it('does not affect other shifts on Wednesday, including same-area eve/night shifts', () => {
+    expect(getCoverageFor('POD-E', {}, 3)).toEqual(DEFAULT_COVERAGE['POD-E']);
+    expect(getCoverageFor('POD-N', {}, 3)).toEqual(DEFAULT_COVERAGE['POD-N']);
+    expect(getCoverageFor('FLEX-E', {}, 3)).toEqual(DEFAULT_COVERAGE['FLEX-E']);
+    expect(getCoverageFor('FLEX-N', {}, 3)).toEqual(DEFAULT_COVERAGE['FLEX-N']);
+    expect(getCoverageFor('MT-D', {}, 3)).toEqual(DEFAULT_COVERAGE['MT-D']);
+  });
+
+  it('is a direct replacement, not a clamp -- overrides even a chief-customized higher value', () => {
+    // Unlike DOW_COVERAGE_MAX_OVERRIDE, this one does NOT defer to a chief's bigger Rules-tab
+    // number: Wednesday is a structurally different (APP-covered) day, not a bigger version of
+    // a normal day.
+    expect(getCoverageFor('POD-D', { 'POD-D': { min: 3, max: 5 } }, 3)).toEqual({ min: 1, max: 2 });
+    expect(getCoverageFor('FLEX-D', { 'FLEX-D': { min: 2, max: 6 } }, 3)).toEqual({ min: 1, max: 2 });
+  });
+
+  it('also overrides a chief-customized value that is already below the Wednesday numbers', () => {
+    expect(getCoverageFor('POD-D', { 'POD-D': { min: 0, max: 1 } }, 3)).toEqual({ min: 1, max: 2 });
+  });
+
+  it('does not interact with DOW_COVERAGE_MAX_OVERRIDE -- POD-D Mon/Tue bump is untouched', () => {
+    expect(getCoverageFor('POD-D', {}, 1)).toEqual({ min: 2, max: 3 });
+    expect(getCoverageFor('POD-D', {}, 2)).toEqual({ min: 2, max: 3 });
+    expect(DOW_COVERAGE_OVERRIDE['POD-D'][1]).toBeUndefined();
+    expect(DOW_COVERAGE_OVERRIDE['POD-D'][2]).toBeUndefined();
+  });
+
+  it('applies through the 12h-state resolution chain for a normal (non-window) Wednesday', () => {
+    const state = twelveHourStateFor('2026-08-19', {}); // a Wednesday, no windows active
+    expect(getCoverageFor('POD-D', {}, 3, state)).toEqual({ min: 1, max: 2 });
+    expect(getCoverageFor('FLEX-D', {}, 3, state)).toEqual({ min: 1, max: 2 });
+  });
+
+  it('is bypassed (as expected) when the area is under a conference replace window -- suppressed to {0,0} first', () => {
+    const ayConf = { twelveHourWindows: [{ start: '2026-08-19', end: '2026-08-19', areas: ['POD'] }] };
+    const state = twelveHourStateFor('2026-08-19', ayConf); // Wednesday, POD under a replace window
+    expect(getCoverageFor('POD-D', {}, 3, state)).toEqual({ min: 0, max: 0 });
   });
 });
 

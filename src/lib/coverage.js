@@ -13,8 +13,9 @@ import { SHIFTS, SHIFT_MAP } from './shifts.js';
 // chief-directed "best-effort" shift, depends on the right resident being available and willing).
 // Chief edits are stored as a
 // sparse override object in localStorage (res_coverage) and merged over these defaults — same
-// idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (one narrow exception:
-// POD's Mon/Tue max bump, DOW_COVERAGE_MAX_OVERRIDE below); PED-S is the one shift whose very
+// idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (two narrow exceptions:
+// POD's Mon/Tue max bump, DOW_COVERAGE_MAX_OVERRIDE below, and POD-D/FLEX-D's Wednesday
+// min+max drop, DOW_COVERAGE_OVERRIDE below); PED-S is the one shift whose very
 // EXISTENCE varies by day of week, handled separately via SHIFT_DOW (see Chunk 3/PED-S).
 export const DEFAULT_COVERAGE_MINMAX = {
   // Baseline min 2/max 2 every day; POD is chief-directed "no priority for a 3rd resident" outside
@@ -54,6 +55,30 @@ export const DEFAULT_COVERAGE = Object.fromEntries(
 // Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param; the
 // Rules-tab coverage editor itself stays min/max-only (see its one-line caption near the POD row).
 export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1: 3, 2: 3 }, 'POD-N': { 1: 3, 2: 3 } };
+
+// Chief's rule: Wednesday is Grand Rounds day — every EM Home/BAMC PGY carries a Wednesday-day
+// dayTypeRestriction that keeps them off POD-D/FLEX-D entirely (they're at GR), so those shifts
+// run on APPs instead. `seniorCompositionExempt` already waives the PGY-3/PGY-2-senior
+// requirement for exactly this reason (see CLAUDE.md's "WEDNESDAY DAY SHIFTS ARE EXEMPT" note);
+// this is the missing companion — the coverage MINIMUM (and, per the chief, the maximum) also
+// needs to shrink on Wednesdays, or the generator/validator keep demanding a headcount (2 for
+// POD-D, 2-3 for FLEX-D) that a floor staffed by APPs, not residents, doesn't need and often
+// can't hit — a recurring below-minimum warning cluster on Wednesdays for these two shifts.
+// Keyed by shiftId -> {dow: {min,max}}, dow 3 = Wednesday.
+//
+// Unlike DOW_COVERAGE_MAX_OVERRIDE (raise-only, never claws back a chief-customized higher max),
+// this is a direct, unconditional REPLACEMENT of both min and max, applied in
+// applyTraumaClampAndDow after any chief `coverage` override/default has already been resolved.
+// Deliberate choice: the Rules-tab `coverage` state is a single dow-independent number the chief
+// sets for "a normal day" — it was never asked to describe a Grand Rounds Wednesday, so it isn't
+// a signal to preserve a bigger Wednesday number the way DOW_COVERAGE_MAX_OVERRIDE preserves a
+// chief-customized Mon/Tue POD bump. Applying this AFTER the chief override also matches how
+// DOW_COVERAGE_MAX_OVERRIDE and the TRAUMA_SOLO_IDS clamp both already operate on the resolved
+// base rather than gating on whether the base came from a default or an override.
+export const DOW_COVERAGE_OVERRIDE = {
+  'POD-D':  { 3: { min: 1, max: 2 } },
+  'FLEX-D': { 3: { min: 1, max: 2 } },
+};
 
 // Trauma bays are single-resident by nature (validateAll's own double-booking error) — clamped
 // here, the one place every consumer (generator, validateAll, computeCoverageByDate) reads
@@ -224,7 +249,9 @@ export function normalizeCoverageEntry(v) {
 // dow is optional (0-6, Sunday-first) — when provided and DOW_COVERAGE_MAX_OVERRIDE has an entry
 // for this shiftId+dow, the max is raised to that override (never lowered below the base max, so
 // a chief who's already customized a higher max via the Rules tab editor is never clipped back
-// down by this narrow exception). min is never touched by dow.
+// down by this narrow exception). Separately, when DOW_COVERAGE_OVERRIDE has an entry for this
+// shiftId+dow (today: POD-D/FLEX-D on Wednesday, dow 3), BOTH min and max are replaced outright —
+// see DOW_COVERAGE_OVERRIDE's own comment for why that one is unconditional rather than a clamp.
 //
 // `state` is a twelveHourStateFor(dateStr, ayConf) result, or undefined. undefined means "caller
 // has no date context" — plain base lookup, and a 12h id with no date context resolves to its own
@@ -236,8 +263,14 @@ function applyTraumaClampAndDow(shiftId, base, dow) {
   let result = base;
   if (TRAUMA_SOLO_IDS.includes(shiftId)) result = { min: Math.min(result.min, 1), max: Math.min(result.max, 1) };
   if (dow != null) {
-    const override = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
-    if (override != null && override > result.max) result = { min: result.min, max: override };
+    const raiseOverride = DOW_COVERAGE_MAX_OVERRIDE[shiftId]?.[dow];
+    if (raiseOverride != null && raiseOverride > result.max) result = { min: result.min, max: raiseOverride };
+    // Direct replacement, not a clamp — see DOW_COVERAGE_OVERRIDE's own comment for why. Applied
+    // after the raise-only override above; the two never target the same shiftId+dow today
+    // (POD-D's raise entries are Mon/Tue, this override's are Wednesday), but this ordering means
+    // the Wednesday GR/APP rule would win if that ever changed.
+    const directOverride = DOW_COVERAGE_OVERRIDE[shiftId]?.[dow];
+    if (directOverride != null) result = { min: directOverride.min, max: directOverride.max };
   }
   return result;
 }

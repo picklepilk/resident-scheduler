@@ -30,8 +30,8 @@ const ORDINARY_WED = '2026-07-08'; // 1st Wednesday — neither FLEX's nor POD's
 const FLEX_WW = '2026-07-15';      // FLEX's (PGY-2's) own Wellness Wednesday (2nd)
 const POD_WW = '2026-07-22';       // POD's (PGY-3's) own Wellness Wednesday (3rd)
 
-function compositionIssues(allResidents, schedule, appSettings) {
-  return validateAll(allResidents, schedule, block, {}, appSettings).filter(i => i.message.includes('requires an EM PGY-'));
+function compositionIssues(allResidents, schedule, appSettings, ayConf) {
+  return validateAll(allResidents, schedule, block, {}, appSettings, {}, {}, [], ayConf).filter(i => i.message.includes('requires an EM PGY-'));
 }
 
 describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
@@ -129,6 +129,153 @@ describe('1.8 generator/validator agreement — no wrong-PGY FLEX/POD staffing',
       expect(compIssues).toEqual([]);
     });
   }
+});
+
+// Conference-aware seniority fallback (chief-reported real case: AY26/27 Block 4's ACEP window
+// covered 10/5, 10/6, 10/8 — the entire PGY-3 class away at conference — and POD's hard PGY-3
+// requirement had no fallback for it, only Wellness Wednesday, so 10/7 escaped purely by
+// coincidentally being POD's own 3rd Wellness Wednesday and the other three raised unfixable hard
+// errors). isConferenceAwayFor (ResidentScheduler.jsx, near getConferencesInBlock/conferenceDefs)
+// derives the PGY-class-away mapping from conferenceDefs' own `who` field (`'PGY-3 attend'` for
+// ACEP, `'PGY-2 attend'` for AAEM) rather than hardcoding ACEP, so this generalizes to FLEX/AAEM
+// too — covered below alongside POD/ACEP.
+describe('Conference-aware seniority fallback (POD/FLEX primary PGY away at a conference)', () => {
+  // Mon-Wed inside the fixture block, clear of both PGY Wellness Wednesdays (FLEX_WW 07-15, POD_WW
+  // 07-22) so these tests isolate the conference path from the pre-existing WW path.
+  const ACEP_START = '2026-07-13';
+  const ACEP_END = '2026-07-14';
+  const ayConfAcep = { acepStart: ACEP_START, acepEnd: ACEP_END };
+
+  it('POD staffed by a PGY-2 alone on an ACEP date raises no issue', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [ACEP_START]: 'POD-E' } };
+    expect(compositionIssues([pgy2], schedule, {}, ayConfAcep)).toEqual([]);
+  });
+
+  it('the identical PGY-2-only POD group on the SAME date with no ACEP configured still errors', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [ACEP_START]: 'POD-E' } };
+    const issues = compositionIssues([pgy2], schedule, {}, {});
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ level: 'error', dateStr: ACEP_START, shiftId: 'POD-E' });
+    expect(issues[0].message).toContain('PGY-3');
+  });
+
+  it('a PGY-2-only POD group on a date just outside the ACEP window still errors', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const dayAfter = '2026-07-15'; // one day past ACEP_END — also happens to be FLEX_WW, but this is a POD shift
+    const schedule = { p2: { [dayAfter]: 'POD-E' } };
+    const issues = compositionIssues([pgy2], schedule, {}, ayConfAcep);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('PGY-3');
+  });
+
+  it('POD staffed by the primary PGY-3 on an ACEP date is unaffected (still satisfies directly)', () => {
+    const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+    const schedule = { p3: { [ACEP_START]: 'POD-E' } };
+    expect(compositionIssues([pgy3], schedule, {}, ayConfAcep)).toEqual([]);
+  });
+
+  it('Wellness Wednesday path is unchanged when ayConf also carries an unrelated ACEP window', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [POD_WW]: 'POD-E' } }; // POD's own WW, well outside the ACEP window above
+    expect(compositionIssues([pgy2], schedule, {}, ayConfAcep)).toEqual([]);
+  });
+
+  it('ACEP does NOT waive the requirement for FLEX (only names PGY-3 attend, not PGY-2)', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 }); // FLEX's own primary, unaffected either way
+    const pgy1 = res({ id: 'p1', category: 'EM_HOME', pgy: 1 });
+    const schedule = { p1: { [ACEP_START]: 'FLEX-E' } }; // no PGY-2 or PGY-3 assigned at all
+    const issues = compositionIssues([pgy1], schedule, {}, ayConfAcep);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('PGY-2');
+  });
+
+  // AAEM (`who: 'PGY-2 attend'`) is FLEX's mirror of ACEP.
+  it('FLEX staffed by a PGY-3 alone on an AAEM date raises no issue', () => {
+    const aaemStart = '2026-07-13', aaemEnd = '2026-07-14';
+    const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+    const schedule = { p3: { [aaemStart]: 'FLEX-E' } };
+    expect(compositionIssues([pgy3], schedule, {}, { aaemStart, aaemEnd })).toEqual([]);
+  });
+
+  it('the identical PGY-3-only FLEX group with no AAEM configured still errors', () => {
+    const aaemStart = '2026-07-13';
+    const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+    const schedule = { p3: { [aaemStart]: 'FLEX-E' } };
+    const issues = compositionIssues([pgy3], schedule, {}, {});
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('PGY-2');
+  });
+
+  it('with wellnessWednesdaysEnabled OFF, the ACEP conference substitution is unaffected (independent toggles)', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [ACEP_START]: 'POD-E' } };
+    expect(compositionIssues([pgy2], schedule, { wellnessWednesdaysEnabled: false }, ayConfAcep)).toEqual([]);
+  });
+
+  // End-to-end: the generator must be able to CONSTRUCT the PGY-2-staffed POD group during ACEP,
+  // not just have validateAll accept one built by hand. ACEP dates carry no eligibility change of
+  // their own (nothing strips PGY-3s' eligibility for POD on those dates — the app has no separate
+  // "away at conference" concept), so the real-world unavailability is modeled the same way the
+  // chief experiences it: every PGY-3 is simply not there. vacationDates is the fixture's existing
+  // hard-unavailability mechanism (see syntheticRoster.js), so marking every PGY-3 resident's
+  // vacationDates for the ACEP date reproduces "the whole class is away" without inventing a new
+  // fixture mechanism.
+  describe('generator can build it, not just validateAll accept it', () => {
+    // Zero out every non-POD shift's coverage and scope the 12h window to POD only (explicit
+    // ayConf.twelveHourWindows bypasses coverage.js's implicitConferenceWindows, which would
+    // otherwise ALSO flip MT/FLEX to 12h that day — see CLAUDE.md "12-HOUR SHIFT WINDOWS"). With
+    // ACEP taking the whole PGY-3 class away, MT/FLEX/PED/TRAUMA competing for the same handful of
+    // synthetic PGY-2s on the same day starved POD's own fallback pool first (confirmed
+    // empirically — an earlier version of this test using the implicit windows failed with FLEX-N12
+    // still reporting pgy2Required, i.e. a fixture-roster-size contention artifact, not a defect in
+    // the fallback logic itself). Isolating POD is what actually isolates the thing under test.
+    const NON_POD_ZERO_COVERAGE = Object.fromEntries([
+      'FLEX-D', 'FLEX-E', 'FLEX-N', 'FLEX-D12', 'FLEX-N12',
+      'MT-D', 'MT-E', 'MT-N', 'MT-D12', 'MT-N12',
+      'PED-D', 'PED-E', 'PED-N', 'PED-S', 'PED-D12', 'PED-N12', 'PED-N-FM',
+      'TRAUMA-D', 'TRAUMA-N',
+    ].map(id => [id, { min: 0, max: 0 }]));
+
+    function fixtureWithAllPgy3sAway(ayConf) {
+      const fixture = makeFixture('standard');
+      for (const r of fixture.allResidents) {
+        if (r.category === 'EM_HOME' && r.pgy === 3) r.vacationDates = [...r.vacationDates, ACEP_START];
+      }
+      fixture.ayConf = ayConf;
+      fixture.coverage = NON_POD_ZERO_COVERAGE;
+      return fixture;
+    }
+    const acepPodOnlyWindow = {
+      ...ayConfAcep,
+      twelveHourWindows: [{ id: 'test_acep_pod', label: 'ACEP (POD)', start: ACEP_START, end: ACEP_END, areas: ['POD'], mode: 'replace' }],
+    };
+
+    it('with ACEP configured, generateSchedule fills POD with a PGY-2 that date and validateAll raises no PGY-3 composition error', () => {
+      const fixture = fixtureWithAllPgy3sAway(acepPodOnlyWindow);
+      const { schedule, report } = generateSchedule({ ...fixture, rng: mulberry32(7) });
+      const podPgy3Unfilled = (report.unfilled || []).filter(u => u.dateStr === ACEP_START && u.reason === 'pgy3Required');
+      expect(podPgy3Unfilled).toEqual([]);
+      const podStaffedThatDay = fixture.allResidents.filter(r => (schedule[r.id]?.[ACEP_START] || '').startsWith('POD-'));
+      expect(podStaffedThatDay.length).toBeGreaterThan(0);
+      expect(podStaffedThatDay.some(r => r.pgy === 2)).toBe(true);
+      expect(podStaffedThatDay.every(r => r.pgy !== 3)).toBe(true); // none WERE available — confirms the fixture setup
+      const issues = validateAll(
+        fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+        fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf,
+      );
+      const compIssues = issues.filter(i => i.dateStr === ACEP_START && i.message.includes('requires an EM PGY-3'));
+      expect(compIssues).toEqual([]);
+    });
+
+    it('WITHOUT ACEP configured, the same all-PGY-3s-away scenario leaves POD unfilled with reason pgy3Required (regression baseline)', () => {
+      const fixture = fixtureWithAllPgy3sAway({ twelveHourWindows: [] }); // no conference data, no implicit 12h swap either
+      const { report } = generateSchedule({ ...fixture, rng: mulberry32(7) });
+      const podPgy3Unfilled = (report.unfilled || []).filter(u => u.dateStr === ACEP_START && u.reason === 'pgy3Required');
+      expect(podPgy3Unfilled.length).toBeGreaterThan(0);
+    });
+  });
 });
 
 describe('1.9 Under-target enforcement in validateAll', () => {
@@ -258,14 +405,14 @@ describe('summarizeGenerationReport — pgy2Required has a recommendation string
     const summary = summarizeGenerationReport(report);
     const flexRow = summary.find(s => s.shiftId === 'FLEX-E');
     expect(flexRow).toBeTruthy();
-    expect(flexRow.recommendations.some(r => r.includes('PGY-2'))).toBe(true);
+    expect(flexRow.recommendations.some(r => r.text.includes('PGY-2'))).toBe(true);
   });
 
   it('the sibling pgy3Required (POD) still produces its own PGY-3 recommendation, unaffected', () => {
     const report = { unfilled: [{ dateStr: '2026-07-09', shiftId: 'POD-E', slotIndex: 0, reason: 'pgy3Required' }] };
     const summary = summarizeGenerationReport(report);
     const podRow = summary.find(s => s.shiftId === 'POD-E');
-    expect(podRow.recommendations.some(r => r.includes('PGY-3'))).toBe(true);
+    expect(podRow.recommendations.some(r => r.text.includes('PGY-3'))).toBe(true);
   });
 });
 
