@@ -31,6 +31,10 @@ function structuralErrorCount(issues) {
   return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
 }
 
+function underTargetErrorCount(issues) {
+  return issues.filter(i => i.level === 'error' && i.message.startsWith('Under target')).length;
+}
+
 function stripVolatile(report) {
   const { generatedAt, ...rest } = report;
   return rest;
@@ -230,7 +234,7 @@ describe('generator harness — performance', () => {
 describe('generator harness — repair pass safety', () => {
   for (const variant of VARIANTS) {
     for (const seed of [1, 2, 42]) {
-      it(`repair never introduces a validateAll error and never regresses the quality vector (${variant} seed=${seed})`, () => {
+      it(`repair never introduces a validateAll error, never increases under-target errors, and never regresses the quality vector (${variant} seed=${seed})`, () => {
         const fixture = makeFixture(variant);
         const dates = getBlockDates(fixture.block.startDate, fixture.block.endDate);
         const scoreOf = (res) => {
@@ -245,12 +249,27 @@ describe('generator harness — repair pass safety', () => {
           });
           return {
             errors: structuralErrorCount(issues),
+            underTargetErrors: underTargetErrorCount(issues),
             vector: computeQualityVector(metrics, normalizeRulePriority(fixture.appSettings?.rulePriority)),
           };
         };
         const before = scoreOf(generateSchedule({ ...fixture, rng: mulberry32(seed), repair: false }));
         const after = scoreOf(generateSchedule({ ...fixture, rng: mulberry32(seed), repair: true }));
         expect(after.errors).toBe(0);
+        // Under-target ("Under target: n/target", EM Home/BAMC hard export-blocking floor, Phase
+        // 1C) is intentionally NOT folded into `errors`/asserted at 0 above: these small synthetic
+        // fixtures are not guaranteed enough coverage headroom for every resident to reach their
+        // own target from a single non-optimal seed (module header comment, confirmed by
+        // inspection), and repair's own moves are coverage/seniority-min-driven (Phase
+        // 1: fill unfilled min-slots via reassignment/swap; Phase 2: rest-violator swap; Phase 3:
+        // senior-gap swap) — none of them targets under-target counts directly, so a baseline
+        // under-target count on these fixtures is a structural fixture property, not something
+        // repair can be expected to zero out. What repair MUST NOT do is make it worse: a same-day
+        // reassignment or cross-day swap that frees a "surplus" cell could, in principle, move a
+        // shift off a resident who was already at/under their own target — this assertion is the
+        // safety net for exactly that, on the same hard-export-blocking feature the exclusion above
+        // would otherwise leave uncovered.
+        expect(after.underTargetErrors).toBeLessThanOrEqual(before.underTargetErrors);
         expect(compareVectors(after.vector, before.vector)).toBeLessThanOrEqual(0);
       });
     }

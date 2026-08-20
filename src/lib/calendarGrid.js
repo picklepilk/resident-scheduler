@@ -3,10 +3,12 @@
 // this duplicates the same padded-week algorithm as that file's own `buildWeekRows` (used by the
 // block-date-range Calendar view) rather than importing it — verified identical output for a
 // contiguous date list, the only shape both callers ever pass.
-
-function toDateStr(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+//
+// toDateStr is dates.js's, not a hand-rolled local-field duplicate — monthDates below only ever
+// feeds it a local-midnight Date (same `new Date(y, m, d)` pattern dates.js's own getBlockDates
+// uses), so both formulations already agreed in practice; importing removes the second copy to
+// keep drifting in sync.
+import { toDateStr } from './dates.js';
 
 // Pads and chunks a flat list of ISO date strings into Sunday-start week rows, padding the first
 // and last week with `null` placeholders so every row has exactly 7 cells.

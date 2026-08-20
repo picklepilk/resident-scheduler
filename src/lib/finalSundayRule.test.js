@@ -7,7 +7,7 @@
 // ResidentScheduler.jsx under jsdom, same pattern as grRestRules.test.js/generator.harness.test.js
 // (verified import-safe there already).
 import { describe, it, expect } from 'vitest';
-import { getEligibleShifts, validateAll, nextBlockRotationFor } from '../ResidentScheduler.jsx';
+import { getEligibleShifts, validateAll, nextBlockRotationFor, finalSundayOf } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 // syntheticRoster's fixed block window: 2026-07-06 (Mon) .. 2026-08-02 (Sun) — the block's own
@@ -43,6 +43,29 @@ function nextSnapshot(blockType) {
     },
   };
 }
+
+describe('finalSundayOf', () => {
+  it('returns the block\'s own end date when the block ends on a Sunday', () => {
+    expect(finalSundayOf({ startDate: '2026-07-06', endDate: '2026-08-02' })).toBe('2026-08-02');
+  });
+
+  it('returns null when the block ends on a non-Sunday weekday, even though an earlier Sunday exists inside the block', () => {
+    // 2026-08-05 is a Wednesday; the previous Sunday (2026-08-02) sits mid-block with several
+    // more in-block days after it, so a night shift there does not span the block boundary at
+    // all — the prior bug here returned that mid-block Sunday as if it were "the final Sunday".
+    expect(finalSundayOf({ startDate: '2026-07-06', endDate: '2026-08-05' })).toBeNull();
+  });
+
+  it('returns null when the block has no startDate/endDate', () => {
+    expect(finalSundayOf({})).toBeNull();
+    expect(finalSundayOf({ startDate: '2026-07-06' })).toBeNull();
+    expect(finalSundayOf({ endDate: '2026-08-02' })).toBeNull();
+  });
+
+  it('returns the end date even for a block shorter than a week, as long as it ends on Sunday', () => {
+    expect(finalSundayOf({ startDate: '2026-07-27', endDate: '2026-08-02' })).toBe('2026-08-02');
+  });
+});
 
 describe('nextBlockRotationFor', () => {
   it('known:false when no abutting next-block snapshot exists', () => {

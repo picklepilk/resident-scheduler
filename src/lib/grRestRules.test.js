@@ -5,7 +5,7 @@
 // "1.7 Night runs: one run of 5-6 strongly preferred"). Imports the real ResidentScheduler.jsx
 // under jsdom, same pattern as generator.harness.test.js — verified import-safe there already.
 import { describe, it, expect } from 'vitest';
-import { isStreakWorkDay, sixDayRunRestViolation, validateAll } from '../ResidentScheduler.jsx';
+import { isStreakWorkDay, sixDayRunRestViolation, sixDayRunRestViolationAhead, validateAll } from '../ResidentScheduler.jsx';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -96,6 +96,82 @@ describe('sixDayRunRestViolation (1.6) — 24h rest after a maxed 6-day work run
 
   it('a run made entirely of obligation days (no shifts at all) never fires', () => {
     expect(sixDayRunRestViolation({}, papaBare, '2026-07-16', 'POD-D')).toBeNull();
+  });
+});
+
+describe('sixDayRunRestViolationAhead — forward mirror: this placement completing a maxed run before an ALREADY-SCHEDULED later shift', () => {
+  // Regression guard for the "forward 6-day-run gap": sixDayRunRestViolation only ever looked
+  // BACKWARD from the shift being placed. A placement that completes a maxed 6-day run right
+  // before a shift the chief (or an earlier generator pass) already put on the schedule a day or
+  // two later went completely unchecked at placement time in both the picker and the generator's
+  // candidate filter — only validateAll's post-hoc whole-schedule walk ever caught it, after the
+  // fact. sixDayRunRestViolationAhead closes that gap.
+
+  it('fires: this placement completes a 6-day run immediately before an already-scheduled next shift with <24h rest', () => {
+    // rs already has POD-D Mon-Fri (07-06..07-10, 5 days) AND an already-scheduled POD-D on
+    // Sunday 07-12 (starts 07:00). Placing POD-D on Saturday 07-11 completes the run to 6 days
+    // (07-06..07-11, ending 16:00) and leaves only 15h before the already-scheduled 07-12 shift.
+    const rs = {
+      '2026-07-06': 'POD-D', '2026-07-07': 'POD-D', '2026-07-08': 'POD-D',
+      '2026-07-09': 'POD-D', '2026-07-10': 'POD-D',
+      '2026-07-12': 'POD-D',
+    };
+    const v = sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D');
+    expect(v).not.toBeNull();
+    expect(v.level).toBe('error');
+    expect(v.message).toContain('POD-D');
+    expect(v.message).toMatch(/15h/);
+  });
+
+  it('does not fire when the already-scheduled next shift still gets >=24h rest', () => {
+    // Same 5-day run, but the already-scheduled next shift is two calendar days later (07-13)
+    // instead of immediately adjacent — plenty of rest even once 07-11 completes the run.
+    const rs = {
+      '2026-07-06': 'POD-D', '2026-07-07': 'POD-D', '2026-07-08': 'POD-D',
+      '2026-07-09': 'POD-D', '2026-07-10': 'POD-D',
+      '2026-07-13': 'POD-D',
+    };
+    expect(sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D')).toBeNull();
+  });
+
+  it('does not fire when this placement leaves the run short of the 6-day max', () => {
+    // Only a 3-day run (07-09..07-11) once this placement lands — nowhere near maxed — even
+    // though the already-scheduled next shift (07-12) is immediately adjacent.
+    const rs = { '2026-07-09': 'POD-D', '2026-07-10': 'POD-D', '2026-07-12': 'POD-D' };
+    expect(sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D')).toBeNull();
+  });
+
+  it('does not fire when nothing is scheduled after dateStr at all', () => {
+    const rs = {
+      '2026-07-06': 'POD-D', '2026-07-07': 'POD-D', '2026-07-08': 'POD-D',
+      '2026-07-09': 'POD-D', '2026-07-10': 'POD-D',
+    };
+    expect(sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D')).toBeNull();
+  });
+
+  it('does not attribute a violation that already exists independent of this placement', () => {
+    // The 6-day run and the too-close next shift are BOTH already fully present in rs — the
+    // violation exists with or without whatever happens at dateStr, so re-evaluating the
+    // (already-scheduled) same shift at the run's own last day must not double-report it here;
+    // that pre-existing violation is validateAll's/the earlier action's to catch, not this one's.
+    const rs = {
+      '2026-07-06': 'POD-D', '2026-07-07': 'POD-D', '2026-07-08': 'POD-D',
+      '2026-07-09': 'POD-D', '2026-07-10': 'POD-D', '2026-07-11': 'POD-D',
+      '2026-07-12': 'POD-D',
+    };
+    expect(sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D')).toBeNull();
+  });
+
+  it('respects the max bound — never searches for a "next" shift past the block\'s own end date', () => {
+    const rs = {
+      '2026-07-06': 'POD-D', '2026-07-07': 'POD-D', '2026-07-08': 'POD-D',
+      '2026-07-09': 'POD-D', '2026-07-10': 'POD-D',
+      '2026-07-12': 'POD-D',
+    };
+    // Bound the walk to end exactly on 07-11 (the placement date itself) — 07-12 is out of
+    // bounds, so there is nothing to search forward into.
+    const bounds = { min: '2026-07-06', max: '2026-07-11' };
+    expect(sixDayRunRestViolationAhead(rs, papaBare, '2026-07-11', 'POD-D', null, bounds)).toBeNull();
   });
 });
 

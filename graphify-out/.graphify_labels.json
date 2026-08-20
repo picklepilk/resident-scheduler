@@ -67,5 +67,11 @@
   "65": "vitest.config.js",
   "66": "migrate_block_pending_account_access.sql",
   "67": "generateSchedule",
-  "71": "ShiftMatrixTab"
+  "68": "dbReady gate",
+  "69": "getEffectiveEligibility",
+  "70": "uuid",
+  "71": "ShiftMatrixTab",
+  "72": "getBlockProgress",
+  "73": "windowOverlapsShiftHours",
+  "74": "inferGroupPgy"
 }

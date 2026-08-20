@@ -85,6 +85,20 @@ describe('shiftBlockedByRestrictions — interval math', () => {
     const r = bareResident([{ id: 'x1', label: 'Anything', blockedTypes: ['day', 'eve', 'night', 'swing'] }]);
     expect(shiftBlockedByRestrictions(r, '2026-07-06', 'NOT-A-REAL-SHIFT')).toBe(false);
   });
+
+  it('daysOfWeek + blockedWindow gates against the spill-over day too, not just the shift\'s start day', () => {
+    // 2026-07-10 is a Friday, 2026-07-11 is a Saturday, 2026-07-09 is a Thursday.
+    // A Saturday-only 00:00-08:00 blocked window must block a Friday 22:00-07:00 (FLEX-N) shift —
+    // the shift's start day (Friday) fails the daysOfWeek:[6] gate, but the shift's 00:00-07:00
+    // portion physically lands on Saturday, which the window is active on. Previously the
+    // daysOfWeek gate was checked only against the shift's start date, so this restriction was
+    // silently never enforced against an overnight shift crossing into its active day.
+    const r = bareResident([{ id: 'sat1', label: 'Saturday morning class', daysOfWeek: [6], blockedWindow: { startH: 0, endH: 8 } }]);
+    expect(shiftBlockedByRestrictions(r, '2026-07-10', 'FLEX-N')).toBe(true);
+    // A Thursday 22:00-07:00 shift spills into Friday, not Saturday — the same restriction must
+    // NOT block it (neither Thursday nor Friday is in daysOfWeek:[6]).
+    expect(shiftBlockedByRestrictions(r, '2026-07-09', 'FLEX-N')).toBe(false);
+  });
 });
 
 describe('getEligibleShifts — work-restriction strip', () => {

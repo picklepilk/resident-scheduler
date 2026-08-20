@@ -7,11 +7,13 @@
     555
   ],
   "errors": 25,
+  "structuralErrors": 0,
+  "underTargetErrors": 25,
   "quality": [
-    156.8,
+    132.8,
     0,
     0,
-    334.9210279910764
+    355.94770533626127
   ],
   "unfilled": 132.8
 }

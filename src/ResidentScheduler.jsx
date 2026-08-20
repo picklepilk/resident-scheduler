@@ -43,6 +43,11 @@ import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
 // the Journal Club date resolvers live in lib/journalClub.js; CATEGORIES/CAT_MAP now live in
 // lib/parse.js (see that file's own header comment for why) — imported above.
 
+// shiftId -> its position in the SHIFTS catalog — shared by every per-cell "sort assignments in
+// catalog order" spot (ScheduleCalendarView, MonthCalendarView) so a resident list doesn't
+// re-scan the whole SHIFTS array with findIndex (twice per comparison) on every render.
+const SHIFT_ORDER_INDEX = new Map(SHIFTS.map((s, i) => [s.id, i]));
+
 // Display labels for QGENDA_NAME_FORMATS, module-level (not local to one component) because both
 // the QGenda export picker modal and SettingsTab's "QGenda Task Names" card render the same
 // appSettings.qgendaNameFormat <select> — one label map, so the two can't drift apart.
@@ -95,8 +100,9 @@ const EM_HOME_BLOCK_TYPES_BY_PGY = {
 // soft-deprioritized on PED-N in the generator's score() unless they've already done a
 // Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma).
 const BASE_ELIGIBILITY = {
-  // EM Home PGY-1: all areas; TRAUMA-D (chief-directed AY26/27: Trauma Day is now PGY-1-ONLY —
-  // PGY-2/3 lost it, see EM_HOME_2/3 below) plus TRAUMA-N; Trauma further gated by block type.
+  // EM Home PGY-1: all areas; TRAUMA-D only (chief-directed AY26/27: Trauma Day is now
+  // PGY-1-ONLY — PGY-2/3 lost it, see EM_HOME_2/3 below). PGY-1 does NOT have TRAUMA-N (that
+  // stayed PGY-2/3's). Trauma further gated by block type.
   // PED-N included per the Thu-Sun EM Home window above (ped_n_em_window gate confines it).
   EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // EM Home PGY-2/3: all shifts including TRAUMA-N (NOT TRAUMA-D — chief-directed AY26/27: Trauma
@@ -154,6 +160,12 @@ const BASE_ELIGIBILITY = {
 //   narrowed to PEDS_2 only (noDay Wednesday) since PGY-3 works Wednesdays with no restriction;
 //   see LEGACY_DAY_RULE_DEFAULTS for the pre-change shapes)
 //   residentFlagOverrides: [{flag:string, fullBlockDays:number[]}]  — replaces dayTypeRestrictions when resident[flag] is true
+// PED-N (Peds Night) Thu-Sun window gate — shared literal, reused identically across every
+// EM_HOME_1/2/3, EM_BAMC_1, and FM_1 live default below (see each site's own comment for why).
+// LEGACY_DAY_RULE_DEFAULTS keeps its own frozen copies of this shape on purpose — those are
+// point-in-time snapshots and must NOT track future edits to this const.
+const PED_N_EM_WINDOW_GATE = { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
+  allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true };
 const DEFAULT_DAY_RULES = {
   EM_HOME_1: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
@@ -165,7 +177,11 @@ const DEFAULT_DAY_RULES = {
     shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
         blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
-      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null,
+      // TRAUMA-D only — EM_HOME_1 was never eligible for TRAUMA-N (see BASE_ELIGIBILITY.EM_HOME_1
+      // above; PGY-2/3 have TRAUMA-N via their own trauma_n_window gates instead). allowedDays
+      // matches SHIFT_DOW['TRAUMA-D'] (src/lib/shifts.js) exactly, same convention as
+      // trauma_n_window's allowedDays matching SHIFT_DOW['TRAUMA-N'].
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null,
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] },
         allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
@@ -177,8 +193,7 @@ const DEFAULT_DAY_RULES = {
       // chief-directed change) but only Thu-Sun (0,4,5,6) — Mon/Tue/Wed stay FM-3-exclusive.
       // overrideImmune so a matrix override can't leak an EM Home resident onto PED-N outside
       // this window; FM-3's own eligibility/rules are untouched by this EM_HOME-scoped gate.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_HOME_2: {
@@ -220,8 +235,7 @@ const DEFAULT_DAY_RULES = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_HOME_3: {
@@ -236,8 +250,7 @@ const DEFAULT_DAY_RULES = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_BAMC_1: {
@@ -255,8 +268,7 @@ const DEFAULT_DAY_RULES = {
       // PED-N (Peds Night) Thu-Sun window — mirrors EM Home's ped_n_em_window (see EM_HOME_1's
       // comment above). BAMC PGY-1 gained PED-N eligibility (chief-directed AY26/27); the 19:00
       // shift doesn't exist Mon-Wed at all, so this gate is load-bearing, not just belt-and-braces.
-      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+      PED_N_EM_WINDOW_GATE,
     ],
   },
   // Peds residents don't work Wednesdays at all (chief-directed, AY26/27) — replaces the old
@@ -274,8 +286,7 @@ const DEFAULT_DAY_RULES = {
     // doesn't exist Mon-Wed at all. FM-1's own Wed/Thu fullBlockDays above already excludes those
     // two days, so this gate's only practical effect is confining PED-N to Fri-Sun — accepted.
     shiftGates: [
-      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-        allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+      PED_N_EM_WINDOW_GATE,
     ],
   },
   FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3] },
@@ -823,6 +834,14 @@ const NAME_W = 210;
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function eligKey(r) { return `${r.category}_${r.pgy}`; }
 
+// Shared Import History entry-shape factory for the four importers (matrix/roster/vacation/
+// lectures) — id/at/kind were hand-inlined identically at each call site; the rest of the shape
+// (filename/sizeBytes vs rawText, summary) still varies per importer, see src/lib/importLog.js
+// header comment for the full documented shape.
+function makeImportLogEntry(kind, fields) {
+  return { id: uuid(), at: new Date().toISOString(), kind, ...fields };
+}
+
 // Shared start-date handler: auto-fills the end date to the configured block length and
 // (re)derives the academic year from the selected date — used by both Home and Settings.
 function applyStartDate(updateBlock, appSettings, s) {
@@ -843,16 +862,10 @@ function applyStartDate(updateBlock, appSettings, s) {
 
 // Pads and chunks a block's date range into Sunday-start week rows for the calendar sub-view —
 // one continuous grid for the whole block rather than calendar-month pagination, since blocks
-// are a fixed ~28 days and routinely span two calendar months.
-function buildWeekRows(dates) {
-  if (!dates.length) return [];
-  const pad = parseDate(dates[0]).getDay();
-  const padded = [...Array(pad).fill(null), ...dates];
-  while (padded.length % 7 !== 0) padded.push(null);
-  const rows = [];
-  for (let i = 0; i < padded.length; i += 7) rows.push(padded.slice(i, i + 7));
-  return rows;
-}
+// are a fixed ~28 days and routinely span two calendar months. Same algorithm as calendarGrid.js's
+// own `paddedCalendarWeeks` (imported here as `monthPaddedWeeks`) — was a hand-duplicated copy,
+// now just an alias so both call sites share the one implementation.
+const buildWeekRows = monthPaddedWeeks;
 
 function prettyDate(s) {
   if (!s) return '';
@@ -1386,6 +1399,10 @@ const PREFERENCE_GROUPS = {
 // ratchet's meaning on its first use.
 const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency'];
 
+// Phase 2.1 chief-directed Wednesday POD/MC ladder (see wedPodLadder in score()): a category's
+// ladder value, 0 for any category not listed (IM deliberately excluded — see that call site).
+const WED_POD_LADDER_BY_CATEGORY = { ANES: 3, FM: 2, NEURO: 2, PSYCH: 2, POD: 1 };
+
 // Worst-case input multiplier per preference term. Most are 0/1 booleans; traumaNightBalance's
 // count is explicitly clamped to 5 inside score(), areaContinuity can fire for BOTH the previous
 // and next adjacent day (max 2), and wedPodLadder is a 0-3 category ladder value (Phase 2.1, see
@@ -1626,7 +1643,9 @@ function isSchedulable(resident) {
 
 // ─── 6-consecutive-work-day rule (ACGME 1-in-7) ────────────────────────────
 // grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
-// — used by GR-lecture validation, the post-night GR rest-gap check, and isStreakWorkDay below.
+// — used by GR-lecture validation and isStreakWorkDay below (a dedicated post-night GR rest-gap
+// check used to also read this; that check was deliberately removed — see the "no more warning
+// for a night shift running straight into Grand Rounds" release note further down this file).
 // Chief ruling (confirmed — a resident was once scheduled 8 days straight because a shift-less GR
 // Wednesday counted as a day OFF, silently splitting one real 8-day obligation run into two
 // "legal" <=6 runs): a day counts toward the streak if a shift is assigned that date, OR it's the
@@ -1686,8 +1705,12 @@ function runLengthIfWorked(rs, resident, dateStr, prevRs = null, bounds = null) 
 // shift-less GR/JC obligation day. Distinct from the postNightRest soft rule in
 // checkCircadianViolations: this is hard (no Soft Rule Priority override), ACGME-driven, and keyed
 // off the 6-day work streak rather than a night run specifically.
-export function sixDayRunRestViolation(rs, resident, dateStr, sid, prevRs = null, bounds = null) {
-  if (!SHIFT_MAP[sid]) return null;
+// Backward walk (the expensive part of sixDayRunRestViolation below) split out on its own: it
+// depends only on (rs, resident, dateStr, prevRs, bounds), NEVER on the shift id being evaluated —
+// so the generator's hot loop can memoize it per (resident, dateStr) via the optional `anchorFn`
+// param threaded through sixDayRunRestViolation/sixDayRunRestViolationAhead below (defaults to this
+// function, i.e. every caller outside the generator sees no behavior change at all).
+function findSixDayRunAnchor(rs, resident, dateStr, prevRs = null, bounds = null) {
   // Walk backward from the day before dateStr for the most recent date the resident actually
   // worked an assigned shift (current block or the previous block's tail) — skipping over any
   // shift-less obligation days in between, since those alone don't reset this clock.
@@ -1709,10 +1732,64 @@ export function sixDayRunRestViolation(rs, resident, dateStr, sid, prevRs = null
   let bd = addDays(parseDate(lastWorkedDs), -1);
   for (let i = 0; i < 60 && isStreakWorkDay(rs, resident, toDateStr(bd), prevRs, bounds); i++) { runLen++; bd = addDays(bd, -1); }
   if (runLen < MAX_CONSECUTIVE_WORK_DAYS) return null;
+  return { lastWorkedDs, lastWorkedSid, runLen };
+}
+export function sixDayRunRestViolation(rs, resident, dateStr, sid, prevRs = null, bounds = null, anchorFn = findSixDayRunAnchor) {
+  if (!SHIFT_MAP[sid]) return null;
+  const anchor = anchorFn(rs, resident, dateStr, prevRs, bounds);
+  if (!anchor) return null;
+  const { lastWorkedDs, lastWorkedSid, runLen } = anchor;
   const gapH = (shiftStartMs(sid, dateStr) - shiftEndMs(lastWorkedSid, lastWorkedDs)) / 3_600_000;
   if (gapH >= NIGHT_RULES.postNightDayRestH) return null;
   return {
     message: `Only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after a ${runLen}-day consecutive work run (last worked ${formatDisplayDate(lastWorkedDs)}) — requires ${NIGHT_RULES.postNightDayRestH}h before the next shift`,
+    level: 'error',
+    // gapH/runLen exposed (in addition to message/level) so sixDayRunRestViolationAhead below can
+    // build its own forward-facing message instead of parsing this one's prose.
+    gapH, runLen,
+  };
+}
+// Forward mirror of sixDayRunRestViolation above (same "hard rule checked in both directions"
+// idiom checkCircadianViolations already uses for the postNightRest soft rule — see its own
+// forward-looking block). sixDayRunRestViolation only ever looks BACKWARD from the shift being
+// placed at dateStr: does dateStr's own shift follow too closely behind a run that already
+// finished. It has no way to notice the mirror case — a shift placed at dateStr can COMPLETE a
+// maxed 6-day run that an ALREADY-SCHEDULED later shift then follows too closely behind, a
+// violation that exists only once dateStr's shift is added. Neither the picker nor the generator's
+// candidate filter re-evaluates an already-placed later shift against a hypothetical earlier one,
+// so this was only ever caught by validateAll walking the finished schedule after the fact (it
+// calls sixDayRunRestViolation for every assignment, including the later one, against the already-
+// complete schedule). This closes that gap at placement time: simulate `sid` landing on dateStr,
+// find the next already-scheduled shift after it, and ask whether THAT shift would newly violate
+// the rule against the simulated schedule. Only reports a violation that this placement itself
+// would cause — one that already existed regardless of this placement is not this action's fault,
+// and is already surfaced elsewhere (validateAll, or this same check when that earlier action was
+// made).
+// anchorFn (see findSixDayRunAnchor/sixDayRunRestViolation above) is only ever forwarded to the
+// "already violating without this placement" check below, which asks about the resident's REAL,
+// unmodified `rs` — safe to memoize per (resident, dateStr). The "with this placement" check just
+// above it asks about a one-off hypothetical `{...rs, [dateStr]: sid}` that's different on every
+// call (varies with the OUTER dateStr/sid being evaluated), so it always computes fresh.
+export function sixDayRunRestViolationAhead(rs, resident, dateStr, sid, prevRs = null, bounds = null, anchorFn = findSixDayRunAnchor) {
+  if (!SHIFT_MAP[sid]) return null;
+  const maxDs = bounds?.max || null;
+  let laterDs = null, laterSid = null;
+  let d = addDays(parseDate(dateStr), 1);
+  for (let i = 0; i < 60; i++) {
+    const ds = toDateStr(d);
+    if (maxDs && ds > maxDs) break;
+    const actualSid = rs && rs[ds];
+    if (actualSid) { laterDs = ds; laterSid = actualSid; break; }
+    d = addDays(d, 1);
+  }
+  if (!laterDs) return null;
+  const withPlacement = sixDayRunRestViolation({ ...rs, [dateStr]: sid }, resident, laterDs, laterSid, prevRs, bounds);
+  if (!withPlacement) return null;
+  // Already violating even without this placement (e.g. a pre-existing gap from an earlier edit) —
+  // not caused by placing sid at dateStr, so don't attribute it here.
+  if (sixDayRunRestViolation(rs, resident, laterDs, laterSid, prevRs, bounds, anchorFn)) return null;
+  return {
+    message: `Would leave the already-scheduled ${laterSid} on ${formatDisplayDate(laterDs)} with only ${withPlacement.gapH % 1 === 0 ? withPlacement.gapH : withPlacement.gapH.toFixed(1)}h rest after the ${withPlacement.runLen}-day consecutive work run this placement creates — requires ${NIGHT_RULES.postNightDayRestH}h`,
     level: 'error',
   };
 }
@@ -1782,15 +1859,16 @@ function prevBlockTailSchedules(block, blocksHistory = []) {
 // service sleepless. finalSundayOf/findNextBlockSnapshot/nextBlockRotationFor mirror
 // streakBounds/findPrevBlockSnapshot/prevBlockTailSchedules above, FORWARD instead of backward.
 
-// The block's own last Sunday (dow===0), or null if the block's date range contains none at all
-// (defensive — blocks are normally ~28 days and always do). O(1): walks back from endDate to the
-// nearest Sunday rather than enumerating every date.
-function finalSundayOf(block) {
+// The block's own FINAL calendar date, but only when that date is itself a Sunday — null
+// otherwise. "Final Sunday" names a specific day: the block's own last date, because an overnight
+// shift placed there is the one that actually spans the block boundary into the next block's
+// rotation (see the header comment above). A block that simply ends on some other weekday has no
+// such date at all — searching backward for the nearest Sunday mid-block (a prior bug here) would
+// flag a date with several more in-block days still ahead of it, where an overnight shift doesn't
+// spill into the next block at all, so the whole final-Sunday transition rule doesn't apply.
+export function finalSundayOf(block) {
   if (!block?.startDate || !block?.endDate) return null;
-  const end = parseDate(block.endDate);
-  const sunday = addDays(end, -end.getDay());
-  const sundayStr = toDateStr(sunday);
-  return sundayStr >= block.startDate ? sundayStr : null;
+  return parseDate(block.endDate).getDay() === 0 ? block.endDate : null;
 }
 // Finds the snapshot immediately AFTER this block — same range-containment/tie-break logic as
 // findPrevBlockSnapshot, just checking the day after block.endDate instead of the day before
@@ -1820,12 +1898,18 @@ function findNextBlockSnapshot(block, blocksHistory = []) {
 //    absence means they're not on our EM schedule next block, so treated as not-continuing.
 //  - continuingEM is true only when the resolved blockType is a BLOCK_TYPES_EM entry with
 //    schedulable:true (mirrors isSchedulable's own definition of "on the EM schedule").
-export function nextBlockRotationFor(resident, block, blocksHistory = []) {
-  const snap = findNextBlockSnapshot(block, blocksHistory);
+// Resident-independent half of nextBlockRotationFor, split out so a per-resident LOOP (validateAll,
+// generateSchedule, ScheduleGrid's nextRotationMap) can call findNextBlockSnapshot ONCE per block
+// instead of once per resident — it filters+sorts the whole blocksHistory array and none of that
+// depends on which resident is asking, only the final emBlockAssignments lookup does.
+function nextRotationFromSnapshot(resident, snap) {
   if (!snap) return { known: false, blockType: null, continuingEM: false };
   const blockType = snap.data?.emBlockAssignments?.[resident.id]?.blockType ?? null;
   const bt = blockType ? BLOCK_TYPE_MAP[blockType] : null;
   return { known: true, blockType, continuingEM: !!(bt && bt.schedulable) };
+}
+export function nextBlockRotationFor(resident, block, blocksHistory = []) {
+  return nextRotationFromSnapshot(resident, findNextBlockSnapshot(block, blocksHistory));
 }
 
 // ─── Half-block Peds/Trauma split (TRAUMA_PEDS / PEDS_TRAUMA rotations) ────
@@ -1960,33 +2044,42 @@ function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
 // exception, seniorCompositionExempt (below), is a different rule entirely — every Wednesday, not
 // just the block's own 3rd — and only ever waives the requirement outright rather than allowing a
 // PGY-2 substitute; don't conflate the two.
-function podWellnessSubstituteAllowed(ds, blockStart) {
+// `appSettings.wellnessWednesdaysEnabled === false` disables Wellness Wednesdays program-wide (see
+// effectiveWellnessWednesdayDate) — when it's off there IS no Wellness Wednesday for PGY-3s to be
+// off on, so the substitution must be refused too, or a disabled feature would silently keep
+// waiving POD's hard composition rule on an ordinary working day. Deliberately still ignores
+// resident.wellnessOverride/the day-rule ordinal override the same way it always has (see
+// effectiveWellnessWednesdayDate's own comment) — only the program-wide toggle, the one control
+// that means "there is no Wellness Wednesday at all", changes this function's answer.
+function podWellnessSubstituteAllowed(ds, blockStart, appSettings) {
+  if (appSettings?.wellnessWednesdaysEnabled === false) return false;
   return ds === nthWeekdayOnOrAfter(blockStart, 3, 3);
 }
 // FLEX's mirror of the above (SENIOR_COMPOSITION.FLEX is now hard too — see the block header
 // comment): the block's own PGY-2 Wellness Wednesday (2nd Wednesday on/after the block's start
 // date — DEFAULT_DAY_RULES.EM_HOME_2's computedDayRules), when a PGY-3 substituting for the
 // missing PGY-2 is explicitly allowed.
-function flexWellnessSubstituteAllowed(ds, blockStart) {
+function flexWellnessSubstituteAllowed(ds, blockStart, appSettings) {
+  if (appSettings?.wellnessWednesdaysEnabled === false) return false;
   return ds === nthWeekdayOnOrAfter(blockStart, 3, 2);
 }
 // Single dispatcher so every call site (validateAll, fillDayPass, narrowForSeniority/
 // compositionStillSatisfied) asks one function "is today this area's own Wellness-Wednesday
 // substitute day" instead of re-deriving the POD-vs-FLEX branch each time.
-function seniorWellnessSubstituteAllowed(area, ds, blockStart) {
-  if (area === 'POD') return podWellnessSubstituteAllowed(ds, blockStart);
-  if (area === 'FLEX') return flexWellnessSubstituteAllowed(ds, blockStart);
+function seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings) {
+  if (area === 'POD') return podWellnessSubstituteAllowed(ds, blockStart, appSettings);
+  if (area === 'FLEX') return flexWellnessSubstituteAllowed(ds, blockStart, appSettings);
   return false;
 }
 // Whether `resident` satisfies area's hard senior-composition requirement on `ds` — the primary
 // PGY always does; the fallback PGY only does on that area's own Wellness-Wednesday substitute
 // day (see seniorWellnessSubstituteAllowed). Shared by validateAll, fillDayPass,
 // narrowForSeniority, and compositionStillSatisfied so the four can't drift on the definition.
-function compositionSatisfies(area, resident, ds, blockStart) {
+function compositionSatisfies(area, resident, ds, blockStart, appSettings) {
   const comp = SENIOR_COMPOSITION[area];
   if (!comp || resident.category !== 'EM_HOME') return false;
   if (resident.pgy === comp.primary) return true;
-  return resident.pgy === comp.fallback && seniorWellnessSubstituteAllowed(area, ds, blockStart);
+  return resident.pgy === comp.fallback && seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings);
 }
 
 // Grand Rounds Wednesday: every EM Home PGY is `noDay`-restricted on Wednesdays (DEFAULT_DAY_RULES,
@@ -2263,16 +2356,17 @@ export function getShiftTarget(resident, appSettings = {}) {
   }
   if (base == null) return null; // self-cover; a delta must NEVER create a target
   const d = Number(resident.targetDelta);
-  if (!Number.isFinite(d) || d === 0) return base;
-  const t = base + d;
-  // Return null, NEVER 0, when a delta zeros (or would go negative on) the target. Reason:
-  // scheduleQuality.js's targetBearing filter is `targets[r.id] != null`, and `0 != null` is
-  // TRUE — a target-0 resident would stay in the fairness population and deficitSpread would
-  // score them assigned/target -> 0, the maximal outlier against peers near 1.0, weighted x10 in
-  // the quality vector's slot 3 (same for nightSpread/weekendSpread). null is the correct
-  // semantic — a fully-bought-down resident is a fairness non-participant, exactly like an
-  // existing self-cover resident — and every downstream consumer (candidatePool,
-  // scoreGenerationResult, scheduleQuality) already handles null.
+  const t = base + (Number.isFinite(d) ? d : 0);
+  // Return null, NEVER 0, whenever the effective target comes out <=0 — an explicit 0 override
+  // (Settings targetOverrides, BLOCK_TARGETS, or SHIFT_TARGETS itself) with no delta at all falls
+  // through the same rule as a delta that zeros/negates a positive base; both are the same
+  // semantic. Reason: scheduleQuality.js's targetBearing filter is `targets[r.id] != null`, and
+  // `0 != null` is TRUE — a target-0 resident would stay in the fairness population and
+  // deficitSpread would score them assigned/target -> 0, the maximal outlier against peers near
+  // 1.0, weighted x10 in the quality vector's slot 3 (same for nightSpread/weekendSpread). null is
+  // the correct semantic — a fully-bought-down (or explicitly zeroed) resident is a fairness
+  // non-participant, exactly like an existing self-cover resident — and every downstream consumer
+  // (candidatePool, scoreGenerationResult, scheduleQuality) already handles null.
   return t > 0 ? t : null;
 }
 
@@ -2375,11 +2469,15 @@ export function offServiceWindowTargetDelta(resident, block, blocksHistory = [])
 // intended use of the feature. PED-N and PED-N-FM used to be one shift (bare 'PED-N') with a
 // two-key owner set; now that they're split ids with their own timing, PED-N has grown back into a
 // multi-owner id (now five keys) via BASE_ELIGIBILITY grants rather than a stale legacy snapshot.
-// PED_GUARD_LEGITIMATE_OWNER values may be a single key (PED-N-FM, PED-S) or an array of keys —
-// stripPedGuardedShifts checks membership either way, so a category/PGY absent from the array
-// (e.g. IM_2, never a PED-N owner) stays excluded regardless of what a stale
-// LEGACY_ELIGIBILITY_DEFAULTS snapshot might once have granted it.
-const PED_GUARD_LEGITIMATE_OWNER = { 'PED-N': ['EM_HOME_1', 'EM_HOME_2', 'EM_HOME_3', 'EM_BAMC_1', 'FM_1'], 'PED-N-FM': 'FM_3', 'PED-S': 'EM_HOME_2' };
+// Derived, not hand-maintained: each guarded id's owner set is exactly the category/PGY keys
+// whose BASE_ELIGIBILITY list actually contains that id, so a future BASE_ELIGIBILITY grant/removal
+// can never silently drift out of sync with the guard. stripPedGuardedShifts checks membership via
+// Array.isArray/.includes either way, so a category/PGY absent from the array (e.g. IM_2, never a
+// PED-N owner) stays excluded regardless of what a stale LEGACY_ELIGIBILITY_DEFAULTS snapshot might
+// once have granted it.
+const PED_GUARD_LEGITIMATE_OWNER = Object.fromEntries(
+  ['PED-N', 'PED-N-FM', 'PED-S'].map(id => [id, Object.keys(BASE_ELIGIBILITY).filter(key => BASE_ELIGIBILITY[key].includes(id))])
+);
 function stripPedGuardedShifts(list, key) {
   return list.filter(id => {
     const owner = PED_GUARD_LEGITIMATE_OWNER[id];
@@ -2599,29 +2697,51 @@ function hourIntervalsOverlap(aStart, aEnd, bStart, bEnd) { return aStart < bEnd
 // calendar date, so it's checked against three copies of itself shifted by -24/0/+24 hours against
 // the shift's own (never-shifted) interval — sufficient because the shift interval is bounded to
 // [0,36) (startH<24, durationH<=12) and the window, once normalized so its own end exceeds its
-// start, is bounded to a single occurrence of at most 24h.
-function windowOverlapsShiftHours(window, shiftStart, shiftEnd) {
+// start, is bounded to a single occurrence of at most 24h. Each shifted copy is a DIFFERENT real
+// calendar day's occurrence of the window (-24 = the day before `dateStr`, 0 = `dateStr` itself,
+// +24 = the day after), so each is gated by its OWN `active*` flag rather than one shared flag —
+// see findBlockingRestriction, the only caller, which knows which flag belongs to which date.
+function windowOverlapsShiftHours(window, shiftStart, shiftEnd, { activePrev, activeStart, activeNext }) {
   let wStart = window.startH, wEnd = window.endH;
   if (wEnd <= wStart) wEnd += 24; // window itself wraps past midnight (e.g. 22 -> 6)
-  return hourIntervalsOverlap(shiftStart, shiftEnd, wStart - 24, wEnd - 24) ||
-         hourIntervalsOverlap(shiftStart, shiftEnd, wStart, wEnd) ||
-         hourIntervalsOverlap(shiftStart, shiftEnd, wStart + 24, wEnd + 24);
+  return (activePrev && hourIntervalsOverlap(shiftStart, shiftEnd, wStart - 24, wEnd - 24)) ||
+         (activeStart && hourIntervalsOverlap(shiftStart, shiftEnd, wStart, wEnd)) ||
+         (activeNext && hourIntervalsOverlap(shiftStart, shiftEnd, wStart + 24, wEnd + 24));
 }
 
 // The first active restriction (if any) that blocks `shiftId` on `dateStr` — returned (not just a
 // boolean) so callers needing a message (validateAll, cellViolations) can name it via its label.
+// A shift starting on `dateStr` can spill into the NEXT calendar day (e.g. FLEX-N 22:00-07:00) —
+// a blockedWindow restriction gated by daysOfWeek/date bounds to that next day must still catch
+// the portion of the shift that lands on it (a Saturday-only 00:00-08:00 window must block a
+// Friday 22:00-07:00 shift, which it previously did NOT: the day-gate was checked only against
+// `dateStr`/its own dow before the window-overlap math ever ran, so a restriction whose
+// daysOfWeek excluded the shift's START day silently never got a chance to block it, even though
+// the window's actual clock-time overlap was on the shift's spill-over day). Symmetric handling
+// for the shift's start day possibly landing inside a window anchored to the PREVIOUS day is
+// included for the same reason, though shift start hours in SHIFT_TIMING are all >=6, so that
+// direction is a latent-only concern today (no shift starts early enough in the morning to reach
+// an ordinary-sized wrapping window's tail).
 function findBlockingRestriction(resident, dateStr, shiftId) {
   const restrictions = resident?.workRestrictions;
   if (!restrictions?.length) return null;
   const shift = SHIFT_MAP[shiftId];
   const timing = SHIFT_TIMING[shiftId];
   if (!shift || !timing) return null;
-  const dow = parseDate(dateStr).getDay();
+  const date = parseDate(dateStr);
+  const dow = date.getDay();
   const shiftStart = timing.startH, shiftEnd = timing.startH + timing.durationH;
+  const prevDate = addDays(date, -1), nextDate = addDays(date, 1);
+  const prevDateStr = toDateStr(prevDate), nextDateStr = toDateStr(nextDate);
+  const prevDow = prevDate.getDay(), nextDow = nextDate.getDay();
   for (const r of restrictions) {
-    if (!restrictionActiveOn(r, dateStr, dow)) continue;
-    if (r.blockedTypes?.includes(shift.type)) return r;
-    if (r.blockedWindow && windowOverlapsShiftHours(r.blockedWindow, shiftStart, shiftEnd)) return r;
+    const activeStart = restrictionActiveOn(r, dateStr, dow);
+    if (activeStart && r.blockedTypes?.includes(shift.type)) return r;
+    if (r.blockedWindow) {
+      const activePrev = restrictionActiveOn(r, prevDateStr, prevDow);
+      const activeNext = restrictionActiveOn(r, nextDateStr, nextDow);
+      if (windowOverlapsShiftHours(r.blockedWindow, shiftStart, shiftEnd, { activePrev, activeStart, activeNext })) return r;
+    }
   }
   return null;
 }
@@ -2853,12 +2973,14 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
   const prevTail = prevBlockTailSchedules(block, blocksHistory);
   const streakWalkBounds = streakBounds(block, prevTail);
   // Final-Sunday overnight transition rule (see nextBlockRotationFor/RULE_NOTES): resolved once
-  // per resident (not per date — it doesn't depend on ds) below.
+  // per resident (not per date — it doesn't depend on ds) below. findNextBlockSnapshot itself is
+  // resident-independent — resolved once per BLOCK here (see nextRotationFromSnapshot's comment).
   const finalSunday = finalSundayOf(block);
+  const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
-    const nextRotation = nextBlockRotationFor(resident, block, blocksHistory);
+    const nextRotation = nextRotationFromSnapshot(resident, nextBlockSnap);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
       // Approved day off — highest-priority violation
@@ -3250,7 +3372,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const assignedHere = allResidents.filter(r => (schedule[r.id] || {})[ds] === shift.id);
         if (!assignedHere.length) continue;
         if (seniorCompositionExempt(shift, ds)) continue; // Grand Rounds Wednesday — see seniorCompositionExempt
-        if (assignedHere.some(r => compositionSatisfies(area, r, ds, block.startDate))) continue;
+        if (assignedHere.some(r => compositionSatisfies(area, r, ds, block.startDate, appSettings))) continue;
         issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
           message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (only exception is the block's own PGY-${comp.primary} Wellness Wednesday)`, level: 'error' });
       }
@@ -3438,6 +3560,36 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const schedule = {};
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
 
+  // Per-resident "schedule version", bumped at the two places below that ever mutate schedule[rid]
+  // (fillDayPass's commit, repairPass's assignCell/unassignCell). candidatePool() re-derives both
+  // nightRunSegments(schedule[r.id]) and the six-day-run backward walk (findSixDayRunAnchor, see its
+  // own comment) for the same (resident, date) across every shift slot considered that day — and
+  // sixDayRunRestViolationAhead's own internal "already violating without this placement" check
+  // re-asks the six-day-run question again for whichever later date it lands on — even though
+  // neither answer can change until that resident's OWN schedule actually mutates. These two caches
+  // key off that version instead, same idiom as conf12Cache just above.
+  const scheduleVersion = {};
+  for (const r of allResidents) scheduleVersion[r.id] = 0;
+  const nightSegCache = {}; // rid -> { v, segments }
+  const cachedNightRunSegments = rid => {
+    const v = scheduleVersion[rid];
+    const hit = nightSegCache[rid];
+    if (hit && hit.v === v) return hit.segments;
+    const segments = nightRunSegments(schedule[rid]);
+    nightSegCache[rid] = { v, segments };
+    return segments;
+  };
+  const sixDayAnchorCache = {}; // `${rid}|${dateStr}` -> { v, anchor }
+  const cachedSixDayRunAnchor = (rs, resident, dateStr, prevRs, bounds) => {
+    const key = `${resident.id}|${dateStr}`;
+    const v = scheduleVersion[resident.id];
+    const hit = sixDayAnchorCache[key];
+    if (hit && hit.v === v) return hit.anchor;
+    const anchor = findSixDayRunAnchor(rs, resident, dateStr, prevRs, bounds);
+    sixDayAnchorCache[key] = { v, anchor };
+    return anchor;
+  };
+
   // Per-resident running state, seeded from kept assignments
   const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {}, hoursTotal = {};
   // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
@@ -3503,8 +3655,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // eligibility on the block's own final Sunday. The unknown-next-block case is deliberately left
   // unchanged (warn-only, surfaced by validateAll) rather than avoided here — see getEligibleShifts.
   const finalSunday = finalSundayOf(block);
+  const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
   const nextRotation = {};
-  for (const r of allResidents) nextRotation[r.id] = nextBlockRotationFor(r, block, blocksHistory);
+  for (const r of allResidents) nextRotation[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
 
   // Eligibility cache: eligCache[rid][ds] = Set of eligible shift ids
   const eligCache = {};
@@ -3619,8 +3772,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // (nightRunBefore/After cover both), so only a candidate who'd START a brand-new isolated
       // segment while already at 2 is excluded.
       pool = pool.filter(r => {
+        if (nightOnly[r.id]) return true;
         if (nightRunBefore(schedule[r.id], ds) > 0 || nightRunAfter(schedule[r.id], ds) > 0) return true;
-        return nightRunSegments(schedule[r.id]).length < 2;
+        return cachedNightRunSegments(r.id).length < 2;
       });
       if (!pool.length) return { candidates: [], restFallback: [], reason: 'nightStintCapped' };
     }
@@ -3636,7 +3790,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // the postNightRest soft rule below (keyed off a night run specifically); this one applies
     // regardless of shift type and is never a fallback-eligible compromise. See
     // sixDayRunRestViolation.
-    pool = pool.filter(r => !sixDayRunRestViolation(schedule[r.id], r, ds, shift.id, prevTail[r.id] || null, streakWalkBounds));
+    pool = pool.filter(r => !sixDayRunRestViolation(schedule[r.id], r, ds, shift.id, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor));
+    if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
+    // Forward mirror of the check above: placing shift.id on ds can COMPLETE a maxed 6-day run
+    // that an already-scheduled LATER shift then follows too closely behind — a violation
+    // sixDayRunRestViolation itself can't see, since it only looks backward from ds. See
+    // sixDayRunRestViolationAhead.
+    pool = pool.filter(r => !sixDayRunRestViolationAhead(schedule[r.id], r, ds, shift.id, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor));
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
     // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
@@ -3677,7 +3837,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const deficit = (t - assigned[r.id]) / t;
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
     const streak = streakBefore(r, ds);
-    const jeo = jeoPolicy === 'warn' && (r.jeopardyDates || []).includes(ds) ? 1 : 0;
+    const jeo = jeoPolicy === 'warn' && isJeopardyDate(r, ds, block.jeopardySchedule) ? 1 : 0;
     const dsDate = parseDate(ds); const dow = dsDate.getDay(); // parsed once — reused by the dow/adjacent-day terms below
     // Peds/EM PGY-2s should hit at least 10 peds shifts before other rotations sap the slot
     const pedsMixNeedsMore = shift.area === 'PED' && isPedsEmMix(r) && pedsCount[r.id] < PEDS_EM_MIX.min ? 1 : 0;
@@ -3719,7 +3879,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (runBefore > 0 && runBefore < NIGHT_RULES.maxRun) {
         nightCluster = 1;
       } else if (runBefore === 0) {
-        const priorRunCount = nightRunSegments(schedule[r.id]).length;
+        const priorRunCount = cachedNightRunSegments(r.id).length;
         // Strengthened again (chief feedback, Phase 1B: still not converging to a single clean
         // 5-6 run reliably enough) — was -1.0/-1.5/-0.4, now -1.5/-2.5/-0.8. Ordering unchanged:
         // a run that structurally can't reach minRun is worse than starting a 3rd+ separate run,
@@ -3728,7 +3888,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         else if (priorRunCount >= 2) nightCluster = -2.5; // would start a 3rd+ separate run
         else if (priorRunCount === 1) nightCluster = -0.8; // would start a 2nd separate run
       }
-    } else if (runBefore >= 1 && runBefore <= 3) {
+    } else if (runBefore >= 1 && runBefore < NIGHT_RULES.minRun) {
       nightCluster = -0.625; // -25 at the 40-point scale below
     }
     // FLEX/POD seniority: boost the primary PGY when filling the (still-empty) senior slot;
@@ -3757,7 +3917,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // deliberately excluded (IM_2 stays night-only Wednesday — untouched, and its own
     // dayTypeRestrictions already keep it off POD-D that day regardless).
     const wedPodLadder = shift.area === 'POD' && shift.type === 'day' && dow === 3
-      ? (r.category === 'ANES' ? 3 : (['FM', 'NEURO', 'PSYCH'].includes(r.category) ? 2 : (r.category === 'POD' ? 1 : 0)))
+      ? (WED_POD_LADDER_BY_CATEGORY[r.category] || 0)
       : 0;
     // Mildly steer away from a resident's 3rd (final allowed) journal club this AY, once they're
     // already at 2 — candidatePool already hard-blocks a 4th.
@@ -3935,7 +4095,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // became hard) — an unmet requirement leaves the slot unfilled with reason 'pgy3Required'/
       // 'pgy2Required', never silently staffed with the wrong PGY.
       const comp = SENIOR_COMPOSITION[slot.shift.area];
-      const compSatisfies = r => !!comp && compositionSatisfies(slot.shift.area, r, ds, block.startDate);
+      const compSatisfies = r => !!comp && compositionSatisfies(slot.shift.area, r, ds, block.startDate, appSettings);
       const seniorFilled = comp
         ? allResidents.some(r => schedule[r.id][ds] === slot.shift.id && compSatisfies(r))
         : null;
@@ -3989,6 +4149,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         }
       }
       schedule[best.id][ds] = slot.shift.id;
+      scheduleVersion[best.id]++;
       assigned[best.id]++;
       hoursTotal[best.id] += SHIFT_TIMING[slot.shift.id]?.durationH || 0;
       typeCount[best.id][slot.shift.type]++;
@@ -4036,6 +4197,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const sid = schedule[rid][ds];
       if (!sid) return null;
       delete schedule[rid][ds];
+      scheduleVersion[rid]++;
       assigned[rid]--;
       hoursTotal[rid] -= SHIFT_TIMING[sid]?.durationH || 0;
       const sh = SHIFT_MAP[sid];
@@ -4050,6 +4212,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     function assignCell(rid, sid, ds) {
       schedule[rid][ds] = sid;
+      scheduleVersion[rid]++;
       assigned[rid]++;
       hoursTotal[rid] += SHIFT_TIMING[sid]?.durationH || 0;
       const sh = SHIFT_MAP[sid];
@@ -4089,7 +4252,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (seniorCompositionExempt(shift, ds)) return pool; // Grand Rounds Wednesday — see seniorCompositionExempt
       const comp = SENIOR_COMPOSITION[shift.area];
       if (!comp) return pool;
-      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate);
+      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings);
       if (allResidents.some(r => schedule[r.id][ds] === shift.id && satisfies(r))) return pool;
       return pool.filter(satisfies);
     }
@@ -4105,7 +4268,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const comp = shift && SENIOR_COMPOSITION[shift.area];
       if (!comp) return true;
       if (seniorCompositionExempt(shift, ds)) return true; // Grand Rounds Wednesday — see seniorCompositionExempt
-      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate);
+      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings);
       return allResidents.some(r => schedule[r.id][ds] === shiftId && satisfies(r));
     }
 
@@ -4381,7 +4544,7 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
 // Render-time summary of a generation report: group unfilled slots per shift, detect
 // structural weekday gaps (day-of-week rules that block everyone — Trauma days, GR Wed),
 // and derive plain-language recommendations. Not stored — wording can evolve freely.
-function summarizeGenerationReport(report, appSettings = {}) {
+export function summarizeGenerationReport(report, appSettings = {}) {
   const byShift = {};
   for (const u of report.unfilled) {
     (byShift[u.shiftId] ??= []).push(u);
@@ -4445,6 +4608,7 @@ function summarizeGenerationReport(report, appSettings = {}) {
     if (reasonCounts.restProtected) recs.push(`Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
     if (reasonCounts.seniorProtected) recs.push(`Left unfilled to protect FLEX/POD senior composition — no senior PGY was eligible for ${label}. Reorder Soft Rule Priority on the Rules tab to staff a junior instead, or assign manually.`);
     if (reasonCounts.pgy3Required) recs.push(`No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
+    if (reasonCounts.pgy2Required) recs.push(`No EM Home PGY-2 (or, on the block's own PGY-2 Wellness Wednesday, PGY-3 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
     if (reasonCounts.hoursCapped) recs.push(`Eligible residents were already within reach of the ACGME 80h/week average for this block — cover ${label} with a resident further from the cap, or assign manually.`);
 
     return { shiftId, slots, reasonCounts, structural, gapDows, recommendations: recs };
@@ -5272,7 +5436,10 @@ function AvailabilityRangesEditor({ ranges = [], onUpdate }) {
   );
 }
 
-const RESTRICTION_DOW_SHORT = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+// 2-letter weekday labels — derived from the shared DOW table (module scope, above) rather than a
+// third hand-rolled weekday array; DOW's 3-letter names all shorten losslessly to their first two
+// characters ('Sun'->'Su', ... 'Sat'->'Sa').
+const RESTRICTION_DOW_SHORT = DOW.map(d => d.slice(0, 2));
 
 // Per-resident work-restrictions editor (resident.workRestrictions — see findBlockingRestriction/
 // shiftBlockedByRestrictions above for the semantics these rows are edited into). Lives in
@@ -5542,8 +5709,8 @@ function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings
   // wasn't formally on the list, and this must never block logging that.
   const onJeopardyThisDate = useMemo(() => {
     if (!date) return new Set();
-    return new Set((allResidents || []).filter(r => (r.jeopardyDates || []).includes(date)).map(r => r.id));
-  }, [allResidents, date]);
+    return new Set((allResidents || []).filter(r => isJeopardyDate(r, date, block?.jeopardySchedule)).map(r => r.id));
+  }, [allResidents, date, block]);
 
   // A residentId in the log may no longer be on the roster (departed, or an off-service resident
   // who only ever existed inside an old block) — the incident is history and must survive a
@@ -6656,11 +6823,10 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     // src/lib/importLog.js header comment). xlsx importer, so filename/size, no rawText.
     if (setImportLog) {
       const ranges = newSnaps.map(s => `${prettyDate(s.startDate)}–${prettyDate(s.endDate)}`).join(', ');
-      setImportLog(prev => appendImportLog(normalizeImportLog(prev), {
-        id: uuid(), at: new Date().toISOString(), kind: 'matrix',
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('matrix', {
         filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
         summary: `${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} imported (${ranges}) · ${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''}, ${preview.existingCount} matched existing`,
-      }));
+      })));
     }
 
     showToast(`Imported ${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} from "${fileName}"`, 'green');
@@ -7411,11 +7577,10 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
     // verbatim (see src/lib/importLog.js) for later reference; summary is counts only.
     if (setImportLog) {
       const dupeCount = preview.rows.length - newRows.length;
-      setImportLog(prev => appendImportLog(normalizeImportLog(prev), {
-        id: uuid(), at: new Date().toISOString(), kind: 'roster',
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('roster', {
         rawText: text,
         summary: `${newRows.length} of ${preview.rows.length} row${preview.rows.length !== 1 ? 's' : ''} imported${dupeCount ? ` (${dupeCount} duplicate/skipped)` : ''}`,
-      }));
+      })));
     }
     onClose();
   }
@@ -7515,13 +7680,10 @@ function parseVacationDateRange(raw, ayStartYear) {
   return { start: `${startYear}-${pad(sm)}-${pad(sd)}`, end: `${endYear}-${pad(em)}-${pad(ed)}` };
 }
 
-function expandDateRangeInclusive(start, end) {
-  const dates = [];
-  let cur = parseDate(start);
-  const last = parseDate(end);
-  while (cur <= last) { dates.push(toDateStr(cur)); cur = addDays(cur, 1); }
-  return dates;
-}
+// Same inclusive-range walk as dates.js's getBlockDates (start/end always valid ISO strings at
+// both call sites below, so its extra empty/NaN guards are a no-op here) — was a hand-duplicated
+// copy, now just an alias so both share the one implementation.
+const expandDateRangeInclusive = getBlockDates;
 
 // Groups the sheet's rows into PGY sections, each a run of "Last, First"-shaped name-column
 // rows immediately following a "PGY\d" marker in column 0 — stops a section (without needing
@@ -7659,11 +7821,10 @@ function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast, setImp
     }));
     // Import History entry — xlsx importer, counts only (no resident name list beyond counts).
     if (setImportLog) {
-      setImportLog(prev => appendImportLog(normalizeImportLog(prev), {
-        id: uuid(), at: new Date().toISOString(), kind: 'vacation',
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('vacation', {
         filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
         summary: `${preview.matched.length} matched, ${preview.unmatched.length} unmatched, ${preview.skipped.length} skipped`,
-      }));
+      })));
     }
     showToast(`Imported vacation dates for ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`, 'green');
     onClose();
@@ -7905,11 +8066,10 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData
     // ever runs after a Parse, so `totalWarnings` (declared below, same component scope) is
     // already computed by the time this button handler fires.
     if (setImportLog) {
-      setImportLog(prev => appendImportLog(normalizeImportLog(prev), {
-        id: uuid(), at: new Date().toISOString(), kind: 'lectures',
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('lectures', {
         rawText: text,
         summary: `${preview.matched.length} matched, ${preview.unmatched.length} unmatched, ${totalWarnings} warning${totalWarnings !== 1 ? 's' : ''}`,
-      }));
+      })));
     }
     showToast(`Imported lecture/JC dates for ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`, 'green');
     onClose();
@@ -9584,8 +9744,16 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // 6. 24h rest after a maxed 6-consecutive-work-day run (ACGME, hard) — see
   // sixDayRunRestViolation; distinct from the postNightRest soft rule already covered by the
   // circadian checks above.
-  const sixDayRunV = sixDayRunRestViolation(row, resident, dateStr, sid, prevTail[resident.id] || null, streakBounds(block, prevTail));
+  const sixDayRunBounds = streakBounds(block, prevTail);
+  const sixDayRunV = sixDayRunRestViolation(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
   if (sixDayRunV) vs.push({ message: sixDayRunV.message, level: sixDayRunV.level });
+  // 6b. Forward mirror of the above — this placement can complete a maxed 6-day run that an
+  // already-scheduled LATER shift then follows too closely behind (see
+  // sixDayRunRestViolationAhead); sixDayRunRestViolation itself only looks backward from dateStr,
+  // so without this the picker would let a chief create this violation and only find out later
+  // from validateAll.
+  const sixDayRunAheadV = sixDayRunRestViolationAhead(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
+  if (sixDayRunAheadV) vs.push({ message: sixDayRunAheadV.message, level: sixDayRunAheadV.level });
   return vs;
 }
 
@@ -9840,7 +10008,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const finalSunday = useMemo(() => finalSundayOf(block), [block.startDate, block.endDate]);
   const nextRotationMap = useMemo(() => {
     const m = {};
-    for (const r of allResidents) m[r.id] = nextBlockRotationFor(r, block, blocksHistory);
+    const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
+    for (const r of allResidents) m[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
     return m;
   }, [allResidents, block.id, block.endDate, blocksHistory]);
 
@@ -10769,7 +10938,7 @@ function ScheduleCalendarView({ dates, residents, sched, coverageByDate, areaFil
                 const assignments = residents
                   .map(r => ({ r, sid: sched[r.id]?.[ds] }))
                   .filter(({sid}) => sid && (areaFilter==='ALL' || SHIFT_MAP[sid]?.area === areaFilter))
-                  .sort((a,b) => SHIFTS.findIndex(s=>s.id===a.sid) - SHIFTS.findIndex(s=>s.id===b.sid));
+                  .sort((a,b) => SHIFT_ORDER_INDEX.get(a.sid) - SHIFT_ORDER_INDEX.get(b.sid));
                 const byTimeOfDay = {};
                 for (const a of assignments) {
                   const t = SHIFT_MAP[a.sid]?.type;
@@ -10858,6 +11027,19 @@ const MONTH_DOW_HEADER = (
 
 const MONTH_CELL_CHIP_CAP = 7;
 
+// Shared month-pager state — months list + bounded page index + current month's padded week grid —
+// for MonthCalendarView and PerResidentMonthView below — both page through the same
+// `monthsInRange(startDate, endDate)` list (see MonthNavHeader above for the matching nav UI); was
+// five lines hand-duplicated at each call site.
+function useMonthPager(startDate, endDate) {
+  const months = useMemo(() => monthsInRange(startDate, endDate), [startDate, endDate]);
+  const [idx, setIdx] = useState(0);
+  const boundedIdx = Math.min(idx, Math.max(0, months.length - 1));
+  const current = months[boundedIdx];
+  const weeks = useMemo(() => current ? monthPaddedWeeks(monthDates(current.year, current.month)) : [], [current]);
+  return { months, boundedIdx, setIdx, current, weeks };
+}
+
 // One calendar month per page (padded Sunday-first grid, see src/lib/calendarGrid.js), every
 // assigned shift that date shown as an area-colored 'LastName · SHIFT-ID' chip — the whole-block
 // complement to ScheduleCalendarView's continuous Sunday-week rows above. Prev/next is bounded to
@@ -10865,12 +11047,12 @@ const MONTH_CELL_CHIP_CAP = 7;
 // date range (a real calendar day, since month boundaries rarely line up with block boundaries) is
 // muted and never carries assignments — `sched` only ever has entries for in-block dates anyway,
 // this just makes that visible rather than silently rendering an empty cell.
-function MonthCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick, blockStart, blockEnd }) {
-  const months = useMemo(() => monthsInRange(blockStart, blockEnd), [blockStart, blockEnd]);
-  const [idx, setIdx] = useState(0);
-  const boundedIdx = Math.min(idx, Math.max(0, months.length - 1));
-  const current = months[boundedIdx];
-  const weeks = useMemo(() => current ? monthPaddedWeeks(monthDates(current.year, current.month)) : [], [current]);
+// React.memo'd: every prop here is either a primitive (areaFilter/blockStart/blockEnd) or a value
+// ScheduleGrid already recomputes via its own useMemo (dates/sched/coverageByDate/residents), so a
+// ScheduleGrid re-render triggered by something this view doesn't care about (e.g. hover state)
+// no longer forces this whole month grid to re-render and re-walk every cell too.
+const MonthCalendarView = React.memo(function MonthCalendarView({ dates, residents, sched, coverageByDate, areaFilter, onChipClick, blockStart, blockEnd }) {
+  const { months, boundedIdx, setIdx, current, weeks } = useMonthPager(blockStart, blockEnd);
   const blockDateSet = useMemo(() => new Set(dates), [dates]);
 
   if (!current) return <p className="text-sm text-gray-400 italic">Set block dates to see the month view.</p>;
@@ -10890,7 +11072,7 @@ function MonthCalendarView({ dates, residents, sched, coverageByDate, areaFilter
               ? residents
                   .map(r => ({ r, sid: sched[r.id]?.[ds] }))
                   .filter(({sid}) => sid && (areaFilter==='ALL' || SHIFT_MAP[sid]?.area === areaFilter))
-                  .sort((a,b) => SHIFTS.findIndex(s=>s.id===a.sid) - SHIFTS.findIndex(s=>s.id===b.sid))
+                  .sort((a,b) => SHIFT_ORDER_INDEX.get(a.sid) - SHIFT_ORDER_INDEX.get(b.sid))
               : [];
             return (
               <div key={ds} className={`min-h-[90px] border-r border-gray-100 last:border-r-0 p-1 ${!inBlock ? 'bg-gray-50/60 opacity-50' : ''}`}>
@@ -10924,7 +11106,7 @@ function MonthCalendarView({ dates, residents, sched, coverageByDate, areaFilter
       ))}
     </div>
   );
-}
+});
 
 // Same month grid as above, scoped to one resident (dropdown, defaults to the first schedulable
 // resident) — markers reuse the exact GR/JC/WW/OFF/VAC/jeopardy logic ResidentCard/the Schedule
@@ -10939,11 +11121,7 @@ function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, app
   }, [schedulable, residentId]);
   const res = schedulable.find(r => r.id === residentId) || schedulable[0] || null;
 
-  const months = useMemo(() => monthsInRange(block.startDate, block.endDate), [block.startDate, block.endDate]);
-  const [idx, setIdx] = useState(0);
-  const boundedIdx = Math.min(idx, Math.max(0, months.length - 1));
-  const current = months[boundedIdx];
-  const weeks = useMemo(() => current ? monthPaddedWeeks(monthDates(current.year, current.month)) : [], [current]);
+  const { months, boundedIdx, setIdx, current, weeks } = useMonthPager(block.startDate, block.endDate);
   const blockDateSet = useMemo(() => new Set(dates), [dates]);
 
   if (!res) return <p className="text-sm text-gray-400 italic">No schedulable residents on this block.</p>;
@@ -12898,9 +13076,17 @@ function JeopardyTab({ block, updateBlock, allResidents, showToast }) {
                   <tr key={ds} className={isWknd ? 'bg-muted/30' : ''}>
                     <td className="px-2 py-1 border-b border-r border-border/60 whitespace-nowrap font-medium text-xs">{DOW[dow]} {formatDisplayDate(ds)}</td>
                     {JEOPARDY_TRACKS.map(track => {
-                      const isMetro = track === 'pgy3' && dateInRanges(ds, metroRanges);
                       const reason = unfilledByKey.get(`${track}|${ds}`);
                       const rid = jeopardySchedule[track]?.[ds] || '';
+                      // Only show the "covered by Metro" placeholder when the cell is actually
+                      // empty. A PGY-3 can still have a real jeopardy assignment on a Metro date
+                      // (set before the range existed, or a deliberate manual override) — that
+                      // assignment keeps driving eligibility/warnings elsewhere (isJeopardyDate
+                      // reads jeopardySchedule directly, with no Metro-range awareness of its
+                      // own), so hiding it behind a static, non-interactive badge would make a
+                      // still-live assignment invisible AND undeletable here. An assigned cell
+                      // always falls through to the normal editable <select> below instead.
+                      const isMetro = track === 'pgy3' && !rid && dateInRanges(ds, metroRanges);
                       if (isMetro) {
                         return (
                           <td key={track} className="px-2 py-1 border-b border-border/40">
@@ -13299,10 +13485,6 @@ export function summarizeOverrides(overrideLog = [], residentsById = {}) {
 // DEMO_MODE_KEY — deliberately NOT in LS_BACKUP_KEYS (it's "has this device already migrated its
 // local data", not scheduling data itself).
 const PED_N_FM_MIGRATION_KEY = 'res_pednfm_migrated';
-// Device-local one-shot marker for migratePedsPgy1ToPgy2 (see that function's own header comment
-// and the mount effect that uses it, near PED_N_FM_MIGRATION_KEY's own effect) — same
-// deliberately-not-in-LS_BACKUP_KEYS posture as every other one-shot migration marker in this file.
-const PEDS_PGY2_MIGRATION_KEY = 'res_peds_pgy2_migrated';
 export function migratePedNightAssignments(schedule, categoryForId) {
   if (!schedule || typeof schedule !== 'object') return schedule;
   let scheduleChanged = false;
@@ -13329,8 +13511,20 @@ export function migratePedNightAssignments(schedule, categoryForId) {
 // saved resident records when this shipped — a still-pgy:1 PEDS resident would resolve eligibility
 // through `BASE_ELIGIBILITY['PEDS_1'] || []` (empty array: zero eligible shifts, no explanatory
 // error anywhere) and day-rules through `DEFAULT_DAY_RULES['PEDS_1'] ?? {}` (silently unrestricted,
-// the opposite problem). This is a one-shot mount migration (see PEDS_PGY2_MIGRATION_KEY below)
-// that rewrites every PEDS resident with pgy===1 to pgy:2, wherever a resident record can appear.
+// the opposite problem). This is a mount migration that rewrites every PEDS resident with pgy===1
+// to pgy:2, wherever a resident record can appear — deliberately MARKERLESS (no localStorage
+// one-shot flag, unlike migratePedNightAssignments/PED_N_FM_MIGRATION_KEY above), same idiom as
+// the LEGACY_DAY_RULE_DEFAULTS/LEGACY_ELIGIBILITY_DEFAULTS one-time prune effect near the bottom
+// of the root component: it's cheap and idempotent (returns the SAME reference, not just a deep-
+// equal copy, when nothing needs to change — see below), so it's safe and correct to simply re-run
+// it every mount instead of gating it behind a marker. A one-shot marker was tried first and
+// turned out to be actively wrong here: cloud sync is last-write-wins on the WHOLE document, so a
+// stale device (or an old JSON backup restore) can push a still-pgy:1 record back into the shared
+// cloud row well after this device's marker was already set — the mount overlay then applies that
+// stale pgy:1 over local state, but the marker check silently skips re-running the fix, leaving
+// the resurrected pgy:1 (and its empty eligibility) in place indefinitely. Markerless re-running
+// closes that hole: whichever device loads the bad data next simply fixes it again, no flag to
+// desync from the shared cloud state in the first place.
 //
 // Pure transform, exported for tests. Operates on any array of resident-shaped objects
 // ({id, category, pgy, ...}) — used identically for emRoster (belt-and-braces only: PEDS is a
@@ -13546,14 +13740,14 @@ export default function ResidentScheduler({ viewer } = {}) {
   // cleanup-timing ambiguity at all.
   const prevSaveDepsRef = useRef(null);
   useEffect(() => {
-    const deps = [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder];
+    const deps = [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog];
     const changed = prevSaveDepsRef.current !== null && deps.some((d, i) => d !== prevSaveDepsRef.current[i]);
     prevSaveDepsRef.current = deps;
     if (!changed) return;
     setSaveState('saving');
     const t = setTimeout(() => setSaveState('saved'), 600);
     return () => clearTimeout(t);
-  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder]);
+  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog]);
 
   // Debounced cloud sync — a SEPARATE effect from the pill-timer one above, not folded together:
   // that effect's prevSaveDepsRef reference-diffing dodges a StrictMode hazard around a boolean
@@ -13596,7 +13790,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, dbReady]);
+  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog, dbReady]);
 
   // Demo Sandbox entry/exit — see the DEMO SANDBOX comment above the useLocalStorage block for the
   // isolation design. Every action here ends in window.location.reload(): demoMode is only ever
@@ -13837,28 +14031,24 @@ export default function ResidentScheduler({ viewer } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbReady]);
 
-  // One-time mount migration: rewrite any resident recorded as PEDS pgy:1 to pgy:2 (see
-  // migratePedsPgy1ToPgy2 above for why this exists — Peds is PGY-2/PGY-3 only now). Gated on a
-  // stored marker so a re-run can never touch a resident the chief has since deliberately set back
-  // to pgy:1 (not that PEDS_1 exists as a valid pgyOptions entry any more, but the same discipline
-  // as every other one-shot marker in this file) — the marker is set even when zero records needed
-  // changing, so this only ever runs once per device.
+  // Mount migration (re-run every mount, not one-shot — see migratePedsPgy1ToPgy2's own header
+  // comment for why): rewrite any resident recorded as PEDS pgy:1 to pgy:2 (Peds is PGY-2/PGY-3
+  // only now). Markerless is safe here specifically because migratePedsPgy1ToPgy2 is a cheap,
+  // idempotent, reference-stable no-op once nothing is left to fix — re-running it every mount
+  // costs nothing on the (overwhelmingly common) already-migrated path, and closes the resurrected-
+  // pgy:1 hole a one-shot marker would leave open against cloud last-write-wins (see that
+  // function's comment for the exact scenario).
   useEffect(() => {
     // MUST run after the mount-time cloud overlay has applied, hence the dbReady gate rather than a
-    // bare [] — see PED_N_FM_MIGRATION_KEY's own effect above for the full explanation (same
-    // reasoning, verbatim): a []-deps effect body runs FIRST, against the pre-overlay localStorage
-    // copy; it would migrate that, write its one-shot marker, and then be overwritten wholesale by
-    // the cloud row's still-unmigrated res_em_roster / res_current_block / res_blocks_history —
-    // permanently, because the marker stops it ever running again. dbReady is set synchronously
-    // when cloud sync isn't configured, so a local-only install just runs this one render later. A
-    // cloud load that FAILED leaves dbReady false forever by design: no migration and no marker, so
-    // a later reload retries it cleanly against real data. Running after the overlay also means the
-    // rewritten values differ from cloudBaselineRef, so the debounced save heals the shared cloud
-    // row too instead of only this device.
+    // bare [] — see PED_N_FM_MIGRATION_KEY's own effect above for the full explanation of why a
+    // []-deps effect body would run against the pre-overlay localStorage copy. dbReady is set
+    // synchronously when cloud sync isn't configured, so a local-only install just runs this one
+    // render later. A cloud load that FAILED leaves dbReady false forever by design — no migration
+    // this mount, but (unlike the one-shot migrations above) there's no marker to leave stuck
+    // either, so the very next successful mount just runs it again against real data. Running after
+    // the overlay also means a rewritten value differs from cloudBaselineRef, so the debounced save
+    // heals the shared cloud row too instead of only this device.
     if (!dbReady) return;
-    let alreadyRan = false;
-    try { alreadyRan = localStorage.getItem(PEDS_PGY2_MIGRATION_KEY) === 'true'; } catch { /* storage blocked */ }
-    if (alreadyRan) return;
 
     // Belt-and-braces: PEDS is a non-persistent, off-service-only category (see CATEGORIES in
     // lib/parse.js), so it should never actually appear in emRoster — the real fix is each
@@ -13883,8 +14073,6 @@ export default function ResidentScheduler({ viewer } = {}) {
       });
       return changed ? next : prev;
     });
-
-    try { localStorage.setItem(PEDS_PGY2_MIGRATION_KEY, 'true'); } catch { /* storage blocked */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbReady]);
 

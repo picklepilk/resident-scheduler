@@ -5,6 +5,17 @@
 // residents recorded as pgy:1 to pgy:2 so they don't silently lose all eligibility (empty
 // BASE_ELIGIBILITY['PEDS_1']) after the restructure — see the comment above
 // migratePedsPgy1ToPgy2 in ResidentScheduler.jsx.
+//
+// The mount effect that calls this (near migratePedsPgy1ToPgy2's own definition) is deliberately
+// markerless — no localStorage one-shot flag, unlike migratePedNightAssignments's own mount
+// effect — specifically BECAUSE this pure transform is cheap and reference-stable when there's
+// nothing to fix (see the "returns the same reference" tests below): a one-shot marker was tried
+// first and left a real hole against cloud last-write-wins (a stale device's still-pgy:1 record
+// could resurrect over a device that had already "migrated" and stopped re-checking). All the
+// tests below exercise the pure transform directly; the effect-level "runs every mount, no
+// marker" behavior has no render harness in this repo to exercise against (ResidentScheduler.jsx
+// mounts a real component tree — Supabase, localStorage, ~40 hooks — no test in this suite
+// renders it), so it's verified by code inspection of the effect body instead.
 import { describe, it, expect } from 'vitest';
 import { migratePedsPgy1ToPgy2 } from '../ResidentScheduler.jsx';
 

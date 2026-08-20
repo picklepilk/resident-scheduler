@@ -196,13 +196,6 @@ describe('overlappingAssignments', () => {
     expect(out.same).toEqual([{ id: 'off1', name: 'Off Service' }]);
   });
 
-  it('includePrevDayNights: false skips adjacent-date spillover checks', () => {
-    const a = res('a'), b = res('b');
-    const schedule = { a: { [D]: 'POD-D' }, b: { [prevD]: 'MT-N' } };
-    const out = overlappingAssignments(schedule, [a, b], D, 'POD-D', { residentId: 'a', includePrevDayNights: false });
-    expect(out.overlapping).toEqual([]);
-  });
-
   it('returns empty result for an unknown shift id rather than throwing', () => {
     const out = overlappingAssignments({}, [], D, 'NOT-A-SHIFT');
     expect(out).toEqual({ same: [], overlapping: [] });

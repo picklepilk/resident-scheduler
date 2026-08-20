@@ -12,7 +12,7 @@
 // `res_state` cloud sync. It is also NOT wrapped by the Demo Sandbox's `physKey` — same reasoning
 // as `res_dark_mode`: a viewer's own UI layout preference has nothing to do with which sandbox
 // they're currently poking at.
-import { createContext, useContext, useEffect, useRef, useState, useCallback, createElement } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo, createElement } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient.js';
 import { DEFAULT_UI_PREFS, normalizeUiPrefs } from './lib/uiPrefs.js';
 
@@ -42,6 +42,24 @@ export function useUiPrefs(viewer) {
   // the cloud read returns would clobber a genuinely different cloud value with it.
   const cloudLoadedRef = useRef(!AUTH_ENABLED);
   const saveTimerRef = useRef(null);
+  // Set by setCardOpen/toggleTabOverflow/setShowUnscheduled when they fire while the mount-time
+  // cloud load is still in flight. Without this, a real local edit made in that narrow window was
+  // silently destroyed the instant the load's `setPrefs(normalizeUiPrefs(data.ui_prefs))` landed
+  // — or, if the load found nothing to overlay, the edit itself survived but never reached the
+  // cloud, since the save effect below had already bailed out on `!cloudLoadedRef.current` and
+  // nothing re-triggers it once that ref flips true (refs aren't effect deps). The load effect
+  // below both skips the overwrite and flushes the pending edit once it resolves.
+  const editedDuringLoadRef = useRef(false);
+  // Re-assigned on every render (not inside an effect) so it always closes over the latest
+  // `prefs`/`viewer` — the debounced save effect and the post-load flush both call through this
+  // ref instead of duplicating the save call, so there is exactly one place that talks to
+  // Supabase for a save.
+  const saveNowRef = useRef(() => {});
+  saveNowRef.current = async () => {
+    if (!AUTH_ENABLED || !viewer?.userId) return;
+    const { error } = await supabase.from('profiles').update({ ui_prefs: prefs }).eq('id', viewer.userId);
+    if (error) console.warn('uiPrefs: cloud save failed', error);
+  };
 
   useEffect(() => {
     try { localStorage.setItem(UI_PREFS_KEY, JSON.stringify(prefs)); } catch { /* storage unavailable — device-local is best-effort */ }
@@ -49,39 +67,50 @@ export function useUiPrefs(viewer) {
 
   // Mount-time (and viewer-change-time) cloud load. Cloud value overlays the device value only
   // when present (`data.ui_prefs != null`) — a brand-new profile with no saved prefs yet must not
-  // wipe out whatever this device already has.
+  // wipe out whatever this device already has. If a local edit landed while this load was still in
+  // flight (`editedDuringLoadRef`), the overlay is skipped entirely (the local edit wins) and that
+  // edit is flushed to the cloud immediately once the load resolves.
   useEffect(() => {
     if (!AUTH_ENABLED || !viewer?.userId) { cloudLoadedRef.current = true; return; }
     let cancelled = false;
     cloudLoadedRef.current = false;
+    editedDuringLoadRef.current = false;
     (async () => {
       const { data } = await supabase.from('profiles').select('ui_prefs').eq('id', viewer.userId).maybeSingle();
       if (cancelled) return;
-      if (data?.ui_prefs != null) setPrefs(normalizeUiPrefs(data.ui_prefs));
+      if (data?.ui_prefs != null && !editedDuringLoadRef.current) setPrefs(normalizeUiPrefs(data.ui_prefs));
       cloudLoadedRef.current = true;
+      if (editedDuringLoadRef.current) {
+        editedDuringLoadRef.current = false;
+        saveNowRef.current();
+      }
     })();
     return () => { cancelled = true; };
   }, [viewer?.userId]);
 
   // Debounced per-profile save, using the real auth client (this writes the caller's own
   // `profiles` row, gated by `profiles_update_own` — see supabase/migrate_profile_ui_prefs.sql),
-  // not the hand-rolled `sbFetch` client the `res_state` sync uses.
+  // not the hand-rolled `sbFetch` client the `res_state` sync uses. Routed through `saveNowRef` so
+  // this and the post-load flush above share one implementation; the shared implementation awaits
+  // the Supabase builder (a lazy thenable — nothing fires until awaited/thenned) and logs rather
+  // than throws on error, since a failed background sync must never crash the app or block local
+  // editing.
   useEffect(() => {
     if (!AUTH_ENABLED || !viewer?.userId || !cloudLoadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      supabase.from('profiles').update({ ui_prefs: prefs }).eq('id', viewer.userId);
-    }, UI_PREFS_SAVE_DEBOUNCE_MS);
+    saveTimerRef.current = setTimeout(() => { saveNowRef.current(); }, UI_PREFS_SAVE_DEBOUNCE_MS);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [prefs, viewer?.userId]);
 
   const setCardOpen = useCallback((prefId, open) => {
     if (!prefId) return;
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
     setPrefs(p => ({ ...p, cardOpen: { ...p.cardOpen, [prefId]: open } }));
   }, []);
 
   const toggleTabOverflow = useCallback(tabId => {
     if (!tabId) return;
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
     setPrefs(p => ({
       ...p,
       tabOverflow: p.tabOverflow.includes(tabId)
@@ -91,10 +120,18 @@ export function useUiPrefs(viewer) {
   }, []);
 
   const setShowUnscheduled = useCallback(v => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
     setPrefs(p => ({ ...p, showUnscheduled: !!v }));
   }, []);
 
-  return { prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled };
+  // Memoized so consumers reading this via UiPrefsContext (~20 CollapsibleCard call sites plus
+  // SidebarNav) don't all re-render on every root render — only when prefs actually change (the
+  // four callbacks are already stable via useCallback([]), so in practice this only changes when
+  // `prefs` does).
+  return useMemo(
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled]
+  );
 }
 
 // Context so deeply-nested primitives (CollapsibleCard, used ~20 places across

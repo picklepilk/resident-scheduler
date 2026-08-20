@@ -2,7 +2,7 @@
 // Pure unit tests for the quality scorer — no ResidentScheduler.jsx import, no DOM.
 import { describe, it, expect } from 'vitest';
 import { addDays, parseDate, toDateStr, getBlockDates } from './dates.js';
-import { SHIFTS } from './shifts.js';
+import { SHIFTS, SHIFT_DOW } from './shifts.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import {
   computeQualityMetrics,
@@ -127,6 +127,30 @@ describe('computeQualityMetrics — night-run shape', () => {
     expect(clustered.nightShapePenalty).toBeCloseTo(0.25, 5);
   });
 
+  it('interior run one below minRun scores worse than a compliant run at minRun (regression: minRun 4→5)', () => {
+    // The app's real NIGHT_RULES.minRun is 5, not this file's local minRun-4 constant — exercise
+    // the ladder at the real value so a 4-run (structurally short) and a 5-run (compliant) are
+    // both covered and the 4-run must score worse, never equal or better.
+    const rules = { minRun: 5, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
+    const dates = mkDates('2026-01-01', 9); // indices 0..8
+
+    // Interior 4-night run (idx 2..5) — one below minRun(5).
+    const fourRunSchedule = {
+      r1: Object.fromEntries([2, 3, 4, 5].map(i => [dates[i], 'POD-N'])),
+    };
+    // Interior 5-night run (idx 2..6) — exactly minRun, compliant.
+    const fiveRunSchedule = {
+      r1: Object.fromEntries([2, 3, 4, 5, 6].map(i => [dates[i], 'POD-N'])),
+    };
+
+    const fourRun = computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: fourRunSchedule, dates });
+    const fiveRun = computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: fiveRunSchedule, dates });
+
+    expect(fourRun.nightShapePenalty).toBeGreaterThan(fiveRun.nightShapePenalty);
+    expect(fourRun.nightShapePenalty).toBeCloseTo(1, 5); // minRun(5) - len(4)
+    expect(fiveRun.nightShapePenalty).toBeCloseTo(0.25, 5); // 0.25*(idealRun(6)-len(5))
+  });
+
   it('a night run touching the block start or end is exempt, even at length 1', () => {
     const dates = mkDates('2026-01-01', 5); // indices 0..4
 
@@ -215,6 +239,35 @@ describe('computeQualityMetrics — coverageMiss', () => {
       restCompromiseCount: 0,
     });
     expect(metrics.coverageMiss).toBe(2);
+  });
+
+  it('a shift with min>=1 that does not exist on this weekday (SHIFT_DOW) charges zero coverage miss — same guard as the other five SHIFT_DOW consumers (coverageComposition.js, generator.harness.test.js, etc.)', () => {
+    // 2026-01-05 is a Monday (getDay() === 1). SHIFT_DOW['TRAUMA-D'] is [0,2,4,6]
+    // (Sun/Tue/Thu/Sat) — TRAUMA-D simply doesn't exist on Mondays. Empty schedule (nothing
+    // filled anywhere) isolates the assertion to "does this date/shift combo get skipped
+    // entirely", not "is filled >= min".
+    const dates = ['2026-01-05'];
+    expect(parseDate(dates[0]).getDay()).toBe(1);
+    expect(SHIFT_DOW['TRAUMA-D']).not.toContain(1);
+
+    const coverage = Object.fromEntries(SHIFTS.map(s => [s.id, { min: 0, max: 0 }]));
+    coverage['TRAUMA-D'] = { min: 1, max: 1 };
+
+    const metrics = computeQualityMetrics({
+      schedule: {},
+      coverage,
+      dates,
+      residents: [],
+      targets: {},
+      nightOnlyIds: new Set(),
+      nightRules: NIGHT_RULES,
+      weekendPairs: [],
+      seniorGapCount: 0,
+      restCompromiseCount: 0,
+    });
+    // Before the fix: TRAUMA-D's min of 1 would count as a phantom miss on every non-existent
+    // weekday (3x/week) even though the generator never had a slot to fill. After the fix: 0.
+    expect(metrics.coverageMiss).toBe(0);
   });
 });
 

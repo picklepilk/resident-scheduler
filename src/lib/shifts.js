@@ -156,14 +156,14 @@ export function shiftOverlapsJC(sid) {
 // uses, or off-service assignments won't show up here. `residentId` (optional) excludes the
 // hovered resident from both buckets — "who ELSE is working" — since the 4-arg positional
 // signature has no other way to identify who's being hovered.
-export function overlappingAssignments(schedule, allResidents, dateStr, shiftId, { includePrevDayNights = true, residentId } = {}) {
+export function overlappingAssignments(schedule, allResidents, dateStr, shiftId, { residentId } = {}) {
   const result = { same: [], overlapping: [] };
   const hovStart = shiftStartMs(shiftId, dateStr);
   if (hovStart === null) return result;
   const hovEnd = shiftEndMs(shiftId, dateStr);
 
   const refDate = parseDate(dateStr);
-  const offsets = includePrevDayNights ? [-1, 0, 1] : [0];
+  const offsets = [-1, 0, 1];
   const groupMap = new Map(); // otherShiftId -> resident[] (in first-seen order; re-sorted below)
 
   for (const r of (allResidents || [])) {

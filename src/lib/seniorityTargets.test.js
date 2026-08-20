@@ -5,7 +5,7 @@
 // residents"). Imports the real ResidentScheduler.jsx under jsdom — verified import-safe by the
 // existing generator.harness.test.js/grRestRules.test.js suites, same pattern followed here.
 import { describe, it, expect } from 'vitest';
-import { validateAll, generateSchedule, getShiftTarget, offServiceWindowTargetDelta } from '../ResidentScheduler.jsx';
+import { validateAll, generateSchedule, getShiftTarget, offServiceWindowTargetDelta, summarizeGenerationReport } from '../ResidentScheduler.jsx';
 import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -30,8 +30,8 @@ const ORDINARY_WED = '2026-07-08'; // 1st Wednesday — neither FLEX's nor POD's
 const FLEX_WW = '2026-07-15';      // FLEX's (PGY-2's) own Wellness Wednesday (2nd)
 const POD_WW = '2026-07-22';       // POD's (PGY-3's) own Wellness Wednesday (3rd)
 
-function compositionIssues(allResidents, schedule) {
-  return validateAll(allResidents, schedule, block).filter(i => i.message.includes('requires an EM PGY-'));
+function compositionIssues(allResidents, schedule, appSettings) {
+  return validateAll(allResidents, schedule, block, {}, appSettings).filter(i => i.message.includes('requires an EM PGY-'));
 }
 
 describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
@@ -70,6 +70,35 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
     const schedule = { p2: { [POD_WW]: 'POD-E' } };
     expect(compositionIssues([pgy2], schedule)).toEqual([]);
+  });
+
+  // Regression guard: podWellnessSubstituteAllowed/flexWellnessSubstituteAllowed used to key
+  // purely off the computed 3rd/2nd-Wednesday date and ignore appSettings.wellnessWednesdaysEnabled
+  // entirely — so disabling Wellness Wednesdays program-wide left the hard POD-PGY-3/FLEX-PGY-2
+  // composition rule silently waivable on what is otherwise an ordinary working day. Both must now
+  // agree with effectiveWellnessWednesdayDate's own toggle read.
+  it('with wellnessWednesdaysEnabled OFF, a PGY-2-only POD group on POD\'s computed 3rd Wednesday still errors', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [POD_WW]: 'POD-E' } };
+    const issues = compositionIssues([pgy2], schedule, { wellnessWednesdaysEnabled: false });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ level: 'error', dateStr: POD_WW, shiftId: 'POD-E' });
+    expect(issues[0].message).toContain('PGY-3');
+  });
+
+  it('with wellnessWednesdaysEnabled OFF, a PGY-3-only FLEX group on FLEX\'s computed 2nd Wednesday still errors', () => {
+    const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+    const schedule = { p3: { [FLEX_WW]: 'FLEX-E' } };
+    const issues = compositionIssues([pgy3], schedule, { wellnessWednesdaysEnabled: false });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ level: 'error', dateStr: FLEX_WW, shiftId: 'FLEX-E' });
+    expect(issues[0].message).toContain('PGY-2');
+  });
+
+  it('with wellnessWednesdaysEnabled explicitly ON, the POD substitution on the 3rd Wednesday is unaffected', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const schedule = { p2: { [POD_WW]: 'POD-E' } };
+    expect(compositionIssues([pgy2], schedule, { wellnessWednesdaysEnabled: true })).toEqual([]);
   });
 
   it('POD staffed by a PGY-2 alone on an ordinary Wednesday evening still errors', () => {
@@ -177,6 +206,66 @@ describe('1.10 getShiftTarget — vacation-rotation BLOCK_TARGETS wins even for 
   it('a non-chief resident on a vacation block is unaffected by this change (unchanged path)', () => {
     const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM_VAC' };
     expect(getShiftTarget(r)).toBe(11);
+  });
+});
+
+describe('getShiftTarget — explicit-0 override returns null, never 0 (documented contract)', () => {
+  // Regression guard: getShiftTarget's own contract comment says a fully-bought-down/self-cover
+  // resident must resolve to null, never 0 — every downstream consumer (candidatePool,
+  // scoreGenerationResult, scheduleQuality's targetBearing filter) treats `!= null` as "counts
+  // toward the fairness population", and 0 wrongly passes that check while null correctly doesn't.
+  // The bug: only the targetDelta-zeroing path enforced this; an explicit 0 landing in `base` with
+  // NO delta at all (targetDelta unset/0) fell through and returned the raw 0.
+
+  it('an explicit 0 Settings targetOverrides entry (no targetDelta) returns null, not 0', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 0 } })).toBeNull();
+  });
+
+  it('a non-zero Settings targetOverrides entry is unaffected', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 5 } })).toBe(5);
+  });
+
+  it('a targetDelta that exactly zeros a positive base still returns null (pre-existing behavior, unchanged)', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM', targetDelta: -18 }; // base 18 (EM_HOME_3)
+    expect(getShiftTarget(r)).toBeNull();
+  });
+
+  it('a targetDelta that would go negative also returns null, not a negative number', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM', targetDelta: -25 };
+    expect(getShiftTarget(r)).toBeNull();
+  });
+
+  it('an explicit 0 base WITH a positive targetDelta correctly nets to a real target (not forced null)', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM', targetDelta: 4 };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 0 } })).toBe(4);
+  });
+
+  it('a normal positive target with no delta is unaffected', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM' };
+    expect(getShiftTarget(r)).toBe(18);
+  });
+});
+
+describe('summarizeGenerationReport — pgy2Required has a recommendation string (matches pgy3Required)', () => {
+  // Regression guard: fillDayPass pushes reason:'pgy2Required' for an unfilled FLEX slot with no
+  // eligible PGY-2 (SENIOR_COMPOSITION.FLEX.primary) and no Wellness-Wednesday PGY-3 substitute —
+  // the exact sibling case to 'pgy3Required' for POD — but summarizeGenerationReport had no
+  // recs.push for it at all, so the Violations tab silently showed the gap with zero guidance.
+  it('produces a recommendation mentioning PGY-2 for an unfilled FLEX slot', () => {
+    const report = { unfilled: [{ dateStr: '2026-07-09', shiftId: 'FLEX-E', slotIndex: 0, reason: 'pgy2Required' }] };
+    const summary = summarizeGenerationReport(report);
+    const flexRow = summary.find(s => s.shiftId === 'FLEX-E');
+    expect(flexRow).toBeTruthy();
+    expect(flexRow.recommendations.some(r => r.includes('PGY-2'))).toBe(true);
+  });
+
+  it('the sibling pgy3Required (POD) still produces its own PGY-3 recommendation, unaffected', () => {
+    const report = { unfilled: [{ dateStr: '2026-07-09', shiftId: 'POD-E', slotIndex: 0, reason: 'pgy3Required' }] };
+    const summary = summarizeGenerationReport(report);
+    const podRow = summary.find(s => s.shiftId === 'POD-E');
+    expect(podRow.recommendations.some(r => r.includes('PGY-3'))).toBe(true);
   });
 });
 

@@ -47,6 +47,20 @@ function errorCount(issues) {
   return issues.filter(i => i.level === 'error').length;
 }
 
+// Per-class breakdown, same split generator.harness.test.js's structuralErrorCount already uses:
+// "Under target" (EM Home/BAMC hard export-blocking floor, Phase 1C) vs. everything else
+// ("structural" — ineligible shifts, composition, rest/circadian, coverage, etc.). The two are
+// complementary partitions of the 'error' level, so structural + underTarget === errorCount(issues)
+// always. Tracked separately because the plain sum is class-blind: a structural regression could
+// hide inside the aggregate as long as a simultaneous drop in under-target errors keeps the total
+// at/below the floor, and the two error classes are not remotely interchangeable in severity.
+function structuralErrorCount(issues) {
+  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
+}
+function underTargetErrorCount(issues) {
+  return issues.filter(i => i.level === 'error' && i.message.startsWith('Under target')).length;
+}
+
 function captureOnce(variant, baseSeed) {
   const fixture = makeFixture(variant);
   // `attempts` pinned ON PURPOSE here, unlike the perf smoke test in generator.harness.test.js,
@@ -72,11 +86,18 @@ function captureOnce(variant, baseSeed) {
     restCompromiseCount: report.restCompromises.length,
   });
   const rulePriority = normalizeRulePriority(fixture.appSettings?.rulePriority);
-  return { errors: errorCount(issues), quality: computeQualityVector(metrics, rulePriority), unfilled: report.unfilled.length };
+  return {
+    errors: errorCount(issues),
+    structuralErrors: structuralErrorCount(issues),
+    underTargetErrors: underTargetErrorCount(issues),
+    quality: computeQualityVector(metrics, rulePriority),
+    unfilled: report.unfilled.length,
+  };
 }
 
-// Averages every SEEDS run. `errors` is SUMMED rather than averaged on purpose — a hard validateAll
-// error is never acceptable at any seed and must not be diluted by seeds that happened to be clean.
+// Averages every SEEDS run. `errors`/`structuralErrors`/`underTargetErrors` are all SUMMED rather
+// than averaged on purpose — a hard validateAll error is never acceptable at any seed and must not
+// be diluted by seeds that happened to be clean.
 export function captureFor(variant) {
   const runs = SEEDS.map(s => captureOnce(variant, s));
   const n = runs.length;
@@ -86,6 +107,8 @@ export function captureFor(variant) {
   return {
     seeds: SEEDS,
     errors: runs.reduce((sum, r) => sum + r.errors, 0),
+    structuralErrors: runs.reduce((sum, r) => sum + r.structuralErrors, 0),
+    underTargetErrors: runs.reduce((sum, r) => sum + r.underTargetErrors, 0),
     quality,
     unfilled: runs.reduce((sum, r) => sum + r.unfilled, 0) / n,
   };
@@ -121,17 +144,31 @@ export function makeBaselineSuite(variant) {
       it('writes the committed baseline', () => {
         const before = loadBaseline(variant);
         if (before && !process.env.FORCE_QUALITY_BASELINE) {
-          const errorsWorse = captured.errors > before.errors;
+          // Per-class, not just the aggregate: a structural regression masked by a simultaneous
+          // drop in under-target errors (or vice versa) must still refuse to write. `before` may
+          // predate this per-class split (no structuralErrors/underTargetErrors fields) — treat a
+          // missing prior class count as "unknown, no floor yet" (Infinity, never worse) rather
+          // than 0, so a one-time migration onto the new shape isn't blocked by a class that was
+          // simply never measured before (the pre-existing `errors` total is still checked below
+          // and remains the real floor for that migration write).
+          const structuralWorse = captured.structuralErrors > (before.structuralErrors ?? Infinity);
+          const underTargetWorse = captured.underTargetErrors > (before.underTargetErrors ?? Infinity);
+          const errorsWorse = captured.errors > before.errors || structuralWorse || underTargetWorse;
           const qualityWorse = compareWithTolerance(captured.quality, before.quality) > 0;
           if (errorsWorse || qualityWorse) {
             throw new Error(
               `Refusing to write worse baseline for "${variant}" (errors ${before.errors}->${captured.errors}, ` +
+              `structural ${before.structuralErrors ?? '?'}->${captured.structuralErrors}, ` +
+              `under-target ${before.underTargetErrors ?? '?'}->${captured.underTargetErrors}, ` +
               `quality ${JSON.stringify(before.quality)}->${JSON.stringify(captured.quality)}). ` +
               `Set FORCE_QUALITY_BASELINE=1 to override.`
             );
           }
           // eslint-disable-next-line no-console
-          console.log(`[baseline] ${variant}: errors ${before.errors} -> ${captured.errors}, quality ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`);
+          console.log(`[baseline] ${variant}: errors ${before.errors} -> ${captured.errors} ` +
+            `(structural ${before.structuralErrors ?? '?'} -> ${captured.structuralErrors}, ` +
+            `under-target ${before.underTargetErrors ?? '?'} -> ${captured.underTargetErrors}), ` +
+            `quality ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`);
         }
         fs.writeFileSync(baselinePath(variant), JSON.stringify(captured, null, 2) + '\n', 'utf-8');
         expect(fs.existsSync(baselinePath(variant))).toBe(true);
@@ -141,6 +178,27 @@ export function makeBaselineSuite(variant) {
         const before = loadBaseline(variant);
         expect(before, `no committed baseline for "${variant}" — run with UPDATE_QUALITY_BASELINE=1 first`).not.toBeNull();
         expect(captured.errors, `${variant}: errors`).toBeLessThanOrEqual(before.errors);
+        // Per-class gates, not just the aggregate above: the aggregate alone lets a structural
+        // regression (ineligible shifts, composition, rest/circadian, coverage, etc.) hide as long
+        // as under-target errors happen to drop by an offsetting amount, or vice versa — the two
+        // classes are not interchangeable severities. `before.structuralErrors`/`underTargetErrors`
+        // must exist — a baseline predating this split needs a fresh UPDATE_QUALITY_BASELINE=1 run.
+        expect(
+          before.structuralErrors,
+          `${variant}: committed baseline missing structuralErrors — regenerate with UPDATE_QUALITY_BASELINE=1`
+        ).not.toBeUndefined();
+        expect(
+          before.underTargetErrors,
+          `${variant}: committed baseline missing underTargetErrors — regenerate with UPDATE_QUALITY_BASELINE=1`
+        ).not.toBeUndefined();
+        expect(
+          captured.structuralErrors,
+          `${variant}: structural errors (non-"Under target")`
+        ).toBeLessThanOrEqual(before.structuralErrors);
+        expect(
+          captured.underTargetErrors,
+          `${variant}: under-target errors`
+        ).toBeLessThanOrEqual(before.underTargetErrors);
         expect(
           compareWithTolerance(captured.quality, before.quality),
           `${variant}: quality vector (avg over ${SEEDS.length} seeds) ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`

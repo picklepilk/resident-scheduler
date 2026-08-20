@@ -11,7 +11,7 @@
 // FINAL schedule (post-repair), not raw fill-time bookkeeping — see ResidentScheduler.jsx's
 // `buildQualityInput` for how those are produced.
 
-import { SHIFT_MAP, isNightShiftId } from './shifts.js';
+import { SHIFT_MAP, SHIFT_DOW, isNightShiftId } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 
@@ -108,6 +108,11 @@ export function computeQualityMetrics({
     // on each call, and there are ~40 shift ids to check against the same date.
     const twelveHourState = twelveHourStateFor(ds, ayConf);
     for (const shiftId of Object.keys(SHIFT_MAP)) {
+      // A shift absent from SHIFT_DOW on this weekday doesn't exist at all today (e.g.
+      // TRAUMA-D/TRAUMA-N only run specific weekdays) — same guard as computeCoverageByDate/
+      // composeCoverage/generator.harness.test.js, or every non-existent day charges a phantom
+      // coverage miss the generator never had a chance to fill.
+      if (SHIFT_DOW[shiftId] && !SHIFT_DOW[shiftId].includes(dow)) continue;
       const { min } = getCoverageFor(shiftId, coverage, dow, twelveHourState);
       if (min <= 0) continue;
       let filled = 0;
@@ -248,10 +253,13 @@ export function computeQualityMetrics({
     const interior = runs.filter(run => run.start > 0 && run.end < lastIdx);
     interior.forEach((run, idx) => {
       const { len } = run;
-      if (len === 1) nightShapePenalty += 3;
-      else if (len === 2) nightShapePenalty += 2;
-      else if (len === 3) nightShapePenalty += 1;
-      else if (len >= nightRules.minRun && len <= nightRules.maxRun) {
+      // Below minRun: penalty derived from NIGHT_RULES.minRun, not hardcoded lengths — this used
+      // to be the literals 3/2/1 for len 1/2/3, which was only correct because minRun was 4 at
+      // the time (minRun - len === 3,2,1). Deriving it keeps the ladder in sync with minRun
+      // (bumped 4→5) instead of silently leaving the new minRun-1 length (4) unmatched and
+      // scoring 0 — better than a compliant minRun-length run's 0.25.
+      if (len < nightRules.minRun) nightShapePenalty += (nightRules.minRun - len);
+      else if (len <= nightRules.maxRun) {
         nightShapePenalty += 0.25 * (nightRules.idealRun - len);
       }
       // else: len > maxRun (or otherwise unmatched) — validateAll's hard rule already forbids
