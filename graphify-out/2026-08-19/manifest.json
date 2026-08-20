@@ -30,8 +30,8 @@
     "semantic_hash": ""
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1787157247.3035939,
-    "ast_hash": "62fa059cad34320d9a203667c08a7ee2",
+    "mtime": 1787188186.301515,
+    "ast_hash": "eb3e11157079e5d48e5abfa76657c5cf",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -160,8 +160,8 @@
     "semantic_hash": "4138e59c177dedd107bb45114cb7d199"
   },
   "CLAUDE.md": {
-    "mtime": 1787144122.235571,
-    "ast_hash": "0ff51b7b3b5e764120b5e13e3bc0e78c",
+    "mtime": 1787162349.1061356,
+    "ast_hash": "e1214a02958ea408e7102661018daa74",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -200,8 +200,8 @@
     "semantic_hash": ""
   },
   "src/lib/coverage.test.js": {
-    "mtime": 1787144122.2582154,
-    "ast_hash": "40c54a8ecf30c34be101b301ab976586",
+    "mtime": 1787169321.4605844,
+    "ast_hash": "3a6d25f7aeeeb4c56a550a42c0d8ab78",
     "semantic_hash": ""
   },
   "src/lib/dates.js": {
@@ -215,23 +215,23 @@
     "semantic_hash": "92beadac6ef2aa18d4685654ca9f2e0f"
   },
   "src/lib/parse.js": {
-    "mtime": 1785362223.6153831,
-    "ast_hash": "a2aa7c20aef3db4fb47bb0e67141f740",
-    "semantic_hash": "a2aa7c20aef3db4fb47bb0e67141f740"
+    "mtime": 1787169133.7764962,
+    "ast_hash": "7b3cc9f6b4904588f344e46cf8054b40",
+    "semantic_hash": ""
   },
   "src/lib/parse.test.js": {
-    "mtime": 1785363445.267802,
-    "ast_hash": "a7788d82473073e3752b244f0097e036",
-    "semantic_hash": "a7788d82473073e3752b244f0097e036"
+    "mtime": 1787168401.4321945,
+    "ast_hash": "d97f31b7d9724047a5449c059f7ba6d3",
+    "semantic_hash": ""
   },
   "src/lib/shifts.js": {
-    "mtime": 1787144122.2624536,
-    "ast_hash": "499b0c87949bcc41dcb67c2d1aff6b86",
+    "mtime": 1787169149.3533037,
+    "ast_hash": "5d42da05f662f3fb8de45435199338eb",
     "semantic_hash": ""
   },
   "src/lib/shifts.test.js": {
-    "mtime": 1787144122.2624536,
-    "ast_hash": "a412a96d36dbf60a1a98d581f0cd6c92",
+    "mtime": 1787169292.6246054,
+    "ast_hash": "14fd738a2f2a60e76eadde83205b83b9",
     "semantic_hash": ""
   },
   "vitest.config.js": {
@@ -240,13 +240,13 @@
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/syntheticRoster.js": {
-    "mtime": 1786262212.401427,
-    "ast_hash": "c593fc72ea3556367895e77ae9418dc3",
-    "semantic_hash": "c593fc72ea3556367895e77ae9418dc3"
+    "mtime": 1787169177.3696969,
+    "ast_hash": "7e16cdb6c8efc5b370a408afac17e446",
+    "semantic_hash": ""
   },
   "src/lib/generator.harness.test.js": {
-    "mtime": 1786910156.443551,
-    "ast_hash": "50e7ab8fa27510d2f03636e5b3419c93",
+    "mtime": 1787172130.0948408,
+    "ast_hash": "e509e14bb63380d5f78b743ce04a25d2",
     "semantic_hash": ""
   },
   "src/lib/rng.js": {
@@ -260,8 +260,8 @@
     "semantic_hash": "e4f3c534e1106a800420e2fd1c5a55a6"
   },
   "src/lib/scheduleQuality.js": {
-    "mtime": 1787144122.2613766,
-    "ast_hash": "01e1e19a2f79c231cebc9c4444c7bdf9",
+    "mtime": 1787185434.413802,
+    "ast_hash": "da0fbd9553ddd484a4a9c80a155c10f0",
     "semantic_hash": ""
   },
   "src/lib/scheduleQuality.test.js": {
@@ -280,18 +280,18 @@
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.standard.json": {
-    "mtime": 1786910156.437631,
-    "ast_hash": "1a92dae1424ba86a0640929e920984c3",
+    "mtime": 1787172701.5839827,
+    "ast_hash": "ba4f538f887a23c0299ace2600813df3",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.understaffed.json": {
-    "mtime": 1786910156.4381614,
-    "ast_hash": "46c82d010edc9a9bb0a79d9e7dd1cc64",
+    "mtime": 1787172695.9041853,
+    "ast_hash": "ca876ccf0bd1407826935530f9ad5422",
     "semantic_hash": ""
   },
   "src/lib/__fixtures__/qualityBaseline.vacationHeavy.json": {
-    "mtime": 1786910156.439238,
-    "ast_hash": "2607d843d28f4372d360457fe26cc539",
+    "mtime": 1787172700.7920036,
+    "ast_hash": "dc61622271994403bdb563f2114c72b8",
     "semantic_hash": ""
   },
   "src/lib/baselineSuite.js": {
@@ -372,6 +372,46 @@
   "src/lib/qgenda.test.js": {
     "mtime": 1787144122.2608316,
     "ast_hash": "1fed4ddabd2645a1fe06aa44611fc9a9",
+    "semantic_hash": ""
+  },
+  "src/lib/coverageComposition.js": {
+    "mtime": 1787160767.3681338,
+    "ast_hash": "0182700ef5beed98a1798ac98d41b55b",
+    "semantic_hash": ""
+  },
+  "src/lib/coverageComposition.test.js": {
+    "mtime": 1787169302.472331,
+    "ast_hash": "4ebc7cbba3c4025c10e90762ced2b9d1",
+    "semantic_hash": ""
+  },
+  "src/lib/pedsPgy2Migration.test.js": {
+    "mtime": 1787169267.938497,
+    "ast_hash": "9fea2fc3bc9e8efe442d3df5cbd454d0",
+    "semantic_hash": ""
+  },
+  "src/lib/grRestRules.test.js": {
+    "mtime": 1787170394.2037704,
+    "ast_hash": "18a25ce00c7d0422905b03bce939a868",
+    "semantic_hash": ""
+  },
+  "src/lib/seniorityTargets.test.js": {
+    "mtime": 1787171970.8807943,
+    "ast_hash": "ba63e20e2353ae48327411ba67c36a32",
+    "semantic_hash": ""
+  },
+  "src/lib/availabilityFeatures.test.js": {
+    "mtime": 1787188144.4167342,
+    "ast_hash": "c2c604e6ec55d38817860697e2fb513a",
+    "semantic_hash": ""
+  },
+  "src/lib/finalSundayRule.test.js": {
+    "mtime": 1787182368.882006,
+    "ast_hash": "9afbc3f624479ff4d8bc4ebf20a269b6",
+    "semantic_hash": ""
+  },
+  "src/lib/jeopardyFill.test.js": {
+    "mtime": 1787186966.4492688,
+    "ast_hash": "6308a3123a7c4223d4d69fe98b1c6541",
     "semantic_hash": ""
   }
 }

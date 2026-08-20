@@ -322,6 +322,11 @@ export function computeQualityMetrics({
       }
     }
 
+    // Phase 2.3 (day<->eve<->night type-churn) was implemented here as a mirror of score()'s
+    // typeChurn term, then reverted alongside it — isolated A/B testing showed the fill-time term
+    // consistently INCREASED workShapePenalty (the opposite of its intent) via a destructive
+    // mixShare interaction. See ResidentScheduler.jsx's SCORE_WEIGHTS comment for the measurement.
+
     // Vacation adjacency: a shift the day before vacation starts or the day after it ends. Scored
     // symmetrically because there's no evidence yet that one side matters more than the other —
     // see the plan's open questions. Cheap (1) so it only ever breaks ties.

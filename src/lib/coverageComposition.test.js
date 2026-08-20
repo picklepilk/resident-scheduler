@@ -93,6 +93,41 @@ describe('composeCoverage: SHIFT_DOW (PED-S only exists Mon/Tue/Thu/Fri)', () =>
   });
 });
 
+describe('composeCoverage: SHIFT_DOW (TRAUMA-D/TRAUMA-N are must-fill-only-on-these-days)', () => {
+  const allResidents = [resident('r1', 'EM_HOME', 1)];
+
+  it('TRAUMA-D is absent from a Wednesday entry (GR day, neither shift exists)', () => {
+    const out = composeCoverage({ dates: ['2026-06-03'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Wed
+    expect(out['2026-06-03']['TRAUMA-D']).toBeUndefined();
+    expect(out['2026-06-03']['TRAUMA-N']).toBeUndefined();
+  });
+
+  it('TRAUMA-D is absent from a Monday entry (not in its Sun/Tue/Thu/Sat window)', () => {
+    const out = composeCoverage({ dates: ['2026-06-01'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Mon
+    expect(out['2026-06-01']['TRAUMA-D']).toBeUndefined();
+  });
+
+  it('TRAUMA-D is present on a Tuesday entry with its normal min/max', () => {
+    const out = composeCoverage({ dates: ['2026-06-02'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Tue
+    expect(out['2026-06-02']['TRAUMA-D']).toBeDefined();
+    expect(out['2026-06-02']['TRAUMA-D'].min).toBe(1);
+    expect(out['2026-06-02']['TRAUMA-D'].max).toBe(1);
+  });
+
+  it('TRAUMA-N is present on a Monday entry (in its Sun/Mon/Fri/Sat window)', () => {
+    const out = composeCoverage({ dates: ['2026-06-01'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Mon
+    expect(out['2026-06-01']['TRAUMA-N']).toBeDefined();
+  });
+
+  it('TRAUMA-D and TRAUMA-N are both present on Sunday/Saturday (the overlap days)', () => {
+    const out = composeCoverage({ dates: ['2026-05-31', '2026-06-06'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Sun, Sat
+    expect(out['2026-05-31']['TRAUMA-D']).toBeDefined();
+    expect(out['2026-05-31']['TRAUMA-N']).toBeDefined();
+    expect(out['2026-06-06']['TRAUMA-D']).toBeDefined();
+    expect(out['2026-06-06']['TRAUMA-N']).toBeDefined();
+  });
+});
+
 describe('composeCoverage: 12-hour replace window', () => {
   // Same window shape as src/lib/coverage.test.js's twelveHourWindows fixtures: an explicit
   // ayConf.twelveHourWindows array, mode 'replace', over a single area.

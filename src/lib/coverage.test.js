@@ -7,7 +7,7 @@ import {
   normalizeTwelveHourWindow, implicitConferenceWindows,
   resolveTwelveHourWindows, twelveHourStateFor, twelveHourAllows,
 } from './coverage.js';
-import { SHIFTS } from './shifts.js';
+import { SHIFTS, SHIFT_DOW } from './shifts.js';
 
 describe('normalizeCoverageEntry', () => {
   it('converts a legacy single-number shape to {min,max} with equal values', () => {
@@ -107,6 +107,27 @@ describe('getCoverageFor: TRAUMA clamp on the untouched (no-state) path', () => 
 
   it('clamps a legacy-number TRAUMA-N override down to max 1', () => {
     expect(getCoverageFor('TRAUMA-N', { 'TRAUMA-N': 3 })).toEqual({ min: 1, max: 1 });
+  });
+});
+
+describe('SHIFT_DOW (trauma must-fill days): TRAUMA-D/TRAUMA-N only exist on specific weekdays', () => {
+  // getCoverageFor itself is day-of-week-oblivious for TRAUMA ids (it always returns the base
+  // {min,max}, dow-clamped only where DOW_COVERAGE_MAX_OVERRIDE applies, which TRAUMA never is) —
+  // the actual "doesn't exist today" gating lives in SHIFT_DOW and is applied by callers
+  // (computeCoverageByDate in ResidentScheduler.jsx, composeCoverage in coverageComposition.js,
+  // getEligibleShifts) BEFORE they ever call getCoverageFor for that date. These entries match the
+  // existing EM Home trauma_day_gate/trauma_n_window shiftGate windows exactly (chief-directed
+  // AY26/27 — see coverageComposition.test.js for the caller-side "absent on the wrong day" behavior).
+  it('TRAUMA-D exists Sun/Tue/Thu/Sat, TRAUMA-N exists Sun/Mon/Fri/Sat', () => {
+    expect(SHIFT_DOW['TRAUMA-D']).toEqual([0, 2, 4, 6]);
+    expect(SHIFT_DOW['TRAUMA-N']).toEqual([0, 1, 5, 6]);
+  });
+
+  it('getCoverageFor still returns the full min/max for TRAUMA-D/TRAUMA-N regardless of dow — the caller, not this function, must consult SHIFT_DOW first', () => {
+    // dow=3 (Wednesday) is outside both windows, but getCoverageFor doesn't know that — passing
+    // dow here only ever affects DOW_COVERAGE_MAX_OVERRIDE (POD only), never TRAUMA.
+    expect(getCoverageFor('TRAUMA-D', {}, 3)).toEqual({ min: 1, max: 1 });
+    expect(getCoverageFor('TRAUMA-N', {}, 3)).toEqual({ min: 1, max: 1 });
   });
 });
 

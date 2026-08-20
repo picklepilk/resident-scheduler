@@ -16,7 +16,7 @@
 export const CATEGORIES = [
   { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-blue-50',    badge: 'bg-blue-700 text-white' },
   { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-white' },
-  { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [1,3],   persistent: false, rowBg: 'bg-green-50',   badge: 'bg-green-600 text-white' },
+  { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [2,3],   persistent: false, rowBg: 'bg-green-50',   badge: 'bg-green-600 text-white' },
   { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-white' },
   { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-white' },
   { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-400 text-white' },
@@ -124,9 +124,16 @@ export function parseRosterText(text, allowedCategoryIds) {
       continue;
     }
 
-    const pgyMatch = String(cols[pI] ?? '').match(/[0-9]/);
-    const pgy = pgyMatch ? Number(pgyMatch[0]) : null;
+    const pgyRaw = String(cols[pI] ?? '').trim();
+    const pgyMatch = pgyRaw.match(/[0-9]/);
     const pgyOptions = CAT_MAP[category].pgyOptions;
+    // A blank PGY cell is the common case for a category with only one possible PGY (e.g.
+    // Podiatry — pgyOptions:[1]): a chief's roster paste often omits a redundant PGY column
+    // for those specialties entirely, which used to hard-reject the row with no visible
+    // indication why the resident "didn't populate." Default it instead — but only when the
+    // cell is genuinely blank; an explicit-but-wrong value (e.g. "2" pasted for Podiatry)
+    // still errors below exactly as before.
+    const pgy = pgyMatch ? Number(pgyMatch[0]) : (!pgyRaw && pgyOptions.length === 1 ? pgyOptions[0] : null);
     if (!pgy || !pgyOptions.includes(pgy)) {
       errors.push({ line: lineNo, raw: lines[i], reason: `PGY "${cols[pI] ?? ''}" isn't valid for ${CAT_MAP[category].label} (allowed: ${pgyOptions.join(', ')})` });
       continue;

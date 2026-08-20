@@ -1,0 +1,22 @@
+-- One-time delta for an already-provisioned production DB — add alongside applying the baseline.
+-- Apply with: npx supabase db query --linked -f supabase/migrate_profile_ui_prefs.sql
+-- (CLI not on PATH; npx it. --linked follows supabase/.temp/, independent of whatever project the
+-- dashboard currently has selected — see CLAUDE.md.)
+--
+-- Adds per-viewer UI preferences (Schedule tab's sidebar "Other" overflow group membership,
+-- per-card collapsed/expanded state — see src/uiPrefs.js) to each admin/resident's OWN profile
+-- row, so the same layout choices follow them across devices. Device-local-only when this column
+-- is null or the row can't be reached (auth off, or the write fails) — see src/uiPrefs.js's
+-- `useUiPrefs` for the localStorage fallback.
+--
+-- RLS/trigger check performed before writing this migration (see day_off_requests.sql):
+--   - `profiles_update_own` already permits a self-UPDATE of any column other than `role`
+--     (`using (auth.uid() = id and role <> 'pending') with check (auth.uid() = id)`).
+--   - `enforce_profile_role_change_rules` (BEFORE UPDATE trigger) only inspects `new.role` for a
+--     SELF-update (`auth.uid() = old.id`) — every other column, including this new one, passes
+--     through untouched. Its cross-account branch (an admin editing someone else's row) is
+--     unreachable here: `profiles_admin_update_role`'s USING clause requires `id <> auth.uid()`,
+--     and nothing in this app ever has an admin write another user's ui_prefs.
+-- Conclusion: no trigger change needed. A signed-in, non-pending viewer can already write their
+-- own `ui_prefs` the moment this column exists — this migration is additive only.
+alter table profiles add column if not exists ui_prefs jsonb;

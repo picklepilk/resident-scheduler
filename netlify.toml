@@ -14,3 +14,18 @@
   from   = "/*"
   to     = "/index.html"
   status = 200
+  # Netlify serves an existing static file (this SPA catch-all's own /sw.js, /manifest.webmanifest,
+  # /icons/*) before falling back to a redirect, so this rule never shadows them — no exception
+  # needed here.
+
+# Service worker must never be served from a stale CDN cache, or a deploy's new sw.js can't
+# reach clients to invalidate old caches (see public/sw.js's CACHE_VERSION comment).
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"

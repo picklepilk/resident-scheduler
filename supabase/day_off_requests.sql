@@ -10,7 +10,14 @@ create table profiles (
   email       text not null,
   role        text not null default 'pending' check (role in ('pending','resident','admin')),
   resident_id text,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- Per-viewer UI preferences (sidebar "Other" overflow group, per-card collapsed/expanded state
+  -- — see src/uiPrefs.js). Added 2026 via migrate_profile_ui_prefs.sql for already-provisioned
+  -- DBs; included directly here so a fresh install needs only this baseline. Already writable by
+  -- a signed-in, non-pending viewer on their own row with no trigger change — see that
+  -- migration's own comment for why (profiles_update_own's WITH CHECK only pins auth.uid()=id,
+  -- and enforce_profile_role_change_rules only guards the role column on a self-update).
+  ui_prefs    jsonb
 );
 alter table profiles enable row level security;
 

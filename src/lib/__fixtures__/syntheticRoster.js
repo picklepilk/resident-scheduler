@@ -90,8 +90,9 @@ function makeResident(overrides) {
 // EM_BAMC PGY-1 x2 (Sierra, Tango).
 // FM PGY-3 x2 (Uniform, Victor) — night-only eligibility path (BASE_ELIGIBILITY.FM_3 = PED-N
 // only, onlyDays Mon/Tue/Wed via DEFAULT_DAY_RULES.FM_3 — see isNightOnlyResident).
-// Off-service x3 (Whiskey/PEDS-1, Xray/IM-2, Yankee/NEURO-1) — exercise all three
-// availabilityMode paths ('full', 'ranges', 'days').
+// Off-service x3 (Whiskey/PEDS-2, Xray/IM-2, Yankee/NEURO-1) — exercise all three
+// availabilityMode paths ('full', 'ranges', 'days'). Peds is PGY-2/PGY-3 only (chief-directed
+// AY26/27 restructure — see BASE_ELIGIBILITY.PEDS_2 in ResidentScheduler.jsx).
 function buildStandardRoster() {
   return [
     // EM_HOME PGY-1
@@ -122,7 +123,7 @@ function buildStandardRoster() {
     makeResident({ firstName: 'Uniform', category: 'FM', pgy: 3 }),
     makeResident({ firstName: 'Victor', category: 'FM', pgy: 3 }),
     // Off-service (non-persistent categories, mirrors block.offServiceResidents entries)
-    makeResident({ firstName: 'Whiskey', category: 'PEDS', pgy: 1, availabilityMode: 'full' }),
+    makeResident({ firstName: 'Whiskey', category: 'PEDS', pgy: 2, availabilityMode: 'full' }),
     makeResident({
       firstName: 'Xray', category: 'IM', pgy: 2, availabilityMode: 'ranges',
       availableRanges: [{ start: '2026-07-20', end: BLOCK_END }],

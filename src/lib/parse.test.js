@@ -133,6 +133,38 @@ describe('parseRosterText', () => {
     expect(parseRosterText('', ['EM_HOME'])).toEqual({ ok: [], errors: [] });
     expect(parseRosterText('   \n  \n', ['EM_HOME'])).toEqual({ ok: [], errors: [] });
   });
+
+  // Regression: a chief reported a Podiatry resident "didn't populate from roster upload." Root
+  // cause — Podiatry (like NEURO/ANES/PSYCH) has exactly one valid pgyOptions entry ([1]), and a
+  // spreadsheet with a redundant single-value PGY column is easy to leave blank when copy-pasted
+  // (unlike EM Home, which genuinely needs PGY-1/2/3 distinguished). A blank PGY cell used to be
+  // hard-rejected with no visible reason the row was dropped; it now defaults for any
+  // single-option category, while an explicit wrong value still errors exactly as before.
+  it('defaults PGY when the cell is blank and the category has exactly one valid PGY (Podiatry)', () => {
+    const { ok, errors } = parseRosterText('Smith, Pat\tPodiatry', ['POD']);
+    expect(errors).toEqual([]);
+    expect(ok).toEqual([{ firstName: 'Pat', lastName: 'Smith', category: 'POD', pgy: 1 }]);
+  });
+
+  it('defaults PGY when the cell is present but empty (trailing delimiter, no value)', () => {
+    const { ok, errors } = parseRosterText('Smith, Pat\tPodiatry\t', ['POD']);
+    expect(errors).toEqual([]);
+    expect(ok).toEqual([{ firstName: 'Pat', lastName: 'Smith', category: 'POD', pgy: 1 }]);
+  });
+
+  it('still rejects an explicit-but-invalid PGY for a single-option category', () => {
+    const { ok, errors } = parseRosterText('Smith, Pat\tPodiatry\t2', ['POD']);
+    expect(ok).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toMatch(/PGY/);
+  });
+
+  it('does NOT default a blank PGY for a multi-option category (EM Home still requires it)', () => {
+    const { ok, errors } = parseRosterText('Doe, Jane\tEM - Home', ['EM_HOME']);
+    expect(ok).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toMatch(/PGY/);
+  });
 });
 
 describe('parseDateRangeInAY', () => {

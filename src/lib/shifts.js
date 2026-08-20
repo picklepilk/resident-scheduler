@@ -2,7 +2,7 @@
 // Shift catalog constants and their direct helpers, extracted from ResidentScheduler.jsx's
 // CONSTANTS section. No React, no side effects at import time.
 
-import { parseDate } from './dates.js';
+import { parseDate, addDays, toDateStr } from './dates.js';
 
 // NOTE: AREA_COLORS is not in the original extraction spec's const list, but SHIFTS reads it
 // directly (SHIFTS[].chip) to build the shift catalog, so it has to live wherever SHIFTS lives
@@ -32,29 +32,31 @@ export const AREA_COLORS = {
 // PED-N-FM is a SECOND exception to the AREA-TYPE shift-id convention (PED-S was the first) —
 // it's AREA-TYPE-QUALIFIER, not plain AREA-TYPE. Nothing currently parses shift ids by splitting
 // on '-', but the convention itself is documented in this repo's CLAUDE.md, so note the exception
-// here too. The `short` field on PED-N-FM is an optional display abbreviation consumed by the
-// Shift Matrix header, which otherwise derives a column label from `type[0].toUpperCase()` — with
-// two 'night' shifts in the PED area that would render two indistinguishable 'N' columns.
+// here too. Every entry now carries an explicit `short` display abbreviation, consumed by the
+// Shift Matrix column header and eligSummaryFor — without it a shift falls back to
+// `type[0].toUpperCase()`, which collapses same-type shifts to identical single letters (POD-D and
+// POD-D12 both 'D', PED-N and PED-N-FM both 'N'). Add a `short` to any new shift id for the same
+// reason, rather than relying on the fallback.
 // Retiming PED-N's startH from 23 to 19 (below, in SHIFT_TIMING) flips shiftOverlapsJC('PED-N')
 // from false to true (shiftOverlapsJC is `startH < 21 && startH + durationH > 18`) — that's an
 // intended consequence of the split, not a bug: the new 19:00 PED-N genuinely overlaps Journal
 // Club's 18:00-21:00 window, while PED-N-FM (still 23:00) does not.
 export const SHIFTS = [
-  { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
-  { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.POD.chip.eve },
-  { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
-  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
-  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.PED.chip.eve },
-  { id: 'PED-N',    label: 'Peds Night',   area: 'PED',    hours: '19:00–04:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
+  { id: 'POD-D',    label: 'POD Day',      area: 'POD',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.POD.chip.day, short: 'D' },
+  { id: 'POD-E',    label: 'POD Eve',      area: 'POD',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.POD.chip.eve, short: 'E' },
+  { id: 'POD-N',    label: 'POD Night',    area: 'POD',    hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.POD.chip.night, short: 'N' },
+  { id: 'PED-D',    label: 'PED Day',      area: 'PED',    hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.PED.chip.day, short: 'D' },
+  { id: 'PED-E',    label: 'PED Eve',      area: 'PED',    hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.PED.chip.eve, short: 'E' },
+  { id: 'PED-N',    label: 'Peds Night',   area: 'PED',    hours: '19:00–04:00', type: 'night', chip: AREA_COLORS.PED.chip.night, short: 'N' },
   { id: 'PED-N-FM', label: 'Peds Night (FM Only)', area: 'PED', hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.PED.chip.night, short: 'NF' },
-  { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
-  { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: AREA_COLORS.FLEX.chip.eve },
-  { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
-  { id: 'MT-D',     label: 'MT Day',       area: 'MT',     hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
-  { id: 'MT-E',     label: 'MT Eve',       area: 'MT',     hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.MT.chip.eve },
-  { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
-  { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.TRAUMA.chip.day },
-  { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.TRAUMA.chip.night },
+  { id: 'FLEX-D',   label: 'FLEX Day',     area: 'FLEX',   hours: '06:00–15:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day, short: 'D' },
+  { id: 'FLEX-E',   label: 'FLEX Eve',     area: 'FLEX',   hours: '14:00–23:00', type: 'eve',   chip: AREA_COLORS.FLEX.chip.eve, short: 'E' },
+  { id: 'FLEX-N',   label: 'FLEX Night',   area: 'FLEX',   hours: '22:00–07:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night, short: 'N' },
+  { id: 'MT-D',     label: 'MT Day',       area: 'MT',     hours: '07:00–16:00', type: 'day',   chip: AREA_COLORS.MT.chip.day, short: 'D' },
+  { id: 'MT-E',     label: 'MT Eve',       area: 'MT',     hours: '15:00–00:00', type: 'eve',   chip: AREA_COLORS.MT.chip.eve, short: 'E' },
+  { id: 'MT-N',     label: 'MT Night',     area: 'MT',     hours: '23:00–08:00', type: 'night', chip: AREA_COLORS.MT.chip.night, short: 'N' },
+  { id: 'TRAUMA-D', label: 'Trauma Day',   area: 'TRAUMA', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.TRAUMA.chip.day, short: 'D' },
+  { id: 'TRAUMA-N', label: 'Trauma Night', area: 'TRAUMA', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.TRAUMA.chip.night, short: 'N' },
   // 12h conference-week pairs (day+night, no evening) — POD/MT/FLEX auto-swap in for any
   // ACEP/AAEM/SAEM conference-week date (see CONF_SUPPRESSED_NORMAL_IDS/CONF_AUTO_SWAP_12H_IDS,
   // isConferenceCoverageDate), chief-editable via the coverage editor. PED's 12h pair exists too
@@ -62,18 +64,21 @@ export const SHIFTS = [
   // default (see DEFAULT_COVERAGE_MINMAX). type stays plain 'day'/'night' — never a new type
   // string — so circadian rules, JC overlap, night-run counting, PDF/CSV export, and
   // senior-composition rules all apply with zero special-casing (they key off type/area, never id).
-  { id: 'POD-D12',  label: 'POD Day 12h',  area: 'POD',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.POD.chip.day },
-  { id: 'POD-N12',  label: 'POD Night 12h',area: 'POD',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.POD.chip.night },
-  { id: 'MT-D12',   label: 'MT Day 12h',   area: 'MT',   hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.MT.chip.day },
-  { id: 'MT-N12',   label: 'MT Night 12h', area: 'MT',   hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.MT.chip.night },
-  { id: 'FLEX-D12', label: 'FLEX Day 12h', area: 'FLEX', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day },
-  { id: 'FLEX-N12', label: 'FLEX Night 12h',area:'FLEX', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night },
-  { id: 'PED-D12',  label: 'PED Day 12h',  area: 'PED',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.PED.chip.day },
-  { id: 'PED-N12',  label: 'PED Night 12h',area: 'PED',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.PED.chip.night },
+  // Explicit `short: 'D12'/'N12'` — without it these fell back to `type[0].toUpperCase()` and
+  // rendered identically to the 9h D/N columns in the Shift Matrix header (POD-D and POD-D12 both
+  // showing 'D'), which is exactly the ambiguity the Shift Matrix readability pass was meant to fix.
+  { id: 'POD-D12',  label: 'POD Day 12h',  area: 'POD',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.POD.chip.day, short: 'D12' },
+  { id: 'POD-N12',  label: 'POD Night 12h',area: 'POD',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.POD.chip.night, short: 'N12' },
+  { id: 'MT-D12',   label: 'MT Day 12h',   area: 'MT',   hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.MT.chip.day, short: 'D12' },
+  { id: 'MT-N12',   label: 'MT Night 12h', area: 'MT',   hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.MT.chip.night, short: 'N12' },
+  { id: 'FLEX-D12', label: 'FLEX Day 12h', area: 'FLEX', hours: '06:00–18:00', type: 'day',   chip: AREA_COLORS.FLEX.chip.day, short: 'D12' },
+  { id: 'FLEX-N12', label: 'FLEX Night 12h',area:'FLEX', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night, short: 'N12' },
+  { id: 'PED-D12',  label: 'PED Day 12h',  area: 'PED',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.PED.chip.day, short: 'D12' },
+  { id: 'PED-N12',  label: 'PED Night 12h',area: 'PED',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.PED.chip.night, short: 'N12' },
   // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
   // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
   // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
-  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: AREA_COLORS.PED.chip.swing },
+  { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: AREA_COLORS.PED.chip.swing, short: 'S' },
 ];
 export const SHIFT_MAP = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
 export const SHIFT_AREAS = ['POD', 'PED', 'FLEX', 'MT', 'TRAUMA'];
@@ -109,9 +114,13 @@ export const SHIFT_TIMING = {
 };
 
 // Shifts that only exist on certain weekdays (JS getDay(): 0=Sun..6=Sat). Coverage min/max is
-// otherwise DOW-independent by design — this is a narrow exception for one shift, not a general
-// per-day-of-week coverage feature.
-export const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5] };
+// otherwise DOW-independent by design — this is a narrow exception, not a general per-day-of-week
+// coverage feature. TRAUMA-D/TRAUMA-N are must-fill-only-on-these-days (chief-directed AY26/27):
+// these match the existing EM Home eligibility windows (trauma_day_gate/trauma_n_window
+// shiftGates in DEFAULT_DAY_RULES) exactly, so this doesn't change WHO can work trauma, only stops
+// coverage from demanding a min:1 body on a day the shift structurally can't be staffed at all
+// (previously a phantom unfilled slot on every non-window day of every block).
+export const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5], 'TRAUMA-D': [0, 2, 4, 6], 'TRAUMA-N': [0, 1, 5, 6] };
 
 // Millisecond timestamp for the START of a shift on a given date
 export function shiftStartMs(shiftId, dateStr) {
@@ -133,4 +142,50 @@ export function isNightShiftId(sid) { return SHIFT_MAP[sid]?.type === 'night'; }
 export function shiftOverlapsJC(sid) {
   const t = SHIFT_TIMING[sid];
   return !!t && t.startH < 21 && t.startH + t.durationH > 18;
+}
+
+// "Who else is around this shift" lookup for the grid's hover card / ShiftPickerModal's inline
+// panel (see CLAUDE.md Phase 8) — one pure helper so both surfaces read the exact same answer.
+// Mirrors checkRestViolations' cross-midnight approach (ResidentScheduler.jsx): exact-ms interval
+// overlap via shiftStartMs/shiftEndMs, scanned across dateStr-1/dateStr/dateStr+1 rather than
+// hand-rolled minute arithmetic per direction. A day/night/evening shift never exceeds 12h, so a
+// same-shift-id hit on an adjacent date can never itself overlap the hovered instant — no special
+// casing needed to keep "same shift, different date" out of the `same` bucket.
+// `schedule` is the whole block.schedule map ({residentId: {dateStr: shiftId}}); `allResidents`
+// must be the denormalized roster (EM + off-service) every other consumer in this app already
+// uses, or off-service assignments won't show up here. `residentId` (optional) excludes the
+// hovered resident from both buckets — "who ELSE is working" — since the 4-arg positional
+// signature has no other way to identify who's being hovered.
+export function overlappingAssignments(schedule, allResidents, dateStr, shiftId, { includePrevDayNights = true, residentId } = {}) {
+  const result = { same: [], overlapping: [] };
+  const hovStart = shiftStartMs(shiftId, dateStr);
+  if (hovStart === null) return result;
+  const hovEnd = shiftEndMs(shiftId, dateStr);
+
+  const refDate = parseDate(dateStr);
+  const offsets = includePrevDayNights ? [-1, 0, 1] : [0];
+  const groupMap = new Map(); // otherShiftId -> resident[] (in first-seen order; re-sorted below)
+
+  for (const r of (allResidents || [])) {
+    if (residentId != null && r.id === residentId) continue;
+    const rs = schedule?.[r.id];
+    if (!rs) continue;
+    const name = `${r.firstName} ${r.lastName}`;
+    for (const offset of offsets) {
+      const checkDs = toDateStr(addDays(refDate, offset));
+      const sid = rs[checkDs];
+      if (!sid) continue;
+      if (offset === 0 && sid === shiftId) { result.same.push({ id: r.id, name }); continue; }
+      const exStart = shiftStartMs(sid, checkDs);
+      if (exStart === null) continue;
+      const exEnd = shiftEndMs(sid, checkDs);
+      if (hovStart < exEnd && exStart < hovEnd) {
+        if (!groupMap.has(sid)) groupMap.set(sid, []);
+        groupMap.get(sid).push({ id: r.id, name });
+      }
+    }
+  }
+
+  result.overlapping = SHIFTS.filter(s => groupMap.has(s.id)).map(s => ({ shiftId: s.id, residents: groupMap.get(s.id) }));
+  return result;
 }

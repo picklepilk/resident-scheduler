@@ -96,6 +96,17 @@ window.addEventListener('unhandledrejection', (e) => {
   reportCrash(message, stack);
 });
 
+// ─── SERVICE WORKER ─────────────────────────────────────────────────────────
+// Production-only: registering against the Vite dev server would cache dev module URLs and
+// fight HMR. Deferred to `load` so it never competes with the initial render for bandwidth/CPU,
+// and wrapped so an unsupported browser (or a registration failure) is a silent no-op rather
+// than an uncaught rejection.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 const isRequestsRoute = window.location.pathname.replace(/\/+$/, '') === '/requests';
 
 ReactDOM.createRoot(document.getElementById('root')).render(

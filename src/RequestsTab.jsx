@@ -364,9 +364,9 @@ function AdminManagement({ session, emRoster, profiles, onProfileChanged, demoMo
           <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1.5">Pending approval ({pending.length})</p>
           <div className="space-y-1">
             {pending.map(p => (
-              <div key={p.id} className="flex items-center justify-between text-xs bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                <p className="text-gray-800">{p.email}</p>
-                <div className="flex gap-1.5">
+              <div key={p.id} className="flex items-center justify-between flex-wrap gap-2 text-xs bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                <p className="text-gray-800 min-w-0 break-all">{p.email}</p>
+                <div className="flex gap-1.5 flex-wrap">
                   <button
                     onClick={() => setRole(p, ROLE.RESIDENT)}
                     disabled={busyId === p.id}
@@ -389,9 +389,9 @@ function AdminManagement({ session, emRoster, profiles, onProfileChanged, demoMo
       )}
       <div className="space-y-1">
         {approved.map(p => (
-          <div key={p.id} className="flex items-center justify-between text-xs bg-white border border-gray-200 rounded-md px-3 py-2">
-            <div>
-              <p className="text-gray-800">{p.email} {p.id === session.user.id && <span className="text-gray-400">(you)</span>}</p>
+          <div key={p.id} className="flex items-center justify-between flex-wrap gap-2 text-xs bg-white border border-gray-200 rounded-md px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-gray-800 break-all">{p.email} {p.id === session.user.id && <span className="text-gray-400">(you)</span>}</p>
               <p className="text-gray-400">{p.role} · {residentLabel(p.resident_id)}</p>
             </div>
             <button

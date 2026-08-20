@@ -11,15 +11,24 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { generateSchedule, generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates, parseDate } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
-import { SHIFT_MAP } from './shifts.js';
+import { SHIFT_MAP, SHIFT_DOW } from './shifts.js';
 import { computeQualityMetrics, computeQualityVector, compareVectors } from './scheduleQuality.js';
 import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 const VARIANTS = ['standard', 'understaffed', 'vacationHeavy'];
 
-function errorCount(issues) {
-  return issues.filter(i => i.level === 'error').length;
+// Phase 1C ("1.9 Under-target enforcement in validateAll") made under-target EM Home/BAMC a hard
+// error — deliberately, so an in-progress/incomplete schedule screams at export time. These small
+// synthetic fixtures are NOT guaranteed to have enough coverage headroom for every resident to
+// reach their own target from a single non-optimal seed with no repair (e.g. Golf/Hotel's
+// EM_TOX/EM_EMS weekday-window blockTypes structurally cap their eligible days well below 19) —
+// confirmed by inspection: every error these fixtures now produce is exactly an "Under target: "
+// message, nothing else. The tests below therefore assert zero STRUCTURAL errors (ineligible
+// shifts, composition, rest/circadian, coverage, etc.) rather than zero errors outright, so a
+// genuine regression in any other rule still fails loudly.
+function structuralErrorCount(issues) {
+  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
 }
 
 function stripVolatile(report) {
@@ -39,16 +48,16 @@ describe('generator harness — determinism', () => {
   }
 });
 
-describe('generator harness — zero hard errors on clean fixtures', () => {
+describe('generator harness — zero hard STRUCTURAL errors on clean fixtures', () => {
   for (const variant of VARIANTS) {
-    it(`validateAll reports 0 errors (${variant})`, () => {
+    it(`validateAll reports 0 structural errors (${variant})`, () => {
       const fixture = makeFixture(variant);
       const { schedule } = generateSchedule({ ...fixture, rng: mulberry32(1) });
       const issues = validateAll(
         fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
         fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
       );
-      expect(errorCount(issues)).toBe(0);
+      expect(structuralErrorCount(issues)).toBe(0);
     });
   }
 });
@@ -71,6 +80,13 @@ describe('generator harness — accounting invariants', () => {
         // getCoverageFor calls carry ayConf/state (see coverage.js's state param contract).
         const twelveHourState = twelveHourStateFor(ds, fixture.ayConf);
         for (const shiftId of Object.keys(SHIFT_MAP)) {
+          // A shift absent from SHIFT_DOW on this weekday doesn't exist at all today (e.g.
+          // TRAUMA-D/TRAUMA-N's must-fill-only-on-these-days windows, PED-S's Mon/Tue/Thu/Fri) —
+          // the generator's own fillDayPass skips it before ever considering it, so it never
+          // produces a report.unfilled entry either. getCoverageFor itself is DOW-oblivious for
+          // these ids (see coverage.test.js's own note on this), so this guard has to live here,
+          // same as computeCoverageByDate/composeCoverage's own SHIFT_DOW check.
+          if (SHIFT_DOW[shiftId] && !SHIFT_DOW[shiftId].includes(dow)) continue;
           const { min, max } = getCoverageFor(shiftId, fixture.coverage, dow, twelveHourState);
           if (min <= 0) continue;
           let filled = 0;
@@ -139,7 +155,7 @@ describe('generator harness — block-edge night runs', () => {
       fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
       fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
     );
-    expect(errorCount(issues)).toBe(0);
+    expect(structuralErrorCount(issues)).toBe(0);
 
     const qInput = buildQualityInput({ schedule, report, allResidents: fixture.allResidents, block: fixture.block, appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides, ayConf: fixture.ayConf });
     const metrics = computeQualityMetrics({
@@ -228,7 +244,7 @@ describe('generator harness — repair pass safety', () => {
             seniorGapCount: res.report.seniorGaps.length, restCompromiseCount: res.report.restCompromises.length,
           });
           return {
-            errors: issues.filter(i => i.level === 'error').length,
+            errors: structuralErrorCount(issues),
             vector: computeQualityVector(metrics, normalizeRulePriority(fixture.appSettings?.rulePriority)),
           };
         };
