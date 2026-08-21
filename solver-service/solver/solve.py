@@ -7,6 +7,7 @@ as-is, never "upgraded" by relaxing anything.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -20,6 +21,13 @@ from solver.validate import validate_schedule
 
 SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 PROBE_TIME_SECONDS = 5.0
+
+
+def _num_workers(payload: Payload) -> int:
+    """Clamp the requested worker count to what the machine actually has --
+    production runs on a 2-vCPU box, and an unclamped `numWorkers: 8` just
+    thrashes CP-SAT's own scheduler instead of parallelizing."""
+    return min(payload.config.num_workers, os.cpu_count() or 1)
 
 
 @dataclass
@@ -50,7 +58,7 @@ def _solve_pass1(payload: Payload) -> SolveResult:
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
-    solver.parameters.num_workers = payload.config.num_workers
+    solver.parameters.num_workers = _num_workers(payload)
     solver.parameters.random_seed = payload.config.random_seed
 
     t0 = time.time()
@@ -109,7 +117,7 @@ def run_pass2(payload: Payload) -> SolveResult:
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
-    solver.parameters.num_workers = payload.config.num_workers
+    solver.parameters.num_workers = _num_workers(payload)
     solver.parameters.random_seed = payload.config.random_seed
 
     t0 = time.time()
@@ -170,7 +178,7 @@ def _run_conflict_probe(payload: Payload, elastic) -> list:
 
     probe_solver = cp_model.CpSolver()
     probe_solver.parameters.max_time_in_seconds = min(PROBE_TIME_SECONDS, payload.config.max_time_seconds)
-    probe_solver.parameters.num_workers = payload.config.num_workers
+    probe_solver.parameters.num_workers = _num_workers(payload)
     probe_solver.parameters.random_seed = payload.config.random_seed
 
     status = probe_solver.solve(model)
