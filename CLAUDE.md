@@ -384,8 +384,9 @@ names below rather than trusting offsets.
   and Validation (and the picker, via a `prevTail` map threaded down from `ScheduleGrid`).
   `validateAll`'s walk revived a previously-dead `runHasShift` flag: a run built entirely from
   GR/JC obligation days (zero actual shifts in the current block) does not raise an error.
-- `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: MRV slot ordering per
-  day, candidate filtering with named unfilled-reasons — including `halfTargetMet`,
+- `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: **greedy fresh MRV slot
+  ordering per day** — see "Fresh MRV" below,
+  candidate filtering with named unfilled-reasons — including `halfTargetMet`,
   `circadianBlocked`, `nightCapped`, `jcCapped` — target/type-mix/streak/jeopardy/trauma-nights-
   preferred/peds-mix/night-clustering/seniority/JC-avoidance scoring; recomputes candidate pool
   fresh for every slot — cached pool went stale mid-day, caused double-booking once, don't
@@ -399,6 +400,39 @@ names below rather than trusting offsets.
   `totalSlots`). `summarizeGenerationReport()` turns generator's report into grouped,
   human-readable recommendations for Violations tab, including "expected gap" detection for
   day-of-week rules (Trauma windows, GR Wednesday) and for PED-N (FM-3-exclusive — see below).
+- **Fresh MRV (greedy slot ordering inside `fillDayPass`)** — the day's slots used to be sorted
+  ONCE by `candidatePool(...).candidates.length` measured against start-of-day state. That key went
+  stale the instant the first slot was filled (an assignment removes that resident from every other
+  shift's pool today, via `candidatePool`'s `!schedule[r.id][ds]` filter), so a shift that started
+  with 6 candidates could be down to 1 by the time the frozen order reached it. The loop is greedy
+  now: re-pick the most-constrained REMAINING slot after every placement. Three things make this
+  work and must stay true together:
+  1. **Counts are maintained incrementally, not recomputed.** Re-running `candidatePool` for every
+     remaining shift after every placement is ~O(shifts²) pool calls/day — far too slow for the
+     300-generation baseline suite. Deleting only the winner's id from each cached set is EXACT,
+     not an approximation, because every filter in `candidatePool` reads **per-resident** state
+     only (the candidate's own `schedule` row — `checkRestViolations`/`checkCircadianViolations`/
+     `runLengthIfWorked`/`sixDayRunRest*` all index by the candidate's own id — plus their own
+     assigned/night/peds/trauma/jc/bamc counters). A placement can therefore only ever REMOVE the
+     assigned resident from another pool; nobody else's membership changes and nobody is ever
+     added. **A new cross-resident filter in `candidatePool` would break that reasoning** — the
+     per-slot fresh pool re-seeds the cache entry each pick, so the key self-corrects, but the
+     ordering would silently degrade.
+  2. **The cache is a SORT KEY ONLY.** The actual fill decision still calls `candidatePool` fresh
+     for the slot being filled — the pre-existing "cached pool went stale mid-day and double-booked
+     once" rule is unchanged, don't route the decision through the cache.
+  3. **The count is COMPOSITION-AWARE, and that is where the win actually comes from.** A FLEX/POD
+     shift with no qualifying primary PGY on it yet can only be filled from the primary sub-pool,
+     so its raw pool size wildly overstates its real freedom. Measured on the fixtures,
+     `pgy2Required`/`pgy3Required` are ~60% of all unfilled min-slots, by exactly this mechanism:
+     a roomy-looking POD-D (12 raw candidates, one of them the day's only free PGY-3) sorted after
+     some unconstrained shift with 5, that shift took the PGY-3, and POD-D became unfillable.
+     Scoring by the EFFECTIVE pool fills it first instead. Plain fresh MRV *without* this was
+     measurably NEUTRAL (slot 0 ±0.4, slot 3 mixed, one variant marginally outside tolerance); with
+     it, slot 3 improved 7–21% on all three variants. Don't drop it back to `poolIds[sid].size`.
+  Determinism is preserved by construction: `remaining` keeps the original slot order and the pick
+  uses a strict `<`, so ties resolve to the earliest original slot — exactly the stable-sort
+  tiebreak the old `slots.sort` relied on, so seeds still replay.
 - **Generator quality harness + best-of-N + repair pass** (`src/lib/rng.js`, `src/lib/
   scheduleQuality.js`, `src/lib/generator.harness.test.js`, `src/lib/baselineSuite.js` +
   `src/lib/generator.baseline.<variant>.test.js`,
@@ -427,7 +461,22 @@ names below rather than trusting offsets.
   `betterQuality` improvement) runs as a closure inside `generateSchedule`, after the three fill
   passes: Phase 1 tries to fill remaining `unfilled` min-slots via same-day reassignment or a
   cross-day swap that frees a genuinely-surplus cell; Phase 2 swaps a `restCompromises` violator
-  for a clean candidate if one now exists; Phase 3 swaps a `seniorGaps` junior for a senior.
+  for a clean candidate if one now exists; Phase 3 swaps a `seniorGaps` junior for a senior;
+  **Phase 4 runs bounded depth-2 ejection chains** over whatever min-slots Phase 1 left. Phase 1's
+  moves are both depth-1 where it matters — Move A backfills the shift it vacates only from
+  residents FREE that day, Move B requires the donor cell to already have headcount SURPLUS. The
+  common leftover shape is neither: the only resident who can legally take unfilled slot S is X,
+  X's own cell A sits exactly AT its min, and nobody free can backfill A. Phase 4 does the two
+  moves — `X: A → S`, then `Y → A`, where Y is either free that day or is ejected from a genuinely
+  surplus cell (strictly above its own min AND not that shift's only qualifying primary PGY).
+  Donors are pre-narrowed by the destination's hard composition when it is still unsatisfied (same
+  reason as the MRV key above — otherwise the donor cap is spent on juniors `narrowForSeniority`
+  will reject anyway), and a cross-day donor's cells are tried NEAREST-DATE-FIRST, since a
+  rest/circadian/streak blocker is nearly always a neighbouring shift, never one three weeks away.
+  Measured reality on the fixtures: chains fire ~1×/run and are worth ~0.2–0.4 coverage slots —
+  the blocks are capacity-saturated (every resident at target, essentially no surplus anywhere to
+  eject), so this phase is a correctness-preserving mop-up, not a large lever. Don't expect more
+  from it without adding real capacity.
   Every move is transactional (unassign source/destination, run the same `candidatePool` closure
   the fill passes used against that intermediate state, commit only if every touched shift/date
   stays at/above its coverage min, else exact revert) and is additionally narrowed by
@@ -439,7 +488,12 @@ names below rather than trusting offsets.
   attempt; the two narrowing checks let repair succeed instead of self-destructing. `keptCells`
   (every non-empty cell in the incoming `block.schedule` at seed time — covers manual entries and
   partial-regenerate's locked/out-of-range cells identically, since both arrive that way) are never
-  touched. Global 300-`poolFor`-call budget bounds worst-case cost. After all phases, `unfilled`/
+  touched. The `poolFor`-call budget is **300 for Phases 1-3, then +200 for Phase 4** (500 worst
+  case), deliberately NOT one shared 500: Phase 1's per-slot donor scan will happily swallow the
+  whole allowance on a hard block (measured: it exhausts all 300 on every fixture variant) and
+  would starve Phase 4 to a no-op, and a single pool would also perturb Phases 1-3, whose
+  behaviour is intentionally left bit-for-bit unchanged. Phase 4 additionally carries structural
+  caps (8 donors/slot, 4 donor cells/donor, 3 backfill donors/cell). After all phases, `unfilled`/
   `restCompromises`/`seniorGaps`/`filled`/`optionalFilled` are rebuilt from the final schedule —
   report arrays are never trusted as still-accurate post-mutation — but **scoped to generated
   (non-kept) cells only**, preserving the report's "generator choices" semantics (a manual cell's

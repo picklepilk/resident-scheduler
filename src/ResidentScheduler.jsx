@@ -4295,17 +4295,68 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         for (let k = Math.max(cov.min, already); k < cov.max; k++) slots.push({ shift, slotIndex: k });
       }
     }
-    // MRV: fill the most-constrained shift first (fewest strict candidates as of the day start).
-    // This pre-pass pool is ONLY a sort key — every shift's pool is computed against the same
-    // start-of-day state, so it's fine as a rough ordering estimate but must NOT be reused for
-    // the actual fill below: assigning shift A can remove a candidate from shift B's pool (e.g.
-    // "already working today"), so each slot's real fill decision needs a fresh candidatePool
-    // call against the current, mid-day state.
-    const sortPool = {};
+    // MRV: fill the most-constrained shift first (fewest strict candidates). This used to be a
+    // ONE-TIME sort of the whole day's slots against start-of-day state, which went stale the
+    // moment the first slot was filled — assigning a resident removes them from every other
+    // shift's pool today ("already working today"), so a shift that started with 6 candidates can
+    // be down to 1 by the time the static order reaches it, long after less-constrained shifts
+    // already ate its pool. The selection below is greedy instead: re-pick the most-constrained
+    // REMAINING slot after every placement.
+    //
+    // The counts are maintained INCREMENTALLY rather than by re-running candidatePool for every
+    // remaining shift after every placement (that is ~O(shifts^2) pool calls/day — far too slow
+    // for the 300-generation baseline suite). This is EXACT, not an approximation: every filter
+    // in candidatePool reads only PER-RESIDENT state (that resident's own row of `schedule` —
+    // checkRestViolations/checkCircadianViolations/runLengthIfWorked/sixDayRunRest* all index
+    // schedule by the candidate's own id — plus their own assigned/night/peds/trauma/jc/bamc
+    // counters). So committing an assignment can only ever remove the ASSIGNED resident from
+    // another shift's pool; no other resident's membership can change, and nobody can ever be
+    // ADDED to a pool by a placement. Deleting the winner's id from every cached set therefore
+    // reproduces exactly what a full recompute would return.
+    //
+    // The per-slot fill DECISION still uses a fresh candidatePool call and never this cache — a
+    // cached pool reused for the actual decision went stale mid-day and double-booked once, don't
+    // reintroduce that. That fresh result also re-seeds this cache entry, so the ordering key
+    // self-corrects even if the reasoning above is ever invalidated by a new cross-resident filter.
+    //
+    // The count is also COMPOSITION-AWARE, which is what makes the fresh ordering pay for itself.
+    // A FLEX/POD shift with no qualifying primary PGY on it yet can only legally be filled from
+    // the primary sub-pool (see the SENIOR_COMPOSITION branch below), so its raw pool size wildly
+    // overstates how many candidates it really has: measured on the fixtures, `pgy2Required`/
+    // `pgy3Required` are ~60% of all unfilled min-slots, and the mechanism is exactly this — a
+    // roomy-looking POD-D (12 raw candidates, 1 of them the day's only free PGY-3) sorts AFTER
+    // some unconstrained shift with 5 raw candidates, that shift takes the PGY-3, and POD-D is
+    // then unfillable. Scoring it by its EFFECTIVE pool (primary sub-pool while unsatisfied)
+    // fills it first instead. Once a qualifying resident lands on it the shift reverts to its
+    // raw count, since the narrowing no longer applies.
+    const poolIds = {};   // shiftId -> Set of candidate resident ids
+    const compIds = {};   // shiftId -> Set of ids satisfying its hard composition (null if N/A)
+    const compCount = {}; // shiftId -> |poolIds ∩ compIds|
+    const compDone = {};  // shiftId -> a qualifying resident is already on it today
     for (const { shift } of slots) {
-      if (sortPool[shift.id] == null) sortPool[shift.id] = candidatePool(shift, ds).candidates.length;
+      if (poolIds[shift.id] != null) continue;
+      poolIds[shift.id] = new Set(candidatePool(shift, ds).candidates.map(r => r.id));
+      const comp = SENIOR_COMPOSITION[shift.area];
+      if (!comp || seniorCompositionExempt(shift, ds)) { compIds[shift.id] = null; continue; }
+      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings, ayConf);
+      compIds[shift.id] = new Set(allResidents.filter(satisfies).map(r => r.id));
+      compDone[shift.id] = allResidents.some(r => schedule[r.id][ds] === shift.id && compIds[shift.id].has(r.id));
+      compCount[shift.id] = 0;
+      for (const id of poolIds[shift.id]) if (compIds[shift.id].has(id)) compCount[shift.id]++;
     }
-    slots.sort((a, b) => sortPool[a.shift.id] - sortPool[b.shift.id]);
+    // Effective remaining-candidate count for the MRV pick.
+    const mrvCount = sid => (compIds[sid] && !compDone[sid]) ? compCount[sid] : poolIds[sid].size;
+    // Re-seeds both counters for one shift from an authoritative fresh candidatePool result.
+    function reseedPool(sid, candidates) {
+      poolIds[sid] = new Set(candidates.map(r => r.id));
+      if (!compIds[sid]) return;
+      compCount[sid] = 0;
+      for (const id of poolIds[sid]) if (compIds[sid].has(id)) compCount[sid]++;
+    }
+    // Remaining slots stay in their original construction order, and the greedy pick below uses a
+    // STRICT `<` — so ties resolve to the earliest original slot, exactly the stable-sort tiebreak
+    // the previous `slots.sort` relied on. Seeds still replay identically.
+    const remaining = slots.slice();
 
     // Rule ranks for this pass's priority-aware fallback decisions — larger index = less
     // important = broken first. Read once per day pass; cheap and appSettings doesn't change
@@ -4326,8 +4377,17 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       return gaps.length ? Math.min(...gaps) : null;
     }
 
-    for (const slot of slots) {
+    while (remaining.length) {
+      // Fresh MRV pick: fewest remaining candidates wins, earliest original slot breaks ties.
+      let pickAt = 0, pickN = mrvCount(remaining[0].shift.id);
+      for (let i = 1; i < remaining.length; i++) {
+        const n = mrvCount(remaining[i].shift.id);
+        if (n < pickN) { pickAt = i; pickN = n; }
+      }
+      const slot = remaining.splice(pickAt, 1)[0];
       let { candidates, restFallback, reason, circadianByResident } = candidatePool(slot.shift, ds);
+      // Re-seed the ordering key from the authoritative fresh pool (see the MRV comment above).
+      reseedPool(slot.shift.id, candidates);
       let restCompromise = false;
 
       // If the clean pool is empty but a rest-violating pool exists, use it only when the chief
@@ -4413,6 +4473,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         }
       }
       schedule[best.id][ds] = slot.shift.id;
+      // Incremental MRV maintenance (see the comment on poolIds): the winner is now working
+      // today, so they leave every remaining shift's pool for this date — and they are the ONLY
+      // resident whose membership this placement can change. If the winner satisfies THIS shift's
+      // hard composition, the shift also stops being narrowed and reverts to its raw count.
+      for (const sid in poolIds) {
+        if (poolIds[sid].delete(best.id) && compIds[sid]?.has(best.id)) compCount[sid]--;
+      }
+      if (compIds[slot.shift.id]?.has(best.id)) compDone[slot.shift.id] = true;
       scheduleVersion[best.id]++;
       assigned[best.id]++;
       typeCount[best.id][slot.shift.type]++;
@@ -4442,8 +4510,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
   // never-overwrite invariant.
   function repairPass() {
-    let budget = 300; // global cap on poolFor calls across every phase, so a stubborn block can't
-                       // spin the repair pass indefinitely.
+    // Cap on poolFor calls, so a stubborn block can't spin the repair pass indefinitely. Phases
+    // 1-3 keep their original 300; Phase 4 (ejection chains) then gets a further +200 of its own
+    // (see its header) — a single shared 500 would let Phase 1's per-slot donor scan swallow the
+    // whole allowance on a hard block and starve Phase 4 down to a no-op, and would also perturb
+    // Phases 1-3's existing behaviour, which is deliberately left bit-for-bit unchanged here.
+    // Worst case across the whole repair pass is therefore 500 calls, up from 300.
+    let budget = 300;
 
     function filledCount(sid, ds) {
       let n = 0;
@@ -4675,6 +4748,166 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       }
     }
     report.seniorGaps = report.seniorGaps.filter(g => !gapFixed.has(g));
+
+    // Phase 4 — bounded ejection chains (depth 2) for whatever min-slots Phase 1 could not fix.
+    //
+    // Phase 1's two moves are both depth-1 in the sense that matters: Move A relocates someone
+    // already working today and only backfills their vacated shift from residents who are FREE
+    // that day; Move B requires the donor cell it vacates to already have headcount SURPLUS. The
+    // common remaining shape is neither — the only resident who can legally take unfilled slot S
+    // is X, X's own cell A sits exactly AT its coverage min, and nobody free can backfill A. That
+    // needs two moves, not one: X: A -> S, then some Y -> A, where Y is drawn from a genuinely
+    // surplus cell (headcount strictly above that shift's min, and not that shift's only
+    // qualifying primary PGY) or is free that day. Net effect is +1 covered min-slot with no new
+    // hole: the only cell that loses a body is one that had a body to spare.
+    //
+    // Same transactional discipline as Phases 1-3 — tentative unassign/assign, every touched
+    // shift/date re-checked against its own coverage min AND compositionStillSatisfied, exact
+    // revert otherwise — and the same narrowForSeniority narrowing on every destination pool, so
+    // a chain can never introduce a hard seniority error that generateScheduleBest's outer
+    // validateAll gate would then throw the whole repaired result away for. keptCells are never
+    // touched (movable()). Only clean `candidates` are ever admitted, never restFallback, so a
+    // chain cannot trade a coverage gap for a new rest violation.
+    //
+    // Bounds: +200 poolFor calls on top of whatever Phases 1-3 left, plus hard structural caps
+    // (donors, donor cells per donor, backfill donors per cell) so one pathological slot cannot
+    // consume the entire allowance by itself.
+    budget += 200;
+    const CHAIN_MAX_DONORS = 8;      // X candidates tried per unfilled slot
+    const CHAIN_MAX_DONOR_CELLS = 4; // cells of X's tried (cross-day donors only; same-day X has exactly one)
+    const CHAIN_MAX_BACKFILL = 3;    // surplus residents Y tried per vacated cell
+
+    // Residents currently on a genuinely surplus cell on `ds` — headcount strictly above that
+    // shift's own min, so vacating them leaves no new gap. `excludeSid` skips the shift being
+    // backfilled itself (Y is already on it — nothing to move).
+    function surplusDonorsOn(ds, excludeSid) {
+      const out = [];
+      for (const r of allResidents) {
+        const sid = schedule[r.id][ds];
+        if (!sid || sid === excludeSid || !movable(r.id, ds)) continue;
+        if (filledCount(sid, ds) <= minFor(sid, ds)) continue;
+        out.push({ r, sid });
+      }
+      return out;
+    }
+
+    // Tries to put SOMEONE onto (tShift, tDs), which has just been vacated and is now below its
+    // min. Source 1: a resident free that day (one pool call). Source 2: a resident sitting on a
+    // genuinely surplus cell that same day (the "ejection" half of the chain). Returns an undo
+    // thunk on success, null on failure — the caller owns the outer transaction.
+    function backfillVacated(tShift, tDs) {
+      if (budget <= 0) return null;
+      const free = narrowForSeniority(poolFor(tShift, tDs).candidates, tShift, tDs);
+      if (free.length) {
+        const winner = pickBestScore(free, tShift, tDs);
+        assignCell(winner.id, tShift.id, tDs);
+        return { by: winner.id, from: null, undo: () => unassignCell(winner.id, tDs) };
+      }
+      let tried = 0;
+      for (const { r: y, sid: ySid } of surplusDonorsOn(tDs, tShift.id)) {
+        if (budget <= 0 || tried >= CHAIN_MAX_BACKFILL) break;
+        tried++;
+        unassignCell(y.id, tDs);
+        if (!compositionStillSatisfied(ySid, tDs)) { assignCell(y.id, ySid, tDs); continue; }
+        const pool = narrowForSeniority(poolFor(tShift, tDs).candidates, tShift, tDs);
+        if (pool.includes(y)) {
+          assignCell(y.id, tShift.id, tDs);
+          // Y's old cell was headroom above its min, i.e. an optional fill that no longer exists.
+          report.optionalFilled = Math.max(0, report.optionalFilled - 1);
+          return {
+            by: y.id, from: ySid,
+            undo: () => { unassignCell(y.id, tDs); assignCell(y.id, ySid, tDs); report.optionalFilled++; },
+          };
+        }
+        assignCell(y.id, ySid, tDs); // Y can't legally take T — revert, try the next surplus donor
+      }
+      return null;
+    }
+
+    function chainUnfilledSlot(u) {
+      const S = SHIFT_MAP[u.shiftId];
+      if (!S) return false;
+      const ds = u.dateStr;
+      if (filledCount(S.id, ds) >= minFor(S.id, ds)) return true; // fixed as a side effect already
+      const dsDate = parseDate(ds); // parsed once — reused by the donor-cell proximity sort below
+
+      // X must be eligible for S on this date at all (static per-resident eligibility — a move
+      // can't change eligCache, same reasoning as Phase 1's noEligible skip) and must have a cell
+      // to give up. Donors are ALSO pre-narrowed by the hard seniority composition when the slot
+      // still lacks a qualifying primary PGY: `pgy2Required`/`pgy3Required` are by far the most
+      // common unfilled reasons on real blocks (measured on the fixtures: ~60% of all unfilled
+      // rows), and for those slots narrowForSeniority will reject every non-primary donor anyway
+      // — spending the donor cap on juniors who can never pass it wastes the whole phase. This is
+      // the same predicate narrowForSeniority applies, evaluated statically so it costs no pool
+      // calls; narrowForSeniority still re-checks it against live state before any commit.
+      const compNeeded = SENIOR_COMPOSITION[S.area] && !seniorCompositionExempt(S, ds)
+        && !allResidents.some(r => schedule[r.id][ds] === S.id && compositionSatisfies(S.area, r, ds, block.startDate, appSettings, ayConf));
+      const donors = allResidents
+        .filter(r => eligCache[r.id][ds].has(S.id))
+        .filter(r => !compNeeded || compositionSatisfies(S.area, r, ds, block.startDate, appSettings, ayConf))
+        .slice(0, CHAIN_MAX_DONORS);
+      for (const x of donors) {
+        if (budget <= 0) break;
+        const sameDaySid = schedule[x.id][ds];
+        const donorCells = sameDaySid
+          ? (movable(x.id, ds) ? [{ ds2: ds, sid2: sameDaySid }] : [])
+          : dates
+              .filter(ds2 => ds2 !== ds && schedule[x.id][ds2] && movable(x.id, ds2))
+              // NEAREST DATES FIRST. X is free on ds yet still wasn't placed there, so their
+              // blocker is usually a neighbouring shift: postNightRest/circadian look ±2 days,
+              // the 6-day streak and its post-run rest look at the surrounding run. Vacating a
+              // cell three weeks away almost never unblocks any of those, while the adjacent one
+              // usually does — and `allRestBlocked`/`streakBlocked`/`sixDayRunRestBlocked`
+              // together are the second-largest unfilled class after the composition ones. Ties
+              // (same distance either side) break to the earlier date, so seeds still replay.
+              .sort((a, b) => Math.abs(parseDate(a) - dsDate) - Math.abs(parseDate(b) - dsDate) || (a < b ? -1 : 1))
+              // Cells already at/below min are exactly the ones Phase 1's Move B skipped for lack
+              // of surplus — those are this phase's whole point, so they are NOT filtered out.
+              .slice(0, CHAIN_MAX_DONOR_CELLS)
+              .map(ds2 => ({ ds2, sid2: schedule[x.id][ds2] }));
+
+        for (const { ds2, sid2 } of donorCells) {
+          if (budget <= 0) break;
+          const tShift = SHIFT_MAP[sid2];
+          if (!tShift) continue;
+          unassignCell(x.id, ds2);
+          const canTakeS = narrowForSeniority(poolFor(S, ds).candidates, S, ds).includes(x);
+          if (!canTakeS) { assignCell(x.id, sid2, ds2); continue; }
+          assignCell(x.id, S.id, ds);
+
+          if (filledCount(sid2, ds2) >= minFor(sid2, ds2) && compositionStillSatisfied(sid2, ds2)) {
+            // Donor cell had spare headcount after all (Phase 1 caps how many donors it scans, so
+            // it can miss these) — a plain move, no second link needed.
+            report.optionalFilled = Math.max(0, report.optionalFilled - 1);
+            report.repairs.push({ type: 'ejectionChain', residentId: x.id, dateStr: ds, to: S.id, freedFrom: { dateStr: ds2, shiftId: sid2 } });
+            return true;
+          }
+          const back = backfillVacated(tShift, ds2);
+          if (back && compositionStillSatisfied(sid2, ds2) && filledCount(sid2, ds2) >= minFor(sid2, ds2)) {
+            report.repairs.push({
+              type: 'ejectionChain', residentId: x.id, dateStr: ds, to: S.id,
+              freedFrom: { dateStr: ds2, shiftId: sid2 }, backfilledBy: back.by,
+              ...(back.from ? { backfillFreedFrom: back.from } : {}),
+            });
+            return true;
+          }
+          // Exact revert of the whole chain, innermost link first.
+          if (back) back.undo();
+          unassignCell(x.id, ds);
+          assignCell(x.id, sid2, ds2);
+        }
+      }
+      return false;
+    }
+
+    for (const u of [...report.unfilled]) {
+      if (budget <= 0) break;
+      if (u.reason === 'noEligible') continue; // structural, unfixable by rearrangement
+      if (chainUnfilledSlot(u)) report.filled++;
+    }
+    // Same re-derivation Phase 1 does: a row fixed as a side effect of a different slot's chain
+    // must drop here too, so never trust the array itself after mutation.
+    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
   }
 
   // Three passes over the whole block: everything else at minimum coverage first, then Trauma
