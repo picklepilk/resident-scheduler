@@ -25,6 +25,7 @@ import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcad
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments } from './lib/shifts.js';
 import { getCoverageFor, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
+import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
@@ -1436,6 +1437,23 @@ const SCORE_WEIGHTS = {
   // run SHAPE) — diversity must never contend with run-clustering, only tie-break within it; see
   // NIGHT_DIVERSITY_AREAS's own comment for the precedence.
   nightAreaDiversity: 2,
+  // Holiday equity (see HOLIDAY_EQUITY_CLAMP and score()'s holidayEquity term): mildly steer a
+  // holiday date away from whoever already carries the most holiday shifts this academic year.
+  // PREFERENCE, always-on band — it can fire on ANY shift (a holiday doesn't care which area you
+  // work), so it stacks with whichever shift-specific group applies and belongs here rather than
+  // in a group of its own. In practice it fires on only the one or two holiday dates a 28-day
+  // block contains, but the band is sized for the worst case, as every entry here is.
+  //
+  // SIZED SMALL ON PURPOSE. The real work of holiday equalization is done by the SELECTION vector
+  // (scheduleQuality.js's holidaySpread at coefficient 8, compared across 20 attempts), not by
+  // this term. score() is greedy and per-slot; a large holiday term here would fight `deficit`
+  // (100) for the one candidate who happens to be available on Christmas and produce an unfilled
+  // slot instead of a fairer one — the documented preference/structural inversion hazard above,
+  // going live for real. 2 x the 3-point clamp = a 6-point band: enough to reliably break a tie
+  // between two comparably-deficit candidates, nowhere near enough to override one. Same shape and
+  // near-identical magnitude as traumaNightBalance (2 x clamp 5 = 10), which is the same idea
+  // applied to trauma nights.
+  holidayEquity: 2,
   // Phase 2.3 (day<->eve<->night type-churn) was implemented and A/B'd (score() term +
   // scheduleQuality.js workShapePenalty mirror) but REVERTED: isolated at weight 1 and weight 2, it
   // consistently INCREASED workShapePenalty across all 3 committed fixtures (+15 to +25) relative
@@ -1464,7 +1482,15 @@ const PREFERENCE_GROUPS = {
 // applies instead of being mutually exclusive with it. Banded and ratcheted separately — folding
 // them into each group would have forced the recorded per-shift ceilings upward and destroyed the
 // ratchet's meaning on its first use.
-const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency', 'nightAreaDiversity'];
+const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency', 'nightAreaDiversity', 'holidayEquity'];
+
+// Recency clamp on the AY-to-date holiday count fed into score()'s holidayEquity term — the same
+// idiom, for the same reason, as traumaNightBalance's Math.min(..., 5) and seniorScarcityProtect's
+// clamp: an accumulating yearly counter left unclamped grows all year until it swamps the tiers it
+// was only ever meant to tie-break. 3 rather than 5 because holidays are far sparser than trauma
+// nights — by three worked holidays in one academic year a resident is unambiguously the most
+// loaded, and further counting adds nothing this term should act on.
+const HOLIDAY_EQUITY_CLAMP = 3;
 
 // Phase 2.1 chief-directed Wednesday POD/MC ladder (see wedPodLadder in score()): a category's
 // ladder value, 0 for any category not listed (IM deliberately excluded — see that call site).
@@ -1474,7 +1500,7 @@ const WED_POD_LADDER_BY_CATEGORY = { ANES: 3, FM: 2, NEURO: 2, PSYCH: 2, POD: 1 
 // count is explicitly clamped to 5 inside score(), areaContinuity can fire for BOTH the previous
 // and next adjacent day (max 2), and wedPodLadder is a 0-3 category ladder value (Phase 2.1, see
 // its own SCORE_WEIGHTS comment).
-const PREFERENCE_MAX_INPUT = { traumaNightBalance: 5, areaContinuity: 2, wedPodLadder: 3 };
+const PREFERENCE_MAX_INPUT = { traumaNightBalance: 5, areaContinuity: 2, wedPodLadder: 3, holidayEquity: HOLIDAY_EQUITY_CLAMP };
 
 // Largest shift target in the app — the BINDING case for the invariant, because a bigger target
 // makes each individual shift worth FEWER deficit points (deficit is a ratio), leaving the least
@@ -1504,7 +1530,16 @@ const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.val
 // (night-area spread), not a rescale, so widening the ceiling is correct. Still comfortably below
 // the smallest shift-specific group (traumaNight, 22) — see the "always-on band stays well under
 // the smallest shift-specific group" test.
-const PREFERENCE_BAND_CEILING = { traumaNight: 22, peds: 40, pod: 37, always: 10 };
+// CONSCIOUS DECISION (holiday model): `always` is deliberately raised again — 10 -> 16.
+// holidayEquity adds weight 2 x max input HOLIDAY_EQUITY_CLAMP (3) = 6 (10+6=16). A genuinely new
+// chief-facing preference (holiday equalization, previously not modelled at all), not a rescale of
+// an existing term, so widening the recorded ceiling is the correct outcome — the ratchet exists
+// to catch ACCIDENTAL growth, not to block deliberate new preferences. Still comfortably below the
+// smallest shift-specific group (traumaNight, 22), which the "always-on band stays well under the
+// smallest shift-specific group" test asserts independently; that 22-vs-16 margin is now the
+// binding constraint on any FURTHER always-on term, so the next one needs a real re-derivation
+// rather than another bump.
+const PREFERENCE_BAND_CEILING = { traumaNight: 22, peds: 40, pod: 37, always: 16 };
 
 export const SCORE_TIERS = {
   SCORE_WEIGHTS, PREFERENCE_GROUPS, PREFERENCE_ALWAYS, PREFERENCE_MAX_INPUT, MAX_SHIFT_TARGET,
@@ -1685,6 +1720,32 @@ function countPublishedTraumaNights(residentId, ay, blocksHistory = [], excludeB
   }
   return count;
 }
+// Yearly HOLIDAY-shift count across PUBLISHED saved blocks — same excludeBlockId/AY-match shape as
+// countPublishedTraumaNights/countPublishedJC directly above, and used the same way: a soft
+// generator nudge toward spreading holiday work across the academic year, never a cap.
+//
+// `holidayDates` is the AY's full holiday date Set (lib/holidays.js). Passing it in rather than
+// resolving it here keeps the AY's config resolved ONCE per generation instead of once per
+// resident, and makes the no-op explicit: an empty set short-circuits to 0 before touching
+// blocksHistory at all, so an AY with no configured holidays costs nothing and changes nothing.
+//
+// Uncapped by block count, unlike computeAyPriorTotals's AY_CARRYOVER_MAX_BLOCKS window. That is
+// the local convention for these score()-feeding yearly counters (countPublishedTraumaNights is
+// uncapped too): the recency clamp for this family lives at the USE site, as an explicit
+// Math.min on the value fed into score() — see HOLIDAY_EQUITY_CLAMP.
+function countPublishedHolidayShifts(residentId, ay, blocksHistory = [], excludeBlockId = null, holidayDates = new Set()) {
+  if (!holidayDates.size) return 0;
+  let count = 0;
+  for (const snap of blocksHistory) {
+    if (!snap?.published || snap.id === excludeBlockId) continue;
+    if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
+    const rs = snap.data?.schedule?.[residentId];
+    if (!rs) continue;
+    for (const ds of holidayDates) if (rs[ds]) count++;
+  }
+  return count;
+}
+
 // emTraumaCap replaces the old pgy2TraumaCap setting; legacy saved values are still honored so
 // existing localStorage isn't silently reinterpreted until the chief touches the Settings field.
 function getTraumaCap(appSettings = {}) { return appSettings.emTraumaCap ?? appSettings.pgy2TraumaCap ?? 2; }
@@ -2262,11 +2323,22 @@ const AY_CARRYOVER_MAX_BLOCKS = 6;
 // be doing something, just not dominating.
 const AY_CARRYOVER_FULL_AT = 3;
 
-// Returns { [residentId]: { nights, weekendDates, assigned, blocks } } for the given AY. A resident
-// absent from every published snapshot is simply absent from the map — callers MUST treat that as
-// "no history", never as zero. Zero would read as maximally under-worked and would systematically
-// hammer whoever is newest to the roster.
-function computeAyPriorTotals(ay, blocksHistory = [], excludeBlockId = null) {
+// Returns { [residentId]: { nights, weekendDates, holidays, assigned, blocks } } for the given AY.
+// A resident absent from every published snapshot is simply absent from the map — callers MUST
+// treat that as "no history", never as zero. Zero would read as maximally under-worked and would
+// systematically hammer whoever is newest to the roster.
+//
+// `holidayDates` is the AY's holiday date Set (lib/holidays.js), passed in rather than resolved
+// here for the same reason as countPublishedHolidayShifts above (this module can't reach the
+// component's ayData state, and the caller already holds the resolved ayConf). An empty set —
+// every AY today, until a chief configures holidays — leaves every `holidays` total at 0, which
+// makes the holiday half of the carryover a strict no-op without any separate flag.
+//
+// NOTE the deliberate asymmetry with countPublishedHolidayShifts: that counter feeds score() and
+// is uncapped-then-clamped, while this one is windowed to the most recent AY_CARRYOVER_MAX_BLOCKS
+// published blocks. Both are "recency clamps", applied at the layer each function's own consumers
+// already expect one — don't unify them without re-deriving both rationales.
+function computeAyPriorTotals(ay, blocksHistory = [], excludeBlockId = null, holidayDates = new Set()) {
   const published = (blocksHistory || [])
     .filter(snap => snap?.published && snap.id !== excludeBlockId)
     .filter(snap => (snap.academicYear || snap.data?.academicYear) === ay)
@@ -2280,7 +2352,7 @@ function computeAyPriorTotals(ay, blocksHistory = [], excludeBlockId = null) {
     const dates = getBlockDates(snap.startDate || snap.data?.startDate, snap.endDate || snap.data?.endDate);
     for (const [rid, rs] of Object.entries(schedule)) {
       if (!rs) continue;
-      let nights = 0, weekendDates = 0, assigned = 0, sawAny = false;
+      let nights = 0, weekendDates = 0, holidays = 0, assigned = 0, sawAny = false;
       for (const ds of dates) {
         const sid = rs[ds];
         if (!sid) continue;
@@ -2289,14 +2361,19 @@ function computeAyPriorTotals(ay, blocksHistory = [], excludeBlockId = null) {
         if (isNightShiftId(sid)) nights++;
         const dow = parseDate(ds).getDay();
         if (dow === 0 || dow === 6) weekendDates++;
+        // A shift ASSIGNED to a holiday date counts as a holiday shift — including a night shift
+        // that starts on the holiday and runs into the next day. See lib/holidays.js's
+        // countHolidayShifts for why start-date is the right definition.
+        if (holidayDates.has(ds)) holidays++;
       }
       // A resident present in the snapshot but with zero shifts in it (e.g. fully on vacation)
       // still counts as history — they were on the roster for that block, so their low totals are
       // real information, not missing data.
       if (!sawAny && !(rid in schedule)) continue;
-      if (!out[rid]) out[rid] = { nights: 0, weekendDates: 0, assigned: 0, blocks: 0 };
+      if (!out[rid]) out[rid] = { nights: 0, weekendDates: 0, holidays: 0, assigned: 0, blocks: 0 };
       out[rid].nights += nights;
       out[rid].weekendDates += weekendDates;
+      out[rid].holidays += holidays;
       out[rid].assigned += assigned;
       out[rid].blocks += 1;
     }
@@ -3712,6 +3789,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // 12h shift's default minimum. A closure can't miss.
   const jcDateSet = new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate }));
   const isJcDay = ds => jcDateSet.has(ds);
+  // Holiday dates (lib/holidays.js). Two sets, deliberately: `holidayBlockDates` is what score()
+  // and the running counters test against (this block's own holidays), while `ayHolidayDates` is
+  // the whole academic year's, needed to count what a resident already worked in PUBLISHED earlier
+  // blocks. Both are EMPTY unless the chief has configured holidays for this AY — which is the
+  // entire no-op guarantee: with no config, `isHolidayDay` is always false, `holidayYearly` stays
+  // 0 for everyone, score()'s holidayEquity term is identically 0, and generation is bit-for-bit
+  // what it was before holidays existed (this is what keeps the committed quality baselines valid).
+  const ayHolidayDates = holidayDateSet(ayConf);
+  const holidayBlockDates = new Set(holidayDatesInRange(block.startDate, block.endDate, ayConf));
+  const isHolidayDay = ds => holidayBlockDates.has(ds);
   const conf12Cache = {};
   const conf12For = ds => (conf12Cache[ds] ??= twelveHourStateFor(ds, ayConf || {}));
 
@@ -3776,6 +3863,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
   // trauma-night load between PGY-2/3 across the year (see traumaNightPgyPrefersDow in score()).
   const traumaNightYearly = {};
+  // Yearly HOLIDAY-shift count: published earlier blocks this AY, PLUS what this generation has
+  // placed (or kept) on a holiday date so far. Running rather than seeded-and-frozen, so a
+  // multi-day holiday equalizes WITHIN the block too — assigning someone Christmas Eve immediately
+  // makes them a worse candidate for Christmas Day, which a seed-only counter could not express.
+  // Maintained at exactly the same three sites as traumaNightYearly (fillDayPass's commit,
+  // repairPass's assignCell/unassignCell) — the repair pass's counter bookkeeping must stay an
+  // exact inverse pair or its transactional revert leaves the scorer lying.
+  const holidayYearly = {};
   // Whether this resident has already done (or is currently on) a Peds/Trauma-mix rotation this
   // AY — used only to lift the PED-N PGY-1 deprioritization in score() (see hasPriorPedsTrauma).
   // Precomputed once per resident (depends only on resident.blockType/blocksHistory/block, none of
@@ -3793,6 +3888,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     nightAreaCount[r.id] = Object.fromEntries(NIGHT_DIVERSITY_AREAS.map(a => [a, 0]));
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
     traumaNightYearly[r.id] = isTraumaCapSubject(r) ? countPublishedTraumaNights(r.id, block.academicYear, blocksHistory, block.id) : 0;
+    // Unlike traumaNightYearly this is NOT gated on a rotation predicate — a holiday is a holiday
+    // for every schedulable resident, off-service categories included. Short-circuits to 0 inside
+    // countPublishedHolidayShifts when no holidays are configured.
+    holidayYearly[r.id] = countPublishedHolidayShifts(r.id, block.academicYear, blocksHistory, block.id, ayHolidayDates);
     priorPedsTrauma[r.id] = hasPriorPedsTrauma(r, blocksHistory, block, traumaBlocks);
     // Cross-block JC count (published blocks this AY) plus what's already kept in this block —
     // seeded once; kept assignments in `schedule[r.id]` are counted below via countCurrentBlockJC
@@ -3812,6 +3911,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[r.id][sh.area]++;
       if (r.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(sDs).getDay() === 3) bamcWedNightCount[r.id]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
+      if (isHolidayDay(sDs)) holidayYearly[r.id] = (holidayYearly[r.id] || 0) + 1;
     }
   }
   const residentById = new Map(allResidents.map(r => [r.id, r]));
@@ -4243,6 +4343,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const offAdjacency =
       ((r.vacationDates || []).includes(prevDs) || (r.approvedDatesOff || []).includes(prevDs) ||
        (r.vacationDates || []).includes(nextDs) || (r.approvedDatesOff || []).includes(nextDs)) ? 1 : 0;
+    // Holiday equity: on a chief-configured holiday date, mildly discourage whoever already carries
+    // the most holiday shifts this academic year (published prior blocks + what this generation has
+    // placed so far). Clamped exactly like traumaNightBalance so a resident who worked several
+    // holidays early in the year doesn't accumulate an ever-growing penalty that eventually
+    // outweighs real scheduling facts. Zero on every non-holiday date, and zero everywhere when the
+    // AY has no holidays configured (holidayBlockDates is then empty) — see isHolidayDay.
+    const holidayEquity = isHolidayDay(ds) ? Math.min(holidayYearly[r.id] || 0, HOLIDAY_EQUITY_CLAMP) : 0;
     // Phase 2.3 (day<->eve<->night type-churn) was implemented, A/B'd, and reverted — see the
     // matching SCORE_WEIGHTS comment for the measured reason. Its scheduleQuality.js retrospective
     // mirror was reverted alongside it.
@@ -4264,7 +4371,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       - W.podPgy2Deprioritize * podPgy2Deprioritize + W.wedPodLadder * wedPodLadder
       + W.workContinuity * workContinuity + W.areaContinuity * areaContinuity
       - W.offAdjacency * offAdjacency - W.seniorScarcityProtect * seniorScarcityRisk
-      + W.nightAreaDiversity * nightAreaDiversity + rng();
+      + W.nightAreaDiversity * nightAreaDiversity - W.holidayEquity * holidayEquity + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -4490,6 +4597,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (slot.shift.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(slot.shift.area)) nightAreaCount[best.id][slot.shift.area]++;
       if (best.category === 'EM_BAMC' && slot.shift.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[best.id]++;
       if (slot.shift.id === 'TRAUMA-N') traumaNightYearly[best.id] = (traumaNightYearly[best.id] || 0) + 1;
+      if (isHolidayDay(ds)) holidayYearly[best.id] = (holidayYearly[best.id] || 0) + 1;
       if (best.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
       if (jeoPolicy === 'warn' && isJeopardyDate(best, ds, block.jeopardySchedule)) {
         report.jeopardyPlacements.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
@@ -4546,6 +4654,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const r = residentById.get(rid);
       if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
+      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
       if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
       return sid;
     }
@@ -4562,6 +4671,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const r = residentById.get(rid);
       if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
+      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
       if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
     }
     // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
@@ -4977,8 +5087,14 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
     // never import from this file. Keeps the shape scorer's fragmentation floor in step with the
     // hard rule the generator and validateAll actually enforce.
     maxConsecutiveWorkDays: MAX_CONSECUTIVE_WORK_DAYS,
-    ayPriorTotals: computeAyPriorTotals(ay, blocksHistory, block.id),
+    // Holiday equity. The AY's full holiday date set feeds the carryover accumulator (prior
+    // published blocks span the whole year), while the scorer itself only needs this block's own
+    // holiday dates. Both resolve to empty for an ayConf with no configured holidays, which makes
+    // holidaySpread exactly 0 and leaves the quality vector numerically identical to what it was
+    // before this feature — the property the committed baseline fixtures depend on.
+    ayPriorTotals: computeAyPriorTotals(ay, blocksHistory, block.id, holidayDateSet(ayConf)),
     ayCarryoverFullAt: AY_CARRYOVER_FULL_AT,
+    holidayDates: holidayDatesInRange(block.startDate, block.endDate, ayConf),
     // The scorer has to see the same coverage the generator saw. Without this it resolves every
     // 12h shift's DEFAULT_COVERAGE minimum on every date (~10 phantom unfillable slots/day) and
     // permanently disagrees with the generator it is scoring. Passed rather than imported for the
@@ -6958,6 +7074,11 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
               onUpdate={conf => updateAyData(selectedAy, conf)}
               blockStart={block.startDate}
             />
+            <HolidayDatesEditor
+              ay={selectedAy}
+              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
+              onUpdate={conf => updateAyData(selectedAy, conf)}
+            />
             <TwelveHourWindowsEditor
               ay={selectedAy}
               conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
@@ -7737,6 +7858,107 @@ function JournalClubDatesEditor({ ay, conf, onUpdate, blockStart }) {
               <button onClick={reset}
                 className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
                 Reset to first Tuesdays
+              </button>
+            )}
+            <button onClick={() => setOpen(false)}
+              className="text-xs px-3 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors font-medium">
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Inline holiday editor, in the same AY folder as the conference/JC dates. Holidays are NAMED and
+// may span days ("Christmas Eve & Day", Dec 24-25), which is why this is a row editor rather than
+// the flat SpecialDaysList chip editor Journal Club uses.
+//
+// AN ABSENT LIST MEANS "NO HOLIDAYS", NOT "DERIVE US DEFAULTS" — the opposite of
+// JournalClubDatesEditor's convention, deliberately. See lib/holidays.js's header: deriving would
+// invent holiday obligations for every already-saved academic year and silently move generator
+// scoring. "Add US defaults" is a button the chief presses, and every row it adds is editable and
+// deletable afterwards.
+function HolidayDatesEditor({ ay, conf, onUpdate }) {
+  const [open, setOpen] = useState(false);
+  const holidays = resolveHolidays(conf);
+
+  const commit = next => onUpdate({ ...conf, holidays: next });
+  const patch = (i, fields) => commit(holidays.map((h, j) => j === i ? { ...h, ...fields } : h));
+  const remove = i => commit(holidays.filter((_, j) => j !== i));
+  const addBlank = () => commit([...holidays, { id: `h_${Date.now()}`, name: '', start: '', end: '' }]);
+  // Merges rather than replaces, and matches on START DATE so pressing this twice can't duplicate
+  // a holiday the chief has since renamed ("Christmas Eve & Day" -> "Christmas").
+  const addDefaults = () => {
+    const have = new Set(holidays.map(h => h.start));
+    commit([...holidays, ...defaultUsHolidays(ay).filter(h => !have.has(h.start))]
+      .sort((a, b) => (a.start || '').localeCompare(b.start || '')));
+  };
+  const clearAll = () => { const c = { ...conf }; delete c.holidays; onUpdate(c); };
+
+  // Rows still being typed (blank name/start) are dropped by resolveHolidays, so summarize off the
+  // RAW stored array — otherwise adding a blank row makes the header count appear not to change.
+  const rawCount = Array.isArray(conf.holidays) ? conf.holidays.length : 0;
+  const summary = rawCount === 0
+    ? 'None set — holiday equity is off for this year'
+    : `${holidays.length} holiday${holidays.length === 1 ? '' : 's'} · ${holidays.map(h => h.name).join(', ')}`;
+
+  return (
+    <div className="bg-primary/10 border-b border-primary/20">
+      <button onClick={() => setOpen(p => !p)}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-primary/10 transition-colors">
+        <div className="flex items-center gap-2 min-w-0">
+          <CalendarDays size={13} className="text-primary shrink-0"/>
+          <span className="text-xs font-semibold text-primary">Holidays</span>
+          <span className={`text-xs truncate ${rawCount ? 'text-primary' : 'text-primary italic'}`}>{summary}</span>
+        </div>
+        <ChevronDown size={13} className={`text-primary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+
+      {open && (
+        <div className="px-4 py-3 space-y-2">
+          <p className="text-xs text-gray-500">
+            Who works each holiday is tracked per resident across the whole academic year (published
+            blocks + the current one) and equalized by the generator. Leave this empty and nothing
+            about scheduling changes. A night shift STARTING on a holiday counts as that holiday.
+          </p>
+          {rawCount === 0 ? (
+            <p className="text-xs text-gray-400 italic">No holidays defined for {ay}.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {(conf.holidays || []).map((h, i) => (
+                <div key={h?.id || i} className="flex items-center gap-1.5">
+                  <input type="text" value={h?.name || ''} onChange={e => patch(i, { name: e.target.value })}
+                    placeholder="Holiday name"
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white flex-1 min-w-0"/>
+                  <input type="date" value={h?.start || ''} onChange={e => patch(i, { start: e.target.value })}
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white shrink-0"/>
+                  <span className="text-gray-400 text-xs shrink-0">–</span>
+                  <input type="date" value={h?.end || ''} onChange={e => patch(i, { end: e.target.value })}
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white shrink-0"/>
+                  <button onClick={() => remove(i)} title="Remove holiday"
+                    className="shrink-0 p-1 text-gray-400 hover:text-destructive transition-colors">
+                    <Trash2 size={12}/>
+                  </button>
+                </div>
+              ))}
+              <p className="text-xs text-gray-400">Leave the second date blank for a single-day holiday.</p>
+            </div>
+          )}
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            <button onClick={addDefaults}
+              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
+              Add US defaults
+            </button>
+            <button onClick={addBlank}
+              className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
+              <Plus size={11} className="inline -mt-0.5 mr-0.5"/>Add holiday
+            </button>
+            {rawCount > 0 && (
+              <button onClick={clearAll}
+                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
+                Clear all
               </button>
             )}
             <button onClick={() => setOpen(false)}
@@ -12438,7 +12660,107 @@ function OverrideInsightsCard({ overrideLog, allResidents }) {
   );
 }
 
-function ValidationTab({ issues, block, appSettings, allResidents }) {
+// Holiday equity, on the Validation tab so the chief can eyeball the single most contested fact in
+// the schedule without exporting anything: who is on each holiday in THIS block, and what everyone's
+// academic-year holiday total looks like.
+//
+// Reports only — nothing here feeds generation (the generator reads the same numbers itself, via
+// score()'s holidayEquity and the quality vector's holidaySpread). Same posture as
+// OverrideInsightsCard above.
+//
+// Renders nothing when the AY has no configured holidays, which is every existing block: the
+// feature should be invisible until turned on, not a permanent empty card.
+function HolidayEquityCard({ block, allResidents, blocksHistory, ayConf }) {
+  const ay = block.academicYear || getAcademicYearFor(block.startDate);
+  const data = useMemo(() => {
+    if (!resolveHolidays(ayConf).length) return null;
+    const ayDates = holidayDateSet(ayConf);
+    const blockDates = new Set(holidayDatesInRange(block.startDate, block.endDate, ayConf));
+    const schedule = block.schedule || {};
+    const roster = buildHolidayRoster({
+      schedule, residents: allResidents, startDate: block.startDate, endDate: block.endDate,
+      ayConf, shiftLabelFor: sid => SHIFT_MAP[sid]?.label || sid,
+    });
+    // Prior = PUBLISHED earlier blocks this AY only, matching every other AY-to-date count in the
+    // app (countPublishedJC / countPublishedTraumaNights / computeAyPriorTotals). An unpublished
+    // draft is work-in-progress and must not move anyone's ledger.
+    const totals = allResidents
+      .filter(r => isSchedulable(r))
+      .map(r => {
+        const prior = countPublishedHolidayShifts(r.id, ay, blocksHistory, block.id, ayDates);
+        let thisBlock = 0;
+        for (const ds of blockDates) if (schedule[r.id]?.[ds]) thisBlock++;
+        return { id: r.id, name: `${r.lastName}, ${r.firstName}`, prior, thisBlock, total: prior + thisBlock };
+      })
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+    return { roster, totals, worked: totals.filter(t => t.total > 0) };
+  }, [block, allResidents, blocksHistory, ayConf, ay]);
+
+  if (!data) return null;
+  const { roster, totals, worked } = data;
+
+  return (
+    <CollapsibleCard
+      title="Holiday equity"
+      prefId="validation-holidays"
+      subtitle={roster.length
+        ? `${roster.length} holiday${roster.length === 1 ? '' : 's'} in this block · ${ay} totals below`
+        : `No holidays in this block · ${ay} totals below`}
+      defaultOpen={roster.length > 0}
+    >
+      {roster.length > 0 && (
+        <div className="space-y-3 mb-4">
+          {roster.map(h => (
+            <div key={h.id}>
+              <p className="text-sm font-semibold text-card-foreground">
+                {h.name}
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {h.dates.map(formatDisplayDate).join(' · ')}
+                </span>
+              </p>
+              {h.days.map(day => (
+                <div key={day.date} className="mt-1 pl-3 border-l-2 border-amber-200">
+                  <p className="text-xs text-muted-foreground">{formatDisplayDate(day.date)}</p>
+                  {day.assignments.length === 0 ? (
+                    <p className="text-xs text-muted-foreground italic">Nobody scheduled.</p>
+                  ) : (
+                    <p className="text-sm text-card-foreground">
+                      {day.assignments.map(a => `${a.name} (${a.shiftLabel})`).join(', ')}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs font-semibold text-card-foreground mb-1">Academic-year holiday shifts ({ay})</p>
+      <p className="text-xs text-muted-foreground mb-2">
+        Published earlier blocks plus this one. A resident on vacation or approved time off over a
+        holiday counts zero for it — they are unavailable, not credited, so their lower total is
+        what steers the next holiday toward them.
+      </p>
+      {worked.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">Nobody has worked a holiday this year yet.</p>
+      ) : (
+        <ul className="divide-y divide-border">
+          {totals.filter(t => t.total > 0 || t.thisBlock > 0).map(t => (
+            <li key={t.id} className="py-1.5 flex items-center gap-2 text-sm">
+              <span className="text-card-foreground flex-1 min-w-0 truncate">{t.name}</span>
+              <span className="text-xs text-muted-foreground shrink-0">
+                {t.prior} prior + {t.thisBlock} this block
+              </span>
+              <span className="font-semibold text-card-foreground w-6 text-right shrink-0">{t.total}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </CollapsibleCard>
+  );
+}
+
+function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {} }) {
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
@@ -12451,6 +12773,7 @@ function ValidationTab({ issues, block, appSettings, allResidents }) {
   if(!issues.length) return (
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate}/>}
+      <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="text-center py-16">
         <CheckCircle size={48} className="mx-auto mb-3 text-green-500"/>
@@ -12463,6 +12786,7 @@ function ValidationTab({ issues, block, appSettings, allResidents }) {
   return (
     <div className="space-y-4">
       {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate}/>}
+      <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="flex gap-3 flex-wrap">
         {errors.length>0 && <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-2.5 text-sm text-destructive font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
@@ -15622,8 +15946,8 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
-          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents}/>}
-          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer}/>}
+          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf}/>}
+          {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog}/>}

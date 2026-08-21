@@ -84,12 +84,16 @@ export function computeQualityMetrics({
   // an older/among-tests caller that omits it still produces a finite workShapePenalty.
   maxConsecutiveWorkDays = 6,
   // AY-to-date carryover (Phase 2). `ayPriorTotals` maps residentId -> {nights, weekendDates,
-  // assigned, blocks} accumulated over PUBLISHED earlier blocks in the same academic year. A
-  // resident with no history is ABSENT from the map, never present-with-zeros — see the
+  // holidays, assigned, blocks} accumulated over PUBLISHED earlier blocks in the same academic
+  // year. A resident with no history is ABSENT from the map, never present-with-zeros — see the
   // no-history handling below for why that distinction is load-bearing. Defaults to {} so every
   // caller that doesn't supply it gets exactly today's block-only behavior.
   ayPriorTotals = {},
   ayCarryoverFullAt = 3,
+  // Holiday dates falling inside THIS block, resolved by the caller from the AY's chief-editable
+  // holiday list (see lib/holidays.js — an AY with no configured holidays yields none, and this
+  // whole metric is then a strict no-op). Accepted as an array or a Set; normalized below.
+  holidayDates = [],
   // 12h-window context (chief-definable ACEP/AAEM/SAEM-style conference windows — see
   // coverage.js's TWELVE_HOUR_IDS/twelveHourStateFor). The scorer must see EXACTLY the coverage
   // the generator saw, or it permanently disagrees with the thing it's supposed to be scoring
@@ -165,6 +169,26 @@ export function computeQualityMetrics({
     return n;
   });
 
+  // holidaySpread: count of chief-configured HOLIDAY dates worked, spread across each
+  // (category,pgy) cohort — the same construction as weekendSpread, over a much sparser and far
+  // more contested set of dates.
+  //
+  // STRICT NO-OP ON EMPTY CONFIG. With no holidays configured for the AY (the state of every
+  // existing block, and of the committed quality-baseline fixtures) `holidayDateSet` is empty and
+  // this is exactly 0 — not "0 by arithmetic coincidence", but by an explicit early exit, so the
+  // guarantee is visible rather than inferred. Same discipline as the AY-carryover blend below.
+  //
+  // A resident on vacation/approved time off over a holiday counts 0 for it, exactly like anyone
+  // else who didn't work — see lib/holidays.js's header on why "unavailable" is deliberately not
+  // "spared" (their lower total is what steers the NEXT holiday toward them).
+  const holidayDateSet = holidayDates instanceof Set ? holidayDates : new Set(holidayDates || []);
+  const holidaySpread = holidayDateSet.size === 0 ? 0 : groupedSpread(targetBearing, r => {
+    const rs = schedule[r.id] || {};
+    let n = 0;
+    for (const ds of holidayDateSet) if (rs[ds]) n++;
+    return n;
+  });
+
   // ── AY-to-date carryover blend ────────────────────────────────────────────────────────────
   // Fairness measured only inside one block lets a resident who was hammered last block start even
   // again this block. These three spreads are therefore re-measured over (prior AY total + this
@@ -195,6 +219,7 @@ export function computeQualityMetrics({
   let blendedDeficitSpread = deficitSpread;
   let blendedNightSpread = nightSpread;
   let blendedWeekendSpread = weekendSpread;
+  let blendedHolidaySpread = holidaySpread;
 
   if (confidence > 0) {
     const ayDeficitSpread = groupedSpread(withHistory, r => {
@@ -222,10 +247,28 @@ export function computeQualityMetrics({
       return n;
     });
 
+    // Holiday carryover is the MOST important of the four, and the reason carryover exists at all
+    // for this metric: holidays are sparse (a handful of dates a year, often one or zero inside a
+    // given 28-day block), so within-block spread alone can never express "she worked Thanksgiving,
+    // so he takes Christmas." Measured over the year, it can. Blended on the same confidence ramp
+    // as the other three rather than a bespoke one — a program with too little published history to
+    // trust for nights has too little to trust for holidays either.
+    //
+    // Blended over `withHistory`, NOT over everyone: a resident absent from ayPriorTotals is
+    // excluded, never read as zero holidays worked. Zeroing them would mark the newest resident on
+    // the roster as maximally holiday-deprived and aim every holiday straight at them.
+    const ayHolidaySpread = holidayDateSet.size === 0 ? 0 : groupedSpread(withHistory, r => {
+      const rs = schedule[r.id] || {};
+      let n = ayPriorTotals[r.id].holidays || 0;
+      for (const ds of holidayDateSet) if (rs[ds]) n++;
+      return n;
+    });
+
     const blend = (blockValue, ayValue) => (1 - confidence) * blockValue + confidence * ayValue;
     blendedDeficitSpread = blend(deficitSpread, ayDeficitSpread);
     blendedNightSpread = blend(nightSpread, ayNightSpread);
     blendedWeekendSpread = blend(weekendSpread, ayWeekendSpread);
+    blendedHolidaySpread = blend(holidaySpread, ayHolidaySpread);
   }
 
   // nightShapePenalty: maximal consecutive-date night runs per non-night-only resident. A run
@@ -356,11 +399,13 @@ export function computeQualityMetrics({
     deficitSpread: blendedDeficitSpread,
     nightSpread: blendedNightSpread,
     weekendSpread: blendedWeekendSpread,
+    holidaySpread: blendedHolidaySpread,
     // Block-only originals kept alongside for diagnostics and for tests that need to prove the
     // blend is a strict no-op on empty history without re-deriving it.
     blockDeficitSpread: deficitSpread,
     blockNightSpread: nightSpread,
     blockWeekendSpread: weekendSpread,
+    blockHolidaySpread: holidaySpread,
     ayCarryoverConfidence: confidence,
     nightShapePenalty,
     workShapePenalty,
@@ -389,9 +434,27 @@ export function computeQualityVector(metrics, rulePriority) {
   // implicit 1.0 — work-shape is a softer preference than circadian night shaping, and it accrues
   // over far more days (every worked day, not just nights), so an equal coefficient would let it
   // dominate the whole slot.
+  //
+  // holidaySpread joins the same slot at coefficient 8 — between deficitSpread (10) and
+  // nightSpread (6). The ordering is the argument:
+  //   * BELOW deficitSpread(10), because overall workload fairness governs all ~28 days of the
+  //     block and holiday equity governs one or two of them; a schedule that equalizes Christmas
+  //     by leaving someone 4 shifts short of target is not a better schedule.
+  //   * ABOVE nightSpread(6) and weekendSpread(4), because the underlying counts are far sparser.
+  //     One extra night out of ~5, or one extra weekend day out of ~8, is a modest inequity; one
+  //     extra Christmas out of the ONE Christmas in the year is total. A per-unit weight has to
+  //     carry that difference, since the stddevs themselves are computed identically.
+  // 8 also sits deliberately between them rather than at a new extreme: this term must be able to
+  // break a tie between otherwise comparable schedules, never to buy its way past a real
+  // target-fairness regression.
+  //
+  // `?? 0` guards callers built before this metric existed (several tests construct metrics
+  // objects by hand) — undefined would poison the whole sum to NaN and silently make every
+  // comparison false rather than failing loudly.
   const fairnessPlusShape =
     2 * metrics.underTargetTotal +
     10 * metrics.deficitSpread +
+    8 * (metrics.holidaySpread ?? 0) +
     6 * metrics.nightSpread +
     4 * metrics.weekendSpread +
     metrics.nightShapePenalty +

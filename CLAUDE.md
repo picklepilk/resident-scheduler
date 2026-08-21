@@ -245,7 +245,7 @@ npm run dev
 npm run build     # → dist/
 npm run preview
 npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality/
-                   # journalClub/eligibilityOverrides/qgenda/jeopardyLedger/coverageComposition) plus
+                   # journalClub/holidays/eligibilityOverrides/qgenda/jeopardyLedger/coverageComposition) plus
                    # generator.harness.test.js + generator.baseline.<variant>.test.js, which import
                    # the generator/validateAll
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
@@ -951,6 +951,65 @@ names below rather than trusting offsets.
   already-published blocks (`countPublishedJC` recomputes against the current list) — accepted.
   The generator hoists a JC-date `Set` once per run (`isJcDay`), since `isJcDate` otherwise lands
   in `score()`, which runs per candidate per slot.
+- **HOLIDAYS ARE CHIEF-EDITABLE PER AY** (`src/lib/holidays.js`, `ayData[AY].holidays`,
+  `HolidayDatesEditor` in the Dashboard AY band next to `JournalClubDatesEditor`): who works
+  Thanksgiving/Christmas/New Year's is the most politically charged fact in the schedule, and until
+  this landed the app had no holiday concept at all. Stored as NAMED, possibly multi-day entries —
+  `[{id, name, start, end}]` — not a flat date list like `jcDates`, because "Christmas" is one
+  thing the chief reasons about even when it spans Dec 24-25, and the report card has to say
+  "Christmas: Rivera (POD-N)". Additive key on the existing per-AY object, so no new
+  `LS_BACKUP_KEYS` entry, no `syncBindings` change, no migration; `resolveHolidays` treats the
+  stored value as untrusted shape (junk entries dropped, blank/backwards `end` = single-day,
+  range expansion capped at 31 days so a year typo can't swallow a block).
+  **ABSENT CONFIG DERIVES NOTHING — the deliberate OPPOSITE of `jcDates`.** An AY with no stored
+  `holidays` resolves to `[]`, never to `defaultUsHolidays()`. Deriving would retroactively invent
+  holiday obligations for every already-saved AY, silently move generator scoring, and assert a US
+  federal calendar the chief never approved. `defaultUsHolidays(ay)` (July 4, Labor, Thanksgiving,
+  Christmas Eve+Day, New Year's Eve+Day, Memorial — floating ones computed, not hardcoded) is
+  offered behind an "Add US defaults" button that MERGES by start date, so pressing it twice can't
+  duplicate a since-renamed holiday. Consequence, asserted in three separate places
+  (`holidays.test.js`, `scheduleQuality.test.js`, `generator.harness.test.js`): with no holidays
+  configured, generation is **bit-for-bit** unchanged and `holidaySpread` is exactly 0 — which is
+  why the committed quality baselines did NOT need regeneration.
+  **"Worked a holiday" = a shift ASSIGNED to a holiday date**, i.e. one that STARTS on it. Schedule
+  cells are keyed by start date app-wide, so this needs no timing logic: a night shift starting
+  Christmas counts as Christmas even though most of its hours land on the 26th; one starting Dec 26
+  doesn't, even though it began three hours after Christmas ended. Anything else disagrees with how
+  residents actually talk about "working Christmas".
+  **Time off on a holiday is UNAVAILABLE, not SPARED** (documented choice): `vacationDates`/
+  `approvedDatesOff` already make the resident unassignable, so no special case is needed. They are
+  NOT credited with "having had it off" and NOT excluded from the equity population — their count
+  for that date is 0, which lowers their AY total, which steers the NEXT holiday toward them. Being
+  off for Thanksgiving is exactly what should make you a stronger candidate for Christmas.
+  Three consumers, all reading the same resolver: (1) `computeQualityMetrics` gains `holidaySpread`
+  (cohort stddev like `nightSpread`/`weekendSpread`), blended through the SAME AY-carryover
+  confidence ramp as the other three spreads and joining the EXISTING last vector slot at
+  **coefficient 8** — below `deficitSpread`(10) because block-wide workload fairness governs all 28
+  days while holidays govern one or two, above `nightSpread`(6)/`weekendSpread`(4) because the
+  counts are far sparser (one extra night out of ~5 is modest; one extra Christmas out of the one
+  Christmas in the year is total). Carryover is ESSENTIAL here, not a refinement: holidays are so
+  sparse that within-block spread alone can never express "she worked Thanksgiving, so he takes
+  Christmas". `computeAyPriorTotals` gained a `holidays` field (published-blocks-only,
+  no-history-residents excluded-not-zeroed — both unchanged semantics). (2) `score()` gains
+  `holidayEquity` (PREFERENCE, always-on band, weight 2 x `HOLIDAY_EQUITY_CLAMP` 3 = a 6-point
+  band; `PREFERENCE_BAND_CEILING.always` consciously raised 10 -> 16, still under the smallest
+  shift group's 22 — that margin is now the binding constraint on any further always-on term).
+  Deliberately tiny: the SELECTION vector does the real equalizing across 20 attempts, while a
+  large fill-time term would fight `deficit`(100) for the one person free on Christmas and produce
+  an UNFILLED slot instead of a fairer one — the documented preference/structural inversion hazard
+  going live for real. Measured on the fixtures (capacity-saturated, ~no slack): the term is live
+  and directionally correct but rarely has a tie left to break, so the harness asserts MONOTONICITY
+  (prior holiday load never makes you MORE likely to get another — catches a sign error at the use
+  site) rather than a specific flip. `holidayYearly` is maintained at the same three counter sites
+  as `traumaNightYearly` (fill commit + repair's `assignCell`/`unassignCell`) — an exact inverse
+  pair, or repair's transactional revert leaves the scorer lying. (3) `HolidayEquityCard` on the
+  Validation tab lists per-holiday assignments plus per-resident AY totals; renders NOTHING when no
+  holidays are configured, so the feature stays invisible until turned on.
+  Requests: holiday dates are badged in `RequestsTab`'s approval queue and noted in the resident-
+  facing `RequestForm` (via `holidayNameForDateAnyAy`, the multi-AY resolver — same role as
+  `isJcDateAnyAy`, but with NO derived fallback, since an unconfigured AY genuinely has no
+  holidays). Both are informational only; nothing is blocked, and an approved holiday date behaves
+  exactly like any other approved day off.
 - **Grand Rounds lecture dates** (`resident.grLectureDates`, EM_HOME + EM_BAMC): no evening/night
   shift day before lecture date — hard-stripped from eligibility (generator, manual
   picker both), `validateAll` errors if stale/imported schedule violates it. Validated to fall on

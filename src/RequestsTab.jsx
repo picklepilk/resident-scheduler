@@ -5,6 +5,7 @@ import LoginScreen from './residentRequests/LoginScreen';
 import RequestForm from './residentRequests/RequestForm';
 import RequestList from './residentRequests/RequestList';
 import { formatResidentName, groupByBlock } from './residentRequests/blockLookup';
+import { holidayNameForDateAnyAy } from './lib/holidays.js';
 
 // Admin-only tab inside the main scheduler. AppGate has already established the viewer is an
 // admin before this ever mounts, so the session/role checks below are defence in depth rather
@@ -19,7 +20,7 @@ import { formatResidentName, groupByBlock } from './residentRequests/blockLookup
 // `{user:{id,email}}` stand-in so every existing `session.user.id`/`session.user.email` read below
 // keeps working unchanged. The fetch stays intact as a fallback for a caller that mounts this
 // component without the prop (see the header comment above).
-export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast, demoMode, viewer }) {
+export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsChanged, showToast, demoMode, viewer, ayData = {} }) {
   const [session, setSession] = useState(() => viewer ? { user: { id: viewer.userId, email: viewer.email } } : undefined);
   const [role, setRole] = useState(() => viewer ? viewer.role : undefined); // undefined = not fetched, null = no profile row
   const [profiles, setProfiles] = useState([]);
@@ -77,7 +78,7 @@ export default function RequestsTab({ emRoster, setEmRoster, blocks, onRequestsC
 
   return (
     <>
-      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} refreshSignal={pendingRefreshSignal} demoMode={demoMode} showToast={showToast} />
+      <ApprovalQueue emRoster={emRoster} setEmRoster={setEmRoster} blocks={blocks} session={session} onRequestsChanged={onRequestsChanged} refreshSignal={pendingRefreshSignal} demoMode={demoMode} showToast={showToast} ayData={ayData} />
       <ViewAsPanel emRoster={emRoster} blocks={blocks} profiles={profiles} profilesError={profilesError}
         onRequestsChanged={onRequestsChanged} onFiled={() => setPendingRefreshSignal(s => s + 1)} demoMode={demoMode} />
       <AdminManagement session={session} emRoster={emRoster} profiles={profiles} onProfileChanged={loadProfiles} demoMode={demoMode} />
@@ -232,7 +233,7 @@ function ViewAsPanel({ emRoster, blocks, profiles, profilesError, onRequestsChan
 // now live in residentRequests/blockLookup.js — shared with RequestList.jsx so the two can't drift
 // on grouping logic. Residents are sorted by name within each group below so the admin can scan
 // who's asking for what block at a glance (groupByBlock itself preserves input order per group).
-function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal, demoMode, showToast }) {
+function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChanged, refreshSignal, demoMode, showToast, ayData = {} }) {
   const [requests, setRequests] = useState([]);
   const [noteDraft, setNoteDraft] = useState({});
   const [error, setError] = useState(null);
@@ -290,7 +291,23 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
                 {group.requests.map(req => (
                   <div key={req.id} className="bg-white border border-gray-200 rounded-lg p-3">
                     <p className="text-sm font-medium text-gray-800">{residentName(req.resident_id)}</p>
-                    <p className="text-xs text-gray-500">{req.dates.join(', ')}</p>
+                    {/* Holiday dates are called out here because approving one is the decision the
+                        chief most needs to make deliberately — it removes that resident from the
+                        holiday pool entirely, and holiday load is tracked/equalized across the whole
+                        academic year (see lib/holidays.js). Purely informational: nothing is blocked,
+                        and an approved holiday date behaves exactly like any other approved day off. */}
+                    <p className="text-xs text-gray-500">
+                      {req.dates.map((d, i) => {
+                        const holiday = holidayNameForDateAnyAy(d, ayData);
+                        return (
+                          <span key={d}>
+                            {i > 0 && ', '}
+                            {d}
+                            {holiday && <span className="ml-1 px-1 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">{holiday}</span>}
+                          </span>
+                        );
+                      })}
+                    </p>
                     {req.reason && <p className="text-xs text-gray-500 mt-1">"{req.reason}"</p>}
                     <input type="text" placeholder="Optional note back to resident" value={noteDraft[req.id] || ''}
                       onChange={e => setNoteDraft(prev => ({ ...prev, [req.id]: e.target.value }))}

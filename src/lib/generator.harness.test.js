@@ -374,3 +374,192 @@ describe('generator harness — AY-to-date carryover wiring (Phase 2)', () => {
     expect(nightSpreadFor(fixture, selfHistory).ayCarryoverConfidence).toBe(0);
   });
 });
+
+describe('generator harness — holiday wiring', () => {
+  // The holiday model's headline safety property, end to end through the REAL generator rather
+  // than through the scorer in isolation: with no holidays configured (the state of every block
+  // that exists today, and of every committed baseline fixture), generation must be BIT-FOR-BIT
+  // unchanged. If this ever fails, the committed quality baselines are silently invalid.
+  for (const variant of VARIANTS) {
+    it(`no holiday config produces a bit-for-bit identical schedule (${variant})`, () => {
+      const fixture = makeFixture(variant);
+      const plain = generateSchedule({ ...fixture, rng: mulberry32(7) });
+      // Every "no holidays" spelling a persisted ayConf can actually take, including junk shapes a
+      // hand-edited localStorage or an old JSON backup could produce.
+      for (const holidays of [undefined, null, [], { notAnArray: true }, [null, { name: 'x' }]]) {
+        const ayConf = { ...(fixture.ayConf || {}), holidays };
+        const withEmpty = generateSchedule({ ...fixture, ayConf, rng: mulberry32(7) });
+        expect(withEmpty.schedule).toEqual(plain.schedule);
+        expect(stripVolatile(withEmpty.report)).toEqual(stripVolatile(plain.report));
+      }
+    });
+  }
+
+  it('holidayDates reach computeQualityMetrics through buildQualityInput', () => {
+    // buildQualityInput is the only path production takes to the scorer, so the plumbing has to be
+    // asserted there rather than by calling computeQualityMetrics with a hand-built holidayDates
+    // array (which would pass even if nothing were wired).
+    const fixture = makeFixture('standard');
+    const dates = getBlockDates(fixture.block.startDate, fixture.block.endDate);
+    const inBlock = [dates[3], dates[4]];
+    const ayConf = {
+      ...(fixture.ayConf || {}),
+      holidays: [{ id: 'h1', name: 'Test Holiday', start: inBlock[0], end: inBlock[1] }],
+    };
+    const { schedule, report } = generateSchedule({ ...fixture, ayConf, rng: mulberry32(5) });
+
+    const qInput = buildQualityInput({
+      schedule, report, allResidents: fixture.allResidents, block: fixture.block,
+      appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides,
+      blocksHistory: [], ayConf,
+    });
+    expect(qInput.holidayDates).toEqual(inBlock);
+
+    const withHolidays = computeQualityMetrics({
+      ...qInput, dates, coverage: fixture.coverage,
+      seniorGapCount: report.seniorGaps.length, restCompromiseCount: report.restCompromises.length,
+    });
+    // The fixture blocks are capacity-saturated, so these two dates are staffed by whoever is
+    // available — the point here is only that the metric is LIVE (a real number derived from real
+    // assignments), not that it happens to be nonzero.
+    expect(Number.isFinite(withHolidays.holidaySpread)).toBe(true);
+    expect(withHolidays.blockHolidaySpread).toBe(withHolidays.holidaySpread); // no history -> no blend
+
+    // ...and with the same seed and no holiday config, the metric is exactly 0.
+    const noneInput = buildQualityInput({
+      schedule, report, allResidents: fixture.allResidents, block: fixture.block,
+      appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides,
+      blocksHistory: [], ayConf: {},
+    });
+    expect(noneInput.holidayDates).toEqual([]);
+    expect(computeQualityMetrics({
+      ...noneInput, dates, coverage: fixture.coverage,
+      seniorGapCount: report.seniorGaps.length, restCompromiseCount: report.restCompromises.length,
+    }).holidaySpread).toBe(0);
+  });
+
+  it('a PUBLISHED prior block\'s holiday work feeds the AY carryover totals', () => {
+    // The sparse-data case holidays exist for: nothing in THIS block says who worked Thanksgiving,
+    // so the only way the scorer can know is the published snapshot.
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const [rA] = fixture.allResidents;
+    const priorStart = '2026-06-01', priorEnd = '2026-06-28';
+    const priorHoliday = '2026-06-05';
+    const ayConf = {
+      ...(fixture.ayConf || {}),
+      holidays: [{ id: 'prior', name: 'Prior Holiday', start: priorHoliday, end: priorHoliday }],
+    };
+    const snap = {
+      id: 'p1', published: true, academicYear: ay, startDate: priorStart, endDate: priorEnd,
+      savedAt: `${priorStart}T00:00:00.000Z`,
+      data: {
+        schedule: { [rA.id]: { [priorHoliday]: 'POD-D' } },
+        startDate: priorStart, endDate: priorEnd, academicYear: ay,
+      },
+    };
+    const { schedule, report } = generateSchedule({ ...fixture, ayConf, rng: mulberry32(5) });
+    const qInput = buildQualityInput({
+      schedule, report, allResidents: fixture.allResidents, block: fixture.block,
+      appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides,
+      blocksHistory: [snap], ayConf,
+    });
+
+    expect(qInput.ayPriorTotals[rA.id].holidays).toBe(1);
+    // The prior holiday falls outside this block, so it contributes to the AY ledger only.
+    expect(qInput.holidayDates).toEqual([]);
+  });
+
+  it('an UNPUBLISHED prior block\'s holiday work contributes nothing (published-only)', () => {
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const [rA] = fixture.allResidents;
+    const priorHoliday = '2026-06-05';
+    const ayConf = {
+      ...(fixture.ayConf || {}),
+      holidays: [{ id: 'prior', name: 'Prior Holiday', start: priorHoliday, end: priorHoliday }],
+    };
+    const draft = {
+      id: 'p1', published: false, academicYear: ay, startDate: '2026-06-01', endDate: '2026-06-28',
+      savedAt: '2026-06-01T00:00:00.000Z',
+      data: {
+        schedule: { [rA.id]: { [priorHoliday]: 'POD-D' } },
+        startDate: '2026-06-01', endDate: '2026-06-28', academicYear: ay,
+      },
+    };
+    const { schedule, report } = generateSchedule({ ...fixture, ayConf, rng: mulberry32(5) });
+    const qInput = buildQualityInput({
+      schedule, report, allResidents: fixture.allResidents, block: fixture.block,
+      appSettings: fixture.appSettings, eligOverrides: fixture.eligOverrides,
+      blocksHistory: [draft], ayConf,
+    });
+    expect(qInput.ayPriorTotals[rA.id]).toBeUndefined();
+  });
+
+  it('score()\'s holiday nudge never runs BACKWARDS on the resident carrying the AY holiday load', () => {
+    // score() is a closure over generator state and can't be called from a test, so this observes
+    // the term through generator OUTPUT. The two arms are identical in every input except the one
+    // that drives holidayYearly:
+    //   arm A — the in-block date is the AY's only holiday, so nobody has prior holiday history;
+    //   arm B — three dates inside the SAME published prior snapshot are ALSO declared holidays,
+    //           giving that snapshot's resident a holidayYearly of 3 (== HOLIDAY_EQUITY_CLAMP).
+    // Crucially `blocksHistory` is byte-identical across both arms, so every other history-derived
+    // input the generator has (prevBlockTailSchedules, traumaNightYearly, priorPedsTrauma,
+    // countPublishedJC, next-block rotation) is unchanged. Declaring a date a holiday feeds exactly
+    // one thing and nothing else: holidayYearly. That is what makes this a clean isolation.
+    //
+    // ACCEPTED LIMITATION, measured rather than assumed: the synthetic fixtures are
+    // capacity-saturated (see the repair-pass notes in CLAUDE.md — every resident sits at target,
+    // there is essentially no slack), and holidayEquity is a deliberately small preference weight
+    // (2, clamped at 3 = a 6-point band) that must never outrank `deficit` (100). Probed across
+    // four in-block dates x 8 seeds, the loaded resident's holiday count moved 8->8, 8->8, 8->8,
+    // 8->7: the term is live and directionally correct, but on a block with no slack it rarely has
+    // a tie left to break. Asserting a specific drop would therefore be asserting fixture trivia.
+    // What IS well-defined, and what actually matters, is MONOTONICITY: knowing a resident already
+    // worked holidays must never make the generator MORE likely to hand them another. A sign error
+    // at the use site (`+ W.holidayEquity` instead of `-`) fails this immediately.
+    const fixture = makeFixture('standard');
+    const ay = fixture.block.academicYear;
+    const dates = getBlockDates(fixture.block.startDate, fixture.block.endDate);
+    const holiday = dates[20];
+    const priorStart = '2026-06-01', priorEnd = '2026-06-28';
+    const priorDates = ['2026-06-02', '2026-06-03', '2026-06-04'];
+    const seeds = [1, 2, 3, 5, 8, 13, 21, 42];
+
+    const holidayOnly = { id: 'h', name: 'Holiday', start: holiday, end: holiday };
+    const armA = { ...(fixture.ayConf || {}), holidays: [holidayOnly] };
+
+    // Identify the resident this fixture actually puts on that date, rather than assuming any two
+    // roster entries compete for it — an earlier draft of this test picked two same-PGY residents
+    // and failed because only one of them was ever eligible there at all.
+    const counts = {};
+    for (const seed of seeds) {
+      const { schedule } = generateSchedule({ ...fixture, ayConf: armA, rng: mulberry32(seed) });
+      for (const r of fixture.allResidents) if (schedule[r.id]?.[holiday]) counts[r.id] = (counts[r.id] || 0) + 1;
+    }
+    const [loadedId, baselineCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    expect(baselineCount).toBeGreaterThan(0); // fixture sanity: someone works this date
+
+    const history = [{
+      id: 'p1', published: true, academicYear: ay, startDate: priorStart, endDate: priorEnd,
+      savedAt: `${priorStart}T00:00:00.000Z`,
+      data: {
+        schedule: { [loadedId]: Object.fromEntries(priorDates.map(d => [d, 'POD-D'])) },
+        startDate: priorStart, endDate: priorEnd, academicYear: ay,
+      },
+    }];
+    const armB = {
+      ...armA,
+      holidays: [holidayOnly, ...priorDates.map((d, i) => ({ id: `pr${i}`, name: `Prior ${i}`, start: d, end: d }))],
+    };
+
+    let withoutPriorHolidays = 0, withPriorHolidays = 0;
+    for (const seed of seeds) {
+      const a = generateSchedule({ ...fixture, ayConf: armA, blocksHistory: history, rng: mulberry32(seed) }).schedule;
+      const b = generateSchedule({ ...fixture, ayConf: armB, blocksHistory: history, rng: mulberry32(seed) }).schedule;
+      if (a[loadedId]?.[holiday]) withoutPriorHolidays++;
+      if (b[loadedId]?.[holiday]) withPriorHolidays++;
+    }
+    expect(withPriorHolidays).toBeLessThanOrEqual(withoutPriorHolidays);
+  });
+});

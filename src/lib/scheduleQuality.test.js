@@ -26,7 +26,13 @@ function makeMetrics(overrides) {
     deficitSpread: 0,
     nightSpread: 0,
     weekendSpread: 0,
+    holidaySpread: 0,
     nightShapePenalty: 0,
+    // Was missing, which made computeQualityVector's `0.5 * metrics.workShapePenalty` term NaN for
+    // every hand-built metrics object in this file. The existing assertions never noticed because
+    // they all resolve at tuple index 0-2, before slot 3 is ever compared; any test that reads slot
+    // 3 directly (see the holidaySpread weighting block) needs it finite.
+    workShapePenalty: 0,
     ...overrides,
   };
 }
@@ -462,7 +468,7 @@ describe('computeQualityMetrics — AY-to-date carryover (Phase 2)', () => {
     const withEmpty = computeQualityMetrics({ ...base, schedule, ayPriorTotals: {} });
 
     expect(withEmpty.ayCarryoverConfidence).toBe(0);
-    for (const k of ['deficitSpread', 'nightSpread', 'weekendSpread']) {
+    for (const k of ['deficitSpread', 'nightSpread', 'weekendSpread', 'holidaySpread']) {
       expect(withEmpty[k]).toBe(withoutArg[k]);
       // ...and the blended value equals the block-only value it was derived from.
       const blockKey = `block${k[0].toUpperCase()}${k.slice(1)}`;
@@ -560,5 +566,184 @@ describe('computeQualityMetrics — AY-to-date carryover (Phase 2)', () => {
     expect(withOmitted.ayCarryoverConfidence).toBeCloseTo(1, 5);
     expect(Number.isFinite(withOmitted.deficitSpread)).toBe(true);
     expect(withOmitted.deficitSpread).toBeCloseTo(withExplicitEqual.deficitSpread, 10);
+  });
+});
+
+describe('computeQualityMetrics — holiday equity', () => {
+  const dates = mkDates('2026-12-20', 14); // 2026-12-20 .. 2027-01-02
+  const mk = (id) => ({ id, category: 'EM_HOME', pgy: 2, vacationDates: [], approvedDatesOff: [] });
+  const residents = [mk('a'), mk('b')];
+  const targets = { a: 10, b: 10 };
+  const base = {
+    coverage: {},
+    residents,
+    targets,
+    nightOnlyIds: new Set(),
+    nightRules: NIGHT_RULES,
+    weekendPairs: [],
+    seniorGapCount: 0,
+    restCompromiseCount: 0,
+    dates,
+  };
+  // Two NON-ADJACENT holiday dates, on purpose. Adjacent ones (a real Dec 24-25) would make the
+  // two fixtures below differ in WORK SHAPE as well — one resident with a 2-day run vs two with
+  // isolated singles — and workShapePenalty would swamp the holiday term, testing the wrong thing.
+  const HOLIDAYS = ['2026-12-25', '2027-01-01'];
+
+  // The two fixtures are deliberately IDENTICAL in every respect the scorer measures except who
+  // gets the holidays: same four worked dates in aggregate (so coverageMiss is identical), two
+  // shifts each (so deficitSpread and underTargetTotal are identical), all isolated day shifts
+  // (so nightShapePenalty is 0 and workShapePenalty is identical), no weekend pairs configured,
+  // no time off. The ONLY difference is which resident holds each holiday date.
+  const lopsided = { // `a` works both holidays
+    a: { '2026-12-25': 'POD-D', '2027-01-01': 'POD-D' },
+    b: { '2026-12-27': 'POD-D', '2026-12-29': 'POD-D' },
+  };
+  const even = { // one holiday each
+    a: { '2026-12-25': 'POD-D', '2026-12-27': 'POD-D' },
+    b: { '2027-01-01': 'POD-D', '2026-12-29': 'POD-D' },
+  };
+
+  it('is a STRICT no-op when no holidays are configured — the baseline-preserving property', () => {
+    // Three ways of saying "no holidays", all of which must be numerically identical to a scorer
+    // with no holiday concept at all. This is what keeps the committed quality baselines valid
+    // without regeneration: the fixtures carry no holiday config, so the new term contributes 0.
+    const omitted = computeQualityMetrics({ ...base, schedule: lopsided });
+    const emptyArray = computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: [] });
+    const emptySet = computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: new Set() });
+
+    for (const m of [omitted, emptyArray, emptySet]) {
+      expect(m.holidaySpread).toBe(0);
+      expect(m.blockHolidaySpread).toBe(0);
+    }
+    const priority = ['coverageMin', 'seniorComposition', 'postNightRest'];
+    expect(computeQualityVector(omitted, priority)).toEqual(computeQualityVector(emptyArray, priority));
+    expect(computeQualityVector(omitted, priority)).toEqual(computeQualityVector(emptySet, priority));
+  });
+
+  it('penalizes a lopsided holiday split and scores an even one at zero', () => {
+    const bad = computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: HOLIDAYS });
+    const good = computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS });
+
+    expect(good.holidaySpread).toBe(0);
+    expect(bad.holidaySpread).toBeGreaterThan(0);
+  });
+
+  it('makes the even split win the quality vector, all else equal', () => {
+    const priority = ['coverageMin', 'seniorComposition', 'postNightRest'];
+    const bad = computeQualityVector(computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: HOLIDAYS }), priority);
+    const good = computeQualityVector(computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS }), priority);
+
+    expect(compareVectors(good, bad)).toBeLessThan(0);
+    expect(betterQuality(wrap(good), wrap(bad))).toBe(true);
+    // ...and with holidays switched off, the two are INDISTINGUISHABLE — which is what proves the
+    // difference above comes from the holiday term and not from some incidental asymmetry in the
+    // fixtures (an earlier draft of this test failed exactly that way: adjacent holiday dates made
+    // the two schedules differ in workShapePenalty, and that, not holidays, decided the winner).
+    const badOff = computeQualityVector(computeQualityMetrics({ ...base, schedule: lopsided }), priority);
+    const goodOff = computeQualityVector(computeQualityMetrics({ ...base, schedule: even }), priority);
+    expect(compareVectors(goodOff, badOff)).toBe(0);
+  });
+
+  it('accepts holidayDates as an array or a Set interchangeably', () => {
+    const asArray = computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: HOLIDAYS });
+    const asSet = computeQualityMetrics({ ...base, schedule: lopsided, holidayDates: new Set(HOLIDAYS) });
+    expect(asSet.holidaySpread).toBe(asArray.holidaySpread);
+  });
+
+  it('a night shift STARTING on the holiday counts; one starting the next day does not', () => {
+    const startsOnXmas = { a: { '2026-12-25': 'POD-N' }, b: {} };
+    const startsAfter = { a: { '2026-12-26': 'POD-N' }, b: {} };
+    expect(computeQualityMetrics({ ...base, schedule: startsOnXmas, holidayDates: HOLIDAYS }).holidaySpread)
+      .toBeGreaterThan(0);
+    expect(computeQualityMetrics({ ...base, schedule: startsAfter, holidayDates: HOLIDAYS }).holidaySpread)
+      .toBe(0);
+  });
+
+  it('counts a resident who is off over the holidays as zero — unavailable, not spared', () => {
+    // `b` has approved time off across both holidays, so they cannot be assigned. They are NOT
+    // excluded from the population and NOT credited: their 0 is real, and it is exactly what
+    // registers as the imbalance the next holiday should correct.
+    const residentsWithOff = [mk('a'), { ...mk('b'), approvedDatesOff: HOLIDAYS }];
+    const m = computeQualityMetrics({
+      ...base, residents: residentsWithOff, schedule: lopsided, holidayDates: HOLIDAYS,
+    });
+    expect(m.holidaySpread).toBeGreaterThan(0);
+  });
+
+  it('surfaces year-to-date holiday imbalance the block alone cannot see (AY carryover)', () => {
+    // This is the case holidays exist for, and the reason carryover is essential rather than nice
+    // to have. Both residents work exactly one holiday THIS block, so block-only holidaySpread is
+    // 0 and the block looks perfectly fair on its own evidence. But `a` already worked two
+    // holidays in published earlier blocks. Only the carryover can see that.
+    const ayPriorTotals = {
+      a: { nights: 5, weekendDates: 8, holidays: 2, assigned: 30, blocks: 3 },
+      b: { nights: 5, weekendDates: 8, holidays: 0, assigned: 30, blocks: 3 },
+    };
+    const blockOnly = computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS });
+    const withAy = computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS, ayPriorTotals, ayCarryoverFullAt: 3 });
+
+    expect(blockOnly.holidaySpread).toBe(0);
+    expect(withAy.ayCarryoverConfidence).toBeCloseTo(1, 5);
+    expect(withAy.holidaySpread).toBeGreaterThan(0);
+    // The block-only figure is reported untouched alongside the blended one.
+    expect(withAy.blockHolidaySpread).toBe(0);
+  });
+
+  it('EXCLUDES a no-history resident from the AY holiday population rather than zeroing them', () => {
+    // `b` is new to the roster. Reading them as "0 holidays worked" would mark them maximally
+    // holiday-deprived and aim every holiday at them. With only one resident carrying history,
+    // confidence is 0 and nothing is blended — the same guarantee the night/weekend carryover
+    // already makes.
+    const onlyA = { a: { nights: 5, weekendDates: 8, holidays: 2, assigned: 30, blocks: 3 } };
+    const m = computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS, ayPriorTotals: onlyA, ayCarryoverFullAt: 3 });
+    expect(m.ayCarryoverConfidence).toBe(0);
+    expect(m.holidaySpread).toBe(m.blockHolidaySpread);
+  });
+
+  it('tolerates prior totals from before this metric existed (missing `holidays` key)', () => {
+    // A map built by an older code path has no `holidays` field. That must read as 0 rather than
+    // NaN-poisoning the spread into a silently-always-false comparison.
+    const legacy = {
+      a: { nights: 5, weekendDates: 8, assigned: 30, blocks: 3 },
+      b: { nights: 5, weekendDates: 8, assigned: 30, blocks: 3 },
+    };
+    const m = computeQualityMetrics({ ...base, schedule: even, holidayDates: HOLIDAYS, ayPriorTotals: legacy, ayCarryoverFullAt: 3 });
+    expect(Number.isFinite(m.holidaySpread)).toBe(true);
+  });
+});
+
+describe('computeQualityVector — holidaySpread weighting', () => {
+  const priority = ['coverageMin', 'seniorComposition', 'postNightRest'];
+  const slot3 = m => computeQualityVector(m, priority)[3];
+
+  it('is weighted at 8 — between deficitSpread (10) and nightSpread (6)', () => {
+    const unit = slot3(makeMetrics({ holidaySpread: 1 })) - slot3(makeMetrics({}));
+    expect(unit).toBeCloseTo(8, 10);
+    expect(unit).toBeLessThan(slot3(makeMetrics({ deficitSpread: 1 })) - slot3(makeMetrics({})));
+    expect(unit).toBeGreaterThan(slot3(makeMetrics({ nightSpread: 1 })) - slot3(makeMetrics({})));
+  });
+
+  it('joins the EXISTING fairness slot rather than adding a 5th tuple element', () => {
+    // A new slot would rank holiday equity above coverage/seniority/rest, which it must never do:
+    // a schedule nobody can staff is not redeemed by being fair about Christmas.
+    expect(computeQualityVector(makeMetrics({ holidaySpread: 3 }), priority)).toHaveLength(4);
+  });
+
+  it('never outranks a higher-priority tier no matter how large', () => {
+    const hugeHoliday = makeMetrics({ holidaySpread: 5000 });
+    const oneCoverageMiss = makeMetrics({ coverageMiss: 1 });
+    expect(compareVectors(
+      computeQualityVector(hugeHoliday, priority),
+      computeQualityVector(oneCoverageMiss, priority),
+    )).toBeLessThan(0);
+  });
+
+  it('reads a metrics object built before this field existed as 0, not NaN', () => {
+    const legacy = { coverageMiss: 0, seniorGaps: 0, restCompromises: 0, underTargetTotal: 0,
+      deficitSpread: 0, nightSpread: 0, weekendSpread: 0, nightShapePenalty: 0, workShapePenalty: 0 };
+    const v = computeQualityVector(legacy, priority);
+    expect(Number.isNaN(v[3])).toBe(false);
+    expect(v[3]).toBe(0);
   });
 });

@@ -111,6 +111,18 @@ export async function fetchBlocksForLookup() {
     .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
 }
 
+// Read-only per-AY config fetch (the `res_ay_data` key of the same shared res_state document), so
+// the resident-facing request form can tell someone that the date they're about to request is
+// Thanksgiving. Returns {} on any failure — every caller uses this only to ADD an informational
+// note, never to gate or validate a submission, so a failed fetch degrades to "no note" rather
+// than to a broken form. Importing src/lib/holidays.js from here is fine and intended: the rule
+// this directory honors is "never import from ResidentScheduler.jsx", and lib/* is pure.
+export async function fetchAyDataForLookup() {
+  const data = await fetchResState();
+  const ayData = data && data.res_ay_data;
+  return ayData && typeof ayData === 'object' ? ayData : {};
+}
+
 // Read-only roster fetch, same res_state row as fetchBlocksForLookup — only RENDERS the fields
 // needed to let a resident identify themselves. See fetchResState's own comment above: the
 // underlying fetch still pulls the whole shared document (including the full schedule) to the
