@@ -10,6 +10,12 @@ primary_region = "iad"
 
 [build]
 
+[env]
+  # Browser origins allowed to call this service (api/main.py's CORSMiddleware allowlist) — the
+  # deployed scheduler app plus local dev servers. Never "*": one specific frontend is the only
+  # intended caller.
+  SOLVER_CORS_ORIGINS = "https://residentscheduling.netlify.app,http://localhost:5173,http://localhost:4173"
+
 # Matches the Dockerfile's own `EXPOSE 8080` / `CMD [...--port", "8080"]` — must stay in sync if
 # either changes.
 [http_service]

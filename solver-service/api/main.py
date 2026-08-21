@@ -9,9 +9,12 @@ HTTP status codes per docs/PAYLOAD_SCHEMA.md's "Errors" note (400 schema,
 
 from __future__ import annotations
 
+import os
+
 from importlib.metadata import version as _pkg_version
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
 from solver.io.payload import PayloadError, parse_payload
@@ -24,6 +27,25 @@ except Exception:  # pragma: no cover -- package metadata should always exist
     ORTOOLS_VERSION = "unknown"
 
 app = FastAPI(title="resident-scheduler-solver", version="1")
+
+# The service is called directly from the scheduler app's browser origin (solverClient.js fetch),
+# so CORS must be open to that origin or every call dies in preflight and the app silently falls
+# back to its built-in generator. SOLVER_CORS_ORIGINS is a comma-separated allowlist set at deploy
+# time (the app's own origin(s), never "*" — one specific frontend is the only intended caller);
+# the localhost defaults keep `uvicorn` + `npm run dev` working with no env var at all.
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get(
+        "SOLVER_CORS_ORIGINS", "http://localhost:5173,http://localhost:4173"
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.get("/health", response_model=HealthResponse)
