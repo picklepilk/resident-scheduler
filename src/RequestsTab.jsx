@@ -255,17 +255,30 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
   async function decide(req, status) {
     if (demoMode) { showToast?.('Exit the demo sandbox first.', 'red'); return; }
     const note = noteDraft[req.id] || null;
+    const decidedAt = new Date().toISOString();
     // Check the write's own error rather than assuming success — an RLS denial, expired session,
     // or network blip must not update local approvedDatesOff/UI state while the database write
     // itself never took effect (that desync is exactly what the code review flagged).
     const { error: updateError } = await supabase.from('day_off_requests').update({
-      status, decision_note: note, decided_at: new Date().toISOString(), decided_by: session.user.id,
+      status, decision_note: note, decided_at: decidedAt, decided_by: session.user.id,
     }).eq('id', req.id);
     if (updateError) { setError(updateError.message); return; }
     setError(null);
     if (status === 'approved') {
+      // The resident's typed reason and the admin's own note are otherwise stuck in Supabase —
+      // the schedule grid (tooltip, resident cards, PDF export) needs to work offline and from a
+      // JSON backup, and res_em_roster already carries per-resident date-keyed data the same way
+      // (jcPresentDates, grLectureDates), so the explanation is stamped onto the roster here at
+      // approval time rather than read back from Supabase on demand. Known limitation: only
+      // approvals made after this ships carry a reason/note — nothing backfills older ones.
+      const stamp = { reason: req.reason || undefined, note: note || undefined, at: decidedAt };
+      const hasNote = stamp.reason || stamp.note;
       setEmRoster(prev => prev.map(r => r.id === req.resident_id
-        ? { ...r, approvedDatesOff: Array.from(new Set([...(r.approvedDatesOff || []), ...req.dates])).sort() }
+        ? {
+            ...r,
+            approvedDatesOff: Array.from(new Set([...(r.approvedDatesOff || []), ...req.dates])).sort(),
+            ...(hasNote ? { offRequestNotes: { ...(r.offRequestNotes || {}), ...Object.fromEntries(req.dates.map(d => [d, stamp])) } } : {}),
+          }
         : r));
     }
     loadRequests();

@@ -1,0 +1,52 @@
+# Fly.io app config for the CP-SAT solver service (see README.md's "Deploy" section for the
+# `fly launch --no-deploy` / `fly deploy` walkthrough this file is used by).
+#
+# App name is a PLACEHOLDER — Fly app names are globally unique across all Fly customers, so
+# "resident-scheduler-solver" will very likely already be taken by someone else. `fly launch`
+# prompts for a name (or edit `app` below) before the first deploy; this repo is public, so don't
+# assume this literal name is reserved for us.
+app = "resident-scheduler-solver"
+primary_region = "iad"
+
+[build]
+
+# Matches the Dockerfile's own `EXPOSE 8080` / `CMD [...--port", "8080"]` — must stay in sync if
+# either changes.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # This service is stateless (no DB, no local disk state — see README's "Determinism" note) and
+  # only ever called synchronously by the app's Generate Schedule/Regenerate actions, which already
+  # fall back cleanly to the built-in JS generator on any non-200/timeout (see
+  # src/lib/solverClient.js in the main app repo). Scaling to zero when idle is the right default
+  # for a low-traffic internal tool — a cold start just makes the NEXT solve request a few seconds
+  # slower, it never surfaces as a hard error.
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  # CP-SAT is CPU-bound and payload.config.numWorkers defaults to 8 (see docs/PAYLOAD_SCHEMA.md) —
+  # size the machine to roughly match, or numWorkers is requesting more parallelism than the
+  # machine actually has. Adjust both together if you change this.
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 2048
+
+# ─── CORS ───────────────────────────────────────────────────────────────────────────────────────
+# TODO(solver-service owner): api/main.py does not currently set up CORSMiddleware at all (checked
+# 2026-08-21 — no `from fastapi.middleware.cors import CORSMiddleware` anywhere in api/). A browser
+# calling this service directly from the app's own origin (src/lib/solverClient.js's `fetch`) will
+# be blocked by the browser's CORS preflight once this is deployed somewhere cross-origin from the
+# app, even though a plain `curl`/server-to-server call works fine today. Add CORSMiddleware in
+# api/main.py, gated by a `SOLVER_CORS_ORIGINS` env var (comma-separated allowed origins — the
+# deployed app's own origin(s), not `*`, since this is meant to be called by one specific frontend)
+# once solver-service/api/ is no longer being actively edited elsewhere. Not fixed here because
+# api/main.py is owned by another concurrent change at the time this file was written.

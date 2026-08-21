@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "config": {
+    "maxTimeSeconds": 10,
+    "numWorkers": 1,
+    "randomSeed": 13,
+    "coverageMinMode": "hard_then_elastic",
+    "maxVerificationResolves": 2,
+    "weights": {}
+  },
+  "block": {
+    "startDate": "2026-04-06",
+    "endDate": "2026-04-06",
+    "dates": [
+      "2026-04-06"
+    ]
+  },
+  "shifts": {
+    "D": {
+      "startH": 7,
+      "durationH": 9,
+      "type": "day",
+      "area": "POD"
+    }
+  },
+  "residents": [
+    {
+      "id": "r1",
+      "cohort": null,
+      "target": null,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": {
+        "nights": null,
+        "trauma": null,
+        "jcRemaining": null,
+        "bamcWedNights": null,
+        "pedsMixMax": null,
+        "pedsMixMin": null,
+        "fm1PedsMax": null
+      },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": {
+        "nights": 0,
+        "weekends": 0,
+        "holidays": 0
+      }
+    },
+    {
+      "id": "r2",
+      "cohort": null,
+      "target": null,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": {
+        "nights": null,
+        "trauma": null,
+        "jcRemaining": null,
+        "bamcWedNights": null,
+        "pedsMixMax": null,
+        "pedsMixMin": null,
+        "fm1PedsMax": null
+      },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": {
+        "nights": 0,
+        "weekends": 0,
+        "holidays": 0
+      }
+    }
+  ],
+  "eligible": {
+    "r1": {
+      "2026-04-06": [
+        "D"
+      ]
+    },
+    "r2": {
+      "2026-04-06": [
+        "D"
+      ]
+    }
+  },
+  "obligations": {},
+  "locked": [],
+  "coverage": {
+    "D": {
+      "2026-04-06": {
+        "min": 3,
+        "max": 3
+      }
+    }
+  },
+  "seniorPrimary": {},
+  "jcDates": [],
+  "holidays": {},
+  "preferences": [],
+  "rulePriority": [
+    "coverageMin",
+    "seniorComposition",
+    "postNightRest"
+  ],
+  "settings": {
+    "enforceRest": true,
+    "enforceWeekendOff": true
+  }
+}

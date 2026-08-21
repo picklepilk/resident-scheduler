@@ -4,7 +4,7 @@
 // — the part most likely to be silently wrong, since a broken guard either logs nothing (feature
 // quietly dead) or logs a whole generation as hundreds of "overrides" (feature quietly useless).
 import { describe, it, expect } from 'vitest';
-import { withOverrideEvents, summarizeOverrides } from '../ResidentScheduler.jsx';
+import { withOverrideEvents, summarizeOverrides, offReasonText } from '../ResidentScheduler.jsx';
 
 const REPORT = { generatedAt: '2026-08-01T00:00:00.000Z' };
 
@@ -99,5 +99,68 @@ describe('summarizeOverrides — surfaces repetition, not individual edits', () 
   it('handles an empty log', () => {
     expect(summarizeOverrides([], residents)).toEqual([]);
     expect(summarizeOverrides(undefined, residents)).toEqual([]);
+  });
+});
+
+// offReasonText reads RequestsTab.jsx's ApprovalQueue.decide() stamp:
+// resident.offRequestNotes[dateStr] = {reason?, note?, at?}. It comes back from JSON backups,
+// cloud sync rows, and hand-edited localStorage, so every shape guard below matters — a throw
+// here would break the grid/card/PDF surfaces that call it on every rendered cell.
+describe('offReasonText — reads the day-off request explanation stamped by RequestsTab', () => {
+  const DATE = '2026-08-15';
+
+  it('returns "Requested: <reason>" when only a reason was stamped', () => {
+    const res = { offRequestNotes: { [DATE]: { reason: 'family wedding' } } };
+    expect(offReasonText(res, DATE)).toBe('Requested: family wedding');
+  });
+
+  it('returns "Chief: <note>" when only an admin note was stamped', () => {
+    const res = { offRequestNotes: { [DATE]: { note: 'approved, thanks for the notice' } } };
+    expect(offReasonText(res, DATE)).toBe('Chief: approved, thanks for the notice');
+  });
+
+  it('joins reason and note with an em dash when both are present', () => {
+    const res = { offRequestNotes: { [DATE]: { reason: 'family wedding', note: 'enjoy!' } } };
+    expect(offReasonText(res, DATE)).toBe('Requested: family wedding — Chief: enjoy!');
+  });
+
+  it('returns null when neither reason nor note is present', () => {
+    const res = { offRequestNotes: { [DATE]: { at: '2026-08-01T00:00:00.000Z' } } };
+    expect(offReasonText(res, DATE)).toBeNull();
+  });
+
+  it('returns null when offRequestNotes is missing entirely', () => {
+    expect(offReasonText({ approvedDatesOff: [DATE] }, DATE)).toBeNull();
+    expect(offReasonText({}, DATE)).toBeNull();
+  });
+
+  it('returns null when offRequestNotes is present but not a plain object', () => {
+    expect(offReasonText({ offRequestNotes: 'nope' }, DATE)).toBeNull();
+    expect(offReasonText({ offRequestNotes: ['nope'] }, DATE)).toBeNull();
+    expect(offReasonText({ offRequestNotes: null }, DATE)).toBeNull();
+  });
+
+  it('returns null when the per-date entry is not a plain object', () => {
+    expect(offReasonText({ offRequestNotes: { [DATE]: 'family wedding' } }, DATE)).toBeNull();
+    expect(offReasonText({ offRequestNotes: { [DATE]: ['family wedding'] } }, DATE)).toBeNull();
+    expect(offReasonText({ offRequestNotes: { [DATE]: null } }, DATE)).toBeNull();
+  });
+
+  it('ignores non-string reason/note fields rather than throwing', () => {
+    const res = { offRequestNotes: { [DATE]: { reason: 42, note: { oops: true } } } };
+    expect(offReasonText(res, DATE)).toBeNull();
+  });
+
+  it('trims whitespace and treats a blank-after-trim reason as absent', () => {
+    const res = { offRequestNotes: { [DATE]: { reason: '   ' } } };
+    expect(offReasonText(res, DATE)).toBeNull();
+  });
+
+  it('caps the combined text at ~200 chars with an ellipsis', () => {
+    const longReason = 'x'.repeat(250);
+    const res = { offRequestNotes: { [DATE]: { reason: longReason } } };
+    const out = offReasonText(res, DATE);
+    expect(out.length).toBe(200);
+    expect(out.endsWith('…')).toBe(true);
   });
 });

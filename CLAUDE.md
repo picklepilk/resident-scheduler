@@ -245,9 +245,13 @@ npm run dev
 npm run build     # → dist/
 npm run preview
 npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality/
-                   # journalClub/holidays/eligibilityOverrides/qgenda/jeopardyLedger/coverageComposition) plus
-                   # generator.harness.test.js + generator.baseline.<variant>.test.js, which import
-                   # the generator/validateAll
+                   # journalClub/holidays/eligibilityOverrides/qgenda/jeopardyLedger/
+                   # coverageComposition/dateSetPaint) plus
+                   # generator.harness.test.js + generator.baseline.<variant>.test.js (3 of these
+                   # currently fail on purpose — see "Jeopardy may never collide with a clinical
+                   # shift" below, not yet regenerated) + monthPagerInitialMonth.test.js/
+                   # traumaPedsSplitPedN.test.js, which all import
+                   # the generator/validateAll/useMonthPager/getEligibleShifts
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
                    # import-safe — see "Generator quality harness" above). Everything else in that
                    # file (UI, tabs, most business logic) still has no test suite.
@@ -258,6 +262,79 @@ npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/sch
   running `npm run dev` and generating/exporting a sample schedule.
 - Netlify deploy (`netlify.toml`: build = `npm run build`, publish = `dist`, SPA redirect
   `/* → /index.html`).
+
+## CP-SAT solver service (optional second scheduling engine)
+`solver-service/` is a standalone Python/FastAPI service (Google OR-Tools CP-SAT) that solves the
+same scheduling problem the built-in JS generator (`generateScheduleBest`) solves greedily, but as
+a true constraint program — see `solver-service/docs/PAYLOAD_SCHEMA.md` for the full request/
+response contract and `solver-service/README.md` for local dev/deploy. **Optional and additive**:
+with `VITE_SOLVER_URL` unset the app behaves exactly as it always has (`SOLVER_ENABLED` false,
+same `%VITE_*%`-unresolved-token guard convention as `SUPABASE_ENABLED`/`AUTH_ENABLED` — see
+`src/lib/solverClient.js`). Even when configured, a chief-level kill switch exists:
+`appSettings.useSolverService` (Settings → Rule Enforcement → "Use optimizer service", checkbox
+hidden when `SOLVER_ENABLED` false), read as `!== false` everywhere so an old backup/cloud row
+with no such key keeps the solver on — unchecking routes Generate straight to
+`generateScheduleBest` with no redeploy, and rides `res_app_settings` (no new backup key). Division of labor (division-of-labor table in PAYLOAD_SCHEMA.md):
+the app resolves ALL policy (eligibility, coverage, seniority, fairness, jeopardy, etc.) into
+plain JSON and ships it; the solver only does the constraint solve, never re-implements scheduling
+policy.
+- **JS-side seams**, all in `ResidentScheduler.jsx` unless noted: `buildSolverPayload()` (~line
+  5226) turns `{allResidents, block, coverage, eligOverrides, appSettings, dayRules,
+  blocksHistory, ayConf}` — the exact same args shape `generateSchedule`/`generateScheduleBest`
+  take — into a `POST /solve` body. `mapSolverResult()` (~line 5469) reshapes the response back
+  into the app's own `{schedule, report}` shape, so `runGenerate`/`runPartialRegenerate` can
+  commit either engine's result through the identical `updateBlockTracked` call.
+  `generateViaSolverOrLocal()` (~line 11849) is the ONLY place that decides solver-vs-local: tries
+  the solver when `SOLVER_ENABLED`, catches any failure/non-200/timeout, falls back to
+  `generateScheduleBest()`. `src/lib/solverClient.js` is the pure `fetch` wrapper (`solveRemote`,
+  15s→120s-class `AbortController` timeout, much longer than `sbFetch`'s 15s since a real CP-SAT
+  solve can legitimately run tens of seconds) — a `src/lib/` module, so it never imports
+  `ResidentScheduler.jsx` (see "Layout & stack" above).
+- **Eligibility payload gotcha, fixed once already**: `buildSolverPayload`'s `eligible[r][d]` must
+  additionally exclude jeopardy-call dates whenever `appSettings.jeopardyPolicy !== 'off'` — NOT
+  only when policy is `'block'`, which is all `getEligibleShifts` itself does (that path is shared
+  with the manual picker, which legitimately wants to offer the shift with a warning under
+  `'warn'` policy for a human to override). The solver has no human-in-the-loop step: whatever's
+  in `eligible[r][d]` is exactly what CP-SAT is free to assign, and `validateAll` ALWAYS
+  hard-errors a clinical shift on a jeopardy date regardless of policy (see "Jeopardy may never
+  collide with a clinical shift" below) — under the app's default `'warn'` policy, an unfiltered
+  payload let the solver legally double-book jeopardy. Mirrors the JS local generator's own
+  `candidatePool` hard-exclusion (reason `'jeopardyConflict'`) exactly. Caught and fixed via the
+  parity test below, not by inspection — worth remembering if PAYLOAD_SCHEMA.md's rule set ever
+  grows: an eligibility carve-out enforced only inside the generator's `candidatePool` (not inside
+  `getEligibleShifts` itself) needs the same extra filter added to `buildSolverPayload`, or the
+  solver silently doesn't know about it.
+- **Feasibility report UI** (only present when a solve's `mode === 'relaxed'` — the solver could
+  only reach a feasible schedule by relaxing one or more rules; rides into
+  `block.generationReport.feasibility` unchanged via `mapSolverResult`): a **"BEST EFFORT — rules
+  relaxed"** banner above the Schedule tab's grid (inside `ScheduleGrid`, not header chrome — sits
+  between the in-grid legend and the lock-mode banner); a **`FeasibilityReportCard`** on the
+  Violations tab, rendered above the existing `GenerationReportCard` at both its call sites,
+  grouping `feasibility.violations` by rule (ruleLabel, tier badge, resident names resolved via
+  `allResidents`, dates, magnitude), listing `feasibility.conflicts` as monospace chips, and
+  `feasibility.recommendations` with a green "Verified" pill (a re-solve confirmed that single
+  change restores full feasibility) vs. gray "Candidate"; and a **`relaxedCellSet`** memo
+  (`${residentId}_${dateStr}` keys, same convention as the existing `violMap`) that adds a dashed
+  amber outline ring + tooltip line ("Rule relaxed by optimizer: …") to any grid cell named in
+  `feasibility.violations` — visually distinct from `violMap`'s solid red ring for ordinary
+  `validateAll` violations. Legend gained a one-line "dashed amber = rule relaxed by optimizer"
+  entry alongside the existing "red ring = rule violation" one.
+- **Parity test** (`src/lib/solverParity.test.js`): builds a real payload from
+  `makeFixture('standard')` via `buildSolverPayload`, shells out to `solver-service/cli.py` as a
+  real Python subprocess (`solver-service/.venv/Scripts/python.exe`, not a mock), maps the result
+  back via `mapSolverResult`, and asserts `validateAll` reports zero STRUCTURAL errors on the
+  returned schedule (same "structural vs. under-target" split `generator.harness.test.js` already
+  uses — these small synthetic fixtures aren't guaranteed enough headroom for every resident to
+  reach target from one non-optimal solve). `describe.skip`s unless `SOLVER_PARITY=1` is set, so
+  plain `npm test` never needs Python installed; run it directly with
+  `SOLVER_PARITY=1 npx vitest run src/lib/solverParity.test.js` (bash) or
+  `$env:SOLVER_PARITY=1; npx vitest run src/lib/solverParity.test.js` (PowerShell) — no
+  `solve:parity` npm script, since this repo has no `cross-env` dependency and a plain
+  `VAR=1 npm run ...` script silently no-ops under Windows' default `cmd.exe` script shell.
+- **Determinism caveat**: a solver `FEASIBLE` result (hit `config.maxTimeSeconds` before proving
+  optimality) is NOT byte-replayable — the returned `schedule` is the record, not something to
+  regenerate later from the response's diagnostic-only `seed` field. Unlike the JS generator's own
+  `generateScheduleBest`, which IS fully seed-replayable (see "Generator quality harness" below).
 
 ## Map of ResidentScheduler.jsx
 Line numbers drift as file grows — grep for `// ─── SECTION ───` markers or function
@@ -358,12 +435,16 @@ names below rather than trusting offsets.
   (July 1–July 1 from `"AY26/27"`-style string), `countPublishedJC`/`countCurrentBlockJC` (cross-
   block counting reads `published` saved-block snapshots — see "Published blocks" below).
 - `getEligibleShifts(resident, dateStr, ..., ctx)` (jeopardy-call logic lives here, plus
-  Peds/Trauma half-block split via `traumaPedsHalf`, off-service availability via
+  Peds/Trauma half-block split via `traumaPedsHalf` — including the chief's opt-in
+  `allowSplitPedsNights` flag that additionally allows PED-N on the peds half, see "Trauma/Peds
+  rotation 8/11 split" below — off-service availability via
   `isAvailableOnDate`, JC-presenter shift stripping, Grand-Rounds-lecture day-before stripping;
   `ctx = {blockStart, forGenerator}` — `blockStart` needed for half-block split AND for
   `activeWhen` gate evaluation, `forGenerator` gates `scope:'generator'` restrictions and
   generator-only late-night-after-JC-presenting avoidance) and `validateAll()`, rules/validation
-  engine (jeopardy policy, 7-consecutive-work-day rule, trauma double-booking, min/max coverage,
+  engine (jeopardy-collision escalation — a clinical shift on a jeopardy date is now a hard
+  `'error'` under both `'warn'` and `'block'` policy, see "Jeopardy may never collide with a
+  clinical shift" below — 7-consecutive-work-day rule, trauma double-booking, min/max coverage,
   circadian night-run/turnaround checks, FLEX/POD seniority, Journal Club cap/presenter checks,
   Grand Rounds lecture day-before check — see each feature's section below for specifics).
   `grWorkDow`/`isStreakWorkDay`/`runLengthIfWorked`/`prevBlockTailSchedules` implement the
@@ -387,8 +468,11 @@ names below rather than trusting offsets.
 - `SCHEDULE GENERATOR` — `generateSchedule()` (coverage-driven auto-fill: **greedy fresh MRV slot
   ordering per day** — see "Fresh MRV" below,
   candidate filtering with named unfilled-reasons — including `halfTargetMet`,
-  `circadianBlocked`, `nightCapped`, `jcCapped` — target/type-mix/streak/jeopardy/trauma-nights-
-  preferred/peds-mix/night-clustering/seniority/JC-avoidance scoring; recomputes candidate pool
+  `circadianBlocked`, `nightCapped`, `jcCapped`, `jeopardyConflict` (a jeopardy call may never
+  double as a clinical shift — a hard `candidatePool` exclusion under any policy but `'off'`, not a
+  score preference; see "Jeopardy may never collide with a clinical shift" below) —
+  target/type-mix/streak/trauma-nights-preferred/peds-mix/night-clustering/seniority/JC-avoidance
+  scoring; recomputes candidate pool
   fresh for every slot — cached pool went stale mid-day, caused double-booking once, don't
   reintroduce that; never overwrites non-empty cell). Fill happens in **three passes** via
   `fillDayPass(ds, includeShift, phase)` — `phase:'min'` fills every shift to its configured
@@ -557,11 +641,26 @@ names below rather than trusting offsets.
   Days (Code Blue/Procedure/Anesthesia only now — **Peds Advocacy Days removed**, see "Data model"
   below). `RESIDENT FORM` (shared by Add/Edit modals, plus
   `ImportRosterModal` for bulk roster import — `jcPresentDates`/`grLectureDates`/`vacationDates`
-  date-chip editors live here alongside `approvedDatesOff`/`jeopardyDates`), `EM RESIDENTS TAB`
+  date-chip editors live here alongside `approvedDatesOff`/`jeopardyDates`; the Jeopardy Call Dates
+  editor is now gated on the form's own live `category` — `EM_HOME`/`EM_BAMC` only, jeopardy being
+  an EM-rotation obligation, see "Off-service residents have no jeopardy" below), `EM RESIDENTS
+  TAB`
   (also hosts the `ImportVacationModal`/`ImportLecturesModal` trigger buttons — see "Matrix
   Import" above — and each PGY-3 EM_HOME resident's chief-role select, see "Chief roles" below),
   `OFF-SERVICE TAB`
-  (inline per-tile date-off/jeopardy editors), `SHIFT MATRIX TAB` (rotation-aware shift matrix),
+  (inline per-tile date-off editor — its Jeopardy Call Dates editor is gone, same reason as
+  `ResidentForm`'s). Both tabs now also open a per-resident **`TimeOffModal`** ("Time Off Calendar"
+  button) — a paintable, click-drag, AY-wide multi-month calendar for Approved Off/Vacation/
+  Jeopardy that replaces fourteen round-trips through `DateListEditor` for a two-week vacation with
+  one drag; `DateListEditor`'s chip lists remain the read-only summary / precise single-date path
+  on both surfaces, unchanged. Reuses `useMonthPager` (gained an optional third `initialMonth` arg
+  so the modal opens on the block's own month, not the AY range's first month — always last July)
+  and `DAY_MARKERS` for chip colors; the click/drag-paint commit math
+  (`toggleDateInList`/`paintActionFor`/`applyDateRangePaint`) is pure and unit-tested in
+  `src/lib/dateSetPaint.js`, mirroring the schedule grid's own lock-paint gesture — the target
+  add-vs-remove is captured once on mousedown, the whole span commits in ONE state write on
+  mouseup. Deliberately **not** wired into `ResidentForm` — nested-modal interaction there was left
+  unverified, a known gap. `SHIFT MATRIX TAB` (rotation-aware shift matrix),
   `RULES TAB` ("Scheduling Rules" in UI — day/rotation rules plus Daily Shift Coverage
   editor, now paired min/max inputs per shift, consumed by generator), `SHIFT PICKER MODAL`
   (its violation aggregator is module-level `cellViolations(resident, dateStr, sid, block,
@@ -618,6 +717,21 @@ names below rather than trusting offsets.
   does own session/role check rather than trusting caller, stays correct even
   though `AppGate` already established viewer is admin. Unlike `feedback`, not
   filtered out of `TABS` when unconfigured; renders own "not configured" message instead.
+- **`DAY_MARKERS`** (near `RULE_NOTES`) — single style table for the six on-grid day markers
+  (GR/JC/WW/OFF/VAC/J) plus the pending-day-off-request R badge, now the one source of truth
+  across seven render sites (Schedule grid cells, its in-grid legend, `SidebarNav`'s legend,
+  `ResidentCard`, `PerResidentMonthView`, `ScheduleCalendarView`, `UserGuideTab`) that used to be
+  four hand-drifted palettes. Each row carries `label`/`chip`/`onShift`/`dark`/`title`: `chip` is a
+  standalone pill for a light surface; `onShift` is the variant drawn ON TOP OF a colored shift
+  chip — solid `bg-white` + a colored ring + a `-700` text shade, **never** a `/10` alpha tint,
+  because a tint let the shift chip's own saturated background bleed straight through the badge
+  text (the original contrast bug this table exists to fix); `dark` is `SidebarNav`'s own
+  treatment, since that sidebar is a solid dark-navy surface, not a themed light one. **JC moved
+  off `--primary` onto explicit `sky` shades** (easy to confuse with the app's own accent-color
+  chrome otherwise); `src/index.css` gained the missing `.dark` remaps for `teal`/`violet`/`sky`
+  (previously none existed at all, so VAC and WW were unreadable in dark mode). If you introduce a
+  new marker or restyle an existing one, edit this table — a render site inlining its own Tailwind
+  classes again is exactly the drift this fixed.
 - **Generator score() weight table + tier audit** (`SCORE_WEIGHTS`/`PREFERENCE_GROUPS`/
   `PREFERENCE_ALWAYS`/`PREFERENCE_BAND_CEILING`/`SCORE_TIERS` near `SOFT_RULES`;
   `src/lib/scoreWeights.test.js`): every weight `score()` uses lives in one exported table instead
@@ -693,7 +807,11 @@ names below rather than trusting offsets.
   dates on landscape A3 — ~28-day block's date columns don't fit legibly on letter/A4) and
   `exportResidentCalendarPDF` (one page per schedulable resident, Date/Shift/Time/Notes rows,
   Notes carrying same OFF/jeopardy/JC-presenting/GR-lecture markers `ResidentCardsView` shows
-  on screen), both via header "PDF" button → format-picker `Modal` → existing
+  on screen — an approved-off day's Notes cell now also appends the resident's own reason, e.g.
+  `OFF (conference)`, capped to 40 chars via `offRequestEntryFor`/`offReasonText`; the chief's own
+  decision note is deliberately never printed here, only the resident's; a shift's Notes cell now
+  also appends `Xh since prev shift`/`Yh until next shift` via `shiftGapsFor`, same current-block-
+  only scope limit as `ResidentCard`/the grid tooltip), both via header "PDF" button → format-picker `Modal` → existing
   `requestExport`/`exportConfirm` error gate. In demo mode both draw a red `pdfDemoBanner` via
   `didDrawPage` so it repeats on every page, not just the first — the table's `margin.top` is
   set to clear the banner's height (`PDF_DEMO_BANNER_H`) whenever `demoMode`, not just its
@@ -778,7 +896,16 @@ names below rather than trusting offsets.
   `SHIFTS` at all (can't happen for one just added there). **A `SHIFTS` entry with no explicit
   `DEFAULT_COVERAGE_MINMAX` entry therefore silently demands 1 body EVERY day (~28 phantom
   unfilled slots/block) — `coverage.test.js` now enforces the catalog-wide invariant that every
-  `SHIFTS` id has one, so this can't recur.**
+  `SHIFTS` id has one, so this can't recur.** `src/lib/shifts.js`'s `shiftGapsFor(rs, dateStr)`
+  reads this same table to build one resident's whole schedule row into a sorted timeline and
+  return the gap (hours) to the nearest shift before/after `dateStr` — display only, shown on four
+  surfaces (`ResidentCard` rows, the Schedule grid cell tooltip, `ShiftPickerModal` candidates, the
+  per-resident PDF Notes) and deliberately scoped to the CURRENT BLOCK only, so a shift on the
+  block's first day reports no "since" gap even though the resident may have worked the prior
+  block's tail — a scope limit, not a bug. `formatGapH` matches `checkRestViolations`'s own inline
+  formatting (whole hours bare, fractional to one decimal); `gapIsShort(earlierShiftId, gapH)` is
+  the sole arbiter of "too short" and defers to the exact threshold `checkRestViolations` already
+  uses (the earlier shift's own duration) — don't re-derive that threshold at a display call site.
 - **Coverage is min/max, not single number.** `getCoverageFor(shiftId, coverage)` returns
   `{min,max}` — generator fills every shift to `min` first (hard: below-min is `unfilled`
   slot, Validation warning), then optionally tops up toward `max` only for residents still
@@ -1105,6 +1232,40 @@ names below rather than trusting offsets.
   Master Matrix re-upload would wipe the deltas (and `isChief`, which it already did).
   Off-service residents carry `targetDelta` directly on the resident object inside the block —
   they're per-block by construction, so they need no seam.
+- **Jeopardy may never collide with a clinical shift** (chief-directed rule): a jeopardy call and a
+  clinical shift on the same date for the same resident is now a hard violation everywhere, not a
+  soft nudge. `fillJeopardy` hard-excludes any candidate who already has a shift that date, on all
+  three tracks (new unfilled reason `'allScheduled'`, distinct from `'allUnavailable'` — vacation/
+  approved-off vs. already-clinically-scheduled are different gaps the chief needs to see
+  differently) — the old PGY-2-only "prefer whoever's free, fall back to the busy pool" soft
+  preference is gone entirely. `validateAll` and `cellViolations` both escalate the collision to
+  `level:'error'` under **both** `'warn'` and `'block'` jeopardy policy (`'block'` additionally
+  `continue`s past further eligibility checks for that cell, `'warn'` does not); `'off'` remains a
+  full escape hatch, completely silent, matching every other jeopardy check. The generator's
+  `candidatePool` hard-excludes on the same rule (reason `'jeopardyConflict'`) whenever policy isn't
+  `'off'`, and `SCORE_WEIGHTS.jeopardy`/`report.jeopardyPlacements` were **removed as unreachable** —
+  a soft score-time preference could no longer be trusted not to manufacture what
+  `generateScheduleBest`'s error-count ranking treats as disqualifying, now that `validateAll`
+  escalates the same collision to a hard error. `JeopardyTab`'s manual dry-run dropdown disables
+  (and labels) any candidate already scheduled that date, so the chief can't hand-pick the exact
+  violation auto-fill now prevents. **This moved the committed generator quality baselines** — the
+  synthetic fixtures give two residents `jeopardyDates`, so the new `jeopardyConflict` exclusion
+  changes which candidates are eligible; the before/after vectors are in git history, and `npm test`
+  is expected to show exactly the 3 `generator.baseline.*` failures this caused, not yet
+  regenerated (see "Generator quality harness" above for the regeneration command).
+- **Off-service residents have no jeopardy.** Jeopardy is an EM-rotation obligation — an off-service
+  resident can never be on a jeopardy TRACK (`jeopardyCandidatesFor` already keyed off
+  `emBlockAssignments`/`EM_HOME`), but the per-resident `jeopardyDates` field on the profile had no
+  such guard and could still leak jeopardy onto an off-service resident's own record.
+  `isJeopardyDate(resident, ...)` now gates on `resident.category` (`EM_HOME`/`EM_BAMC` only) —
+  deliberately a **READ-TIME ignore, not a data migration** (same posture as `effectiveChiefRole`'s
+  legacy fallback): one guard fixes every consumer at once (grid badge, `ResidentCard`, PDF, the
+  generator, `fillJeopardy`, `validateAll`), and a re-imported old backup behaves correctly with no
+  extra code. The Jeopardy Call Dates editor was removed from the Off-Service tab and from
+  `ResidentForm` for non-EM categories (see the Map's `RESIDENT FORM`/`OFF-SERVICE TAB` bullet), and
+  `jeopardyDates: []` was dropped from both off-service creation paths (`ImportMatrixModal`'s
+  off-service rows, `ImportRosterModal`'s off-service import) — a new off-service record shouldn't
+  carry a field nothing reads any more.
 - **Jeopardy & sick-call ledger** (`appSettings.jeopardyLog`, `src/lib/jeopardyLedger.js`,
   `JeopardySickCallsCard` on the Dashboard): ONE incident record per real event —
   `{id, date, shiftId, sickResidentId, activatedResidentId, note, at}` — with both the sick-call
@@ -1173,7 +1334,17 @@ names below rather than trusting offsets.
   TRAUMA_PEDS/PEDS_TRAUMA enforced as two separate protected sub-targets (8 trauma-half shifts,
   11 peds-half shifts) via per-resident sub-caps in generator's `candidatePool`, not just
   single combined number — peds half (filled first, since Trauma Day generated last) can no
-  longer silently consume trauma half's budget.
+  longer silently consume trauma half's budget. **`appSettings.allowSplitPedsNights`** (default
+  `false`, Rules tab toggle) lets the peds half additionally take `PED-N` (9h, Thu-Sun) — the
+  trauma half stays Trauma-Day-only UNCONDITIONALLY, no exceptions (there is no trauma-side
+  sub-target budget to charge a peds night to), and `PED-N12` is deliberately excluded — the chief
+  asked for the 9h shift only. The only thing ever blocking this was `getEligibleShifts` step 5's
+  hardcoded peds-half whitelist (`PED-D`/`PED-E` only); everything upstream already allowed it
+  (`PED-N` is already in `BASE_ELIGIBILITY.EM_HOME_1`, the `ped_n_em_window` shiftGate already
+  confines it to Thu-Sun, it already charges the 11-shift peds sub-target via `candidatePool`'s
+  `shift.area==='PED'` filter, and `score()`'s `pedNPgy1Deprioritize` is already 0 for these
+  residents). Read as `?? false` everywhere so an old backup with no such key stays off;
+  default-off means generation is bit-for-bit unchanged.
 - **BAMC residents schedulable by default.** `isSchedulable` falls back to `'EM'` rotation
   for EM_HOME/EM_BAMC residents with no `blockType` set — this makes BAMC residents added
   via Off-Service tab (never assigns `blockType`) actually appear in generated
@@ -1185,6 +1356,35 @@ names below rather than trusting offsets.
   with existing persistence/backup — no new `LS_BACKUP_KEYS` entry needed for
   resident-level fields like this. Same true of `jcPresentDates`/`grLectureDates` on
   `emRoster` entries — ride inside `res_em_roster`, no new key needed.
+  **`resident.offRequestNotes`** (`{[dateStr]: {reason?, note?, at?}}`) is the same pattern:
+  `RequestsTab`'s `ApprovalQueue.decide()` stamps the resident's typed reason and the chief's own
+  decision note onto the roster at approval time, rather than leaving them to be re-read from
+  Supabase's `day_off_requests` table on demand — the schedule grid (tooltip, `ResidentCard`, PDF
+  Notes) needs to work offline and from a JSON backup, and this rides `res_em_roster` for free the
+  same way `jcPresentDates` does. `offReasonText` is the single reader, going through the
+  untrusted-shape guard `offRequestEntryFor` (round-trips through JSON backups/cloud rows/
+  hand-edited localStorage, never throws — same posture as `reconcileTabOrder`/
+  `normalizeCoverageEntry`), and is capped to 200 chars. **Known limitation:** only approvals made
+  after this shipped carry a reason — nothing backfills older already-approved requests.
+- **`offServiceWindowStatus(resident, block, blocksHistory)`** (near `getShiftTarget`) is the full
+  status object behind the pre-existing `offServiceWindowTargetDelta` (a straddling off-service
+  rotation window's obligation is the category's raw `SHIFT_TARGETS` count for the WHOLE window,
+  only the REMAINING portion demanded of a block that covers just part of it) —
+  `{base, alreadyWorked, effectiveTarget, foundHistory, overlapDays, totalWindowDays, ranges,
+  delta}`, so three UI surfaces (Off-Service tab tile, Schedule grid row title, `ResidentCard`
+  header) can explain WHERE a pro-rated target came from instead of showing a bare `8/15`.
+  `offServiceWindowTargetDelta` is now a thin wrapper over it — **every non-display consumer** (the
+  `allResidents` composition seam, the generator/validator path through it, existing tests) must
+  keep calling the wrapper, never the status function directly, because the wrapper alone collapses
+  a zero/absent delta to `null`, preserving its exact original contract. **The trap a wrapper
+  written as `status?.delta ?? null` would hit:** `0 ?? null` is `0`, not `null` — the actual
+  wrapper is `status && status.delta !== 0 ? status.delta : null` specifically to avoid that, since
+  a `0 !== null` delta would flow into the generator as a real (bogus) target adjustment.
+  `offServiceWindowSummary(status)` is the shared display wording — "Measured" (`foundHistory` true,
+  a prior `blocksHistory` snapshot actually showed shifts worked inside the window) gets a bare
+  fact; "estimated" (no prior snapshot found, this block's share is only pro-rated by day-count) is
+  explicitly labeled "pro-rated" — so the three surfaces can't drift on how the
+  measured-vs-estimated distinction reads.
 - `blocksHistory` snapshots now carry `published: boolean` field (default falsy for old/absent
   snapshots — no migration needed) — see "Published blocks" above. `saveBlock` must read any
   existing snapshot's `published` value before building replacement snapshot, or re-saving

@@ -5,7 +5,7 @@
 // residents"). Imports the real ResidentScheduler.jsx under jsdom — verified import-safe by the
 // existing generator.harness.test.js/grRestRules.test.js suites, same pattern followed here.
 import { describe, it, expect } from 'vitest';
-import { validateAll, generateSchedule, getShiftTarget, offServiceWindowTargetDelta, summarizeGenerationReport } from '../ResidentScheduler.jsx';
+import { validateAll, generateSchedule, getShiftTarget, offServiceWindowTargetDelta, offServiceWindowStatus, offServiceWindowSummary, summarizeGenerationReport } from '../ResidentScheduler.jsx';
 import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -492,5 +492,127 @@ describe('1.11 offServiceWindowTargetDelta', () => {
     const delta = offServiceWindowTargetDelta(r, block, []);
     const effective = 15 + delta;
     expect(effective).toBeLessThan(7);
+  });
+});
+
+// 1.11 display split: offServiceWindowTargetDelta was split into a full-status function
+// (offServiceWindowStatus) plus a thin delta-only wrapper that preserves the ORIGINAL contract
+// (null on delta===0, never a bare 0). The wrapper is the one every non-display consumer
+// (allResidents' composition seam, the tests above) must keep calling unchanged; the tests here
+// cover the new function and the display presenter built on top of it.
+describe('1.11 offServiceWindowStatus (full status object) + offServiceWindowSummary (display wording)', () => {
+  it('returns the full field set for a straddling window with prior history (mirrors the podiatry delta test above)', () => {
+    const r = {
+      id: 'pod1', firstName: 'Pat', lastName: 'Odiatry', category: 'POD', pgy: 1,
+      availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-06-29', end: '2026-07-12' }], // 14 days: 7 prior block, 7 this one
+    };
+    const priorBlock = {
+      data: {
+        startDate: '2026-06-08', endDate: '2026-07-05',
+        offServiceResidents: [{ id: 'pod1', firstName: 'Pat', lastName: 'Odiatry', category: 'POD', pgy: 1 }],
+        schedule: { pod1: { '2026-07-01': 'POD-D', '2026-07-02': 'POD-D', '2026-07-03': 'POD-D' } },
+      },
+    };
+    const status = offServiceWindowStatus(r, block, [priorBlock]);
+    expect(status).toMatchObject({
+      base: 14, alreadyWorked: 3, effectiveTarget: 11, foundHistory: true,
+      overlapDays: 7, totalWindowDays: 14, delta: -3,
+    });
+    expect(Array.isArray(status.ranges)).toBe(true);
+    // The pre-existing wrapper's contract is unaffected by the split.
+    expect(offServiceWindowTargetDelta(r, block, [priorBlock])).toBe(-3);
+  });
+
+  it('returns a status object with delta: 0 in exactly the case where the old wrapper returns null', () => {
+    // Straddling window, prior-block match found, but zero shifts recorded inside the window —
+    // effectiveTarget nets back to the full base, so delta is legitimately 0. offServiceWindowStatus
+    // must still report the full (measured) status; only the thin wrapper collapses this to null.
+    const r = {
+      id: 'pod3', firstName: 'Pat', lastName: 'NoWork', category: 'POD', pgy: 1,
+      availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-06-29', end: '2026-07-12' }],
+    };
+    const priorBlock = {
+      data: {
+        startDate: '2026-06-08', endDate: '2026-07-05',
+        offServiceResidents: [{ id: 'pod3', firstName: 'Pat', lastName: 'NoWork', category: 'POD', pgy: 1 }],
+        schedule: { pod3: {} },
+      },
+    };
+    const status = offServiceWindowStatus(r, block, [priorBlock]);
+    expect(status).toMatchObject({ base: 14, alreadyWorked: 0, effectiveTarget: 14, foundHistory: true, delta: 0 });
+    expect(offServiceWindowTargetDelta(r, block, [priorBlock])).toBeNull();
+  });
+
+  it('returns null for EM_HOME/EM_BAMC, same as the wrapper', () => {
+    const r = { category: 'EM_HOME', pgy: 1, availabilityMode: 'ranges', availableRanges: [{ start: '2026-07-01', end: '2026-07-10' }] };
+    expect(offServiceWindowStatus(r, block, [])).toBeNull();
+  });
+
+  it('returns null when availabilityMode is not "ranges", same as the wrapper', () => {
+    const r = { category: 'POD', pgy: 1, availabilityMode: 'full', availableRanges: [] };
+    expect(offServiceWindowStatus(r, block, [])).toBeNull();
+  });
+
+  it('returns null when availableRanges is empty, same as the wrapper', () => {
+    const r = { category: 'POD', pgy: 1, availabilityMode: 'ranges', availableRanges: [] };
+    expect(offServiceWindowStatus(r, block, [])).toBeNull();
+  });
+
+  it('returns null when the block has no startDate/endDate, same as the wrapper', () => {
+    const r = { category: 'POD', pgy: 1, availabilityMode: 'ranges', availableRanges: [{ start: '2026-07-01', end: '2026-07-10' }] };
+    expect(offServiceWindowStatus(r, {}, [])).toBeNull();
+  });
+
+  it('returns null when the window is fully inside this block, same as the wrapper', () => {
+    const r = {
+      category: 'POD', pgy: 1, availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-07-10', end: '2026-07-23' }],
+    };
+    expect(offServiceWindowStatus(r, block, [])).toBeNull();
+  });
+
+  it('returns null when the window does not touch this block at all', () => {
+    const r = {
+      category: 'POD', pgy: 1, availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-05-01', end: '2026-05-14' }], // well before block start
+    };
+    expect(offServiceWindowStatus(r, block, [])).toBeNull();
+  });
+
+  it('offServiceWindowSummary: measured case names the prior-block count and remaining count, no "pro-rated" wording', () => {
+    const r = {
+      id: 'pod1', firstName: 'Pat', lastName: 'Odiatry', category: 'POD', pgy: 1,
+      availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-06-29', end: '2026-07-12' }],
+    };
+    const priorBlock = {
+      data: {
+        startDate: '2026-06-08', endDate: '2026-07-05',
+        offServiceResidents: [{ id: 'pod1', firstName: 'Pat', lastName: 'Odiatry', category: 'POD', pgy: 1 }],
+        schedule: { pod1: { '2026-07-01': 'POD-D', '2026-07-02': 'POD-D', '2026-07-03': 'POD-D' } },
+      },
+    };
+    const status = offServiceWindowStatus(r, block, [priorBlock]);
+    const summary = offServiceWindowSummary(status);
+    expect(summary).toBe('Window quota: 3 of 14 worked in prior blocks · 11 remaining here');
+    expect(summary).not.toContain('pro-rated');
+  });
+
+  it('offServiceWindowSummary: pro-rated case (no prior block found) says "pro-rated" and uses "~"', () => {
+    const r = {
+      id: 'peds1', category: 'PEDS', pgy: 2, availabilityMode: 'ranges',
+      availableRanges: [{ start: '2026-06-22', end: '2026-07-19' }],
+    };
+    const status = offServiceWindowStatus(r, block, []);
+    const summary = offServiceWindowSummary(status);
+    expect(status.foundHistory).toBe(false);
+    expect(summary).toContain('pro-rated');
+    expect(summary).toMatch(/^Window quota: ~\d+ of 15 this block \(pro-rated, no prior block found\)$/);
+  });
+
+  it('offServiceWindowSummary returns null when there is no status', () => {
+    expect(offServiceWindowSummary(null)).toBeNull();
   });
 });

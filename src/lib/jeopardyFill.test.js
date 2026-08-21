@@ -6,7 +6,7 @@
 // logic genuinely belongs to that file (candidate rotation ids, block-shape helpers) so it isn't
 // worth extracting a parallel lib module just to get a "pure" test file.
 import { describe, it, expect } from 'vitest';
-import { fillJeopardy, validateAll } from '../ResidentScheduler.jsx';
+import { fillJeopardy, validateAll, isJeopardyDate } from '../ResidentScheduler.jsx';
 
 // Minimal EM_HOME resident factory — mirrors the field set __fixtures__/syntheticRoster.js proved
 // safe to hand to validateAll/getEligibleShifts without crashing on an undefined array access.
@@ -73,25 +73,36 @@ describe('fillJeopardy — pgy1 balance across candidates, respecting vacation',
   });
 });
 
-describe('fillJeopardy — pgy2 prefers dates the resident has no assigned shift', () => {
-  it('prefers the free candidate on a date where the other candidate is working', () => {
+describe('fillJeopardy — a candidate already working a shift that date is never picked (hard rule, all tracks)', () => {
+  it('picks the candidate with no shift that date over one who is scheduled', () => {
     const x = makeResident({ id: 'p2_x', pgy: 2, blockType: 'EM_EMS' });
     const y = makeResident({ id: 'p2_y', pgy: 2, blockType: 'EM_TOX' });
     const block = makeBlock({ schedule: { p2_x: { [DATES6[0]]: 'POD-D' } } }); // x is working date 0
 
     const { jeopardySchedule } = fillJeopardy(block, [x, y]);
 
-    expect(jeopardySchedule.pgy2[DATES6[0]]).toBe('p2_y'); // y is free that date, preferred over busy x
+    expect(jeopardySchedule.pgy2[DATES6[0]]).toBe('p2_y'); // y is free that date, x is hard-excluded
   });
 
-  it('falls back to a busy candidate rather than reporting unfilled when nobody is free', () => {
+  it('never assigns the only candidate when they are already scheduled that date — reports allScheduled instead', () => {
     const x = makeResident({ id: 'p2_x', pgy: 2, blockType: 'EM_EMS' });
     const block = makeBlock({ schedule: { p2_x: { [DATES6[0]]: 'POD-D' } } }); // only candidate, and busy
 
     const { jeopardySchedule, unfilled } = fillJeopardy(block, [x]);
 
-    expect(jeopardySchedule.pgy2[DATES6[0]]).toBe('p2_x');
-    expect(unfilled.filter(u => u.track === 'pgy2')).toEqual([]);
+    expect(jeopardySchedule.pgy2[DATES6[0]]).toBeUndefined();
+    const gap = unfilled.find(u => u.track === 'pgy2' && u.date === DATES6[0]);
+    expect(gap?.reason).toBe('allScheduled');
+  });
+
+  it('still fills normally on a date where the sole candidate is free', () => {
+    const x = makeResident({ id: 'p2_x', pgy: 2, blockType: 'EM_EMS' });
+    const block = makeBlock({ schedule: { p2_x: { [DATES6[0]]: 'POD-D' } } }); // busy date 0 only
+
+    const { jeopardySchedule, unfilled } = fillJeopardy(block, [x]);
+
+    expect(jeopardySchedule.pgy2[DATES6[1]]).toBe('p2_x'); // free on date 1, fills normally
+    expect(unfilled.filter(u => u.track === 'pgy2' && u.date === DATES6[1])).toEqual([]);
   });
 });
 
@@ -159,10 +170,25 @@ describe('fillJeopardy — unfilled reasons', () => {
     expect(pgy2Unfilled).toHaveLength(DATES6.length);
     expect(pgy2Unfilled.every(u => u.reason === 'allUnavailable')).toBe(true);
   });
+
+  it('reports allScheduled (distinct from allUnavailable) when every candidate is off-duty-eligible but already working that date', () => {
+    const a = makeResident({ id: 'p2_a', pgy: 2, blockType: 'EM_EMS' });
+    const b = makeResident({ id: 'p2_b', pgy: 2, blockType: 'EM_TOX' });
+    const block = makeBlock({ schedule: {
+      p2_a: { [DATES6[0]]: 'POD-D' },
+      p2_b: { [DATES6[0]]: 'MT-N' },
+    } });
+
+    const { jeopardySchedule, unfilled } = fillJeopardy(block, [a, b]);
+
+    expect(jeopardySchedule.pgy2[DATES6[0]]).toBeUndefined();
+    const gap = unfilled.find(u => u.track === 'pgy2' && u.date === DATES6[0]);
+    expect(gap?.reason).toBe('allScheduled');
+  });
 });
 
 describe('validateAll — jeopardySchedule union with resident.jeopardyDates', () => {
-  it('flags (warn) a resident scheduled for a shift on a date they are on the jeopardySchedule track, not just resident.jeopardyDates', () => {
+  it('flags (as a hard error, under default warn policy) a resident scheduled for a shift on a date they are on the jeopardySchedule track, not just resident.jeopardyDates', () => {
     const onCall = makeResident({ id: 'p3_admin', pgy: 3, blockType: 'ADMIN' });
     const block = makeBlock({
       schedule: { p3_admin: { [DATES6[0]]: 'POD-D' } },
@@ -171,8 +197,33 @@ describe('validateAll — jeopardySchedule union with resident.jeopardyDates', (
 
     const issues = validateAll([onCall], block.schedule, block, {}, {}, {}, {}, [], {});
 
-    const jeopardyWarn = issues.find(i => i.residentId === 'p3_admin' && i.dateStr === DATES6[0] && /jeopardy/i.test(i.message));
-    expect(jeopardyWarn).toBeTruthy();
-    expect(jeopardyWarn.level).toBe('warn');
+    // Escalated: a clinical shift on a jeopardy date is now a hard error under 'warn' policy too
+    // (only 'off' stays silent) — see CLAUDE.md "may never land on a date the resident already
+    // works clinically".
+    const jeopardyIssue = issues.find(i => i.residentId === 'p3_admin' && i.dateStr === DATES6[0] && /jeopardy/i.test(i.message));
+    expect(jeopardyIssue).toBeTruthy();
+    expect(jeopardyIssue.level).toBe('error');
+  });
+});
+
+describe('isJeopardyDate — off-service residents can never be on jeopardy (read-time category guard)', () => {
+  it('returns false for an off-service resident (e.g. PEDS) even with a populated jeopardyDates field', () => {
+    const offService = makeResident({ id: 'peds_1', pgy: 1, blockType: 'EM' });
+    offService.category = 'PEDS';
+    offService.jeopardyDates = [DATES6[0]];
+
+    expect(isJeopardyDate(offService, DATES6[0], { pgy1: {}, pgy2: {}, pgy3: {} })).toBe(false);
+    // Also ignores a jeopardySchedule track pointing at them (shouldn't be possible via
+    // jeopardyCandidatesFor, but the guard is unconditional either way).
+    expect(isJeopardyDate(offService, DATES6[0], { pgy1: { [DATES6[0]]: 'peds_1' }, pgy2: {}, pgy3: {} })).toBe(false);
+  });
+
+  it('is unaffected for EM_HOME and EM_BAMC residents', () => {
+    const home = makeResident({ id: 'home_1', pgy: 3, blockType: 'ADMIN', jeopardyDates: [DATES6[0]] });
+    expect(isJeopardyDate(home, DATES6[0], { pgy1: {}, pgy2: {}, pgy3: {} })).toBe(true);
+
+    const bamc = makeResident({ id: 'bamc_1', pgy: 3, blockType: 'ADMIN', jeopardyDates: [DATES6[0]] });
+    bamc.category = 'EM_BAMC';
+    expect(isJeopardyDate(bamc, DATES6[0], { pgy1: {}, pgy2: {}, pgy3: {} })).toBe(true);
   });
 });

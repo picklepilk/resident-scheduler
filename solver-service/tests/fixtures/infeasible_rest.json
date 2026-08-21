@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "config": {
+    "maxTimeSeconds": 10,
+    "numWorkers": 1,
+    "randomSeed": 7,
+    "coverageMinMode": "elastic_always",
+    "maxVerificationResolves": 2,
+    "weights": {}
+  },
+  "block": {
+    "startDate": "2026-02-02",
+    "endDate": "2026-02-04",
+    "dates": ["2026-02-02", "2026-02-03", "2026-02-04"]
+  },
+  "shifts": {
+    "D": { "startH": 7, "durationH": 9, "type": "day", "area": "POD" },
+    "N": { "startH": 23, "durationH": 9, "type": "night", "area": "POD" }
+  },
+  "residents": [
+    {
+      "id": "r1",
+      "cohort": null,
+      "target": 2,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": { "nights": 6, "trauma": null, "jcRemaining": null, "bamcWedNights": null, "pedsMixMax": null, "pedsMixMin": null, "fm1PedsMax": null },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": { "nights": 0, "weekends": 0, "holidays": 0 }
+    },
+    {
+      "id": "r2",
+      "cohort": null,
+      "target": 2,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": { "nights": 6, "trauma": null, "jcRemaining": null, "bamcWedNights": null, "pedsMixMax": null, "pedsMixMin": null, "fm1PedsMax": null },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": { "nights": 0, "weekends": 0, "holidays": 0 }
+    }
+  ],
+  "eligible": {
+    "r1": {
+      "2026-02-02": ["D", "N"], "2026-02-03": ["D", "N"], "2026-02-04": ["D", "N"]
+    },
+    "r2": {
+      "2026-02-02": ["D", "N"], "2026-02-03": ["D", "N"], "2026-02-04": ["D", "N"]
+    }
+  },
+  "obligations": {},
+  "locked": [
+    { "residentId": "r1", "date": "2026-02-02", "shiftId": "N" },
+    { "residentId": "r1", "date": "2026-02-03", "shiftId": "D" }
+  ],
+  "coverage": {
+    "D": {
+      "2026-02-02": { "min": 0, "max": 2 }, "2026-02-03": { "min": 1, "max": 2 }, "2026-02-04": { "min": 0, "max": 2 }
+    },
+    "N": {
+      "2026-02-02": { "min": 0, "max": 2 }, "2026-02-03": { "min": 0, "max": 2 }, "2026-02-04": { "min": 0, "max": 2 }
+    }
+  },
+  "seniorPrimary": {},
+  "jcDates": [],
+  "holidays": {},
+  "preferences": [],
+  "rulePriority": ["coverageMin", "seniorComposition", "postNightRest"],
+  "settings": { "enforceRest": true, "enforceWeekendOff": true }
+}

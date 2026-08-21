@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "config": {
+    "maxTimeSeconds": 10,
+    "numWorkers": 4,
+    "randomSeed": 42,
+    "coverageMinMode": "elastic_always",
+    "maxVerificationResolves": 2,
+    "weights": {}
+  },
+  "block": {
+    "startDate": "2026-01-05",
+    "endDate": "2026-01-09",
+    "dates": ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"]
+  },
+  "shifts": {
+    "D": { "startH": 7, "durationH": 9, "type": "day", "area": "POD" },
+    "E": { "startH": 15, "durationH": 8, "type": "eve", "area": "POD" },
+    "N": { "startH": 23, "durationH": 8, "type": "night", "area": "POD" }
+  },
+  "residents": [
+    {
+      "id": "r1",
+      "cohort": "COHORT_A",
+      "target": 3,
+      "isEmCore": true,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": { "nights": 2, "trauma": null, "jcRemaining": null, "bamcWedNights": null, "pedsMixMax": null, "pedsMixMin": null, "fm1PedsMax": null },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": { "nights": 0, "weekends": 0, "holidays": 0 }
+    },
+    {
+      "id": "r2",
+      "cohort": "COHORT_A",
+      "target": 3,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": { "nights": 2, "trauma": null, "jcRemaining": null, "bamcWedNights": null, "pedsMixMax": null, "pedsMixMin": null, "fm1PedsMax": null },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": { "nights": 0, "weekends": 0, "holidays": 0 }
+    },
+    {
+      "id": "r3",
+      "cohort": "COHORT_A",
+      "target": 3,
+      "isEmCore": false,
+      "isIntern": false,
+      "nightExempt": false,
+      "caps": { "nights": 2, "trauma": null, "jcRemaining": null, "bamcWedNights": null, "pedsMixMax": null, "pedsMixMin": null, "fm1PedsMax": null },
+      "traumaPedsSplit": null,
+      "priorTail": {},
+      "priorTailObligations": [],
+      "priorTailHours": 0,
+      "ayPrior": { "nights": 0, "weekends": 0, "holidays": 0 }
+    }
+  ],
+  "eligible": {
+    "r1": {
+      "2026-01-05": ["D", "E", "N"], "2026-01-06": ["D", "E", "N"], "2026-01-07": ["D", "E", "N"],
+      "2026-01-08": ["D", "E", "N"], "2026-01-09": ["D", "E", "N"]
+    },
+    "r2": {
+      "2026-01-05": ["D", "E", "N"], "2026-01-06": ["D", "E", "N"], "2026-01-07": ["D", "E", "N"],
+      "2026-01-08": ["D", "E", "N"], "2026-01-09": ["D", "E", "N"]
+    },
+    "r3": {
+      "2026-01-05": ["D", "E", "N"], "2026-01-06": ["D", "E", "N"], "2026-01-07": ["D", "E", "N"],
+      "2026-01-08": ["D", "E", "N"], "2026-01-09": ["D", "E", "N"]
+    }
+  },
+  "obligations": {},
+  "locked": [],
+  "coverage": {
+    "D": {
+      "2026-01-05": { "min": 1, "max": 1 }, "2026-01-06": { "min": 1, "max": 1 }, "2026-01-07": { "min": 1, "max": 1 },
+      "2026-01-08": { "min": 1, "max": 1 }, "2026-01-09": { "min": 1, "max": 1 }
+    },
+    "E": {
+      "2026-01-05": { "min": 0, "max": 1 }, "2026-01-06": { "min": 0, "max": 1 }, "2026-01-07": { "min": 0, "max": 1 },
+      "2026-01-08": { "min": 0, "max": 1 }, "2026-01-09": { "min": 0, "max": 1 }
+    },
+    "N": {
+      "2026-01-05": { "min": 0, "max": 1 }, "2026-01-06": { "min": 0, "max": 1 }, "2026-01-07": { "min": 0, "max": 1 },
+      "2026-01-08": { "min": 0, "max": 1 }, "2026-01-09": { "min": 0, "max": 1 }
+    }
+  },
+  "seniorPrimary": {},
+  "jcDates": [],
+  "holidays": {},
+  "preferences": [
+    { "residentId": "r1", "shiftId": "D", "date": "2026-01-05", "bonus": 5, "tag": "dowPreference" }
+  ],
+  "rulePriority": ["coverageMin", "seniorComposition", "postNightRest"],
+  "settings": { "enforceRest": true, "enforceWeekendOff": true }
+}

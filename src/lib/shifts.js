@@ -189,3 +189,49 @@ export function overlappingAssignments(schedule, allResidents, dateStr, shiftId,
   result.overlapping = SHIFTS.filter(s => groupMap.has(s.id)).map(s => ({ shiftId: s.id, residents: groupMap.get(s.id) }));
   return result;
 }
+
+// Nearest scheduled shift before/after `dateStr` in one resident's own schedule row, plus the gap
+// (hours) between each and `dateStr`'s own shift — lets a hover card/picker show "Xh before/after"
+// without re-deriving rest-period math a second time. `rs` is one resident's {dateStr: shiftId}
+// row (values may be null/undefined/an unrecognized id); if `dateStr` itself has no anchor shift
+// there's nothing to measure a gap from, so both come back null. Builds the whole timeline fresh
+// each call rather than caching it — blocks are ~28 days, a full sort per call is fine, same
+// tradeoff validateAll's own per-resident timeline walk (ResidentScheduler.jsx) makes.
+export function shiftGapsFor(rs, dateStr) {
+  const result = { prev: null, next: null };
+  const anchorSid = rs?.[dateStr];
+  if (!anchorSid || !SHIFT_TIMING[anchorSid]) return result;
+
+  const timeline = Object.entries(rs || {})
+    .filter(([, sid]) => sid && SHIFT_TIMING[sid])
+    .map(([ds, sid]) => ({ ds, sid, startMs: shiftStartMs(sid, ds), endMs: shiftEndMs(sid, ds) }))
+    .sort((a, b) => a.startMs - b.startMs);
+
+  const idx = timeline.findIndex(e => e.ds === dateStr);
+  if (idx === -1) return result; // anchorSid checked above, but guard anyway
+
+  if (idx > 0) {
+    const p = timeline[idx - 1];
+    result.prev = { ds: p.ds, sid: p.sid, gapH: (timeline[idx].startMs - p.endMs) / 3_600_000 };
+  }
+  if (idx < timeline.length - 1) {
+    const n = timeline[idx + 1];
+    result.next = { ds: n.ds, sid: n.sid, gapH: (n.startMs - timeline[idx].endMs) / 3_600_000 };
+  }
+  return result;
+}
+
+// Display idiom shared with checkRestViolations' own inline formatting (ResidentScheduler.jsx) —
+// whole-hour gaps print bare ("34h"), fractional gaps print one decimal ("10.5h"). '' for a
+// non-finite input rather than "NaNh"/"Infinityh".
+export function formatGapH(h) {
+  return Number.isFinite(h) ? `${h % 1 === 0 ? h : h.toFixed(1)}h` : '';
+}
+
+// True when this gap is shorter than the legally required rest — the earlier shift's own
+// duration, same threshold checkRestViolations uses in ResidentScheduler.jsx (a 9h shift requires
+// 9h rest before the next one starts). False for an unrecognized shift id or a non-finite gap.
+export function gapIsShort(earlierShiftId, gapH) {
+  const t = SHIFT_TIMING[earlierShiftId];
+  return !!t && Number.isFinite(gapH) && gapH < t.durationH;
+}

@@ -154,6 +154,25 @@
   .dark .border-purple-200 { border-color: rgba(168, 85, 247, 0.35); }
   .dark .hover\:border-purple-300:hover { border-color: rgba(168, 85, 247, 0.5); }
 
+  /* VAC (vacation) grid marker */
+  .dark .bg-teal-50 { background-color: rgba(20, 184, 166, 0.14); }
+  .dark .bg-teal-100 { background-color: rgba(20, 184, 166, 0.24); }
+  .dark .text-teal-600 { color: #2dd4bf; }
+  .dark .text-teal-700 { color: #5eead4; }
+
+  /* Wellness-Wednesday (WW) grid marker */
+  .dark .bg-violet-50 { background-color: rgba(139, 92, 246, 0.15); }
+  .dark .bg-violet-100 { background-color: rgba(139, 92, 246, 0.25); }
+  .dark .text-violet-600 { color: #a78bfa; }
+  .dark .text-violet-700 { color: #c4b5fd; }
+  .dark .text-violet-800 { color: #ddd6fe; }
+
+  /* Journal Club (JC) grid marker */
+  .dark .bg-sky-50 { background-color: rgba(14, 165, 233, 0.14); }
+  .dark .bg-sky-100 { background-color: rgba(14, 165, 233, 0.25); }
+  .dark .text-sky-700 { color: #7dd3fc; }
+  .dark .text-sky-800 { color: #bae6fd; }
+
   /* Additional shades of the 8 hues actually used in ResidentScheduler.jsx
      (verified by grepping every bg-/text-/border-*-N class in the file) that
      the block above doesn't cover yet — mainly text colors that sit on -50

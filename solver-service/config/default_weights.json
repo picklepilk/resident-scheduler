@@ -1,0 +1,14 @@
+{
+  "coverageMin": { "perSlack": 1 },
+  "targetDeficitCore": { "perUnit": 1 },
+  "postNightRest": { "perViolation": 1 },
+  "targetDeficit": { "perUnit": 1 },
+  "fairness": { "deficit": 10, "holiday": 8, "night": 6, "weekend": 4 },
+  "nightShape": { "minCost": 5, "maxCost": 5 },
+  "workShape": { "isolatedCost": 3, "fragmentCost": 2 },
+  "weekendOff": { "perMissing": 1 },
+  "pedsMixMin": { "perUnit": 1 },
+  "fm1Peds": { "perUnit": 1 },
+  "internPair": { "perExcess": 1 },
+  "dowPreference": { "scale": 1 }
+}
