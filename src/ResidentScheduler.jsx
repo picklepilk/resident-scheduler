@@ -13621,7 +13621,9 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
             <span className="text-xs font-medium text-gray-500 px-1.5 py-0.5 rounded bg-gray-200 mr-1.5">Expected</span>
             <span className="text-xs text-gray-500">{structuralCount} shift{structuralCount!==1?'s have':' has'} gaps that match a day-of-week rule (e.g. Trauma window, GR Wednesday) — not a coverage problem.</span>
             {structuralGroups.map(g=>(
-              <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]}</p>
+              // recommendations entries are {reason, text, slots} objects (see pushRec) — rendering
+              // the object itself is a hard React #31 crash that takes the whole tab down.
+              <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]?.text ?? ''}</p>
             ))}
           </div>
         )}
