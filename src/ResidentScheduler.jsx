@@ -83,7 +83,7 @@ const BLOCK_TYPE_MAP = Object.fromEntries(BLOCK_TYPES_EM.map(b => [b.id, b]));
 const TRAUMA_BLOCKS = ['PEDS_TRAUMA', 'TRAUMA_PEDS'];
 
 // Block types shown in the rotation dropdown per PGY level (EM Home only)
-const EM_HOME_BLOCK_TYPES_BY_PGY = {
+export const EM_HOME_BLOCK_TYPES_BY_PGY = {
   1: ['EM', 'EM_RES_VAC', 'PEDS_TRAUMA', 'TRAUMA_PEDS', 'US_EM',
       'ANES_VAC', 'ORTHO_VAC', 'NICU', 'PICU', 'OB_VAC'],
   2: ['EM', 'EM_VAC', 'EM_EMS', 'EM_TOX', 'PEDS_EM',
@@ -169,7 +169,7 @@ const BASE_ELIGIBILITY = {
 // BASE_ELIGIBILITY membership + the derived PED_GUARD_LEGITIMATE_OWNER guard, same as every other
 // guarded shift id. LEGACY_DAY_RULE_DEFAULTS keeps frozen copies of the old gate's shape for each
 // affected key — see that map's own comments.
-const DEFAULT_DAY_RULES = {
+export const DEFAULT_DAY_RULES = {
   EM_HOME_1: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
@@ -313,6 +313,20 @@ const BLOCK_TARGETS = {
   EM_HOME_1__PEDS_TRAUMA: 19, // 8 trauma-half + 11 peds-half
   EM_HOME_1__TRAUMA_PEDS: 19,
   EM_HOME_2__PEDS_EM:     19, // 10–12 peds shifts + rest elsewhere
+  // EM/EMS and EM/TOX (chief-confirmed, live verification session): the em_ems_window/
+  // em_tox_window shiftGates (DEFAULT_DAY_RULES.EM_HOME_2, overrideImmune, outsideAction:
+  // 'blockEntireDay') hard-gate these rotations to 2 weekdays/week — at most 2*4=8 workable days
+  // in a 28-day block (4 occurrences of each weekday-of-week, since 28 = 4*7 exactly). With no
+  // BLOCK_TARGETS entry here, getShiftTarget fell back to SHIFT_TARGETS.EM_HOME_2 = 19 — a
+  // mathematically unreachable target that produced 2 permanent "Under target: N/19" HARD errors
+  // on every generated block (confirmed: the only 2 hard errors left in a real 58-resident
+  // generation). 7, not 8: a Journal Club Tuesday / holiday / approved day off routinely eats one
+  // of the 8 window days, and 7 is what the chief's own schedule actually gives them. Chief's own
+  // words: their scheduled work IS the 8 window days (100% PEDS area in the verified fixture);
+  // anything outside the window is a jeopardy call-in, not a scheduling target (see FIX 2 below
+  // and the "call-in/payback" CLAUDE.md note).
+  EM_HOME_2__EM_EMS:       7,
+  EM_HOME_2__EM_TOX:       7,
 };
 // The three EM Home vacation-rotation blockTypes — the only BLOCK_TARGETS entries that must win
 // even for a chief resident (see getShiftTarget: chief on a vacation block works the reduced
@@ -1502,6 +1516,24 @@ const SCORE_WEIGHTS = {
   // 3-concurrent-split-resident harness fixture (see scratch A/B notes) where the unfixed term
   // left three PGY-1s at 8-9/11 instead of 11/11.
   splitPedsHalfBoost: 40,
+  // EM/EMS and EM/TOX PGY-2's in-window work is PEDS-area only (chief-confirmed, live
+  // verification session: 100% of both rotations' in-window shifts in the verified benchmark
+  // fixture were PED-D/PED-E/PED-N/PED-S — anything else in-window is functionally a jeopardy
+  // call-in leaking through as eligible, not real scheduled work; see BLOCK_TARGETS' own comment
+  // for the paired 7-shift target fix). STRUCTURAL, not a pure nicety — this is a correctness fact
+  // about what these two rotations' work actually looks like, not a "nicer if possible" tie-break.
+  // A hard eligibility strip (candidatePool exclusion) was tried first and MEASURED to regress
+  // min-coverage fill by more than the accepted +2-slot tolerance on the `standard` synthetic
+  // fixture (avg unfilled 126.4 -> 129.0, +2.6, fixed 5-seed baselineSuite measurement) — these two
+  // narrow-eligibility rotations are needed as fallback capacity on non-PED shifts often enough
+  // that hard-excluding them costs real coverage. Downgraded to this strong soft penalty instead:
+  // candidatePool is untouched (they remain usable when nothing else can fill a slot), but score()
+  // steers away from placing them on a non-PED shift whenever a comparable alternative exists.
+  // Sized close to splitPedsHalfBoost/secondIntern (both structural, 40/45) — meaningfully above
+  // one shift of deficit (5.0 points at the largest target, see MEASURED FINDING above) so it
+  // reliably wins a tie-break against ordinary deficit pull, without approaching deficit's own
+  // dominant weight (100).
+  emEmsToxNonPedsPenalty: 35,
 
   // ── PREFERENCE ── (see PREFERENCE_KEYS / the invariant test)
   traumaNightDowPref: 12,  // TRAUMA-N: PGY-2 on Fri/Sat, PGY-3 on Sun/Mon
@@ -4179,50 +4211,38 @@ export function fillJeopardy(block, allResidents, { emBlockAssignments } = {}) {
   return { jeopardySchedule, unfilled };
 }
 
-// ─── SCHEDULE GENERATOR ───────────────────────────────────────────────────────
-// Greedy fill: per day, staff the most-constrained shift first (MRV); per slot, pick the
-// eligible resident furthest below target, preferring day/eve/night variety and short streaks.
-// Fill mode never overwrites a non-empty cell — that is the "keep manual assignments" contract.
-// Returns { schedule, report } or null when the block has no dates.
-export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false }) {
-  const dates = getBlockDates(block.startDate, block.endDate);
-  if (!dates.length) return null;
-
-  const sd          = block.specialDays || {};
-  const enforceRest = appSettings.enforceRest !== false;
-  const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
-  const traumaCap   = getTraumaCap(appSettings);
+// ─── SCHEDULE GENERATOR: STATIC CONTEXT (perf) ────────────────────────────────────────────────
+// Every structure below is a PURE function of (allResidents, block, coverage, eligOverrides,
+// appSettings, dayRules, blocksHistory, ayConf, dates) — none of it depends on the per-attempt
+// `rng` or on any fill-time mutation. generateScheduleBest calls this ONCE and shares the same
+// object across all `attempts` generateSchedule() calls plus the post-selection repair re-run,
+// instead of rebuilding it fresh on every one of those 21 calls. eligCache alone is
+// O(residents * dates) calls into getEligibleShifts (itself not cheap — shift-gate/day-rule/
+// jeopardy/JC/rest-period resolution per call) and was measured as the dominant cost of a single
+// generateSchedule() run, so this is the single biggest lever on generateScheduleBest's wall
+// time. Nothing here is ever mutated after this function returns — the mutable per-attempt fill
+// state (schedule/assigned/typeCount/scheduleVersion/the version-keyed caches/streakCache) is
+// still built fresh inside generateSchedule itself on every call, never here — so sharing the
+// same object/array/Set/Map instances across attempts is safe with no cloning needed. Determinism
+// is unaffected: these structures don't feed the tie-break rng, and every attempt still gets its
+// own independent seed via generateScheduleBest's `mulberry32(seed)`.
+// Any direct generateSchedule() caller that doesn't pass a `ctx` (existing tests, the solver
+// payload builder's own sibling logic, etc.) gets identical behavior via the `ctx ||
+// buildStaticGenContext(...)` fallback at the top of generateSchedule — this is purely an
+// internal cache, not a new argument external callers need to supply.
+function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, dates }) {
+  const sd = block.specialDays || {};
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
-  const generalPedsTarget = getGeneralPedsTarget(appSettings);
-  const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
-  const blockWeekends = getBlockWeekends(dates);
 
-  // Hoisted per-date lookups. isJcDate lands inside score(), which runs per candidate per slot, and
-  // twelveHourStateFor walks every window — both would otherwise be re-derived thousands of times.
-  // A memoizing CLOSURE, not a prebuilt map, on purpose: a prebuilt map missing a key would yield
-  // undefined, which getCoverageFor reads as "no date context" and would silently restore every
-  // 12h shift's default minimum. A closure can't miss.
+  // See generateSchedule's own matching comments for what each of these means — verbatim logic,
+  // just relocated so it runs once instead of once per attempt.
   const jcDateSet = new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate }));
   const isJcDay = ds => jcDateSet.has(ds);
-  // Holiday dates (lib/holidays.js). Two sets, deliberately: `holidayBlockDates` is what score()
-  // and the running counters test against (this block's own holidays), while `ayHolidayDates` is
-  // the whole academic year's, needed to count what a resident already worked in PUBLISHED earlier
-  // blocks. Both are EMPTY unless the chief has configured holidays for this AY — which is the
-  // entire no-op guarantee: with no config, `isHolidayDay` is always false, `holidayYearly` stays
-  // 0 for everyone, score()'s holidayEquity term is identically 0, and generation is bit-for-bit
-  // what it was before holidays existed (this is what keeps the committed quality baselines valid).
   const ayHolidayDates = holidayDateSet(ayConf);
   const holidayBlockDates = new Set(holidayDatesInRange(block.startDate, block.endDate, ayConf));
   const isHolidayDay = ds => holidayBlockDates.has(ds);
   const conf12Cache = {};
   const conf12For = ds => (conf12Cache[ds] ??= twelveHourStateFor(ds, ayConf || {}));
-  // Conference-boundary dates (for score()'s nightDurationAlternation exemption): a date whose
-  // 12h-window state differs from the PREVIOUS calendar day's — i.e. the chief's conference-week
-  // 9h<->12h shift swap actually lands here, a calendar-forced duration change rather than a
-  // scheduling choice. Hoisted once per generation (like isJcDay/isHolidayDay above), since
-  // score() runs per candidate per slot. Both sides of a detected boundary are added (the day the
-  // state changed FROM, and the day it changed TO) so the exemption reads correctly regardless of
-  // which of the two adjacent dates score() is comparing `ds` against.
   const conferenceBoundaryDates = new Set();
   {
     const stateKey = st => `${[...st.replaceAreas].sort().join(',')}|${[...st.addAreas].sort().join(',')}`;
@@ -4233,12 +4253,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       prevBoundaryDs = ds; prevKey = key;
     }
   }
-  // Adjacent-date-string cache, keyed by every `ds` score() is ever called with (always a member
-  // of `dates`) — computed once here rather than via addDays/toDateStr on every single score()
-  // call (score() runs per candidate per slot, easily tens of thousands of times per generation;
-  // re-parsing/re-formatting a Date 2-3 times per call was a measured perf regression once the
-  // trauma/night-duration/rest-day terms below needed a 2nd rest day's date too, not just the
-  // immediately adjacent two).
   const dateNeighbors = {};
   for (const ds of dates) {
     const d = parseDate(ds);
@@ -4248,6 +4262,77 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       prev2: toDateStr(addDays(d, -2)),
     };
   }
+
+  const residentById = new Map(allResidents.map(r => [r.id, r]));
+  const prevTail = prevBlockTailSchedules(block, blocksHistory);
+  const streakWalkBounds = streakBounds(block, prevTail);
+
+  const finalSunday = finalSundayOf(block);
+  const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
+  const nextRotation = {};
+  for (const r of allResidents) nextRotation[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
+
+  const eligCache = {};
+  for (const r of allResidents) {
+    eligCache[r.id] = {};
+    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds), finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule }));
+  }
+
+  // target[] only, not the whole assigned/typeCount/... counter seed (that block also depends on
+  // nothing rng-related, but at O(residents) — vs. eligCache's O(residents*dates) — hoisting it
+  // too isn't worth the extra surface area). Computed here purely so the senior-scarcity pre-pass
+  // below can apply candidatePool's own `target[r.id] != null` gate; read-only for the rest of
+  // this context's lifetime, so every attempt can safely share it by reference.
+  const target = {};
+  for (const r of allResidents) target[r.id] = getShiftTarget(r, appSettings);
+
+  const AREA_SHIFT_IDS = { POD: SHIFTS.filter(s => s.area === 'POD').map(s => s.id), FLEX: SHIFTS.filter(s => s.area === 'FLEX').map(s => s.id) };
+  const qualifiersByAreaDate = {};
+  for (const area of ['POD', 'FLEX']) {
+    const areaIds = AREA_SHIFT_IDS[area];
+    qualifiersByAreaDate[area] = {};
+    for (const ds of dates) {
+      qualifiersByAreaDate[area][ds] = allResidents.filter(r =>
+        target[r.id] != null &&
+        compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf) &&
+        areaIds.some(sid => eligCache[r.id][ds].has(sid))).map(r => r.id);
+    }
+  }
+  const { scarceDatesByResident, scarceReserveCount } = computeScarceSeniorReservations(qualifiersByAreaDate);
+
+  return {
+    jcDateSet, isJcDay, ayHolidayDates, holidayBlockDates, isHolidayDay, conf12Cache, conf12For,
+    conferenceBoundaryDates, dateNeighbors, residentById, prevTail, streakWalkBounds, finalSunday,
+    nextRotation, eligCache, target, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
+  };
+}
+
+// ─── SCHEDULE GENERATOR ───────────────────────────────────────────────────────
+// Greedy fill: per day, staff the most-constrained shift first (MRV); per slot, pick the
+// eligible resident furthest below target, preferring day/eve/night variety and short streaks.
+// Fill mode never overwrites a non-empty cell — that is the "keep manual assignments" contract.
+// Returns { schedule, report } or null when the block has no dates. `ctx` (optional) is a
+// precomputed buildStaticGenContext(...) result — see that function's own header — that
+// generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
+// all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null }) {
+  const dates = getBlockDates(block.startDate, block.endDate);
+  if (!dates.length) return null;
+
+  const enforceRest = appSettings.enforceRest !== false;
+  const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
+  const traumaCap   = getTraumaCap(appSettings);
+  const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+  const generalPedsTarget = getGeneralPedsTarget(appSettings);
+  const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
+  const blockWeekends = getBlockWeekends(dates);
+
+  const genCtx = ctx || buildStaticGenContext({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, dates });
+  const {
+    jcDateSet, isJcDay, ayHolidayDates, holidayBlockDates, isHolidayDay, conf12Cache, conf12For,
+    conferenceBoundaryDates, dateNeighbors, residentById, prevTail, streakWalkBounds, finalSunday,
+    nextRotation, eligCache, target: staticTarget, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
+  } = genCtx;
 
   const schedule = {};
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
@@ -4297,9 +4382,74 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     timedCache[rid] = { v, timed };
     return timed;
   };
+  // Per-candidate schedule-shape check memoization (measured: checkRestViolations,
+  // checkCircadianViolations, sixDayRunRestViolation, sixDayRunRestViolationAhead, and
+  // runLengthIfWorked together account for ~78% of generateSchedule's own CPU on the standard
+  // fixture — profiled via a temporary instrumented run, not guessed). Every one of these five
+  // reads ONLY that resident's own row (schedule[r.id]/rs) — never any other resident's — so for a
+  // FIXED (residentId, ds[, shiftId]) triple the result can't change until that resident's own row
+  // mutates, i.e. until scheduleVersion[rid] bumps. That happens routinely within one fillDayPass
+  // call: the fresh-MRV seeding loop (line ~5080) and the per-slot decision call (line ~5157) ask
+  // candidatePool the IDENTICAL (shift, ds) question twice, and a candidate present in several
+  // different shifts' pools on the same date gets asked once per shift — in both cases nothing
+  // about THAT resident's own schedule has changed between asks unless they themselves were just
+  // assigned. Same invalidate-the-whole-entry-on-version-bump idiom as
+  // cachedNightRunSegments/cachedSixDayRunAnchor/cachedTimedFor above — a version bump replaces the
+  // resident's whole cache entry (fresh Maps), it never patches around a stale one.
+  // runLengthIfWorked takes no shiftId at all (isStreakWorkDay is boolean-per-date, not
+  // shift-specific — see MAX_CONSECUTIVE_WORK_DAYS section), so it gets its own single-key-per-date
+  // cache; the other four are keyed by `${ds}|${shiftId}` since their answer genuinely depends on
+  // which shift is being tested.
+  const checkCache = {}; // rid -> { v, rest: Map, circ: Map, six1: Map, six2: Map, runLen: Map }
+  const checkCacheFor = rid => {
+    const v = scheduleVersion[rid];
+    const hit = checkCache[rid];
+    if (hit && hit.v === v) return hit;
+    const fresh = { v, rest: new Map(), circ: new Map(), six1: new Map(), six2: new Map(), runLen: new Map() };
+    checkCache[rid] = fresh;
+    return fresh;
+  };
+  const cachedRestViolations = (rid, ds, shiftId) => {
+    const c = checkCacheFor(rid);
+    const key = ds + '|' + shiftId;
+    let v = c.rest.get(key);
+    if (v === undefined) { v = checkRestViolations(rid, ds, shiftId, schedule); c.rest.set(key, v); }
+    return v;
+  };
+  const cachedCircadianViolations = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
+    const key = ds + '|' + shiftId;
+    let v = c.circ.get(key);
+    if (v === undefined) { v = checkCircadianViolations(r, ds, shiftId, schedule[r.id], { nightOnly: nightOnly[r.id] }); c.circ.set(key, v); }
+    return v;
+  };
+  const cachedSixDayRunRestViolation = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
+    const key = ds + '|' + shiftId;
+    let v = c.six1.get(key);
+    if (v === undefined) { v = sixDayRunRestViolation(schedule[r.id], r, ds, shiftId, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor); c.six1.set(key, v); }
+    return v;
+  };
+  const cachedSixDayRunRestViolationAhead = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
+    const key = ds + '|' + shiftId;
+    let v = c.six2.get(key);
+    if (v === undefined) { v = sixDayRunRestViolationAhead(schedule[r.id], r, ds, shiftId, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor); c.six2.set(key, v); }
+    return v;
+  };
+  const cachedRunLengthIfWorked = (r, ds) => {
+    const c = checkCacheFor(r.id);
+    let v = c.runLen.get(ds);
+    if (v === undefined) { v = runLengthIfWorked(schedule[r.id], r, ds, prevTail[r.id] || null, streakWalkBounds); c.runLen.set(ds, v); }
+    return v;
+  };
 
-  // Per-resident running state, seeded from kept assignments
-  const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
+  // Per-resident running state, seeded from kept assignments. `target` itself comes straight from
+  // genCtx (staticTarget) rather than being recomputed here — see buildStaticGenContext's own
+  // comment: it's read-only for the whole generation, identical every attempt, and safe to share
+  // by reference.
+  const target = staticTarget;
+  const assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
   // PED-N-specific count (subset of pedsCount, which also includes PED-D/PED-E) — read by score()'s
   // pedsInternNightDeficit term, which trends a TRAUMA_PEDS/PEDS_TRAUMA split resident toward ~5-6
   // PED-N placements specifically, not just 5-6 peds-area shifts of any kind.
@@ -4329,7 +4479,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const priorPedsTrauma = {};
   let keptManual = 0;
   for (const r of allResidents) {
-    target[r.id] = getShiftTarget(r, appSettings);
     assigned[r.id] = 0;
     typeCount[r.id] = { day: 0, eve: 0, night: 0, swing: 0 };
     traumaCount[r.id] = 0;
@@ -4367,71 +4516,21 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (isHolidayDay(sDs)) holidayYearly[r.id] = (holidayYearly[r.id] || 0) + 1;
     }
   }
-  const residentById = new Map(allResidents.map(r => [r.id, r]));
   // Every non-empty cell present in the incoming schedule BEFORE any fill pass runs — manual
   // entries (clearFirst:false) and partial-regenerate's locked/out-of-range cells alike (both
   // arrive via block.schedule, so this one set covers both UI paths by construction). The repair
   // pass (below, after the three fill passes) never touches these — same never-overwrite
-  // invariant the fill passes themselves already honor for non-empty cells.
+  // invariant the fill passes themselves already honor for non-empty cells. (This is the one
+  // piece of the old "static setup" block that genuinely can't be hoisted into
+  // buildStaticGenContext — it reads the just-built per-attempt `schedule` copy above, even
+  // though that copy's CONTENTS are themselves attempt-invariant; it's also cheap, O(kept cells),
+  // so there's no perf reason to bother.)
   const keptCells = new Set();
   for (const r of allResidents) {
     for (const ds of Object.keys(schedule[r.id])) {
       if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
     }
   }
-
-  // Cross-block tail of the previous saved block's schedule, for the streak-hard-filter below —
-  // NOT merged into `schedule` itself, since that would corrupt assigned/target counters.
-  const prevTail = prevBlockTailSchedules(block, blocksHistory);
-  const streakWalkBounds = streakBounds(block, prevTail);
-
-  // Final-Sunday overnight transition rule (see nextBlockRotationFor/RULE_NOTES): resolved once
-  // per resident here (it doesn't depend on ds) and folded into the eligibility cache below — a
-  // resident KNOWN to not continue on a schedulable EM rotation next block loses night-shift
-  // eligibility on the block's own final Sunday. The unknown-next-block case is deliberately left
-  // unchanged (warn-only, surfaced by validateAll) rather than avoided here — see getEligibleShifts.
-  const finalSunday = finalSundayOf(block);
-  const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
-  const nextRotation = {};
-  for (const r of allResidents) nextRotation[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
-
-  // Eligibility cache: eligCache[rid][ds] = Set of eligible shift ids
-  const eligCache = {};
-  for (const r of allResidents) {
-    eligCache[r.id] = {};
-    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds), finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule }));
-  }
-
-  // ─── Senior-scarcity pre-pass (item 4) ────────────────────────────────────────────────────
-  // POD/FLEX's hard senior-composition requirement (SENIOR_COMPOSITION) is the largest structural
-  // unfilled source under thin senior supply: greedy date-ascending fill has no notion that a
-  // senior it spends covering an ABUNDANT day (multiple qualifying seniors available) might be the
-  // ONLY qualifying senior for a LATER, scarce day — by the time that day arrives the senior may
-  // already be at their own shift target (candidatePool's allAtTarget filter), and the slot goes
-  // unfilled with reason 'pgy3Required'/'pgy2Required'. Computed ONCE here, purely from
-  // eligibility — no lookahead search, no simulation of the fill itself (deliberately simple and
-  // bounded, per the item's own spec): for each POD/FLEX date, the set of residents who satisfy
-  // compositionSatisfies for that date AND are eligible for at least one of that area's shift ids
-  // that date. A date with EXACTLY ONE qualifying resident is "scarce" for that resident/area.
-  // scarceDatesByResident[rid] = the Set of dates only THIS resident can cover (any area);
-  // scarceReserveCount[rid] = that Set's size, consulted by score()'s seniorScarcityRisk term,
-  // which discourages using a scarcity-reserved resident to fill a DIFFERENT, non-scarce day —
-  // protecting their remaining target headroom for the day(s) only they can cover. This never
-  // excludes anyone (candidatePool stays a pure eligibility/hard-rule filter); it is a score()-only
-  // nudge, same mechanism class as the other soft tie-breaks.
-  const AREA_SHIFT_IDS = { POD: SHIFTS.filter(s => s.area === 'POD').map(s => s.id), FLEX: SHIFTS.filter(s => s.area === 'FLEX').map(s => s.id) };
-  const qualifiersByAreaDate = {}; // area -> { [ds]: residentId[] }
-  for (const area of ['POD', 'FLEX']) {
-    const areaIds = AREA_SHIFT_IDS[area];
-    qualifiersByAreaDate[area] = {};
-    for (const ds of dates) {
-      qualifiersByAreaDate[area][ds] = allResidents.filter(r =>
-        target[r.id] != null &&
-        compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf) &&
-        areaIds.some(sid => eligCache[r.id][ds].has(sid))).map(r => r.id);
-    }
-  }
-  const { scarceDatesByResident, scarceReserveCount } = computeScarceSeniorReservations(qualifiersByAreaDate);
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -4558,7 +4657,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (!pool.length) return { candidates: [], reason: 'bamcWedNightCapped' };
     }
     if (enforceRest) {
-      pool = pool.filter(r => checkRestViolations(r.id, ds, shift.id, schedule).length === 0);
+      pool = pool.filter(r => cachedRestViolations(r.id, ds, shift.id).length === 0);
       if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
     }
     // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
@@ -4568,7 +4667,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Map (not just an array) so both the O(n) re-lookup below and fillDayPass's restGapH tie-
     // break can reuse this one checkCircadianViolations pass per candidate instead of each
     // re-deriving it themselves.
-    const circadianByResident = new Map(pool.map(r => [r, checkCircadianViolations(r, ds, shift.id, schedule[r.id], { nightOnly: nightOnly[r.id] })]));
+    const circadianByResident = new Map(pool.map(r => [r, cachedCircadianViolations(r, ds, shift.id)]));
     pool = pool.filter(r => circadianByResident.get(r).every(v => v.level !== 'error'));
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'circadianBlocked' };
     // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest).
@@ -4595,19 +4694,19 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as
     // worked; prevTail lets the walk see a run continuing from the previous saved block.
-    pool = pool.filter(r => runLengthIfWorked(schedule[r.id], r, ds, prevTail[r.id] || null, streakWalkBounds) <= MAX_CONSECUTIVE_WORK_DAYS);
+    pool = pool.filter(r => cachedRunLengthIfWorked(r, ds) <= MAX_CONSECUTIVE_WORK_DAYS);
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
     // Hard 24h-rest requirement after completing a maxed 6-day work run (ACGME) — distinct from
     // the postNightRest soft rule below (keyed off a night run specifically); this one applies
     // regardless of shift type and is never a fallback-eligible compromise. See
     // sixDayRunRestViolation.
-    pool = pool.filter(r => !sixDayRunRestViolation(schedule[r.id], r, ds, shift.id, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor));
+    pool = pool.filter(r => !cachedSixDayRunRestViolation(r, ds, shift.id));
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
     // Forward mirror of the check above: placing shift.id on ds can COMPLETE a maxed 6-day run
     // that an already-scheduled LATER shift then follows too closely behind — a violation
     // sixDayRunRestViolation itself can't see, since it only looks backward from ds. See
     // sixDayRunRestViolationAhead.
-    pool = pool.filter(r => !sixDayRunRestViolationAhead(schedule[r.id], r, ds, shift.id, prevTail[r.id] || null, streakWalkBounds, cachedSixDayRunAnchor));
+    pool = pool.filter(r => !cachedSixDayRunRestViolationAhead(r, ds, shift.id));
     if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
     // Final split: candidates = clean of the postNightRest preference; restFallback = the same
     // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
@@ -4632,7 +4731,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // "don't strand a short night run"/FM-1-peds-cap penalties) is likewise a soft nudge, not a
   // block — candidatePool never excludes an EM Home PGY-1 from PED-N, this only makes a PGY-2/3
   // or FM-3 candidate win the slot when one is also available. Math.random() only breaks exact ties.
-  function score(r, shift, ds, seniorFilled) {
+  // `assignedHereShared` (optional): the list of residents already on (shift.id, ds), if the
+  // caller already computed it. score() is always called in a tight loop over several candidates
+  // for the SAME (shift, ds) pair with no mutation in between, so every call site now computes
+  // this ONCE before the loop instead of score() re-deriving it (an O(allResidents) scan) on
+  // every single candidate — secondIntern/podEmComposition/flexEmComposition all read it. Falls
+  // back to deriving it locally so score() stays correct even without a caller-supplied value.
+  function score(r, shift, ds, seniorFilled, assignedHereShared) {
+    const assignedHere = assignedHereShared || allResidents.filter(x => schedule[x.id][ds] === shift.id);
     const t = target[r.id];
     // t===0 can't reach this division — getShiftTarget never returns 0 (a delta that would zero
     // the target returns null instead, see its own comment), and null targets are filtered out of
@@ -4849,7 +4955,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // entirely off-service if that's genuinely all that's available; candidatePool is untouched.
     let podEmComposition = 0, flexEmComposition = 0;
     if ((shift.area === 'POD' || shift.area === 'FLEX') && !isEmResident(r)) {
-      const assignedHere = allResidents.filter(x => schedule[x.id][ds] === shift.id);
       const resultingTotal = assignedHere.length + 1;
       const resultingEm = assignedHere.filter(isEmResident).length; // r itself is non-EM, adds 0
       const shortfall = resultingEm < emCompositionRequired(shift.area, resultingTotal) ? 1 : 0;
@@ -4896,13 +5001,18 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // would be worse than pairing two interns). PRECEDENCE (item 2): this discourage must win over
     // podPgy1SecondSlot/bamcFlexPodPedsDay/bamcWedBonus above whenever a comparable non-intern
     // candidate exists — see SCORE_WEIGHTS.secondIntern's own comment for the measured margin.
-    const secondIntern = isEmIntern(r) && allResidents.some(other =>
-      other.id !== r.id && isEmIntern(other) && schedule[other.id][ds] === shift.id) ? 1 : 0;
+    const secondIntern = isEmIntern(r) && assignedHere.some(other =>
+      other.id !== r.id && isEmIntern(other)) ? 1 : 0;
     // Tox residents' Mon/Tue window (em_tox_window/em_tox_window_aug26 shiftGates) already confines
     // WHEN they can work; this just nudges WHICH shift they land on within that window toward Peds
     // Evening specifically (chief: "ideally only evening peds") — soft preference only, doesn't
     // touch eligibility, so they remain free to fill whatever else the gates already allow.
     const toxPedsEvePref = shift.id === 'PED-E' && r.blockType === 'EM_TOX' ? 1 : 0;
+    // EM/EMS and EM/TOX PGY-2's real in-window work is PEDS-area only (chief-confirmed — see
+    // SCORE_WEIGHTS.emEmsToxNonPedsPenalty's own comment for the full reasoning and the measured
+    // coverage regression that ruled out a hard eligibility strip). Fires on any non-PED shift for
+    // these two blockTypes; candidatePool is untouched, so they remain usable as fallback coverage.
+    const emEmsToxNonPeds = (r.blockType === 'EM_EMS' || r.blockType === 'EM_TOX') && shift.area !== 'PED' ? 1 : 0;
     // Work-shape steering (Phase 1). The retrospective counterpart is workShapePenalty in
     // lib/scheduleQuality.js; this is the fill-time nudge so the greedy pass builds decent shape
     // directly instead of relying on best-of-N to stumble into it. Deliberately blind to shift
@@ -4948,6 +5058,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       - W.fm1OverPedsCap * fm1OverPedsCap - W.pedNPgy1Deprioritize * pedNPgy1Deprioritize
       + W.bamcFlexPodPedsDay * bamcFlexPodPedsDay + W.bamcWedBonus * bamcWedBonus
       + W.podPgy1SecondSlot * podPgy1SecondSlot + W.toxPedsEvePref * toxPedsEvePref
+      - W.emEmsToxNonPedsPenalty * emEmsToxNonPeds
       - W.podPgy2Deprioritize * podPgy2Deprioritize + W.wedPodLadder * wedPodLadder
       + W.workContinuity * workContinuity + W.areaContinuity * areaContinuity
       - W.offAdjacency * offAdjacency - W.seniorScarcityProtect * seniorScarcityRisk
@@ -5159,8 +5270,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // unaffected by this branch entirely (restCompromise stays false, so score() alone decides
       // exactly as before this fix).
       let best = candidates[0], bestScore = -Infinity, bestGapH = restCompromise ? restGapH(best, circadianByResident) : null;
+      // Who's already on THIS shift/date — invariant across every candidate scored below (no
+      // mutation happens between candidates in this loop), so it's computed once here rather than
+      // once per candidate inside score() itself (secondIntern/podEmComposition/
+      // flexEmComposition all otherwise re-ran the identical allResidents scan per candidate).
+      const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === slot.shift.id);
       for (const r of candidates) {
-        const s = score(r, slot.shift, ds, seniorFilled);
+        const s = score(r, slot.shift, ds, seniorFilled, assignedHereForSlot);
         if (restCompromise) {
           const g = restGapH(r, circadianByResident);
           // Larger gapH (closer to the 24h target, less severe shortfall) wins first; score()
@@ -5282,9 +5398,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     function pickBestScore(pool, shift, ds) {
       const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
+      const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
       let best = pool[0], bestScore = -Infinity;
       for (const r of pool) {
-        const s = score(r, shift, ds, seniorFilled);
+        const s = score(r, shift, ds, seniorFilled, assignedHereForSlot);
         if (s > bestScore) { bestScore = s; best = r; }
       }
       return best;
@@ -5438,9 +5555,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (budget <= 0) break;
       const shift = SHIFT_MAP[g.shiftId];
       if (!shift) continue;
+      const assignedHereForSlot = allResidents.filter(x => schedule[x.id][g.dateStr] === g.shiftId);
       const juniors = allResidents
         .filter(r => schedule[r.id][g.dateStr] === g.shiftId && movable(r.id, g.dateStr))
-        .sort((a, b) => score(a, shift, g.dateStr, false) - score(b, shift, g.dateStr, false));
+        .sort((a, b) => score(a, shift, g.dateStr, false, assignedHereForSlot) - score(b, shift, g.dateStr, false, assignedHereForSlot));
       for (const junior of juniors) {
         if (budget <= 0) break;
         unassignCell(junior.id, g.dateStr);
@@ -5781,7 +5899,18 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   const ayPriorAll = computeAyPriorTotals(ay, blocksHistory, block.id, holidayDateSet(ayConf));
 
   const residents = allResidents.map(r => {
-    const target = getShiftTarget(r, appSettings);
+    // A non-schedulable resident (an EM_HOME/EM_BAMC resident on an atUH:false blockType — MICU,
+    // PICU, BAPTIST, ORTHO_VAC, ANES_VAC, METRO — see isSchedulable/BLOCK_TYPE_MAP) correctly gets
+    // NO shifts: `eligible[r][d]` above is already built only from `schedulableResidents`, so this
+    // resident has zero eligible slots anywhere in the payload. getShiftTarget itself doesn't know
+    // about schedulability (it only reads category/pgy/blockType), so left alone it still returns
+    // the category's real flat target — the solver then has no way to ever satisfy it and reports
+    // a permanent, bogus "under target" deficit (confirmed live: 29 under-target entries where
+    // only ~2 were real). `target: null` is the payload's own documented escape hatch for exactly
+    // this ("self-cover: no target ceiling, excluded from deficit/fairness terms" — see
+    // PAYLOAD_SCHEMA.md) and is what the JS local generator's own `report.underTarget` (~line 5661)
+    // and validateAll already achieve by gating on isSchedulable before ever computing a deficit.
+    const target = isSchedulable(r) ? getShiftTarget(r, appSettings) : null;
     const isEmCore = r.category === 'EM_HOME' || r.category === 'EM_BAMC';
     const traumaCapSubject = isTraumaCapSubject(r);
     const splitResident = isTraumaPedsSplitResident(r, traumaBlocks);
@@ -5975,7 +6104,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // through the same updateBlockTracked call. Only receives `{ block }` (not the full args
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
-export function mapSolverResult(json, { block } = {}) {
+export function mapSolverResult(json, { block, allResidents } = {}) {
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -6020,7 +6149,20 @@ export function mapSolverResult(json, { block } = {}) {
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
-      underTarget: Array.isArray(json?.report?.underTarget) ? json.report.underTarget : [],
+      // Defensive filter, mirroring buildSolverPayload's own `target: null` fix (see that map's
+      // comment): a resident who isn't schedulable this block (isSchedulable false — e.g. an
+      // EM_HOME/EM_BAMC resident on an atUH:false blockType) already gets `target: null` in the
+      // request payload, so a solver built from a fixed JS bundle should never report one under
+      // target — but this guards report ACCURACY against an older/mismatched solver deploy that
+      // hasn't picked up that fix yet, rather than trusting the response blindly. Only filters when
+      // `allResidents` is supplied (optional, backward-compatible) — every existing caller that
+      // predates this still gets the response's raw list unfiltered.
+      underTarget: (() => {
+        const raw = Array.isArray(json?.report?.underTarget) ? json.report.underTarget : [];
+        if (!Array.isArray(allResidents)) return raw;
+        const schedulableIds = new Set(allResidents.filter(isSchedulable).map(r => r.id));
+        return raw.filter(u => schedulableIds.has(u.residentId));
+      })(),
       capacityWarnings: [],
       repairs: [],
       feasibility: json?.feasibility ?? null,
@@ -6122,16 +6264,36 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   let best = null;
 
+  // Built ONCE and shared across every attempt + the repair re-run below (see
+  // buildStaticGenContext's own header for why this is safe and why it's the dominant lever on
+  // this function's wall time) — every one of the `attempts` calls, plus the repair re-run, would
+  // otherwise redo the same O(residents*dates) eligibility/scarcity setup from scratch. Mirrors
+  // generateSchedule's own default-filling (`coverage = {}` etc.) exactly, since `args` here is
+  // whatever the caller passed straight through to it.
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  if (!dates.length) return null;
+  const genCtx = buildStaticGenContext({
+    allResidents: args.allResidents,
+    block: args.block,
+    coverage: args.coverage || {},
+    eligOverrides: args.eligOverrides || {},
+    appSettings: args.appSettings || {},
+    dayRules: args.dayRules || {},
+    blocksHistory: args.blocksHistory || [],
+    ayConf: args.ayConf || {},
+    dates,
+  });
+
   for (let i = 0; i < attempts; i++) {
     const seed = (resolvedBaseSeed + i * 0x9E3779B9) >>> 0;
-    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false });
+    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false, ctx: genCtx });
     if (!res) return null;
     const score = scoreGenerationResult(res, args, rulePriority);
     if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
   }
 
   if (repair) {
-    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true });
+    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true, ctx: genCtx });
     const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
   }
@@ -12438,7 +12600,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
-        const res = mapSolverResult(json, { block: genBlock });
+        const res = mapSolverResult(json, { block: genBlock, allResidents });
         return { ...res, engineUsed: 'cpsat', relaxed: json.mode === 'relaxed' };
       } catch (e) {
         console.warn('Solver unavailable — falling back to the built-in generator:', e);

@@ -109,6 +109,31 @@ describe('buildSolverPayload', () => {
     }
   });
 
+  it('target is null for a non-schedulable resident, even though getShiftTarget itself does not know about schedulability', () => {
+    // A resident off on an atUH:false blockType (MICU/PICU/BAPTIST/ORTHO_VAC/ANES_VAC/METRO) is
+    // NOT schedulable this block (see isSchedulable/BLOCK_TYPE_MAP) — getEligibleShifts returns []
+    // for them on every date, so they can never be assigned a shift, but getShiftTarget still
+    // returns the category's real flat target since it only reads category/pgy/blockType. Left
+    // unfiltered, the solver would report a permanent, unreachable "under target" deficit for a
+    // resident who was never really on service this block (confirmed live: 29 under-target entries
+    // where only ~2 were real). See buildSolverPayload's own comment at the `target` assignment.
+    const fixture = makeFixture('standard');
+    const offServiceThisBlock = fixture.allResidents.find(r => r.id === 'syn_golf');
+    expect(offServiceThisBlock).toBeTruthy();
+    const raw = getShiftTarget(offServiceThisBlock, fixture.appSettings);
+    expect(raw).not.toBeNull(); // sanity: getShiftTarget alone still returns a real number
+    const allResidents = fixture.allResidents.map(r =>
+      r.id === 'syn_golf' ? { ...r, blockType: 'MICU' } : r
+    );
+    const payload = buildSolverPayload({ ...fixture, allResidents });
+    const entry = payload.residents.find(p => p.id === 'syn_golf');
+    expect(entry).toBeTruthy(); // still present in residents[] — just excluded from deficit/fairness
+    expect(entry.target).toBeNull();
+    // And they get no eligible[] entry at all (already the pre-existing, correct behavior — only
+    // schedulableResidents get a key in `eligible`).
+    expect(payload.eligible.syn_golf).toBeUndefined();
+  });
+
   it('caps are null for residents the cap does not apply to, and set for ones it does', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
@@ -302,6 +327,37 @@ describe('mapSolverResult', () => {
     const podNSummary = summary.find(s => s.shiftId === 'POD-N');
     expect(podNSummary.recommendations.length).toBeGreaterThan(0);
     expect(podNSummary.recommendations[0].text).toContain('coverageShort');
+  });
+
+  it('defensively filters underTarget to schedulable residents when allResidents is supplied', () => {
+    // Report-accuracy-only guard (see buildSolverPayload's own `target: null` fix): if the response
+    // ever names a non-schedulable resident as under target — e.g. an older/mismatched solver
+    // deploy that hasn't picked up the payload-side fix — mapSolverResult should not surface it.
+    const fixture = makeFixture('standard');
+    const allResidents = fixture.allResidents.map(r =>
+      r.id === 'syn_golf' ? { ...r, blockType: 'MICU' } : r
+    );
+    const json = {
+      status: 'OPTIMAL', mode: 'strict', seed: 1, schedule: {},
+      report: {
+        unfilled: [], restCompromises: [], seniorGaps: [],
+        underTarget: [
+          { residentId: 'syn_mike', assigned: 17, target: 19 },   // schedulable — kept
+          { residentId: 'syn_golf', assigned: 0, target: 19 },    // not schedulable this block — dropped
+        ],
+      },
+    };
+    const { report } = mapSolverResult(json, { block, allResidents });
+    expect(report.underTarget).toEqual([{ residentId: 'syn_mike', assigned: 17, target: 19 }]);
+  });
+
+  it('does not filter underTarget when allResidents is omitted (backward compatible)', () => {
+    const json = {
+      status: 'OPTIMAL', mode: 'strict', seed: 1, schedule: {},
+      report: { unfilled: [], restCompromises: [], seniorGaps: [], underTarget: [{ residentId: 'syn_golf', assigned: 0, target: 19 }] },
+    };
+    const { report } = mapSolverResult(json, { block });
+    expect(report.underTarget).toEqual([{ residentId: 'syn_golf', assigned: 0, target: 19 }]);
   });
 
   it('defaults gracefully on a minimal/malformed-ish response (no throw)', () => {

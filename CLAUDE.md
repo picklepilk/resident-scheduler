@@ -1083,6 +1083,31 @@ names below rather than trusting offsets.
   reversed. Both variants live in `DEFAULT_DAY_RULES.EM_HOME_2.shiftGates` simultaneously,
   distinguished by `activeWhen`, so saved block's own `startDate` always resolves to correct
   rule — don't try to "clean up" this into single gate.
+- **EM/EMS and EM/TOX PGY-2's real scheduled work is their 8 hard-gated window days, and those are
+  ~100% PEDS-area** (chief-confirmed, live verification session against his own best block —
+  7/7 in-window shifts were PED-D/E/N/S for both rotations). Two consequences: (1) `BLOCK_TARGETS`
+  carries explicit `EM_HOME_2__EM_EMS`/`EM_HOME_2__EM_TOX: 7` entries (not the flat
+  `SHIFT_TARGETS.EM_HOME_2` = 19, which the 2-weekday/week gate makes mathematically unreachable —
+  8 window days per 28-day block, minus one for the JC/holiday/day-off that routinely eats one);
+  `blockTargetReachability.test.js` asserts this invariant generically for any EM Home rotation
+  with a `blockEntireDay` weekday gate, so a future gate change can't silently reintroduce an
+  impossible target. (2) A HARD eligibility strip to PEDS-only was tried and measured to cost real
+  min-coverage fill on the `standard` synthetic fixture (+2.6 unfilled slots, over the accepted +2
+  tolerance) — these rotations are needed as fallback POD/FLEX/MT/TRAUMA-N capacity often enough
+  that excluding them outright isn't worth it. Downgraded to a strong soft `score()` penalty instead
+  (`SCORE_WEIGHTS.emEmsToxNonPedsPenalty`, STRUCTURAL tier): candidatePool is untouched, but the
+  generator steers away from a non-PED placement for these two blockTypes whenever a comparable
+  alternative exists.
+- **Chief's general call-in/payback rule** (his own words, said in the context of the above): "any
+  resident with extra shifts above their expected baseline is generally due to being called in;
+  anyone with fewer is generally paying back a shift for their call-in." A hand-built schedule
+  therefore mixes worked call-ins in with ordinary planned shifts with no marker distinguishing
+  them (only jeopardy-TRACK dates are separated out, e.g. `chiefBenchmark.json`'s `Res_Call PGY*`
+  rows into `jeopardyDates`) — per-resident shift COUNTS read off a real historical schedule must
+  never be used to derive or validate shift targets, and small over/under-target deviations
+  measured against one are expected noise, not a bug. See `chiefBenchmark.test.js`'s own header
+  comment and `chiefBenchmark.json`'s `_committedFixtureNotes` for the fixture-specific version of
+  this caveat.
 - **Circadian rules** (see `NIGHT_RULES`): nights should cluster into one run of 4-6 (max 6, hard);
   evening shift can never be immediately followed by day shift next day, or vice versa
   (hard, even when plain rest-hour math would otherwise clear it); **the backward `postNightRest`
