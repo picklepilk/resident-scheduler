@@ -15,11 +15,11 @@
 // coincidentally shares some hues with AREA_COLORS; intentionally NOT folded into that map.
 export const CATEGORIES = [
   { id: 'EM_HOME', label: 'EM – Home',        shortLabel: 'EM-H', pgyOptions: [1,2,3], persistent: true,  rowBg: 'bg-blue-50',    badge: 'bg-blue-700 text-white' },
-  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-white' },
+  { id: 'EM_BAMC', label: 'EM – BAMC',        shortLabel: 'BAMC', pgyOptions: [1],     persistent: false, rowBg: 'bg-blue-50',    badge: 'bg-blue-400 text-black/80' },
   { id: 'PEDS',    label: 'Pediatrics',        shortLabel: 'PEDS', pgyOptions: [2,3],   persistent: false, rowBg: 'bg-green-50',   badge: 'bg-green-600 text-white' },
-  { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-white' },
-  { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-white' },
-  { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-400 text-white' },
+  { id: 'FM',      label: 'Family Medicine',   shortLabel: 'FM',   pgyOptions: [1,3],   persistent: false, rowBg: 'bg-yellow-50',  badge: 'bg-yellow-500 text-black/80' },
+  { id: 'IM',      label: 'Internal Medicine', shortLabel: 'IM',   pgyOptions: [2],     persistent: false, rowBg: 'bg-orange-50',  badge: 'bg-orange-500 text-black/80' },
+  { id: 'NEURO',   label: 'Neurology',         shortLabel: 'NEURO',pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-400 text-black/80' },
   { id: 'ANES',    label: 'Anesthesiology',    shortLabel: 'ANES', pgyOptions: [1],     persistent: false, rowBg: 'bg-purple-50',  badge: 'bg-purple-600 text-white' },
   { id: 'PSYCH',   label: 'Psychiatry',        shortLabel: 'PSYCH',pgyOptions: [1],     persistent: false, rowBg: 'bg-amber-50',   badge: 'bg-amber-600 text-white' },
   { id: 'POD',     label: 'Podiatry',          shortLabel: 'POD',  pgyOptions: [1],     persistent: false, rowBg: 'bg-gray-50',    badge: 'bg-gray-500 text-white' },

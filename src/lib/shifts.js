@@ -16,14 +16,20 @@ import { parseDate, addDays, toDateStr } from './dates.js';
 // RGB for jsPDF (PDF_AREA_LIGHT — jsPDF can't consume Tailwind classes). Add/adjust a shift area's
 // color here only; SHIFTS chips, PDF_AREA_LIGHT, and ShiftMatrixTab's areaColor all derive from
 // this map. Declared above SHIFTS (TDZ — SHIFTS reads AREA_COLORS.*.chip.* below).
+// Evening chips keep their -400 background on purpose (the palette reads day-600 / eve-400 /
+// night-900, so eve is meant to be the light one) but carry BLACK text, not white: white on a
+// -400 mid-tone measures 1.67-2.64 contrast in the deployed app — unreadable, and equally so in
+// light and dark mode, since the chip color is theme-independent. Black on the same background
+// measures 8-11 and leaves every hue exactly as it was. Same convention as the sidebar count
+// badges, which have always paired bg-amber-400 with text-black/80 and read fine.
 export const AREA_COLORS = {
-  POD:    { chip: { day: 'bg-blue-600 text-white',   eve: 'bg-blue-400 text-white',   night: 'bg-blue-900 text-white' },
+  POD:    { chip: { day: 'bg-blue-600 text-white',   eve: 'bg-blue-400 text-black/80',   night: 'bg-blue-900 text-white' },
             tint: 'text-blue-700 bg-blue-50 border-blue-200',     pdfLight: [219, 234, 254] },
-  PED:    { chip: { day: 'bg-green-600 text-white',  eve: 'bg-green-400 text-white',  night: 'bg-green-900 text-white', swing: 'bg-green-700 text-white' },
+  PED:    { chip: { day: 'bg-green-600 text-white',  eve: 'bg-green-400 text-black/80',  night: 'bg-green-900 text-white', swing: 'bg-green-700 text-white' },
             tint: 'text-green-700 bg-green-50 border-green-200',  pdfLight: [209, 250, 229] },
-  FLEX:   { chip: { day: 'bg-purple-600 text-white', eve: 'bg-purple-400 text-white', night: 'bg-purple-900 text-white' },
+  FLEX:   { chip: { day: 'bg-purple-600 text-white', eve: 'bg-purple-400 text-black/80', night: 'bg-purple-900 text-white' },
             tint: 'text-purple-700 bg-purple-50 border-purple-200', pdfLight: [237, 233, 254] },
-  MT:     { chip: { day: 'bg-amber-600 text-white',  eve: 'bg-amber-400 text-white',  night: 'bg-amber-900 text-white' },
+  MT:     { chip: { day: 'bg-amber-600 text-white',  eve: 'bg-amber-400 text-black/80',  night: 'bg-amber-900 text-white' },
             tint: 'text-amber-700 bg-amber-50 border-amber-200',  pdfLight: [254, 243, 199] },
   TRAUMA: { chip: { day: 'bg-red-600 text-white',    night: 'bg-red-900 text-white' },
             tint: 'text-red-700 bg-red-50 border-red-200',        pdfLight: [254, 226, 226] },
