@@ -10,6 +10,7 @@ from ortools.sat.python import cp_model
 
 from solver.io.payload import parse_payload
 from solver.model import objective as objective_mod
+from solver.model import trauma_runs as trauma_runs_mod
 from solver.model.circadian import add_circadian_constraints
 from solver.model.objective import TermGroup
 from solver.model.trauma_runs import (
@@ -458,3 +459,225 @@ def test_full_solve_unaffected_when_batch2_fields_absent():
     result = solve(payload)
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert result.validation["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# structural-impossibility pruning (perf): on a real roster only a minority
+# of residents are ever eligible for TRAUMA-N, yet every window/soft-term
+# loop in this module used to iterate ALL residents regardless. Every skip
+# added is provably safe (the term it would have generated is a python
+# constant 0, not a preference or heuristic) -- these tests prove that two
+# ways: (1) the skip actually fires (helper returns empty / group stays
+# empty) exactly where the underlying assignment is structurally impossible,
+# and (2) right at the boundary the skip uses (exactly 3 trauma-possible
+# dates in a hard-cap window, an endpoint that IS trauma-possible, a
+# resident who IS trauma-eligible elsewhere in the block), the pruned code
+# still emits the constraint/term and still catches a real violation -- so
+# the boundary itself, not just the empty-set fast path, is exercised.
+# ---------------------------------------------------------------------------
+
+def test_trauma_possible_indices_empty_when_never_eligible_for_trauma():
+    dates = _dates(4)
+    eligible = {"r1": {d: ["N"] for d in dates}}  # TRAUMA-N never offered at all
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    payload, model, store = _build(
+        dates, TRAUMA_SHIFTS, eligible, coverage,
+        [make_resident("r1", caps={"nights": 6})],
+        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
+    )
+    resident = payload.resident("r1")
+    assert trauma_runs_mod._trauma_possible_indices(payload, store, resident) == frozenset()
+
+
+def test_trauma_possible_indices_includes_a_trauma_shift_in_the_prior_tail():
+    dates = _dates(3)  # starts 2026-01-05
+    tail_date = "2026-01-04"  # the last of the 14 prior-tail dates
+    eligible = {"r1": {d: ["TRAUMA-N", "N"] for d in dates}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    resident_raw = make_resident("r1", caps={"nights": 6}, priorTail={tail_date: "TRAUMA-N"})
+    payload, model, store = _build(
+        dates, TRAUMA_SHIFTS, eligible, coverage, [resident_raw],
+        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
+    )
+    resident = payload.resident("r1")
+    tail_idx = payload.all_dates.index(tail_date)
+    assert tail_idx in trauma_runs_mod._trauma_possible_indices(payload, store, resident)
+
+
+def test_hard_cap_still_forbids_three_trauma_nights_when_exactly_three_positions_are_possible():
+    """Boundary for the '<3 trauma-possible positions -> skip the window'
+    rule: a resident eligible for TRAUMA-N on EXACTLY the 3 dates of one
+    window (count == 3, the smallest count the skip must NOT fire for) must
+    still be caught working all 3 as trauma nights."""
+    dates = _dates(3)
+    eligible = {"r1": {d: ["TRAUMA-N", "N"] for d in dates}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    _, model, store = _build(
+        dates, TRAUMA_SHIFTS, eligible, coverage,
+        [make_resident("r1", caps={"nights": 6})],
+        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
+    )
+    model.add(store.get_x("r1", "TRAUMA-N", dates[0]) == 1)
+    model.add(store.get_x("r1", "TRAUMA-N", dates[1]) == 1)
+    model.add(store.get_x("r1", "TRAUMA-N", dates[2]) == 1)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+
+
+def test_hard_cap_emits_no_window_constraint_when_only_two_positions_are_possible():
+    """Boundary the OTHER direction: a resident eligible for TRAUMA-N on
+    only 2 dates (nowhere else) can never reach a 3rd trauma night in any
+    run by construction. Confirms both that the '<3 possible' skip actually
+    fires (zero window constraints added, only `_link_trauma`'s per-date
+    linking equalities survive) AND that nothing is over-constrained --
+    working both eligible dates as TRAUMA-N stays feasible."""
+    dates = _dates(3)
+    eligible = {"r1": {dates[0]: ["TRAUMA-N", "N"], dates[1]: ["TRAUMA-N", "N"], dates[2]: ["N"]}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    raw = make_payload(
+        residents=[make_resident("r1", caps={"nights": 6})], shifts=TRAUMA_SHIFTS, dates=dates,
+        eligible=eligible, coverage=coverage, traumaNightShiftIds=["TRAUMA-N"],
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    add_circadian_constraints(model, payload, store)
+    add_workday_limit_constraints(model, payload, store)
+
+    resident = payload.resident("r1")
+    assert len(trauma_runs_mod._trauma_possible_indices(payload, store, resident)) == 2
+
+    n_before = len(model.proto.constraints)
+    add_trauma_run_hard_cap(model, payload, store)
+    added = len(model.proto.constraints) - n_before
+    assert added == len(dates)  # only _link_trauma's per-date equalities -- no window constraints
+
+    model.add(store.get_x("r1", "TRAUMA-N", dates[0]) == 1)
+    model.add(store.get_x("r1", "TRAUMA-N", dates[1]) == 1)
+    model.add(store.get_x("r1", "N", dates[2]) == 1)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
+
+
+def test_second_in_run_stays_inert_when_one_endpoint_is_never_trauma_eligible():
+    """Both candidate (a,b) pairs here have at least one endpoint where
+    TRAUMA-N was never offered at all (structurally impossible, not just
+    'chose N instead') -- the AND term must stay fully suppressed, proving
+    the endpoint-index skip fires rather than merely happening to cost 0."""
+    dates = _dates(3)
+    eligible = {
+        "r1": {
+            dates[0]: ["TRAUMA-N", "N"],
+            dates[1]: ["N"],  # TRAUMA-N never offered here
+            dates[2]: ["N"],  # nor here
+        }
+    }
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    payload, model, store = _build(
+        dates, TRAUMA_SHIFTS, eligible, coverage,
+        [make_resident("r1", caps={"nights": 6})],
+        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
+    )
+    model.add(store.get_x("r1", "TRAUMA-N", dates[0]) == 1)
+    model.add(store.get_x("r1", "N", dates[1]) == 1)
+    model.add(store.get_x("r1", "N", dates[2]) == 1)
+
+    group = TermGroup("t")
+    add_trauma_second_in_run_terms(model, payload, store, group, coef=1000)
+    assert group.terms == []
+
+
+def test_mid_run_stays_inert_when_the_middle_date_is_never_trauma_eligible():
+    """Resident IS trauma-eligible elsewhere in the block (dates[3]), so the
+    coarse per-resident skip must NOT fire -- proves the finer per-position
+    skip inside add_trauma_mid_run_terms is what suppresses this term for
+    the interior dates where TRAUMA-N was never offered."""
+    dates = _dates(4)
+    eligible = {
+        "r1": {
+            dates[0]: ["N"],
+            dates[1]: ["N"],                 # candidate mid date -- TRAUMA-N never offered
+            dates[2]: ["N"],
+            dates[3]: ["TRAUMA-N", "N"],      # trauma-eligible ELSEWHERE in the block
+        }
+    }
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
+    payload, model, store = _build(
+        dates, TRAUMA_SHIFTS, eligible, coverage,
+        [make_resident("r1", caps={"nights": 6})],
+        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
+    )
+    model.add(store.get_x("r1", "N", dates[0]) == 1)
+    model.add(store.get_x("r1", "N", dates[1]) == 1)
+    model.add(store.get_x("r1", "N", dates[2]) == 1)
+    model.add(store.get_x("r1", "N", dates[3]) == 1)
+
+    resident = payload.resident("r1")
+    assert trauma_runs_mod._trauma_possible_indices(payload, store, resident)  # non-empty
+
+    group = TermGroup("t")
+    add_trauma_mid_run_terms(model, payload, store, group, coef=1000)
+    # The only candidate mid-positions with a known idx+1 are dates[0..2]
+    # (dates[3] is the block's last date -- no idx+1 in range); none of them
+    # is ever trauma-eligible, so the group stays empty even though the
+    # resident overall IS trauma-eligible.
+    assert group.terms == []
+
+
+def test_night_possible_indices_empty_when_never_night_eligible():
+    dates = _dates(3)
+    day_only_shifts = {"D": {"startH": 7, "durationH": 9, "type": "day", "area": "POD"}}
+    eligible = {"r1": {d: ["D"] for d in dates}}
+    coverage = {"D": {d: {"min": 0, "max": 1} for d in dates}}
+    raw = make_payload(
+        residents=[make_resident("r1")], shifts=day_only_shifts, dates=dates,
+        eligible=eligible, coverage=coverage,
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    resident = payload.resident("r1")
+    assert trauma_runs_mod._night_possible_indices(payload, store, resident) == frozenset()
+
+
+def test_alternation_stays_inert_for_a_resident_with_zero_night_eligibility():
+    dates = _dates(2)
+    day_only_shifts = {"D": {"startH": 7, "durationH": 9, "type": "day", "area": "POD"}}
+    shifts = {**ALT_SHIFTS, **day_only_shifts}
+    eligible = {"r1": {d: ["D"] for d in dates}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in shifts}
+    raw = make_payload(
+        residents=[make_resident("r1")], shifts=shifts, dates=dates,
+        eligible=eligible, coverage=coverage,
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    add_circadian_constraints(model, payload, store)
+    model.add(store.get_x("r1", "D", dates[0]) == 1)
+    model.add(store.get_x("r1", "D", dates[1]) == 1)
+
+    group = TermGroup("t")
+    add_night_duration_alternation_terms(model, payload, store, group, coef=1000)
+    assert group.terms == []
+
+
+def test_second_rest_day_stays_inert_for_a_resident_with_zero_night_eligibility():
+    dates = _dates(5)
+    eligible = {"r1": {d: ["D"] for d in dates}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in REST_SHIFTS}
+    raw = make_payload(
+        residents=[make_resident("r1", caps={"nights": 6})], shifts=REST_SHIFTS, dates=dates,
+        eligible=eligible, coverage=coverage,
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    add_circadian_constraints(model, payload, store)
+    add_workday_limit_constraints(model, payload, store)
+    for d in dates:
+        model.add(store.get_x("r1", "D", d) == 1)
+
+    group = TermGroup("t")
+    add_second_rest_day_terms(model, payload, store, group, coef=1000)
+    assert group.terms == []

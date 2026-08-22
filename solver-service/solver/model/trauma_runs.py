@@ -134,6 +134,76 @@ def _night_duration_classes(payload: Payload) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# structural-impossibility pruning -- see module docstring's "Encoding
+# conventions" section for the AND/OR cost-var trick this feeds. Every
+# function below iterates ALL residents x a sliding window of ALL dates
+# regardless of eligibility, which is correct (a term whose triggering
+# assignment doesn't exist just gets forced to 0 by its own linking
+# constraint or by `_and_cost_var`'s one-directional inequality) but not
+# free: on a real roster only a minority of residents are ever eligible for
+# TRAUMA-N at all (an EM-Home/BAMC-only shift), yet every resident still paid
+# the full O(dates x window-offsets) cost. These helpers compute, ONCE per
+# resident, the exact positions where the relevant term could ever be
+# nonzero, so a window/position whose triggering term is a PROVABLE python
+# constant 0 (not a preference, not a heuristic -- the same fact
+# `_link_trauma`/circadian.py's own linking constraint would derive) can
+# skip creating any var/constraint for it at all. This changes zero solver
+# semantics: every skipped var/constraint would have been forced to exactly
+# the same value (0, or "always satisfied") by the model that remains.
+# ---------------------------------------------------------------------------
+
+def _trauma_possible_indices(payload: Payload, store: VarStore, resident) -> frozenset:
+    """Index set (into `payload.all_dates`) of every position where
+    `_trauma_term_for_position(..., idx)` could ever be nonzero for this
+    resident -- a tail position whose recorded `prior_tail` shift is itself
+    in `trauma_night_shift_ids` (a fixed historical fact, contributes a
+    constant 1), or an in-block position where the resident has at least one
+    real x-var for a trauma shift that date (contributes a free 0/1, per
+    `store.by_resident_date`, the same eligible-shift source `_link_trauma`
+    itself sums over). Empty exactly when `_link_trauma` forces
+    `trauma[r,d] == 0` for this resident on EVERY block date -- computed
+    once per resident here instead of rediscovered by every window below.
+    """
+    tail_len = len(payload.tail_dates)
+    indices = set()
+    for idx in range(tail_len):
+        date_str = payload.all_dates[idx]
+        shift_id = resident.prior_tail.get(date_str)
+        if shift_id in payload.trauma_night_shift_ids:
+            indices.add(idx)
+    for idx in range(tail_len, len(payload.all_dates)):
+        date_str = payload.all_dates[idx]
+        for shift_id, _var in store.by_resident_date.get((resident.id, date_str), []):
+            if shift_id in payload.trauma_night_shift_ids:
+                indices.add(idx)
+                break
+    return frozenset(indices)
+
+
+def _night_possible_indices(payload: Payload, store: VarStore, resident) -> frozenset:
+    """Same idea as `_trauma_possible_indices`, for `_night_term_for_position`
+    (any NIGHT-type shift, not just trauma) -- used by the two soft terms
+    below that key off night runs generally rather than trauma specifically
+    (`nightDurationAlternation`, `secondRestDay`). A position outside this
+    set forces night[r,d] == 0 via circadian.py's own linking constraint, so
+    it can never be the trigger for either term."""
+    tail_len = len(payload.tail_dates)
+    indices = set()
+    for idx in range(tail_len):
+        date_str = payload.all_dates[idx]
+        shift_id = resident.prior_tail.get(date_str)
+        if shift_id and shift_id in payload.shifts and payload.shifts[shift_id].is_night:
+            indices.add(idx)
+    for idx in range(tail_len, len(payload.all_dates)):
+        date_str = payload.all_dates[idx]
+        for shift_id, _var in store.by_resident_date.get((resident.id, date_str), []):
+            if shift_id in payload.shifts and payload.shifts[shift_id].is_night:
+                indices.add(idx)
+                break
+    return frozenset(indices)
+
+
+# ---------------------------------------------------------------------------
 # rule A (hard): <=2 trauma nights per contiguous night run
 # ---------------------------------------------------------------------------
 
@@ -185,6 +255,13 @@ def add_trauma_run_hard_cap(model, payload: Payload, store: VarStore) -> None:
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
+        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        if not trauma_idx:
+            # trauma[r,d] == 0 for every date (see _link_trauma) -- every
+            # window's constraint below would reduce to "0 <= 2 + M*(...)",
+            # always true regardless of the RHS. Skipping the resident
+            # entirely is exact, not an approximation.
+            continue
         for a in range(n):
             for offset in range(2, MAX_WINDOW_OFFSET + 1):
                 b = a + offset
@@ -193,6 +270,13 @@ def add_trauma_run_hard_cap(model, payload: Payload, store: VarStore) -> None:
                 if b < tail_len:
                     continue  # entirely inside the tail -- constants only, nothing to constrain
                 window = range(a, b + 1)
+                # At most `len(trauma_idx & window)` positions in this window
+                # can ever be 1, so if that count is already <= the cap, the
+                # constraint is trivially satisfied for every possible
+                # assignment -- skip it. (Cap is 2; need >=3 possible
+                # positions before the window can even threaten it.)
+                if len(trauma_idx.intersection(window)) < TRAUMA_PER_RUN_HARD_CAP + 1:
+                    continue
                 trauma_terms = [_trauma_term_for_position(payload, store, resident, i) for i in window]
                 nonnight_terms = [1 - _night_term_for_position(payload, store, resident, i) for i in window]
                 model.add(sum(trauma_terms) <= TRAUMA_PER_RUN_HARD_CAP + TRAUMA_HARD_CAP_BIG_M * sum(nonnight_terms))
@@ -215,12 +299,19 @@ def add_trauma_second_in_run_terms(model, payload: Payload, store: VarStore, gro
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
+        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        if not trauma_idx:
+            continue  # trauma[r,d] == 0 everywhere -- every AND below is provably 0
         for a in range(n):
             for offset in range(1, MAX_WINDOW_OFFSET + 1):
                 b = a + offset
                 if b >= n:
                     break
                 if b < tail_len:
+                    continue
+                if a not in trauma_idx or b not in trauma_idx:
+                    # trauma[a] or trauma[b] is a provable 0 -- the AND that
+                    # requires BOTH endpoints to be 1 is provably 0 too.
                     continue
                 window = range(a, b + 1)
                 terms = [_trauma_term_for_position(payload, store, resident, a)]
@@ -251,7 +342,14 @@ def add_trauma_mid_run_terms(model, payload: Payload, store: VarStore, group, co
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
+        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        if not trauma_idx:
+            continue  # trauma[r,d] == 0 everywhere -- every AND below is provably 0
         for idx in range(max(tail_len, 1), n - 1):
+            if idx not in trauma_idx:
+                # trauma_d is a provable 0 -- the AND that requires it to be
+                # 1 is provably 0 regardless of the other three conjuncts.
+                continue
             date_str = payload.all_dates[idx]
             trauma_d = _trauma_term_for_position(payload, store, resident, idx)
             night_prev = _night_term_for_position(payload, store, resident, idx - 1)
@@ -296,9 +394,18 @@ def add_night_duration_alternation_terms(model, payload: Payload, store: VarStor
     exempt = payload.alternation_exempt_dates
 
     for resident in payload.residents:
+        night_idx = _night_possible_indices(payload, store, resident)
+        if not night_idx:
+            continue  # night[r,d] == 0 everywhere -- every nightclass term below is provably 0
         for idx in range(n - 1):
             if idx + 1 < tail_len:
                 continue  # entirely inside the tail
+            if idx not in night_idx or idx + 1 not in night_idx:
+                # Either date can never be ANY night-shift duration class for
+                # this resident, so every AND(term1, term2) pair below --
+                # regardless of which two classes d1/d2 are picked -- is
+                # provably 0.
+                continue
             date1 = payload.all_dates[idx]
             date2 = payload.all_dates[idx + 1]
             if date1 in exempt or date2 in exempt:
@@ -328,9 +435,17 @@ def add_second_rest_day_terms(model, payload: Payload, store: VarStore, group, c
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
+        night_idx = _night_possible_indices(payload, store, resident)
+        if not night_idx:
+            continue  # night[r,d] == 0 everywhere -- run_end is provably 0 at every e
         for e in range(2, n - 2):
             if e + 2 < tail_len:
                 continue  # entirely inside the tail
+            if e - 2 not in night_idx or e - 1 not in night_idx or e not in night_idx:
+                # run_end requires ALL three of e-2, e-1, e to be nights --
+                # if any one is a provable 0, run_end (and therefore the
+                # whole secondRestDay AND) is provably 0 too.
+                continue
             night_e2 = _night_term_for_position(payload, store, resident, e - 2)
             night_e1 = _night_term_for_position(payload, store, resident, e - 1)
             night_e = _night_term_for_position(payload, store, resident, e)
