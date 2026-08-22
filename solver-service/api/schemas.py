@@ -114,6 +114,19 @@ class SolveRequest(BaseModel):
     preferences: list[PreferenceModel] = Field(default_factory=list)
     rulePriority: list = Field(default_factory=list)
     settings: SettingsModel = Field(default_factory=SettingsModel)
+    # Batch 2 (chief round-2 rules) -- all optional, all default to empty/
+    # zero, all inert under those defaults. See docs/PAYLOAD_SCHEMA.md.
+    traumaNightShiftIds: list = Field(default_factory=list)
+    pedsSplitInternIds: list = Field(default_factory=list)
+    pedsNightShiftIds: list = Field(default_factory=list)
+    pedsInternNightTarget: int = 0
+    alternationExemptDates: list = Field(default_factory=list)
+    # Round 2b (EM-count composition + PGY gating pool-restrict) -- all
+    # optional, all default to empty, all inert under those defaults. See
+    # docs/PAYLOAD_SCHEMA.md and solver/model/em_composition.py.
+    emResidentIds: list = Field(default_factory=list)
+    emPgy2ResidentIds: list = Field(default_factory=list)
+    emPgy3ResidentIds: list = Field(default_factory=list)
 
 
 class SolveResponse(BaseModel):

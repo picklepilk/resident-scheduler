@@ -71,15 +71,44 @@ def _build_objective_for(raw_payload: dict):
 
 def _anti_fill_sum(weights: dict) -> int:
     """Sum of every per-assignment term that could ever prefer NOT filling a
-    slot (shape/fairness/dow preference) -- the thing coverageMin's slack
-    weight must dominate."""
-    night = max(weights["nightShape"]["minCost"], weights["nightShape"]["maxCost"])
+    slot (shape/fairness/dow preference/batch-2 trauma-run placement) --
+    the thing coverageMin's slack weight must dominate.
+
+    Batch 2 (2026-08-22) additions: traumaSecondInRun/traumaMidRun/
+    nightDurationAlternation/secondRestDay are all "this assignment isn't
+    the PREFERRED one" penalties, not "leave it empty" ones, but the same
+    domination property matters for them -- generous, not exact, per-single-
+    -assignment stacking multipliers (a trauma night can sit at the "b"
+    endpoint of up to 5 different traumaSecondInRun windows, e.g.), matching
+    this function's existing "generous but finite" posture.
+    `pedsInternNightDeficit` is deliberately excluded -- like targetDeficit,
+    it pushes TOWARD assigning a shift, never away from one.
+
+    Round 2b additions: podEmComposition/flexEmComposition (one shortfall
+    var per (POD|FLEX shift, date), same ×1 stacking as traumaMidRun -- a
+    single (shift,date) pair only ever contributes one shortfall var) and
+    podPgy2Fallback/flexPgy3Fallback (a flat per-assignment cost, same ×1
+    stacking as weekendOff/internPair -- one assignment can only ever be
+    charged once)."""
+    isolated_night = weights["isolatedNight"]["perUnit"]
     work = max(weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"])
     fairness = sum(weights["fairness"].values())
     weekend_off = weights["weekendOff"]["perMissing"]
     intern_pair = weights["internPair"]["perExcess"]
     dow = weights["dowPreference"]["scale"] * 20
-    return night + work + fairness + weekend_off + intern_pair + dow
+    trauma_second = weights["traumaSecondInRun"]["perUnit"] * 5
+    trauma_mid = weights["traumaMidRun"]["perUnit"]
+    night_alt = weights["nightDurationAlternation"]["perUnit"] * 2
+    second_rest = weights["secondRestDay"]["perUnit"]
+    pod_em_comp = weights["podEmComposition"]["perUnit"]
+    flex_em_comp = weights["flexEmComposition"]["perUnit"]
+    pod_pgy2_fallback = weights["podPgy2Fallback"]["perUnit"]
+    flex_pgy3_fallback = weights["flexPgy3Fallback"]["perUnit"]
+    return (
+        isolated_night + work + fairness + weekend_off + intern_pair + dow
+        + trauma_second + trauma_mid + night_alt + second_rest
+        + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
+    )
 
 
 def _generous_soft_objective_max(weights: dict) -> int:
@@ -93,7 +122,7 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + target_unit * GENEROUS_RESIDENTS * 30
         + weights["postNightRest"]["perViolation"] * GENEROUS_RESIDENTS * GENEROUS_DATES * 4
         + sum(weights["fairness"].values()) * 100 * 10
-        + (weights["nightShape"]["minCost"] + weights["nightShape"]["maxCost"]) * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + weights["isolatedNight"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + (weights["workShape"]["isolatedCost"] + weights["workShape"]["fragmentCost"])
         * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["weekendOff"]["perMissing"] * GENEROUS_RESIDENTS
@@ -101,6 +130,17 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["fm1Peds"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["internPair"]["perExcess"] * GENEROUS_COVERAGE_SLOTS
         + weights["dowPreference"]["scale"] * 20 * GENEROUS_COVERAGE_SLOTS
+        # batch 2 (2026-08-22)
+        + weights["traumaSecondInRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + weights["traumaMidRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + weights["nightDurationAlternation"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES * 2
+        + weights["secondRestDay"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + weights["pedsInternNightDeficit"]["perUnit"] * GENEROUS_RESIDENTS
+        # round 2b (EM-count composition + PGY gating pool-restrict)
+        + weights["podEmComposition"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
+        + weights["flexEmComposition"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
+        + weights["podPgy2Fallback"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + weights["flexPgy3Fallback"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
     )
 
 

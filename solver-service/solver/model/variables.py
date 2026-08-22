@@ -5,13 +5,17 @@ Creates:
   either in the resolved `eligible` set or explicitly `locked`. A locked cell
   whose shift isn't in that day's eligible set still gets a var (locked wins)
   -- see `_locked_triples`.
-- `work[r, d]` / `night[r, d]` -- bare BoolVars, declared here but NOT linked
-  to `x` here. The link for `work` needs the day's obligation flag (rule 19,
-  an "obligation day counts as worked even with no shift" fact that lives in
-  the payload, not in this module) so that linking constraint is added by
-  `workday_limits.py`. The link for `night` only needs shift-type data, but
-  is likewise added by its sole consumer, `circadian.py`, to keep one owner
-  per derived variable's defining constraint.
+- `work[r, d]` / `night[r, d]` / `trauma[r, d]` -- bare BoolVars, declared
+  here but NOT linked to `x` here. The link for `work` needs the day's
+  obligation flag (rule 19, an "obligation day counts as worked even with no
+  shift" fact that lives in the payload, not in this module) so that linking
+  constraint is added by `workday_limits.py`. The link for `night` only
+  needs shift-type data, but is likewise added by its sole consumer,
+  `circadian.py`, to keep one owner per derived variable's defining
+  constraint. `trauma` (batch 2: trauma-night-within-run rules) is linked by
+  its own sole consumer, `trauma_runs.py`, the same way -- `trauma[r,d] ==
+  sum(x[r,s,d] for s in payload.trauma_night_shift_ids)`, which is exactly 0
+  everywhere when that (optional, additive) payload field is empty.
 
 Also builds the at-most-one-shift-per-resident-per-day constraint and pins
 locked cells to 1 -- these are structural facts about `x` itself, not tied to
@@ -40,6 +44,7 @@ class VarStore:
     x: dict = field(default_factory=dict)             # (residentId, shiftId, date) -> BoolVar
     work: dict = field(default_factory=dict)           # (residentId, date) -> BoolVar
     night: dict = field(default_factory=dict)          # (residentId, date) -> BoolVar
+    trauma: dict = field(default_factory=dict)         # (residentId, date) -> BoolVar (batch 2)
     by_resident_date: dict = field(default_factory=dict)  # (residentId, date) -> list[(shiftId, BoolVar)]
     by_shift_date: dict = field(default_factory=dict)     # (shiftId, date) -> list[(residentId, BoolVar)]
 
@@ -101,6 +106,7 @@ def build_variables(model, payload: Payload) -> VarStore:
         for date_str in payload.block.dates:
             store.work[(resident.id, date_str)] = model.new_bool_var(f"work[{resident.id},{date_str}]")
             store.night[(resident.id, date_str)] = model.new_bool_var(f"night[{resident.id},{date_str}]")
+            store.trauma[(resident.id, date_str)] = model.new_bool_var(f"trauma[{resident.id},{date_str}]")
 
     return store
 

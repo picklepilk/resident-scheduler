@@ -3,7 +3,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
-  Plus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
+  Plus, Minus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
   Save, ChevronRight, Check, Table2, Activity,
   Stethoscope, ClipboardList, BookOpen, Shield, Edit2, LayoutDashboard,
@@ -97,37 +97,36 @@ const EM_HOME_BLOCK_TYPES_BY_PGY = {
 // Peds overnight is two separate single-owner shift ids (see PED_GUARD_LEGITIMATE_OWNER):
 // PED-N-FM (23:00-08:00) stays FM-3-exclusive program-wide, Mon/Tue/Wed only — no other
 // category/PGY may work it, even via a rotation/matrix override (see getEligibleShifts'
-// half-block/FM-3 handling). PED-N (19:00-04:00) is EM Home's own id, open to all three EM Home
-// PGYs Thu-Sun (0,4,5,6) (chief-directed, AY26/27), confined to that window by each EM_HOME key's
-// own overrideImmune ped_n_em_window shiftGate below — coverage stays min:0/max:1 either way
-// ("ideally filled, other shifts take priority"), and a PGY-1 EM Home candidate is
-// soft-deprioritized on PED-N in the generator's score() unless they've already done a
-// Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma).
+// half-block/FM-3 handling). PED-N (19:00-04:00) now exists all 7 nights (chief-confirmed against
+// live QGenda) — the old Thu-Sun-only ped_n_em_window shiftGate is gone entirely (removed below;
+// see LEGACY_DAY_RULE_DEFAULTS for its frozen pre-removal shape), open to EM Home PGY-1/2/3,
+// EM_BAMC_1, FM_1, and now PEDS_2/PEDS_3 (peds rotators — real staffing observed on live QGenda) —
+// coverage stays min:0/max:1 either way ("ideally filled, other shifts take priority"), and a
+// PGY-1 EM Home candidate is soft-deprioritized on PED-N in the generator's score() unless
+// they've already done a Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma). PED-S (Peds
+// Swing, 11:00-20:00) similarly now exists all 7 days (dropped from SHIFT_DOW) and is no longer
+// EM_HOME_2-EM_TOX/EM_EMS-only — it's open to EM_HOME_1/2/3, EM_BAMC_1, PEDS_2/PEDS_3, and FM_1
+// too (see PED_GUARD_LEGITIMATE_OWNER, derived automatically from whichever category/PGY keys
+// list 'PED-S'/'PED-N' here).
 const BASE_ELIGIBILITY = {
   // EM Home PGY-1: all areas; TRAUMA-D only (chief-directed AY26/27: Trauma Day is now
   // PGY-1-ONLY — PGY-2/3 lost it, see EM_HOME_2/3 below). PGY-1 does NOT have TRAUMA-N (that
   // stayed PGY-2/3's). Trauma further gated by block type.
-  // PED-N included per the Thu-Sun EM Home window above (ped_n_em_window gate confines it).
-  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+  EM_HOME_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   // EM Home PGY-2/3: all shifts including TRAUMA-N (NOT TRAUMA-D — chief-directed AY26/27: Trauma
-  // Day is PGY-1-only now, see EM_HOME_1 above) and (Thu-Sun) PED-N. PED-S (Peds Swing) is
-  // further gated to only EM_TOX/EM_EMS rotations, Mon/Tue/Thu/Fri, via the ped_s_* shiftGates
-  // below — nobody else is ever eligible for it, same single-owner invariant PED-N now has too
-  // (PED-N's owner set is {EM_HOME_1/2/3, EM_BAMC_1, FM_1} — see PED_GUARD_LEGITIMATE_OWNER).
+  // Day is PGY-1-only now, see EM_HOME_1 above), PED-N (all 7 nights), and PED-S (all 7 days).
   EM_HOME_2:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
-  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
-  // BAMC: no Trauma. Gained PED-N (chief-directed) — Thu-Sun window only, via its own
-  // ped_n_em_window shiftGate below (mirrors EM Home's).
-  EM_BAMC_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','POD-D12','POD-N12','PED-D12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
-  // Peds: now PGY-2/PGY-3 only (chief-directed AY26/27 restructure — PEDS_1 removed, existing
-  // PGY-1 Peds residents were migrated to PGY-2, see migratePedsPgy1ToPgy2). PED day/eve only —
-  // PED-N stays out of reach for this category on every day of the week, Thu-Sun EM Home/BAMC/FM-1
-  // opening included (Peds residents never gained PED-N eligibility at all).
-  PEDS_2:     ['PED-D','PED-E','PED-D12'],
-  PEDS_3:     ['PED-D','PED-E','PED-D12'],
-  // FM-1: POD default + PED-D/E as fill-in PRN, plus PED-N (chief-directed) — Thu-Sun window only,
-  // via its own ped_n_em_window shiftGate below (mirrors EM Home's).
-  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','POD-D12','POD-N12','PED-D12'],
+  EM_HOME_3:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+  // BAMC: no Trauma. Has PED-N (all 7 nights) and PED-S (all 7 days), both chief-directed.
+  EM_BAMC_1:  ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','POD-D12','POD-N12','PED-D12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+  // Peds: PGY-2/PGY-3 only (chief-directed AY26/27 restructure — PEDS_1 removed, existing PGY-1
+  // Peds residents were migrated to PGY-2, see migratePedsPgy1ToPgy2). Gained PED-N and PED-S
+  // (real staffing observed on live QGenda — Peds rotators genuinely work both).
+  PEDS_2:     ['PED-D','PED-E','PED-N','PED-S','PED-D12'],
+  PEDS_3:     ['PED-D','PED-E','PED-N','PED-S','PED-D12'],
+  // FM-1: POD default + PED-D/E as fill-in PRN, plus PED-N (all 7 nights) and PED-S (all 7 days),
+  // both chief-directed.
+  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','POD-D12','POD-N12','PED-D12'],
   // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
   // PED-N-FM those three days; EM Home covers the separate PED-N id Thu-Sun (see BASE_ELIGIBILITY
   // comment above). PED-N12 dropped deliberately: it's the 12h variant of PED-N's (EM) 19:00-07:00
@@ -164,12 +163,12 @@ const BASE_ELIGIBILITY = {
 //   narrowed to PEDS_2 only (noDay Wednesday) since PGY-3 works Wednesdays with no restriction;
 //   see LEGACY_DAY_RULE_DEFAULTS for the pre-change shapes)
 //   residentFlagOverrides: [{flag:string, fullBlockDays:number[]}]  — replaces dayTypeRestrictions when resident[flag] is true
-// PED-N (Peds Night) Thu-Sun window gate — shared literal, reused identically across every
-// EM_HOME_1/2/3, EM_BAMC_1, and FM_1 live default below (see each site's own comment for why).
-// LEGACY_DAY_RULE_DEFAULTS keeps its own frozen copies of this shape on purpose — those are
-// point-in-time snapshots and must NOT track future edits to this const.
-const PED_N_EM_WINDOW_GATE = { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null,
-  allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true };
+// PED-N (Peds Night) used to be confined to a Thu-Sun window via a shared 'ped_n_em_window'
+// shiftGate on every EM_HOME_1/2/3/EM_BAMC_1/FM_1 default below — removed entirely (chief-
+// confirmed against live QGenda: PED-N runs all 7 nights). Ownership is now enforced solely by
+// BASE_ELIGIBILITY membership + the derived PED_GUARD_LEGITIMATE_OWNER guard, same as every other
+// guarded shift id. LEGACY_DAY_RULE_DEFAULTS keeps frozen copies of the old gate's shape for each
+// affected key — see that map's own comments.
 const DEFAULT_DAY_RULES = {
   EM_HOME_1: {
     // GR Wednesday — no day shifts (Grand Rounds); evenings/nights are workable.
@@ -193,11 +192,6 @@ const DEFAULT_DAY_RULES = {
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
-      // PED-N (Peds Night) Thu-Sun window: EM Home gained PED-N in BASE_ELIGIBILITY (AY26/27
-      // chief-directed change) but only Thu-Sun (0,4,5,6) — Mon/Tue/Wed stay FM-3-exclusive.
-      // overrideImmune so a matrix override can't leak an EM Home resident onto PED-N outside
-      // this window; FM-3's own eligibility/rules are untouched by this EM_HOME-scoped gate.
-      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_HOME_2: {
@@ -224,22 +218,11 @@ const DEFAULT_DAY_RULES = {
       { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] },
         allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true,
         activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
-      // PED-S (Peds Swing): only EM/TOX or EM/EMS, and only on its own Mon/Tue/Thu/Fri window —
-      // nobody else, ever (single-owner guard, same class PED-N/PED-N-FM belong to now that the
-      // shift was split into two single-owner ids — see PED_GUARD_LEGITIMATE_OWNER). The weekday
-      // pairing above already confines each rotation to its own two days, so PED-S naturally
-      // follows the swap.
-      { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'],
-        blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
-      { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null,
-        allowedDays: [1,2,4,5], outsideAction: 'stripShiftIds', overrideImmune: true },
       // Trauma Day is PGY-1-only now (chief-directed AY26/27 — see BASE_ELIGIBILITY.EM_HOME_2),
       // so the old trauma_d_window gate is gone (it strips a shift PGY-2 no longer has at all).
       // PGY-2 keeps TRAUMA-N only — its own weekday window below is unchanged.
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
-      // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_HOME_3: {
@@ -253,8 +236,6 @@ const DEFAULT_DAY_RULES = {
       // PGY-3 keeps TRAUMA-N only — its own weekday window below is unchanged.
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null,
         allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
-      // PED-N (Peds Night) Thu-Sun window — see EM_HOME_1's ped_n_em_window comment above.
-      PED_N_EM_WINDOW_GATE,
     ],
   },
   EM_BAMC_1: {
@@ -269,10 +250,6 @@ const DEFAULT_DAY_RULES = {
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
         allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
-      // PED-N (Peds Night) Thu-Sun window — mirrors EM Home's ped_n_em_window (see EM_HOME_1's
-      // comment above). BAMC PGY-1 gained PED-N eligibility (chief-directed AY26/27); the 19:00
-      // shift doesn't exist Mon-Wed at all, so this gate is load-bearing, not just belt-and-braces.
-      PED_N_EM_WINDOW_GATE,
     ],
   },
   // Peds residents don't work Wednesdays at all (chief-directed, AY26/27) — replaces the old
@@ -285,13 +262,6 @@ const DEFAULT_DAY_RULES = {
   FM_1: {
     fullBlockDays: [3,4],
     dayTypeRestrictions: [{ days: [2], mode: 'noNight' }],
-    // PED-N (Peds Night) Thu-Sun window — mirrors EM Home's ped_n_em_window (see EM_HOME_1's
-    // comment above). FM-1 gained PED-N eligibility (chief-directed AY26/27); the 19:00 shift
-    // doesn't exist Mon-Wed at all. FM-1's own Wed/Thu fullBlockDays above already excludes those
-    // two days, so this gate's only practical effect is confining PED-N to Fri-Sun — accepted.
-    shiftGates: [
-      PED_N_EM_WINDOW_GATE,
-    ],
   },
   FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3] },
   IM_2: {
@@ -408,6 +378,13 @@ const LEGACY_DAY_RULE_DEFAULTS = {
     { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ] },
+    // Pre-PED-N-all-nights shape (Thu-Sun ped_n_em_window gate present) — the live default
+    // immediately before PED-N was opened to all 7 nights (chief-confirmed against live QGenda)
+    // and its confinement gate was removed entirely.
+    { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
   // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
   // (Ratna rules pass) corrected this to day-shifts-only, since residents CAN work Wednesday
@@ -434,6 +411,16 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+    // Pre-PED-N-all-nights shape (Thu-Sun ped_n_em_window gate present) — the live default
+    // immediately before PED-N was opened to all 7 nights (chief-confirmed against live QGenda)
+    // and its confinement gate was removed entirely.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
   ],
   EM_HOME_2: [
@@ -505,6 +492,21 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-PED-N-all-nights/PED-S-all-days shape (TRAUMA-D-PGY1-only gate set, plus the old
+    // Thu-Sun ped_n_em_window and the EM_TOX/EM_EMS-only ped_s_rotation_gate/ped_s_day_window) —
+    // the live default immediately before PED-N/PED-S both opened up (chief-confirmed against
+    // live QGenda) and every PED-S/PED-N confinement gate here was removed entirely.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }], shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_ems_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'ped_s_rotation_gate', shiftIds: ['PED-S'], blockTypeFilter: { mode: 'except', ids: ['EM_TOX','EM_EMS'] }, outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_s_day_window', shiftIds: ['PED-S'], blockTypeFilter: null, allowedDays: [1,2,4,5], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
   EM_HOME_3: [
     { fullBlockDays: [3] },
@@ -535,6 +537,14 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-TRAUMA-D-PGY1-only-cleanup / pre-PED-N-all-nights shape (trauma_d_window already
+    // removed since PGY-3 lost TRAUMA-D eligibility, Thu-Sun ped_n_em_window still present) — the
+    // live default immediately before PED-N was opened to all 7 nights (chief-confirmed against
+    // live QGenda) and its confinement gate was removed entirely.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 3 }], shiftGates: [
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
   // Pre-Wednesday-off shape (the "night before an advocacy day" mechanic, driven by a chief-edited
   // advocacyDays date list on the Dashboard) — replaced wholesale by a hard Wednesday fullBlockDays
@@ -551,8 +561,17 @@ const LEGACY_DAY_RULE_DEFAULTS = {
   // morning/eve (Wednesday overnight still allowed).
   IM_2: [{ dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }] }],
   // Pre-PED-N-eligibility shape (fullBlockDays/dayTypeRestrictions only, no shiftGates at all) —
-  // the live default immediately before FM-1 gained the Thu-Sun PED-N grant (AY26/27).
-  FM_1: [{ fullBlockDays: [3,4], dayTypeRestrictions: [{ days: [2], mode: 'noNight' }] }],
+  // the live default immediately before FM-1 gained the Thu-Sun PED-N grant (AY26/27), and the
+  // shape immediately before that grant's Thu-Sun confinement gate was removed entirely.
+  FM_1: [
+    { fullBlockDays: [3,4], dayTypeRestrictions: [{ days: [2], mode: 'noNight' }] },
+    // Pre-PED-N-all-nights shape (Thu-Sun ped_n_em_window gate present, no PED-S at all) — the
+    // live default immediately before PED-N was opened to all 7 nights (chief-confirmed against
+    // live QGenda, confinement gate removed entirely) and FM-1 gained PED-S eligibility.
+    { fullBlockDays: [3,4], dayTypeRestrictions: [{ days: [2], mode: 'noNight' }], shiftGates: [
+      { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+  ],
 };
 const LEGACY_ELIGIBILITY_DEFAULTS = {
   EM_HOME_1: [
@@ -563,6 +582,10 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-12h-conference-shift shape (no D12/N12 ids at all) — the live default immediately
     // before the conference-week 12h shift feature was added.
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D'],
+    // Pre-PED-S-all-EM-Home shape (no PED-S at all) — the live default immediately before
+    // PED-S opened up from EM_HOME_2-EM_TOX/EM_EMS-only to all EM Home PGYs (chief-confirmed
+    // against live QGenda).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   ],
   EM_HOME_2: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N'],
@@ -589,6 +612,10 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-TRAUMA-D-PGY1-only shape — the live default immediately before Trauma Day became
     // PGY-1-only (chief-directed AY26/27).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-D','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+    // Pre-PED-S-all-EM-Home shape (no PED-S at all) — the live default immediately before
+    // PED-S opened up from EM_HOME_2-EM_TOX/EM_EMS-only to all EM Home PGYs (chief-confirmed
+    // against live QGenda).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-N','POD-D12','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   ],
   EM_BAMC_1: [
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N'],
@@ -598,6 +625,9 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-N-eligibility shape (no PED-N at all) — the live default immediately before BAMC
     // PGY-1 gained the Thu-Sun PED-N grant (chief-directed AY26/27).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','POD-D12','POD-N12','PED-D12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
+    // Pre-PED-S shape (no PED-S at all) — the live default immediately before BAMC gained PED-S
+    // eligibility (chief-confirmed against live QGenda).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','POD-D12','POD-N12','PED-D12','FLEX-D12','FLEX-N12','MT-D12','MT-N12'],
   ],
   // Peds PGY-1 removed entirely (chief-directed AY26/27 restructure — Peds is now PGY-2/3 only,
   // see BASE_ELIGIBILITY.PEDS_2/migratePedsPgy1ToPgy2). This snapshot list stays so a chief-saved
@@ -615,6 +645,16 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-12h-conference-shift shape (no D12 id) — the live default immediately before the
     // conference-week 12h shift feature was added.
     ['PED-D','PED-E'],
+    // Pre-PED-N/PED-S shape (PED-D/E/D12 only) — the live default immediately before Peds
+    // rotators gained PED-N and PED-S eligibility (chief-confirmed against live QGenda).
+    ['PED-D','PED-E','PED-D12'],
+  ],
+  // PEDS_2 never had an eligibility default change of its own until now (it was just renamed
+  // from PEDS_1 — see PEDS_1's own comment above) — this is that key's first legacy snapshot.
+  PEDS_2: [
+    // Pre-PED-N/PED-S shape (PED-D/E/D12 only) — the live default immediately before Peds
+    // rotators gained PED-N and PED-S eligibility (chief-confirmed against live QGenda).
+    ['PED-D','PED-E','PED-D12'],
   ],
   FM_1: [
     ['POD-D','POD-E','POD-N'],
@@ -624,6 +664,9 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-N-eligibility shape (no PED-N at all) — the live default immediately before FM-1
     // gained the Thu-Sun PED-N grant (chief-directed AY26/27).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','POD-D12','POD-N12','PED-D12'],
+    // Pre-PED-S shape (no PED-S at all) — the live default immediately before FM-1 gained PED-S
+    // eligibility (chief-confirmed against live QGenda).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','POD-D12','POD-N12','PED-D12'],
   ],
   // Pre-12h-conference-shift shape — the live default immediately before the conference-week 12h
   // shift feature was added (see the six entries below), plus the pre-PED-N-FM-split shape (before
@@ -680,11 +723,11 @@ const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on th
 // Academic Chief carries the extra Tuesday restriction below.
 const CHIEF_ROLE_NOTE = 'A PGY-3 EM Home resident may hold one of three distinct chief roles for the year — Academic, Admin, or Scheduling Chief (set on the EM Residents tab) — each worth a 16-shift target. The Academic Chief additionally gets no evening/night shifts on Tuesdays (hard — enforced by the generator and Validation).';
 // Peds Night is now two separate single-owner shift ids (see PED_GUARD_LEGITIMATE_OWNER):
-// PED-N-FM (23:00-08:00) stays FM-3-exclusive Mon/Tue/Wed; PED-N (19:00-04:00) is EM Home's own
-// id, Thu-Sun (AY26/27 chief-directed change). Coverage min stays 0 (best-effort, never required)
-// on both; PGY-1 candidates are soft-deprioritized on PED-N in the generator unless they've
-// already done a Peds/Trauma-mix rotation this AY.
-const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (23:00-08:00) exclusively Mon/Tue/Wed; EM Home PGYs, BAMC PGY-1, and FM PGY-1 are all eligible for PED-N (19:00-04:00) Thu-Sun (enforced via the ped_n_em_window rule). Coverage stays min 0/max 1 either way — "ideally filled, other shifts take priority," not required. EM Home PGY-1 candidates are soft-deprioritized on PED-N (generator only) unless already on/past a Peds/Trauma-mix rotation this academic year.';
+// PED-N-FM (23:00-08:00) stays FM-3-exclusive Mon/Tue/Wed; PED-N (19:00-04:00) now runs all 7
+// nights (chief-confirmed against live QGenda — the old Thu-Sun-only window is gone). Coverage
+// min stays 0 (best-effort, never required) on both; PGY-1 candidates are soft-deprioritized on
+// PED-N in the generator unless they've already done a Peds/Trauma-mix rotation this AY.
+const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (23:00-08:00) exclusively Mon/Tue/Wed; EM Home PGYs, BAMC PGY-1, FM PGY-1, and Peds PGY-2/3 are all eligible for PED-N (19:00-04:00), which now runs all 7 nights. Coverage stays min 0/max 1 either way — "ideally filled, other shifts take priority," not required. EM Home PGY-1 candidates are soft-deprioritized on PED-N (generator only) unless already on/past a Peds/Trauma-mix rotation this academic year.';
 // Chief-directed: a resident may only work an overnight on the block's own FINAL Sunday if they
 // continue on a schedulable EM rotation the very next block — the night run can roll onward
 // instead of stranding them sleepless at the start of a different service. Enforced (hard) once
@@ -695,7 +738,7 @@ const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight transition: an overnight 
 const RULE_NOTES = {
   EM_HOME_1: {
     blockTypeNotes: [
-      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: 'First/last 14 days split (enforced): trauma half = 8 Trauma Day shifts (Tue/Thu/Sat/Sun only, generated last), no other shifts on that half; peds half = 11 PED Day/Eve shifts, plus PED-N (Thu-Sun) when the chief enables "Allow Peds/Trauma interns to work Peds Night" (Rules tab, off by default).' },
+      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: 'First/last 14 days split (enforced): trauma half = 8 Trauma Day shifts (Tue/Thu/Sat/Sun only, generated last), no other shifts on that half; peds half = 11 PED Day/Eve shifts, plus PED-N (now all 7 nights) when the chief enables "Allow Peds/Trauma interns to work Peds Night" (Rules tab, on by default).' },
       { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
@@ -706,10 +749,10 @@ const RULE_NOTES = {
       { ids: ['PEDS_EM'], note: '19 total; 10–12 Peds Day/Eve shifts (generator biases toward 10, hard-caps at 12), rest elsewhere. Enforced.' },
       { ids: ['EM_VAC'], note: '12 shifts total. Enforced.' },
       { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
-      { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue including the PED Swing shift; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
-      { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue including the PED Swing shift. Enforced.' },
+      { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
+      { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue instead. Enforced.' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -727,23 +770,24 @@ const RULE_NOTES = {
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
-      'Gained PED-N eligibility (chief-directed AY26/27) — Thu-Sun only, same window as EM Home. Coverage stays min 0/max 1 (best-effort, not required).',
+      'Has PED-N eligibility (chief-directed) — all 7 nights, same as EM Home. Coverage stays min 0/max 1 (best-effort, not required).',
       SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, FINAL_SUNDAY_RULE_NOTE,
     ],
   },
   // Peds is now PGY-2/PGY-3 only (chief-directed AY26/27 restructure) — PEDS_1 is gone; existing
-  // PGY-1 Peds residents were migrated to PGY-2 (see migratePedsPgy1ToPgy2).
+  // PGY-1 Peds residents were migrated to PGY-2 (see migratePedsPgy1ToPgy2). Both PGYs gained
+  // PED-N and PED-S eligibility (chief-confirmed against live QGenda — real staffing observed).
   PEDS_2: {
-    specialNotes: ['No Wednesday DAY shift (evening/night OK) — chief-directed AY26/27; PGY-3 has no such restriction, see below.', 'Peds Night is FM-3\'s own PED-N-FM (Mon/Tue/Wed) or EM Home/BAMC/FM-1\'s shared PED-N (Thu-Sun), program-wide — Peds residents are never eligible for either, on any day.', 'Peds residents self-cover; app displays schedule only.'],
+    specialNotes: ['No Wednesday DAY shift (evening/night OK) — chief-directed AY26/27; PGY-3 has no such restriction, see below.', 'Eligible for PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) alongside PED-D/PED-E — real staffing observed on live QGenda. PED-N-FM (FM-3\'s own Mon/Tue/Wed shift) stays out of reach.', 'Peds residents self-cover; app displays schedule only.'],
   },
   PEDS_3: {
-    specialNotes: ['Works Wednesdays with no restriction (chief-directed AY26/27 — previously no Wednesdays at all, like PGY-2).', 'Peds Night is FM-3\'s own PED-N-FM (Mon/Tue/Wed) or EM Home/BAMC/FM-1\'s shared PED-N (Thu-Sun), program-wide — Peds residents are never eligible for either, on any day.', 'Self-cover arrangement.'],
+    specialNotes: ['Works Wednesdays with no restriction (chief-directed AY26/27 — previously no Wednesdays at all, like PGY-2).', 'Eligible for PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) alongside PED-D/PED-E — real staffing observed on live QGenda. PED-N-FM (FM-3\'s own Mon/Tue/Wed shift) stays out of reach.', 'Self-cover arrangement.'],
   },
   FM_1: {
-    specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.', 'Gained PED-N eligibility (chief-directed AY26/27) — Thu-Sun only; FM-1\'s own Wed/Thu days off already narrow this to Fri-Sun in practice. Coverage stays min 0/max 1 (best-effort, not required).', FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.', 'Has PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) eligibility (chief-directed). Coverage stays min 0/max 1 (best-effort, not required).', FINAL_SUNDAY_RULE_NOTE],
   },
   FM_3: {
-    specialNotes: ['FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, and FM-1 may optionally cover the separate PED-N shift (19:00-04:00) Thu-Sun, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
+    specialNotes: ['FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, FM-1, and Peds PGY-2/3 may optionally cover the separate PED-N shift (19:00-04:00), which now runs all 7 nights, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
   },
   IM_2: {
     specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab.'],
@@ -1462,12 +1506,25 @@ const SCORE_WEIGHTS = {
   // ── PREFERENCE ── (see PREFERENCE_KEYS / the invariant test)
   traumaNightDowPref: 12,  // TRAUMA-N: PGY-2 on Fri/Sat, PGY-3 on Sun/Mon
   traumaNightBalance: 2,  // ...mildly favor the senior with fewer trauma nights this AY (count clamped at 5)
+  // Trauma-night-within-run tie-breaks (chief-directed, mirrors the hard traumaRunCapped
+  // candidatePool exclusion — see traumaNightRunCount/score()'s traumaSecondInRun/traumaMidRun):
+  // 1 trauma night per run is preferred (a 2nd is tolerated-but-discouraged), and a trauma night
+  // landing strictly mid-run of a MIXED run is discouraged too. Both PREFERENCE, `traumaNight`
+  // group (only ever fire on TRAUMA-N/adjacent-night placements). CONSCIOUS ceiling raise below —
+  // see PREFERENCE_BAND_CEILING.traumaNight's own comment.
+  traumaSecondInRun: 5,
+  traumaMidRun: 6,
   generalPedsNudge: 10,    // non-peds-rotation PGY-2/3 should pick up a few peds shifts a block
   pedsClassRepeat: 10,     // avoid stacking the same PGY class on consecutive peds days
   bamcFlexPodPedsDay: 6,  // BAMC interns prefer Flex/POD/Peds DAY shifts
   bamcWedBonus: 6,        // ...especially Wednesday
   podPgy1SecondSlot: 15,   // POD's 2nd/3rd slot prefers an EM intern once a PGY-3 is present
   toxPedsEvePref: 8,      // EM_TOX residents ideally land on Peds Evening specifically
+  // Peds/Trauma split interns trend toward ~5-6 PED-N shifts on their peds half (chief's own
+  // hand-built schedules do this reliably) — bonus while their PED-N-specific count is under 5.
+  // PREFERENCE, `peds` group (only ever fires on PED-N, a PED-area shift). CONSCIOUS ceiling
+  // raise below — see PREFERENCE_BAND_CEILING.peds's own comment.
+  pedsInternNightDeficit: 6,
   // Phase 2.1 (chief-directed Wednesday POD/MC ladder, off-service categories): BAMC is already
   // handled by bamcFlexPodPedsDay/bamcWedBonus above (strongest); among the remaining off-service
   // categories the chief ranked ANES > FM/NEURO/PSYCH > POD(iatry) for Wednesday POD-D specifically
@@ -1487,6 +1544,25 @@ const SCORE_WEIGHTS = {
   // WHETHER a term is nonzero more than to its magnitude once nonzero, so "modest" here means
   // genuinely small, not merely smaller-than-the-structural-tier.
   podPgy2Deprioritize: 0.5,
+  // EM-count composition (2b-1, chief-directed, SOFT): distinct from SENIOR_COMPOSITION's hard
+  // PGY-CLASS requirement on the shift's FIRST body — this steers the OVERALL EM/off-service split
+  // once a POD/FLEX shift's headcount reaches 2/3 (POD) or 1+ (FLEX). See
+  // emCompositionRequired/emCompositionShortfall in score(): fires only against a NON-EM candidate
+  // whose placement would leave the resulting headcount short of its required EM count. `pod`
+  // group (POD-only). Sized to match bamcFlexPodPedsDay/bamcWedBonus (6) — a modest nudge, not a
+  // gate (candidatePool is untouched; a shift can still fill entirely off-service if that's all
+  // that's available).
+  podEmComposition: 6,
+  // FLEX mirror of the above — any FLEX headcount should include >=1 EM. New `flex` PREFERENCE
+  // group (see PREFERENCE_GROUPS/PREFERENCE_BAND_CEILING.flex) since no FLEX-specific group
+  // existed before this. Same magnitude as podEmComposition for symmetry.
+  flexEmComposition: 6,
+  // FLEX's mirror of podPgy1SecondSlot (2b-1, 3rd-slot preference): once FLEX's own PGY-2
+  // requirement is already met by someone else, the shift's remaining slot(s) should prefer
+  // another EM PGY-2 over an EM PGY-1 (chief-directed — the opposite direction from POD, where the
+  // 2nd/3rd slot instead prefers an intern once the PGY-3 is present). Weight matched to
+  // podPgy1SecondSlot(15) for the same directional-preference magnitude; `flex` group.
+  flexPgy2ThirdSlot: 15,
 
   // ── PREFERENCE (always-on) ── Phase 1 work-shape steering. Unlike every preference above,
   // these can fire on ANY shift, so they stack with whichever shift-specific group applies and
@@ -1523,6 +1599,23 @@ const SCORE_WEIGHTS = {
   // near-identical magnitude as traumaNightBalance (2 x clamp 5 = 10), which is the same idea
   // applied to trauma nights.
   holidayEquity: 2,
+  // Night-shift-duration alternation (generalizes the trauma-9h-vs-12h mixing case, also covers
+  // D12/N12 conference windows — see score()'s nightDurationAlternation term): discourage an
+  // adjacent-night duration mismatch within one run. PREFERENCE, always-on band — it fires on ANY
+  // night shift of ANY area (POD/MT/FLEX/PED/TRAUMA all have night ids with varying durations),
+  // not just one shift-specific group, so it belongs here rather than in a standalone
+  // PREFERENCE_GROUPS entry (same reasoning as nightAreaDiversity above). Small on purpose —
+  // exact final run shape isn't knowable mid-fill, so this is a tie-break, not a hard steer; the
+  // conference-boundary exemption (calendar-forced swaps) already handles the one case where
+  // alternation is unavoidable and shouldn't be penalized at all.
+  nightDurationAlternation: 2,
+  // Second rest day after a night run of >=3 (chief's data: modal gap is 2 days — see score()'s
+  // secondRestDay term): small penalty for breaking what would be the resident's 2nd consecutive
+  // rest day right after a night run. PREFERENCE, always-on band — fires on ANY shift type placed
+  // on that specific date, not one shift-specific group. Deliberately the smallest term in this
+  // band ("small weight, below coverage" per the chief's own framing) — this is a genuine nicety,
+  // not a correctness concern, and must never compete with min-coverage fill.
+  secondRestDay: 1,
   // Phase 2.3 (day<->eve<->night type-churn) was implemented and A/B'd (score() term +
   // scheduleQuality.js workShapePenalty mirror) but REVERTED: isolated at weight 1 and weight 2, it
   // consistently INCREASED workShapePenalty across all 3 committed fixtures (+15 to +25) relative
@@ -1539,19 +1632,29 @@ const SCORE_WEIGHTS = {
 // weights uselessly small. `bamc` terms fire on FLEX/POD/PED day shifts, so they're counted in
 // both the PED and POD groups. The invariant is checked per group, and the worst group wins.
 const PREFERENCE_GROUPS = {
-  traumaNight: ['traumaNightDowPref', 'traumaNightBalance'],
-  peds: ['generalPedsNudge', 'pedsClassRepeat', 'toxPedsEvePref', 'bamcFlexPodPedsDay', 'bamcWedBonus'],
+  // traumaSecondInRun/traumaMidRun added here — see their own SCORE_WEIGHTS comment and
+  // PREFERENCE_BAND_CEILING.traumaNight's conscious raise.
+  traumaNight: ['traumaNightDowPref', 'traumaNightBalance', 'traumaSecondInRun', 'traumaMidRun'],
+  // pedsInternNightDeficit added here — see its own SCORE_WEIGHTS comment and
+  // PREFERENCE_BAND_CEILING.peds's conscious raise.
+  peds: ['generalPedsNudge', 'pedsClassRepeat', 'toxPedsEvePref', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'pedsInternNightDeficit'],
   // Phase 2.1/2.2 add wedPodLadder and podPgy2Deprioritize here — both POD-only, so they belong in
   // this group like every other POD-specific term (see PREFERENCE_BAND_CEILING.pod for the
-  // resulting conscious ceiling increase).
-  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize'],
+  // resulting conscious ceiling increase). 2b-1 adds podEmComposition here too — same reasoning.
+  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition'],
+  // New group (2b-1): FLEX-specific terms had none before this. flexEmComposition/
+  // flexPgy2ThirdSlot only ever fire on FLEX-area slots, mutually exclusive with every other
+  // group's terms for a single scored candidate — same reasoning as `pod`. See
+  // PREFERENCE_BAND_CEILING.flex for why the band is sized comfortably above the always-on band.
+  flex: ['flexEmComposition', 'flexPgy2ThirdSlot'],
 };
 
 // Preference terms that can fire on ANY shift, so they stack on top of whichever group above
 // applies instead of being mutually exclusive with it. Banded and ratcheted separately — folding
 // them into each group would have forced the recorded per-shift ceilings upward and destroyed the
-// ratchet's meaning on its first use.
-const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency', 'nightAreaDiversity', 'holidayEquity'];
+// ratchet's meaning on its first use. nightDurationAlternation/secondRestDay added here — see
+// their own SCORE_WEIGHTS comments and PREFERENCE_BAND_CEILING.always's conscious raise.
+const PREFERENCE_ALWAYS = ['workContinuity', 'areaContinuity', 'offAdjacency', 'nightAreaDiversity', 'holidayEquity', 'nightDurationAlternation', 'secondRestDay'];
 
 // Recency clamp on the AY-to-date holiday count fed into score()'s holidayEquity term — the same
 // idiom, for the same reason, as traumaNightBalance's Math.min(..., 5) and seniorScarcityProtect's
@@ -1608,7 +1711,34 @@ const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.val
 // smallest shift-specific group" test asserts independently; that 22-vs-16 margin is now the
 // binding constraint on any FURTHER always-on term, so the next one needs a real re-derivation
 // rather than another bump.
-const PREFERENCE_BAND_CEILING = { traumaNight: 22, peds: 40, pod: 37, always: 16 };
+//
+// CONSCIOUS DECISION (trauma-run rules, chief-directed benchmark match): `traumaNight` is
+// deliberately raised here — 22 -> 33. traumaSecondInRun adds 5*1=5 and traumaMidRun adds 6*1=6
+// (both 0/1 flags, no PREFERENCE_MAX_INPUT entry needed), for 12+10+5+6=33. Genuinely new
+// chief-directed preferences (trauma-night run-position tie-breaks), not a rescale of the existing
+// traumaNightDowPref/traumaNightBalance terms, so widening the ceiling is the correct outcome.
+// CONSCIOUS DECISION (same pass): `peds` is deliberately raised here too — 40 -> 46.
+// pedsInternNightDeficit adds 6*1=6 (10+10+8+6+6+6=46). Genuinely new preference (split-intern
+// PED-N trend target), not a rescale.
+// CONSCIOUS DECISION (same pass): `always` is deliberately raised again — 16 -> 19.
+// nightDurationAlternation adds 2*1=2 and secondRestDay adds 1*1=1 (16+2+1=19). Both genuinely new
+// (night-duration alternation, 2nd-rest-day preference), not a rescale. Still comfortably below
+// the smallest shift-specific group (traumaNight, now 33) — the "always-on band stays well under
+// the smallest shift-specific group" test asserts this independently; that 33-vs-19 margin is now
+// the binding constraint on any FURTHER always-on term.
+//
+// CONSCIOUS DECISION (2b-1, EM-count composition): `pod` is deliberately raised here too —
+// 37 -> 43. podEmComposition adds 6*1=6 (36.5+6=42.5, ceiling rounded up to 43). Genuinely new
+// chief-directed preference, not a rescale of an existing term.
+// NEW GROUP (2b-1): `flex` did not exist before this pass — no FLEX-specific preference term had
+// ever been added. flexEmComposition(6) + flexPgy2ThirdSlot(15) = 21. This is the group that now
+// determines the "always-on band stays well under the smallest shift-specific group" margin: 21
+// vs. `always`'s 19 is a real but TIGHT 2-point margin (the test only requires strict `<`, and
+// this passes it) — deliberately not padded further just to look comfortable, since these are
+// genuinely meant to be small nudges (see their own SCORE_WEIGHTS comments). Any FUTURE `always`
+// addition, or any shrink of flexPgy2ThirdSlot/flexEmComposition, must re-check this margin by
+// hand — it is now the binding constraint, tighter than traumaNight/peds/pod's much larger bands.
+const PREFERENCE_BAND_CEILING = { traumaNight: 33, peds: 46, pod: 43, always: 19, flex: 21 };
 
 export const SCORE_TIERS = {
   SCORE_WEIGHTS, PREFERENCE_GROUPS, PREFERENCE_ALWAYS, PREFERENCE_MAX_INPUT, MAX_SHIFT_TARGET,
@@ -1674,6 +1804,20 @@ function nightRunBefore(rs, dateStr) { return nightRun(rs, dateStr, -1); }
 // Mirror of nightRunBefore, looking forward from the day after dateStr — used so the generator
 // can avoid stranding a short run when deciding what to place on an adjacent day.
 function nightRunAfter(rs, dateStr) { return nightRun(rs, dateStr, 1); }
+// Count TRAUMA-N shifts within the contiguous night run adjacent to dateStr in one direction
+// (-1 = walking backward from the day before dateStr, +1 = walking forward from the day after),
+// mirroring nightRun's own walk exactly (same 14-day sanity bound, same "stop at the first
+// non-night day" rule) so the two can never disagree about what counts as "in the run." Used by
+// candidatePool's hard traumaRunCapped exclusion and score()'s traumaSecondInRun/traumaMidRun
+// soft terms — chief-directed: at most 2 TRAUMA-N per contiguous night run, 1 preferred.
+function traumaNightRunCount(rs, dateStr, dir) {
+  let n = 0, d = addDays(parseDate(dateStr), dir);
+  for (let i = 0; i < 14 && isNightShiftId(rs[toDateStr(d)]); i++) {
+    if (rs[toDateStr(d)] === 'TRAUMA-N') n++;
+    d = addDays(d, dir);
+  }
+  return n;
+}
 function countNightsInSchedule(rs) { return Object.values(rs).filter(isNightShiftId).length; }
 // Number of separate consecutive-night runs currently in a resident's schedule (any shift-type
 // mix of night ids counts as one run, same as nightRun above) — used by score()'s night-run
@@ -1829,6 +1973,22 @@ function isGeneralPedsCandidate(resident, traumaBlocks) {
 // EM interns: Home or BAMC PGY-1. Named predicate so the no-two-interns rule's generator score
 // term and validateAll warning define "intern" identically (used at three call sites).
 function isEmIntern(resident) { return (resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') && resident.pgy === 1; }
+// "EM" for the EM-count composition rule (2b-1, chief-directed, SOFT — distinct from
+// SENIOR_COMPOSITION's own hard PGY-CLASS requirement): EM Home or EM BAMC, any PGY. Named
+// predicate so score()'s podEmComposition/flexEmComposition terms and validateAll's matching
+// warning can't drift on the definition.
+function isEmResident(resident) { return resident.category === 'EM_HOME' || resident.category === 'EM_BAMC'; }
+// Required EM headcount for a POD/FLEX shift once it reaches `total` assigned bodies (2b-1):
+// POD — 2 staffed needs both EM, 3 staffed needs at least 2 EM (3rd body may be off-service);
+// FLEX — any staffing needs at least 1 EM. A staffed shift's FIRST body is always EM by
+// construction of SENIOR_COMPOSITION's hard rule (unless that day is exempt — see
+// seniorCompositionExempt/seniorWellnessSubstituteAllowed — in which case this soft rule stays
+// live too, since it's a genuinely separate concern from the hard PGY-class requirement).
+function emCompositionRequired(area, total) {
+  if (area === 'POD') return total >= 2 ? 2 : 0;
+  if (area === 'FLEX') return total >= 1 ? 1 : 0;
+  return 0;
+}
 // Soft ceiling on FM-1 peds shifts — peds is fill-in PRN only, not the emphasis (chief feedback):
 // ~1/3 of their shift target. Centralized so the generator's score() discouragement and
 // validateAll's warning can't drift on the divisor. Null target → no ceiling.
@@ -2301,6 +2461,38 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
   return resident.pgy === comp.fallback && seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings, ayConf);
 }
 
+// ─── PGY gating pool-restrict (2b-2, chief-directed, SOFT with fallback) ──────────────────────
+// Distinct from SENIOR_COMPOSITION's HARD requirement on a POD/FLEX shift's first qualifying
+// body (that rule never bends, see compositionSatisfies above): this one governs which PGY may
+// fill the shift's OTHER slots too. The "gated" PGY is exactly SENIOR_COMPOSITION[area].fallback —
+// the same PGY that may only satisfy the hard requirement itself as a Wellness-Wednesday/
+// conference-away substitute — while a qualifying primary-PGY resident
+// (SENIOR_COMPOSITION[area].primary) is still AVAILABLE in this exact shift's own candidate pool
+// (already eligible, not already scheduled today, for THIS shift specifically): an EM PGY-2 is
+// excluded from a POD pool while a PGY-3 could still take it (any of that day's POD slots, not
+// just the composition-required one), and the mirror for FLEX/PGY-3. Falls back to including the
+// gated PGY (usedFallback: true) only when no primary candidate is present in the pool at all —
+// this never blocks a fill, since the hard composition rule above already guarantees nothing is
+// lost to it. Exempt wherever the hard rule itself is waived (seniorCompositionExempt — Grand
+// Rounds Wednesday; seniorWellnessSubstituteAllowed — the area's own Wellness Wednesday or a
+// conference-away date), since those days make the "gated" PGY the ACCEPTED stand-in, not a
+// compromise to steer away from. Pure and parameterized exactly like compositionSatisfies, so both
+// fillDayPass and the repair pass can call it without drifting (see the repair-pass note near
+// narrowForSeniority for why repair does not currently need to call this — soft rule, no hard
+// invariant to protect).
+function narrowForPgyGate(pool, shift, ds, blockStart, appSettings, ayConf) {
+  const comp = SENIOR_COMPOSITION[shift.area];
+  if (!comp) return { pool, usedFallback: false };
+  if (seniorCompositionExempt(shift, ds) || seniorWellnessSubstituteAllowed(shift.area, ds, blockStart, appSettings, ayConf)) {
+    return { pool, usedFallback: false };
+  }
+  const isPrimary = r => r.category === 'EM_HOME' && r.pgy === comp.primary;
+  const isGated = r => r.category === 'EM_HOME' && r.pgy === comp.fallback;
+  if (!pool.some(isGated)) return { pool, usedFallback: false };
+  if (pool.some(isPrimary)) return { pool: pool.filter(r => !isGated(r)), usedFallback: false };
+  return { pool, usedFallback: true };
+}
+
 // Pure core of the senior-scarcity pre-pass (item 4, see the block right before candidatePool()
 // inside generateSchedule): given, per area, a map from date to the list of resident ids that
 // qualify (compositionSatisfies + eligible) that date, returns which resident is the SOLE
@@ -2610,11 +2802,15 @@ const DEFAULT_APP_SETTINGS = {
   // has never heard of this field, same as targetOverrides/rulePriority above. Do not "clean this
   // up" into its own key later without re-solving that problem.
   jeopardyLog: [],
-  allowSplitPedsNights: false, // chief opt-in: let a TRAUMA_PEDS/PEDS_TRAUMA EM Home PGY-1 work PED-N
-                                // (9h only, never PED-N12) during their PEDS half — see step 5 of
-                                // getEligibleShifts. Default false/absent = today's behavior
-                                // (peds half is PED-D/PED-E only); read as `?? false` everywhere so
-                                // an old backup with no such key stays off.
+  allowSplitPedsNights: true, // let a TRAUMA_PEDS/PEDS_TRAUMA EM Home PGY-1 work PED-N (9h only,
+                                // never PED-N12) during their PEDS half — see step 5 of
+                                // getEligibleShifts. Default flipped ON (chief hand-schedules 5-6
+                                // PED-N per split intern in real practice — chief-confirmed
+                                // against live QGenda); read as `?? true` everywhere so an old
+                                // backup/absent key also defaults on. This literal default matters
+                                // for a genuinely fresh install too: with no res_app_settings key
+                                // at all, useLocalStorage's initial value IS this object, and
+                                // `false` here would not be undefined at the read sites' `?? true`.
 };
 
 // Chief-role designation (roster-level, `resident.chiefRole` on emRoster — see CLAUDE.md "Chief
@@ -2797,18 +2993,19 @@ export function offServiceWindowSummary(status) {
 // so built-in rotation shift-type filters (e.g. PGY-1 no-trauma-off-trauma-blocks)
 // are skipped — the override IS the rule. Day-of-week rules always still apply.
 // PED-N/PED-N-FM/PED-S may never become eligible for any category/PGY other than their legitimate
-// owner(s) (EM_HOME_1/2/3, EM_BAMC_1, and FM_1 for PED-N — chief-directed AY26/27 grants BAMC
-// PGY-1 and FM-1 the same Thu-Sun window EM Home already had; FM_3 alone for PED-N-FM; EM_HOME_2
-// only for PED-S — see BASE_ELIGIBILITY above) via a chief-saved override — a Shift Matrix
-// override wholesale-replaces a key's eligibility list, and the owner-specific overrideImmune
-// shiftGates that further restrict each shift (ped_n_em_window's Thu-Sun window, ped_s_*'s
-// rotation/day window) never even get evaluated for a resident whose own category/PGY has no such
-// gates defined (see CLAUDE.md: "no other category/PGY may ever be eligible ... including via a
+// owner(s) (EM_HOME_1/2/3, EM_BAMC_1, FM_1, and PEDS_2/3 for PED-N — now open all 7 nights,
+// chief-confirmed against live QGenda, its old Thu-Sun ped_n_em_window gate removed entirely;
+// FM_3 alone for PED-N-FM; EM_HOME_1/2/3, EM_BAMC_1, FM_1, and PEDS_2/3 for PED-S too — also now
+// open all 7 days — see BASE_ELIGIBILITY above) via a chief-saved override — a Shift Matrix
+// override wholesale-replaces a key's eligibility list, and any owner-specific overrideImmune
+// shiftGate that further restricts a guarded shift (only PED-N-FM's FM-3-only Mon/Tue/Wed window
+// remains) never even gets evaluated for a resident whose own category/PGY has no such gates
+// defined (see CLAUDE.md: "no other category/PGY may ever be eligible ... including via a
 // Shift Matrix rotation override"). An owner's own overrides (category-level or rotation-specific)
 // are left untouched, since keeping PED-N/PED-N-FM/PED-S in an owner's own customized list is the
 // intended use of the feature. PED-N and PED-N-FM used to be one shift (bare 'PED-N') with a
 // two-key owner set; now that they're split ids with their own timing, PED-N has grown back into a
-// multi-owner id (now five keys) via BASE_ELIGIBILITY grants rather than a stale legacy snapshot.
+// multi-owner id via BASE_ELIGIBILITY grants rather than a stale legacy snapshot.
 // Derived, not hand-maintained: each guarded id's owner set is exactly the category/PGY keys
 // whose BASE_ELIGIBILITY list actually contains that id, so a future BASE_ELIGIBILITY grant/removal
 // can never silently drift out of sync with the guard. stripPedGuardedShifts checks membership via
@@ -2877,6 +3074,20 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // id is shown, so a user who skips two releases gets both. Keep entries written for the chief
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
+  {
+    id: '2026-08-22-trauma-nights-peds-progress-dark-mode',
+    date: '2026-08-22',
+    title: 'Smarter trauma-night placement, more Peds Night coverage, a progress indicator while generating, and dark-mode fixes',
+    items: [
+      'Trauma Night placement is smarter now: **no more than 2 Trauma Nights in one night run**, a 2nd trauma night in a run and one sitting in the middle of a mixed run are both discouraged, and the generator now avoids awkward alternating night-shift lengths within a run.',
+      'Night runs of 2-6 are no longer flagged as "too short" — only a truly isolated single night shift gets that treatment now, matching how the department actually runs nights in practice. Small new preference for a 2nd full rest day after a longer night run.',
+      '**"Allow Trauma/Peds interns to work Peds Night" is now ON by default** (still a Rules-tab toggle if you want it off), and the generator now aims for about 5 Peds Nights per split intern, clustered into runs, matching how they\'re actually hand-scheduled today.',
+      '**Peds Night now runs all 7 nights of the week** (previously Thursday–Sunday only), and **Peds Swing now runs all 7 days** (previously Monday/Tuesday/Thursday/Friday) — both are also open to more residents now: Peds rotators, BAMC, and FM PGY-1, in addition to EM Home.',
+      'A **progress indicator now shows while Generate Schedule / Clear & Regenerate / Regenerate Unlocked are running** — a spinner, elapsed time, and what stage it\'s on (building the request, optimizing, or falling back to the built-in engine), so the app no longer looks stuck during a ~30-second optimizer run.',
+      'The Daily Shift Coverage editor on the Rules tab now has **bigger +/- buttons** instead of tiny number boxes — easier to tap on a phone or tablet.',
+      'Fixed a batch of **dark-mode contrast issues** across the whole app (not just the header) — several light-tinted badges, borders, and status text were hard to read against the dark background.',
+    ],
+  },
   {
     id: '2026-08-21-markers-time-off-jeopardy-conflict',
     date: '2026-08-21',
@@ -3169,9 +3380,11 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   // vacationDates) these strip only a SUBSET of shifts on their active dates, not the whole day.
   eligible = eligible.filter(s => !shiftBlockedByRestrictions(resident, dateStr, s));
 
-  // Shift-exists-on-this-weekday-at-all (e.g. PED-S is only Mon/Tue/Thu/Fri) — applies to both
-  // the manual picker and the generator; the generator already skips these dates separately in
-  // fillDayPass, but the picker had no equivalent check, so it offered the shift on invalid days.
+  // Shift-exists-on-this-weekday-at-all (e.g. TRAUMA-D/TRAUMA-N only run certain days — see
+  // SHIFT_DOW in src/lib/shifts.js; PED-S used to be a member too before it opened up to all 7
+  // days) — applies to both the manual picker and the generator; the generator already skips
+  // these dates separately in fillDayPass, but the picker had no equivalent check, so it offered
+  // the shift on invalid days.
   eligible = eligible.filter(s => !SHIFT_DOW[s] || SHIFT_DOW[s].includes(dow));
 
   // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
@@ -3251,14 +3464,15 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   // charge a peds night worked during the trauma half.
   if (half === 'trauma') eligible = eligible.filter(s => s === 'TRAUMA-D');
   else if (half === 'peds') {
-    // PED-N (9h, Thu-Sun) is allowed on the peds half only behind this opt-in, default-off chief
-    // setting — see "Rules tab" for the toggle. PED-N12 is deliberately NOT included here: the
-    // chief asked for the 9h shift only, and PED-N12 belongs to a 12h-window resolution the intern
-    // is not otherwise part of. Nothing else needs to change: PED-N is already in
-    // BASE_ELIGIBILITY.EM_HOME_1, the ped_n_em_window shiftGate still confines it to Thu-Sun, it
-    // already charges the 11-shift peds sub-target via candidatePool's shift.area==='PED' filter,
-    // and score()'s pedNPgy1Deprioritize is already 0 for these residents via hasPriorPedsTrauma.
-    const allowPedNight = appSettings?.allowSplitPedsNights ?? false;
+    // PED-N (9h, now all 7 nights) is allowed on the peds half behind this chief setting — see
+    // "Rules tab" for the toggle, default ON (chief hand-schedules 5-6 PED-N per split intern —
+    // read `?? true` so an old backup/cloud row with no such key still gets the new default).
+    // PED-N12 is deliberately NOT included here: the chief asked for the 9h shift only, and
+    // PED-N12 belongs to a 12h-window resolution the intern is not otherwise part of. Nothing
+    // else needs to change: PED-N is already in BASE_ELIGIBILITY.EM_HOME_1, it already charges
+    // the 11-shift peds sub-target via candidatePool's shift.area==='PED' filter, and score()'s
+    // pedNPgy1Deprioritize is already 0 for these residents via hasPriorPedsTrauma.
+    const allowPedNight = appSettings?.allowSplitPedsNights ?? true;
     eligible = eligible.filter(s => s === 'PED-D' || s === 'PED-E' || (allowPedNight && s === 'PED-N'));
   }
 
@@ -3663,7 +3877,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // block this validator can't see.
     {
       const nOnly = isNightOnlyResident(resident, eligOverrides);
-      let runStart = null, runLen = 0;
+      let runStart = null, runLen = 0, runShiftIds = [];
       const flushNightRun = (runEndIdx) => {
         if (runStart == null) return;
         const touchesEdge = runStart === blockDates[0] || blockDates[runEndIdx] === blockDates[blockDates.length - 1];
@@ -3673,12 +3887,33 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `Isolated night stint of ${runLen} (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — aim for ${NIGHT_RULES.minRun}-${NIGHT_RULES.idealRun} in a row`, level: 'warn' });
-        runStart = null; runLen = 0;
+        // Trauma-night-within-run rules (chief-directed): at most 2 TRAUMA-N per contiguous night
+        // run (hard), and a TRAUMA-N sitting strictly mid-run (not first/last night) of a MIXED
+        // run — one that also has at least one non-trauma night — is a warning. Pure-trauma runs,
+        // 1-night runs, and start/end placements are free. Reuses the exact run boundaries this
+        // same walk already computed, so it can never disagree with the run-length checks above,
+        // and mirrors the same hard exclusion candidatePool applies during generation (reason
+        // 'traumaRunCapped') and the soft traumaSecondInRun/traumaMidRun score() tie-breaks.
+        const traumaRunCount = runShiftIds.filter(sid => sid === 'TRAUMA-N').length;
+        if (traumaRunCount > 2)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+            message: `${traumaRunCount} Trauma Night shifts in one consecutive night run (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max 2 per run`, level: 'error' });
+        const runHasNonTrauma = runShiftIds.some(sid => sid !== 'TRAUMA-N');
+        if (traumaRunCount > 0 && runHasNonTrauma) {
+          runShiftIds.forEach((sid, idx) => {
+            if (sid !== 'TRAUMA-N' || idx === 0 || idx === runShiftIds.length - 1) return;
+            const midDs = toDateStr(addDays(parseDate(runStart), idx));
+            issues.push({ residentId: resident.id, name, dateStr: midDs, shiftId: 'TRAUMA-N',
+              message: `Trauma Night sits mid-run (not the first or last night) of a mixed night run — prefer trauma nights at a run's start or end`, level: 'warn' });
+          });
+        }
+        runStart = null; runLen = 0; runShiftIds = [];
       };
       blockDates.forEach((ds, i) => {
         if (isNightShiftId(rs[ds])) {
           if (runStart == null) runStart = ds;
           runLen++;
+          runShiftIds.push(rs[ds]);
         } else {
           flushNightRun(i - 1);
         }
@@ -3743,9 +3978,45 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const assignedHere = allResidents.filter(r => (schedule[r.id] || {})[ds] === shift.id);
         if (!assignedHere.length) continue;
         if (seniorCompositionExempt(shift, ds)) continue; // Grand Rounds Wednesday — see seniorCompositionExempt
-        if (assignedHere.some(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf))) continue;
-        issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
-          message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: 'error' });
+        const compSatisfiers = assignedHere.filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
+        if (!compSatisfiers.length) {
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
+            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: 'error' });
+          // No `continue` here — the EM-count check right below is INDEPENDENT of whether the hard
+          // PGY-class requirement passed (a shift staffed entirely off-service fails both at once,
+          // and each says something different: "no senior class present" vs. "no EM at all"). Only
+          // the PGY-gating check further down needs a genuine primary already present, and it
+          // re-derives that from `compSatisfiers` itself rather than relying on control flow here.
+        }
+
+        // 2b-1 EM-count composition (SOFT, chief-directed): distinct from the hard PGY-CLASS check
+        // just above — this looks at the OVERALL EM (EM_HOME/EM_BAMC) vs. off-service split once
+        // headcount reaches 2/3 (POD) or 1+ (FLEX), and fires REGARDLESS of whether the hard check
+        // above passed. See emCompositionRequired/isEmResident.
+        const emCount = assignedHere.filter(isEmResident).length;
+        const required = emCompositionRequired(area, assignedHere.length);
+        if (emCount < required) {
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
+            message: `${shift.label} (${formatDisplayDate(ds)}) is staffed ${assignedHere.length} with only ${emCount} EM (Home/BAMC) resident${emCount === 1 ? '' : 's'} — ${area === 'POD' ? `POD wants ${required} EM at this headcount` : 'FLEX wants at least 1 EM'} (soft, chief-directed EM-count composition)`, level: 'warn' });
+        }
+
+        // 2b-2 PGY gating (SOFT, chief-directed, mirrors narrowForPgyGate's generator-side pool
+        // restriction): flag an EM "gated" PGY (POD: PGY-2, FLEX: PGY-3) on this shift only when
+        // the hard requirement above is ALREADY satisfied by a genuine PRIMARY-PGY resident (not
+        // this one) — i.e. this body was not needed to meet composition at all. Chosen deliberately
+        // as the CONSERVATIVE availability test (the plan's own documented fallback) rather than an
+        // additional whole-roster "was a free PGY-3 sitting idle that day" scan: that fuller check
+        // risks false positives from edge cases (target headroom, eligibility gates, time off) that
+        // are already the generator's own concern via narrowForPgyGate, and would duplicate a fair
+        // amount of eligibility logic validateAll doesn't otherwise need. "Composition already met
+        // by a real primary" is a reliable, low-noise proxy for "this gated body wasn't needed".
+        const realPrimaryPresent = compSatisfiers.some(r => r.pgy === comp.primary);
+        if (realPrimaryPresent) {
+          for (const g of assignedHere.filter(r => r.category === 'EM_HOME' && r.pgy === comp.fallback)) {
+            issues.push({ residentId: g.id, name: `${g.firstName} ${g.lastName}`, dateStr: ds, shiftId: shift.id,
+              message: `EM PGY-${comp.fallback} on ${shift.label} (${formatDisplayDate(ds)}) though an EM PGY-${comp.primary} already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-${comp.primary} for extra ${area} slots when one exists)`, level: 'warn' });
+          }
+        }
       }
     }
   }
@@ -3945,6 +4216,38 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const isHolidayDay = ds => holidayBlockDates.has(ds);
   const conf12Cache = {};
   const conf12For = ds => (conf12Cache[ds] ??= twelveHourStateFor(ds, ayConf || {}));
+  // Conference-boundary dates (for score()'s nightDurationAlternation exemption): a date whose
+  // 12h-window state differs from the PREVIOUS calendar day's — i.e. the chief's conference-week
+  // 9h<->12h shift swap actually lands here, a calendar-forced duration change rather than a
+  // scheduling choice. Hoisted once per generation (like isJcDay/isHolidayDay above), since
+  // score() runs per candidate per slot. Both sides of a detected boundary are added (the day the
+  // state changed FROM, and the day it changed TO) so the exemption reads correctly regardless of
+  // which of the two adjacent dates score() is comparing `ds` against.
+  const conferenceBoundaryDates = new Set();
+  {
+    const stateKey = st => `${[...st.replaceAreas].sort().join(',')}|${[...st.addAreas].sort().join(',')}`;
+    let prevBoundaryDs = null, prevKey = null;
+    for (const ds of dates) {
+      const key = stateKey(conf12For(ds));
+      if (prevKey !== null && key !== prevKey) { conferenceBoundaryDates.add(ds); conferenceBoundaryDates.add(prevBoundaryDs); }
+      prevBoundaryDs = ds; prevKey = key;
+    }
+  }
+  // Adjacent-date-string cache, keyed by every `ds` score() is ever called with (always a member
+  // of `dates`) — computed once here rather than via addDays/toDateStr on every single score()
+  // call (score() runs per candidate per slot, easily tens of thousands of times per generation;
+  // re-parsing/re-formatting a Date 2-3 times per call was a measured perf regression once the
+  // trauma/night-duration/rest-day terms below needed a 2nd rest day's date too, not just the
+  // immediately adjacent two).
+  const dateNeighbors = {};
+  for (const ds of dates) {
+    const d = parseDate(ds);
+    dateNeighbors[ds] = {
+      prev: toDateStr(addDays(d, -1)),
+      next: toDateStr(addDays(d, 1)),
+      prev2: toDateStr(addDays(d, -2)),
+    };
+  }
 
   const schedule = {};
   for (const r of allResidents) schedule[r.id] = clearFirst ? {} : { ...(block.schedule?.[r.id] || {}) };
@@ -3997,6 +4300,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 
   // Per-resident running state, seeded from kept assignments
   const target = {}, assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
+  // PED-N-specific count (subset of pedsCount, which also includes PED-D/PED-E) — read by score()'s
+  // pedsInternNightDeficit term, which trends a TRAUMA_PEDS/PEDS_TRAUMA split resident toward ~5-6
+  // PED-N placements specifically, not just 5-6 peds-area shifts of any kind.
+  const pedNCount = {};
   // EM_BAMC's per-block Wednesday-night cap (validateAll's own warn: "BAMC allows at most one per
   // block, runs into Thursday GR") — seeded here and consulted by candidatePool's hard filter below
   // (item 1), same pattern as traumaCount/traumaCap.
@@ -4027,6 +4334,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     typeCount[r.id] = { day: 0, eve: 0, night: 0, swing: 0 };
     traumaCount[r.id] = 0;
     pedsCount[r.id] = 0;
+    pedNCount[r.id] = 0;
     nightCount[r.id] = 0;
     bamcWedNightCount[r.id] = 0;
     nightAreaCount[r.id] = Object.fromEntries(NIGHT_DIVERSITY_AREAS.map(a => [a, 0]));
@@ -4051,6 +4359,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh) typeCount[r.id][sh.type]++;
       if (sh?.area === 'TRAUMA') traumaCount[r.id]++;
       if (sh?.area === 'PED') pedsCount[r.id]++;
+      if (sid === 'PED-N') pedNCount[r.id]++;
       if (sh?.type === 'night') nightCount[r.id]++;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[r.id][sh.area]++;
       if (r.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(sDs).getDay() === 3) bamcWedNightCount[r.id]++;
@@ -4133,6 +4442,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'jeopardyConflict', reported through the normal unfilled/summarizeGenerationReport path
     // instead), so the old "placed anyway, here's the list" tracking could never fire again.
     unfilled: [], underTarget: [], seniorGaps: [], restCompromises: [], repairs: [], capacityWarnings: [],
+    // 2b-2 PGY gating pool-restrict: one entry per slot filled by the "gated" PGY (EM PGY-2 on
+    // POD, EM PGY-3 on FLEX) because no qualifying primary-PGY candidate was available in that
+    // shift's own pool — see narrowForPgyGate. Distinct array from the dormant seniorGaps (that
+    // one tracked the HARD requirement, now unreachable — see its own comment); this is a genuine,
+    // regularly-firing SOFT fallback log.
+    pgyFallbacks: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -4223,6 +4538,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (shift.area === 'PED') {
       pool = pool.filter(r => !(isTraumaPedsSplitResident(r, traumaBlocks) && pedsCount[r.id] >= TRAUMA_PEDS_SPLIT.peds));
       if (!pool.length) return { candidates: [], reason: 'halfTargetMet' };
+    }
+    // HARD: at most 2 TRAUMA-N shifts within one contiguous night run (chief-directed — the
+    // benchmark hand-built schedule never crams a 3rd trauma night into a run). Correctness rule,
+    // not a tie-break, so it's a candidatePool exclusion rather than a score() preference — see
+    // the mirrored soft traumaSecondInRun/traumaMidRun terms in score() for the tie-break side of
+    // this same rule, and validateAll's own retrospective walk for the hard error/warning pair.
+    if (shift.id === 'TRAUMA-N') {
+      pool = pool.filter(r =>
+        (traumaNightRunCount(schedule[r.id], ds, -1) + traumaNightRunCount(schedule[r.id], ds, 1)) < 2);
+      if (!pool.length) return { candidates: [], reason: 'traumaRunCapped' };
     }
     // BAMC Wednesday-night hard cap (item 1): validateAll warns when an EM_BAMC resident works
     // more than one Wednesday-night shift per block ("BAMC allows at most one — runs into
@@ -4324,6 +4649,15 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const mixShare = typeCount[r.id][shift.type] / Math.max(1, assigned[r.id]);
     const streak = streakBefore(r, ds);
     const dsDate = parseDate(ds); const dow = dsDate.getDay(); // parsed once — reused by the dow/adjacent-day terms below
+    // Adjacent-day lookups — hoisted here (rather than down at the work-shape-steering terms that
+    // used to be the only consumer) so the new trauma/night-duration/rest-day terms below can
+    // reuse them too, instead of each re-deriving its own prevDs/nextDs. Pulled from the
+    // per-generation dateNeighbors cache (see its own comment) rather than addDays/toDateStr'd
+    // fresh here — score() runs per candidate per slot, so re-parsing a Date on every call was a
+    // measured perf cost once a 3rd neighbor date (2 days back) was also needed.
+    const { prev: prevDs, next: nextDs } = dateNeighbors[ds];
+    const prevSid = schedule[r.id][prevDs];
+    const nextSid = schedule[r.id][nextDs];
     // Peds/EM PGY-2s should hit at least 10 peds shifts before other rotations sap the slot
     const pedsMixNeedsMore = shift.area === 'PED' && isPedsEmMix(r) && pedsCount[r.id] < PEDS_EM_MIX.min ? 1 : 0;
     // Phase 2.4 (chief-reported bug, see SCORE_WEIGHTS.splitPedsHalfBoost): during a TRAUMA_PEDS/
@@ -4344,10 +4678,19 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const fm1OnPeds = shift.area === 'PED' && r.category === 'FM' && r.pgy === 1 ? 1 : 0;
     const fm1Cap = getFm1PedsCap(t);
     const fm1OverPedsCap = fm1OnPeds && fm1Cap != null && pedsCount[r.id] >= fm1Cap ? 1 : 0;
-    // PED-N Thu-Sun EM-Home opening (chief-directed, AY26/27): soft-deprioritize an EM Home PGY-1
+    // PED-N (now all 7 nights) EM-Home opening: soft-deprioritize an EM Home PGY-1
     // candidate — not blocked, just less likely to be picked over a PGY-2/3 or FM-3 — unless
     // they've already done a Peds/Trauma-mix rotation this AY (see hasPriorPedsTrauma/BASE_ELIGIBILITY).
     const pedNPgy1Deprioritize = shift.id === 'PED-N' && r.category === 'EM_HOME' && r.pgy === 1 && !priorPedsTrauma[r.id] ? 1 : 0;
+    // Peds/Trauma split interns (TRAUMA_PEDS/PEDS_TRAUMA) should trend toward ~5-6 PED-N shifts
+    // during their peds half, mirroring the chief's own hand-built schedules — bonus for a PED-N
+    // placement while their PED-N-specific count (pedNCount, distinct from pedsCount which also
+    // includes PED-D/PED-E) is still under 5. Decays to 0 once they hit 5, same idiom as
+    // splitPedsHalfBoost/pedsMixNeedsMore. Never double-counts against pedNPgy1Deprioritize above:
+    // a split resident's own blockType is always in TRAUMA_BLOCKS, so hasPriorPedsTrauma already
+    // returns true for them and pedNPgy1Deprioritize is structurally 0 (verified, not assumed —
+    // see hasPriorPedsTrauma's own first line).
+    const pedsInternNightDeficit = shift.id === 'PED-N' && isTraumaPedsSplitResident(r, traumaBlocks) && (pedNCount[r.id] || 0) < 5 ? 1 : 0;
     // BAMC interns: prefer Flex/POD/Peds day shifts, especially Wednesday (chief feedback) —
     // the weakest of the new soft nudges, purely a tie-breaker. PRECEDENCE (item 2): this term
     // (and podPgy1SecondSlot below) actively push an EM intern candidate onto POD/FLEX/PED, while
@@ -4367,21 +4710,86 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // the "isolated night shift every other day" pattern chief flagged rather than one clean run.
     const runBefore = nightRunBefore(schedule[r.id], ds);
     let nightCluster = 0;
+    // Night-run SHAPE relaxation (chief-directed — his own real hand-built schedules run mostly
+    // 1-3 nights, 61% of real runs, not the aspirational 5-6 NIGHT_RULES ideal). Scoring used to
+    // penalize every run shorter than NIGHT_RULES.minRun (5), which fought that reality on every
+    // 2-4-night run. Runs of 2-6 now score neutrally; only a genuinely ISOLATED single night
+    // (run length 1, whether about to be started or about to be stranded) is still penalized, and
+    // starting a 2nd/3rd+ separate STINT (a different axis — priorRunCount below) is unchanged.
+    // NIGHT_RULES.minRun/maxRun themselves are untouched — this only relaxes the SCORING
+    // preference, never the hard maxRun cap, isNightOnlyResident's short-run warning, or any
+    // validateAll semantics (see scheduleQuality.js's nightShapePenalty for the matching
+    // retrospective relaxation).
     if (shift.type === 'night') {
       if (runBefore > 0 && runBefore < NIGHT_RULES.maxRun) {
         nightCluster = 1;
       } else if (runBefore === 0) {
         const priorRunCount = cachedNightRunSegments(r.id).length;
-        // Strengthened again (chief feedback, Phase 1B: still not converging to a single clean
-        // 5-6 run reliably enough) — was -1.0/-1.5/-0.4, now -1.5/-2.5/-0.8. Ordering unchanged:
-        // a run that structurally can't reach minRun is worse than starting a 3rd+ separate run,
-        // which is worse than starting a 2nd (tolerated, but only when necessary).
-        if ((t - assigned[r.id]) < NIGHT_RULES.minRun) nightCluster = -1.5;
+        // A run that can't even reach 2 nights (this would be the resident's only night shift,
+        // full stop) is still discouraged as strongly as before; a run that CAN reach 2-6 is no
+        // longer treated as "too short" merely for falling under the 5-night ideal.
+        if ((t - assigned[r.id]) < 2) nightCluster = -1.5;
         else if (priorRunCount >= 2) nightCluster = -2.5; // would start a 3rd+ separate run
         else if (priorRunCount === 1) nightCluster = -0.8; // would start a 2nd separate run
       }
-    } else if (runBefore >= 1 && runBefore < NIGHT_RULES.minRun) {
-      nightCluster = -0.625; // -25 at the 40-point scale below
+    } else if (runBefore === 1) {
+      nightCluster = -0.625; // stranding an isolated single night — still penalized
+    }
+    // Trauma-night-within-run soft preferences (chief-directed, mirrors the hard traumaRunCapped
+    // exclusion in candidatePool — see traumaNightRunCount's own comment): 1 trauma night per run
+    // is preferred, a 2nd is tolerated-but-discouraged, and a trauma night landing strictly
+    // mid-run (not first/last) of a MIXED run (a run that also has non-trauma nights) is
+    // discouraged too — pure-trauma runs, 1-night runs, and start/end placements are free, since
+    // the chief's own data shows 13/15 real trauma-bearing runs already comply.
+    const traumaRunBeforeCount = shift.id === 'TRAUMA-N' ? traumaNightRunCount(schedule[r.id], ds, -1) : 0;
+    const traumaRunAfterCount = shift.id === 'TRAUMA-N' ? traumaNightRunCount(schedule[r.id], ds, 1) : 0;
+    const traumaSecondInRun = shift.id === 'TRAUMA-N' && (traumaRunBeforeCount + traumaRunAfterCount) === 1 ? 1 : 0;
+    // Case A: placing TRAUMA-N itself strictly between two already-assigned night shifts (both
+    // neighbors already night — this placement can only ever land mid-run, never at an end).
+    const traumaMidRunCaseA = shift.id === 'TRAUMA-N' && isNightShiftId(prevSid) && isNightShiftId(nextSid) ? 1 : 0;
+    // Case B: placing a DIFFERENT (non-trauma) night shift adjacent to an existing TRAUMA-N that
+    // currently sits at a run END — this placement would make that neighboring trauma night
+    // interior instead. Score-time approximation only (exact final run shape isn't knowable
+    // mid-fill) — checks whether the trauma neighbor's OTHER side is still empty (i.e. it really
+    // is a run end right now, not already mid-run for some other reason).
+    const traumaMidRunCaseB = shift.type === 'night' && shift.id !== 'TRAUMA-N' && (
+      (prevSid === 'TRAUMA-N' && nightRunAfter(schedule[r.id], prevDs) === 0) ||
+      (nextSid === 'TRAUMA-N' && nightRunBefore(schedule[r.id], nextDs) === 0)
+    ) ? 1 : 0;
+    const traumaMidRun = (traumaMidRunCaseA || traumaMidRunCaseB) ? 1 : 0;
+    // Night-shift-duration alternation (generalizes the trauma-9h-vs-12h mixing case, also covers
+    // D12/N12 conference windows): discourage placing a night shift whose SHIFT_TIMING durationH
+    // differs from an adjacent night already in the same run — an alternating-length run is
+    // harder on circadian rhythm than a uniform one. Exempt whenever either date sits on a
+    // conference-boundary (calendar-forced 9h<->12h swap, not a scheduling choice — see
+    // conferenceBoundaryDates above).
+    let nightDurationAlternation = 0;
+    if (shift.type === 'night') {
+      const thisDur = SHIFT_TIMING[shift.id]?.durationH;
+      const prevDur = isNightShiftId(prevSid) ? SHIFT_TIMING[prevSid]?.durationH : null;
+      const nextDur = isNightShiftId(nextSid) ? SHIFT_TIMING[nextSid]?.durationH : null;
+      if (prevDur != null && prevDur !== thisDur && !conferenceBoundaryDates.has(ds) && !conferenceBoundaryDates.has(prevDs)) {
+        nightDurationAlternation = 1;
+      } else if (nextDur != null && nextDur !== thisDur && !conferenceBoundaryDates.has(ds) && !conferenceBoundaryDates.has(nextDs)) {
+        nightDurationAlternation = 1;
+      }
+    }
+    // Second rest day (chief's data: modal gap after a night run is 2 days): a small penalty for
+    // placing ANY shift exactly 2 days after the end of a night run of >=3 nights, when the day
+    // in between (1 day after the run) is still empty — i.e. this placement would leave only ONE
+    // rest day instead of the resident's usual two. Not shift-type-gated — a day/eve/night shift
+    // dropped into what would be the 2nd rest day all equally break it.
+    let secondRestDay = 0;
+    // Cheapest check first (already-computed prevDs, no extra lookups) — the expensive
+    // nightRunAfter/nightRunBefore walks below only run when day 1 after the run is genuinely
+    // still empty, which is most of the time NOT the case once a block is well into filling.
+    if (!schedule[r.id][prevDs]) {
+      const twoDaysAgo = dateNeighbors[ds].prev2;
+      const twoDaysAgoSid = schedule[r.id][twoDaysAgo];
+      if (isNightShiftId(twoDaysAgoSid) && nightRunAfter(schedule[r.id], twoDaysAgo) === 0) {
+        const runLenEndingTwoDaysAgo = nightRunBefore(schedule[r.id], twoDaysAgo) + 1;
+        if (runLenEndingTwoDaysAgo >= 3) secondRestDay = 1;
+      }
     }
     // Night-area diversity (item 5, see NIGHT_DIVERSITY_AREAS/nightAreaDiversityTerm near
     // NIGHT_RULES) — small nudge toward spreading night shifts across PED/POD/MT/FLEX instead of
@@ -4427,6 +4835,26 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // required, so this can never block a PGY-2 from filling a slot the hard rule actually needs
     // them for — it only biases POD's OTHER slots toward PGY-3/PGY-1.
     const podPgy2Deprioritize = shift.area === 'POD' && r.category === 'EM_HOME' && r.pgy === 2 ? 1 : 0;
+    // FLEX's mirror of podPgy1SecondSlot (2b-1): once FLEX's own PGY-2 requirement is already met
+    // by someone else in this slot (seniorFilled), the shift's remaining slot(s) prefer ANOTHER EM
+    // Home PGY-2 over a PGY-1 — the opposite direction from POD's intern preference, chief-
+    // directed. Never competes with getting the first qualifying PGY-2 placed (seniorFilled gate).
+    const flexPgy2ThirdSlot = shift.area === 'FLEX' && seniorFilled && r.category === 'EM_HOME' && r.pgy === 2 ? 1 : 0;
+    // EM-count composition (2b-1, chief-directed, SOFT — see isEmResident/emCompositionRequired
+    // and their own SCORE_WEIGHTS comments): distinct from SENIOR_COMPOSITION's hard PGY-CLASS
+    // requirement on the shift's FIRST body, this discourages placing a NON-EM candidate on a
+    // POD/FLEX shift whose RESULTING headcount (already-assigned + this candidate) would then
+    // fall short of the EM count that headcount requires. Never fires for an EM candidate (only
+    // the non-EM side of the tradeoff is ever penalized), and never gates — a shift can still fill
+    // entirely off-service if that's genuinely all that's available; candidatePool is untouched.
+    let podEmComposition = 0, flexEmComposition = 0;
+    if ((shift.area === 'POD' || shift.area === 'FLEX') && !isEmResident(r)) {
+      const assignedHere = allResidents.filter(x => schedule[x.id][ds] === shift.id);
+      const resultingTotal = assignedHere.length + 1;
+      const resultingEm = assignedHere.filter(isEmResident).length; // r itself is non-EM, adds 0
+      const shortfall = resultingEm < emCompositionRequired(shift.area, resultingTotal) ? 1 : 0;
+      if (shift.area === 'POD') podEmComposition = shortfall; else flexEmComposition = shortfall;
+    }
     // Phase 2.1 (chief-directed Wednesday POD/MC ladder): BAMC is already the strongest preference
     // via bamcFlexPodPedsDay/bamcWedBonus above; among the remaining off-service categories the
     // chief ranked ANES > FM/NEURO/PSYCH > POD(iatry) for Wednesday POD-DAY specifically. IM is
@@ -4479,11 +4907,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // lib/scheduleQuality.js; this is the fill-time nudge so the greedy pass builds decent shape
     // directly instead of relying on best-of-N to stumble into it. Deliberately blind to shift
     // TYPE — nightCluster already owns night-run shaping at a far larger weight (40), and these
-    // terms must not second-guess it.
-    const prevDs = toDateStr(addDays(dsDate, -1));
-    const nextDs = toDateStr(addDays(dsDate, 1));
-    const prevSid = schedule[r.id][prevDs];
-    const nextSid = schedule[r.id][nextDs];
+    // terms must not second-guess it. (prevDs/nextDs/prevSid/nextSid are now hoisted up near
+    // dsDate/dow, above, since the trauma/night-duration terms need them too.)
     // Prefer extending an existing run over dropping an isolated shift into a gap. Binary, not a
     // count: two adjacent worked days is a resident working straight through, which the streak
     // penalty above already prices — this only distinguishes "attached to something" from "alone".
@@ -4526,7 +4951,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       - W.podPgy2Deprioritize * podPgy2Deprioritize + W.wedPodLadder * wedPodLadder
       + W.workContinuity * workContinuity + W.areaContinuity * areaContinuity
       - W.offAdjacency * offAdjacency - W.seniorScarcityProtect * seniorScarcityRisk
-      + W.nightAreaDiversity * nightAreaDiversity - W.holidayEquity * holidayEquity + rng();
+      + W.nightAreaDiversity * nightAreaDiversity - W.holidayEquity * holidayEquity
+      - W.traumaSecondInRun * traumaSecondInRun - W.traumaMidRun * traumaMidRun
+      - W.nightDurationAlternation * nightDurationAlternation - W.secondRestDay * secondRestDay
+      + W.pedsInternNightDeficit * pedsInternNightDeficit
+      - W.podEmComposition * podEmComposition - W.flexEmComposition * flexEmComposition
+      + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -4714,6 +5144,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           continue; // optional phase: max is a cap, not a requirement — same as other optional misses
         }
       }
+      // PGY gating pool-restrict (2b-2, SOFT, see narrowForPgyGate): applies whether this shift's
+      // OWN composition requirement is already met (the common case — narrows an ADDITIONAL slot
+      // away from the gated PGY while a primary is still around) or the branch above just narrowed
+      // `candidates` to primary-only anyway (a no-op here, since no gated candidate remains to
+      // filter). `usedFallback` is only ever true when no primary candidate exists in THIS pool at
+      // all — recorded below only if the actual winner turns out to be the gated PGY.
+      const pgyGate = narrowForPgyGate(candidates, slot.shift, ds, block.startDate, appSettings, ayConf);
+      candidates = pgyGate.pool;
       // Selection: among the final candidate pool, prefer the smallest actual rest-hour shortfall
       // when this slot is being filled via a rest compromise — otherwise score() alone can pick a
       // candidate 22h short of rest over one only 1h short, purely by coincidence of unrelated
@@ -4748,6 +5186,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       typeCount[best.id][slot.shift.type]++;
       if (slot.shift.area === 'TRAUMA') traumaCount[best.id]++;
       if (slot.shift.area === 'PED') pedsCount[best.id]++;
+      if (slot.shift.id === 'PED-N') pedNCount[best.id]++;
       if (slot.shift.type === 'night') nightCount[best.id]++;
       if (slot.shift.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(slot.shift.area)) nightAreaCount[best.id][slot.shift.area]++;
       if (best.category === 'EM_BAMC' && slot.shift.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[best.id]++;
@@ -4756,6 +5195,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (best.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
       if (restCompromise) {
         report.restCompromises.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id });
+      }
+      // 2b-2 PGY gating fallback: only log when the actual winner is the gated PGY (usedFallback
+      // being true just means the pool wasn't narrowed away from them — a different, non-gated
+      // candidate could still have won on score()).
+      if (pgyGate.usedFallback && comp && best.category === 'EM_HOME' && best.pgy === comp.fallback) {
+        report.pgyFallbacks.push({ residentId: best.id, name: `${best.firstName} ${best.lastName}`, dateStr: ds, shiftId: slot.shift.id, area: slot.shift.area, pgy: best.pgy });
       }
       if (phase === 'min') report.filled++; else report.optionalFilled++;
     }
@@ -4801,6 +5246,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh) typeCount[rid][sh.type]--;
       if (sh?.area === 'TRAUMA') traumaCount[rid]--;
       if (sh?.area === 'PED') pedsCount[rid]--;
+      if (sid === 'PED-N') pedNCount[rid]--;
       if (sh?.type === 'night') nightCount[rid]--;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
       const r = residentById.get(rid);
@@ -4818,6 +5264,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh) typeCount[rid][sh.type]++;
       if (sh?.area === 'TRAUMA') traumaCount[rid]++;
       if (sh?.area === 'PED') pedsCount[rid]++;
+      if (sid === 'PED-N') pedNCount[rid]++;
       if (sh?.type === 'night') nightCount[rid]++;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
       const r = residentById.get(rid);
@@ -5440,6 +5887,46 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     }
   }
 
+  // ── batch-2/round-2b optional fields (see PAYLOAD_SCHEMA.md's own "Batch 2"/"Round 2b" headers)
+  // — every one of these is an OPTIONAL request field the solver treats as a no-op when absent, so
+  // populating them here is additive: an older solver build simply ignores fields it doesn't parse.
+  // traumaNightShiftIds/pedsNightShiftIds are plain shift-id lists (rules 43-48 key off area/type
+  // via these ids rather than re-deriving "trauma" or "peds night" from `shifts` itself).
+  const traumaNightShiftIds = ['TRAUMA-N'];
+  const pedsNightShiftIds = ['PED-N'];
+  // pedsSplitInternIds/pedsInternNightTarget (rule 48) mirror the JS generator's own
+  // pedsInternNightDeficit bonus (see candidatePool/score() above, `isTraumaPedsSplitResident` +
+  // the hardcoded target of 5) — same population, same magnitude, so the two engines push toward
+  // the identical soft target.
+  const pedsSplitInternIds = schedulableResidents.filter(r => isTraumaPedsSplitResident(r, traumaBlocks)).map(r => r.id);
+  const pedsInternNightTarget = 5;
+  // alternationExemptDates (rule 46): a date whose resolved 12h-window state (replaceAreas/
+  // addAreas) differs from the PRIOR calendar date's — i.e. a conference-window boundary — is
+  // calendar-forced mixing, not a scheduling choice, so the duration-alternation penalty must not
+  // fire across it. Compares the day before the block's first date too (a window can start
+  // exactly on day 1), not just pairs strictly inside `dates`.
+  const setsEqual = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+  const alternationExemptDates = [];
+  {
+    let prevDs = toDateStr(addDays(parseDate(dates[0]), -1));
+    for (const ds of dates) {
+      const cur = conf12For(ds);
+      const prev = conf12For(prevDs);
+      if (!setsEqual(cur.replaceAreas, prev.replaceAreas) || !setsEqual(cur.addAreas, prev.addAreas)) {
+        alternationExemptDates.push(ds);
+      }
+      prevDs = ds;
+    }
+  }
+  // emResidentIds/emPgy2ResidentIds/emPgy3ResidentIds (rules 49-50): mirrors isEmResident (EM
+  // headcount for podEmComposition/flexEmComposition) and narrowForPgyGate's own gate (EM_HOME
+  // only, not EM_BAMC — SENIOR_COMPOSITION/isSeniorFor never considers EM_BAMC either) for
+  // podPgy2Fallback/flexPgy3Fallback so the solver's soft-cost translation targets exactly the same
+  // residents the JS generator's pool-restrict-with-fallback does.
+  const emResidentIds = schedulableResidents.filter(isEmResident).map(r => r.id);
+  const emPgy2ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 2).map(r => r.id);
+  const emPgy3ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 3).map(r => r.id);
+
   const resolvedConfig = {
     maxTimeSeconds: 30,
     numWorkers: 8,
@@ -5471,6 +5958,14 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       enforceRest: appSettings.enforceRest !== false,
       enforceWeekendOff: appSettings.enforceWeekendOff !== false,
     },
+    traumaNightShiftIds,
+    pedsNightShiftIds,
+    pedsSplitInternIds,
+    pedsInternNightTarget,
+    alternationExemptDates,
+    emResidentIds,
+    emPgy2ResidentIds,
+    emPgy3ResidentIds,
   };
 }
 
@@ -5524,6 +6019,7 @@ export function mapSolverResult(json, { block } = {}) {
       unfilled,
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
+      pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
       underTarget: Array.isArray(json?.report?.underTarget) ? json.report.underTarget : [],
       capacityWarnings: [],
       repairs: [],
@@ -5826,6 +6322,7 @@ const KNOWN_UNFILLED_REASONS = new Set([
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
   'nightCapped', 'nightStintCapped', 'jcCapped', 'restProtected', 'seniorProtected',
   'pgy3Required', 'pgy2Required', 'hoursCapped', 'bamcWedNightCapped', 'jeopardyConflict',
+  'traumaRunCapped',
 ]);
 export function summarizeGenerationReport(report, appSettings = {}, blockStart = null) {
   const byShift = {};
@@ -5843,19 +6340,18 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     // and that subset is a strict subset of the block's weekdays — i.e. a day-of-week rule.
     const noElig = slots.filter(s => s.reason === 'noEligible');
     const gapDows = [...new Set(noElig.map(s => dow(s.dateStr)))].sort();
-    // PED-N and PED-N-FM are now two separate single-owner ids (see PED_GUARD_LEGITIMATE_OWNER),
-    // each confined to its own day-of-week window — PED-N-FM to FM-3's Mon/Tue/Wed (onlyDays),
-    // PED-N to EM Home's Thu-Sun (ped_n_em_window). Re-derived from that data rather than
-    // hardcoded per-id, so this stays correct if either window ever changes. A noEligible gap
-    // INSIDE an id's own window is expected whenever its owning category isn't on this block or
-    // isn't eligible that specific day — coverage stays min:0 either way ("ideally filled, other
-    // shifts take priority," not required), so this whole path is only reachable at all after a
-    // chief coverage edit raises one of these mins above 0. A gap OUTSIDE the window is a
-    // different problem: the id is stripped to nothing for its owner (and everyone else) on that
-    // weekday, so no one could ever fill it there — a coverage-editor mistake, not an expected gap.
+    // PED-N-FM is still confined to its own day-of-week window (FM-3's Mon/Tue/Wed onlyDays) —
+    // PED-N itself lost its Thu-Sun ped_n_em_window gate entirely and now runs all 7 nights, so it
+    // no longer belongs in this dow-windowed table; a PED-N gap now falls through to the generic
+    // structural/non-structural detection below like any other unwindowed shift. A noEligible gap
+    // INSIDE PED-N-FM's own window is expected whenever FM-3 isn't on this block or isn't eligible
+    // that specific day — coverage stays min:0 either way ("ideally filled, other shifts take
+    // priority," not required), so this whole path is only reachable at all after a chief coverage
+    // edit raises that min above 0. A gap OUTSIDE the window is a different problem: the id is
+    // stripped to nothing for its owner (and everyone else) on that weekday, so no one could ever
+    // fill it there — a coverage-editor mistake, not an expected gap.
     const PED_NIGHT_GAP_EXPECTED = {
       'PED-N-FM': { dows: [1,2,3],   owner: 'FM-3'    },
-      'PED-N':    { dows: [0,4,5,6], owner: 'EM Home' },
     };
     const pedNightExpected = PED_NIGHT_GAP_EXPECTED[shiftId];
     const isPedNExpected = !!pedNightExpected && noElig.length > 0 && noElig.length === slots.length;
@@ -5885,6 +6381,7 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.allWorking) pushRec('allWorking', `Everyone eligible for ${label} was already working that day — add residents to this block or reduce same-day coverage.`);
     if (reasonCounts.selfCoverOnly) pushRec('selfCoverOnly', `Only self-scheduling residents (no shift target, e.g. Peds) are eligible for ${label} — assign them manually in the grid, or set ${label} coverage to 0.`);
     if (reasonCounts.traumaCapped) pushRec('traumaCapped', `Eligible EM PGY-2/3s hit the trauma cap (${getTraumaCap(appSettings)}/block) — raise the cap in Settings or cover with a trauma-block PGY-1.`);
+    if (reasonCounts.traumaRunCapped) pushRec('traumaRunCapped', `Every eligible resident already has 2 Trauma Night shifts in their current night run (max 2 per run) — cover ${label} with a resident starting a new run, or assign manually.`);
     if (reasonCounts.pedsMixCapped) pushRec('pedsMixCapped', `Peds/EM residents have hit their ${PEDS_EM_MIX.max}-peds-shift cap — cover ${label} with other peds-eligible residents.`);
     if (reasonCounts.streakBlocked) {
       // Trauma-half-only shifts (TRAUMA-D/TRAUMA-N) sit right against the 14-day Trauma/Peds
@@ -6551,6 +7048,31 @@ function SectionCard({ title, subtitle, children, action }) {
       </div>
       <div className="px-5 py-4">{children}</div>
     </div>
+  );
+}
+
+// Numeric stepper — [-] [value] [+], replacing a native `<input type="number">` wherever the tap
+// target matters (mobile-usable coverage editing, see Rules tab's Daily Shift Coverage). Buttons
+// are 36px (h-9 w-9, the accessibility-minimum tap target) with high-contrast +/- glyphs; the
+// value itself uses `tabular-nums` so digit width doesn't jitter as it changes. Purely
+// presentational/controlled — `value`/`onChange(next)` own all clamping/pairing semantics (see
+// the coverage editor's own `update()`), this component just won't fire a change past its own
+// `min`/`max` bounds.
+function Stepper({ value, onChange, min = 0, max = 99, title, overridden = false, disabled = false }) {
+  const dec = () => !disabled && value > min && onChange(value - 1);
+  const inc = () => !disabled && value < max && onChange(value + 1);
+  const btnCls = 'h-9 w-9 flex items-center justify-center rounded-lg border font-bold leading-none transition-colors disabled:opacity-30 disabled:cursor-not-allowed ' +
+    (overridden ? 'border-primary/40 text-primary hover:bg-primary/10' : 'border-border text-foreground hover:bg-accent');
+  return (
+    <span className="inline-flex items-center gap-1" title={title}>
+      <button type="button" onClick={dec} disabled={disabled || value <= min} className={btnCls} aria-label={`Decrease${title ? ' ' + title : ''}`}>
+        <Minus size={15}/>
+      </button>
+      <span className={`w-6 text-center text-base tabular-nums font-semibold ${overridden ? 'text-primary' : 'text-foreground'}`}>{value}</span>
+      <button type="button" onClick={inc} disabled={disabled || value >= max} className={btnCls} aria-label={`Increase${title ? ' ' + title : ''}`}>
+        <Plus size={15}/>
+      </button>
+    </span>
   );
 }
 
@@ -10938,26 +11460,16 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
                     });
                   }
                   return (
-                    <td key={key} className="text-center px-3 py-1">
-                      <span className="inline-flex items-center gap-1">
-                        <input type="number" min={0} max={maxCap} title="Minimum"
-                          value={cov.min}
-                          onChange={e => {
-                            const min = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
-                            update({ min, max: Math.max(min, cov.max) });
-                          }}
-                          className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
-                        <span className="text-gray-300">–</span>
-                        <input type="number" min={0} max={maxCap} title="Maximum"
-                          value={cov.max}
-                          onChange={e => {
-                            const max = Math.max(0, Math.min(maxCap, Number(e.target.value) || 0));
-                            update({ min: Math.min(cov.min, max), max });
-                          }}
-                          className={`w-12 text-center text-sm border rounded-lg py-1 ${overridden ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-gray-200'}`}/>
+                    <td key={key} className="text-center px-2 py-1">
+                      <span className="inline-flex items-center gap-2 flex-wrap justify-center">
+                        <Stepper value={cov.min} min={0} max={maxCap} title="Minimum" overridden={overridden}
+                          onChange={min => update({ min, max: Math.max(min, cov.max) })}/>
+                        <span className="text-muted-foreground">–</span>
+                        <Stepper value={cov.max} min={0} max={maxCap} title="Maximum" overridden={overridden}
+                          onChange={max => update({ min: Math.min(cov.min, max), max })}/>
                         {overridden && (
                           <button onClick={() => setCoverage(p => { const n = { ...p }; delete n[shift.id]; return n; })}
-                            title="Reset to default" className="text-gray-300 hover:text-primary"><RefreshCw size={11}/></button>
+                            title="Reset to default" className="text-muted-foreground hover:text-primary"><RefreshCw size={13}/></button>
                         )}
                       </span>
                     </td>
@@ -10985,7 +11497,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         <div className="mt-2">
           <Collapsible title="How coverage works" defaultOpen={false}>
             <p className="text-xs text-gray-500">
-              The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), EM Home's own shift Thu-Sun. Trauma day-of-week limits still apply on top.
+              The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), open to EM Home/BAMC/FM-1/Peds, all 7 nights. Trauma day-of-week limits still apply on top.
             </p>
             <p className="text-xs text-gray-500 mt-1">
               POD max shown above is every day <strong>except Mon/Tue</strong>, when it rises to 3 (not editable here — see Rules tab prose/CLAUDE.md). POD-D and FLEX-D also drop to <strong>min 1 / max 2 on Wednesdays</strong> (Grand Rounds — that floor is staffed by APPs, not editable here either). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
@@ -11054,11 +11566,11 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 
       <SectionCard title="Peds/Trauma Split" subtitle="TRAUMA_PEDS/PEDS_TRAUMA's peds half is PED-D/PED-E only by default (see the block-type note above) — this opts a single additional shift into that half.">
         <label className="flex items-start gap-2.5 cursor-pointer select-none">
-          <input type="checkbox" checked={appSettings.allowSplitPedsNights ?? false}
+          <input type="checkbox" checked={appSettings.allowSplitPedsNights ?? true}
             onChange={e => setAppSettings(p => ({ ...p, allowSplitPedsNights: e.target.checked }))} className="rounded mt-0.5"/>
           <span>
             <span className="block text-xs font-semibold text-gray-700">Allow Peds/Trauma interns to work Peds Night (PED-N)</span>
-            <span className="block text-xs text-gray-400">Applies to the PEDS half only (the trauma half stays Trauma Day only, no exceptions). Keeps the Thu-Sun PED-N window and counts toward the 11-shift peds sub-target — off by default.</span>
+            <span className="block text-xs text-gray-400">Applies to the PEDS half only (the trauma half stays Trauma Day only, no exceptions). PED-N now runs all 7 nights and counts toward the 11-shift peds sub-target — on by default.</span>
           </span>
         </label>
       </SectionCard>
@@ -11548,6 +12060,33 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // otherwise race, or fire two solver requests). Not React state on purpose: it's read-and-set
   // synchronously at the top of each call, before any await, so it can't itself trigger a render.
   const generatingRef = useRef(false);
+  // ── Progress overlay (Generate/Clear & Regenerate/Regenerate Unlocked) — the solver path can
+  // legitimately run ~30s and the local-generator path can take a couple seconds (best-of-20 +
+  // repair), and with no feedback the app looked crashed. `genActive` gates the overlay's
+  // visibility; `genStageLabel` is plain text updated by generateViaSolverOrLocal as the pipeline
+  // moves through its stages; `genElapsedSec` ticks once/sec off a ref-held start time so the label
+  // update itself never resets the clock. Ephemeral UI state only — never persisted, never read by
+  // anything outside this component.
+  const [genActive, setGenActive] = useState(false);
+  const [genStageLabel, setGenStageLabel] = useState('');
+  const [genElapsedSec, setGenElapsedSec] = useState(0);
+  const genTimerRef = useRef(null);
+  function startGenProgress(label) {
+    setGenStageLabel(label);
+    setGenElapsedSec(0);
+    setGenActive(true);
+    if (genTimerRef.current) clearInterval(genTimerRef.current);
+    genTimerRef.current = setInterval(() => setGenElapsedSec(s => s + 1), 1000);
+  }
+  function stopGenProgress() {
+    setGenActive(false);
+    if (genTimerRef.current) { clearInterval(genTimerRef.current); genTimerRef.current = null; }
+  }
+  useEffect(() => () => { if (genTimerRef.current) clearInterval(genTimerRef.current); }, []);
+  // Yields one animation frame so React can paint the overlay/stage-text update BEFORE a
+  // synchronous, CPU-bound call (generateScheduleBest) blocks the main thread — without this the
+  // "Generating…" label set immediately before that call would never actually appear on screen.
+  const yieldToPaint = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   const [view, setView] = useState('grid'); // 'grid' | 'resident' | 'calendar' — ephemeral, not persisted
   const [areaFilter, setAreaFilter] = useState('ALL'); // calendar-view-only shift-area filter
   // Inner mode for the Calendar sub-tab — 'week' is the original continuous-week ScheduleCalendarView
@@ -11889,21 +12428,28 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // `!== false` so an old backup/cloud row with no such key keeps the solver ON — the env-var
     // (VITE_SOLVER_URL) stays the deploy-level switch, this one needs no redeploy.
     const solverAllowed = appSettings.useSolverService !== false;
+    setGenStageLabel('Preparing…');
     if (SOLVER_ENABLED && solverAllowed && hasValidDates) {
       try {
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock });
+        setGenStageLabel('Optimizing schedule — up to ~30s…');
         const json = await solveRemote(payload);
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
+        setGenStageLabel('Validating…');
         const res = mapSolverResult(json, { block: genBlock });
         return { ...res, engineUsed: 'cpsat', relaxed: json.mode === 'relaxed' };
       } catch (e) {
         console.warn('Solver unavailable — falling back to the built-in generator:', e);
+        setGenStageLabel('Optimizer unavailable — using built-in generator…');
+        await yieldToPaint(); // let the fallback label actually paint before the sync generator blocks the thread
         const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
         return res ? { ...res, engineUsed: 'fallback', relaxed: false } : null;
       }
     }
+    setGenStageLabel('Generating (built-in engine)…');
+    await yieldToPaint();
     const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
     return res ? { ...res, engineUsed: 'local', relaxed: false } : null;
   }
@@ -11913,6 +12459,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     generatingRef.current = true;
     setConfirmRegen(false);
     setConfirmGenerate(null);
+    startGenProgress('Preparing…');
     try {
       // Clear & Regenerate: buildSolverPayload has no clearFirst of its own (see
       // generateViaSolverOrLocal's header comment) — an emptied schedule here makes its `locked[]`
@@ -11940,6 +12487,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
+      stopGenProgress();
     }
   }
 
@@ -11954,6 +12502,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmPartialRegen(null);
+    startGenProgress('Preparing…');
     try {
       const locked = block.lockedCells || {};
       const inRange = req.kind === 'range' ? (ds => ds >= req.start && ds <= req.end) : (() => true);
@@ -11986,6 +12535,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
+      stopGenProgress();
     }
   }
 
@@ -12198,6 +12748,20 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
   return (
     <div className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
+      {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
+          promotion (60), below the toast (200); see the DAY_MARKERS z-ladder note in CLAUDE.md. */}
+      {genActive && (
+        <div className="no-print fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-sm" role="status" aria-live="polite">
+          <div className="bg-card border border-border rounded-xl shadow-xl px-8 py-6 flex flex-col items-center gap-3 w-full max-w-sm mx-4">
+            <RefreshCw size={30} className="animate-spin text-primary flex-none"/>
+            <div className="text-sm font-medium text-foreground text-center">{genStageLabel}</div>
+            <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+              <div className="h-full w-1/3 rounded-full bg-primary animate-pulse"/>
+            </div>
+            <div className="text-xs text-muted-foreground font-mono tabular-nums">{genElapsedSec}s elapsed</div>
+          </div>
+        </div>
+      )}
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
@@ -13575,7 +14139,7 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
         </p>
       </div>
       <div className="p-4 space-y-3">
-        {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (
+        {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (report.pgyFallbacks||[]).length === 0 && (
           <p className="text-sm text-green-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
         )}
 
@@ -13611,6 +14175,17 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
             <ul className="mt-1 space-y-0.5">
               {report.restCompromises.map((c,i)=>(
                 <li key={i} className="text-xs text-gray-700">{formatDisplayDate(c.dateStr)} — {SHIFT_MAP[c.shiftId]?.label || c.shiftId} — {c.name} (reorder Soft Rule Priority on the Rules tab to change this)</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {(report.pgyFallbacks||[]).length > 0 && (
+          <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-amber-700">PGY gating fallback — no senior PGY available for these extra POD/FLEX slots</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.pgyFallbacks.map((f,i)=>(
+                <li key={i} className="text-xs text-gray-700">{formatDisplayDate(f.dateStr)} — {SHIFT_MAP[f.shiftId]?.label || f.shiftId} — {f.name} (EM PGY-{f.pgy}; no EM PGY-{SENIOR_COMPOSITION[f.area]?.primary} was free that day, soft rule)</li>
               ))}
             </ul>
           </div>
@@ -14730,7 +15305,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Trauma Day is filled last</strong>, after every other shift for the whole block, so PGY-1 trauma-day slots don't crowd out other coverage.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
           <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
-          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed; optional EM Home Thu-Sun) gaps are marked "Expected" when no one eligible is on the block those days.</li>
+          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed) gaps are marked "Expected" when no one eligible is on the block those days.</li>
         </ul>
       </GuideSection>}
 
@@ -16865,11 +17440,6 @@ export default function ResidentScheduler({ viewer } = {}) {
                 </span>
               </div>
             </div>
-            <span title="Draft v0.4 — Neuro/Anes/Psych/Pod matrix needs verification with chief. FM PGY-1 Peds eligibility TBD. Several rules marked ⚠ in Scheduling Rules tab. See User Guide for help; export backups from Settings."
-              className="hidden sm:inline-flex items-center gap-1.5 border border-omaha/40 bg-omaha/10 rounded-full px-2 py-0.5 flex-none">
-              <span className="w-1.5 h-1.5 rounded-full bg-omaha"/>
-              <span className="text-[11px] font-semibold text-foreground/80">DRAFT v0.4</span>
-            </span>
           </div>
           {block.startDate && (
             <div className="hidden md:flex flex-1 max-w-xs">

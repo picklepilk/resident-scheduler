@@ -33,12 +33,16 @@ broke the old scheme. Instead:
     one short of target and an empty coverage slot are already pulling the
     solver the same direction.
   - What coverageMin actually needs to dominate is the SUM of every
-    per-assignment ANTI-fill term (nightShape/workShape/fairness/band8/
-    dowPreference) that could conceivably prefer leaving a slot empty. Under
-    the shipped weights that sum is at most ~1500 per assignment (nightShape
-    200 + workShape 100 + fairness 100+80+60+40 + weekendOff 500 +
-    internPair 400 + dowPreference 1x20) against coverageMin's 1,000,000 --
-    a >600x margin, asserted by `tests/test_weight_tiering.py`.
+    per-assignment ANTI-fill term (isolatedNight/workShape/fairness/band8/
+    dowPreference/the batch-2 trauma-run-placement terms) that could
+    conceivably prefer leaving a slot empty. Under the shipped weights that
+    sum is comfortably below coverageMin's 1,000,000 with a >100x margin,
+    asserted by `tests/test_weight_tiering.py` (see that file's
+    `_anti_fill_sum` for the exact per-term accounting, updated for batch 2's
+    2026-08-22 addition of traumaSecondInRun/traumaMidRun/
+    nightDurationAlternation/secondRestDay -- `pedsInternNightDeficit` is
+    excluded from that sum on purpose: like targetDeficit, it pushes TOWARD
+    assigning a shift, not away from it).
   - postNightRest is a duty-safety soft rule (rest after a night run), so it
     sits well above the "toward-fill" terms and far above the anti-fill
     preference terms, but does not need to out-rank coverageMin/
@@ -70,7 +74,15 @@ from solver.io.payload import Payload
 from solver.model import timing
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
+from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
 from solver.model.sequence_constraints import add_soft_sequence_constraint
+from solver.model.trauma_runs import (
+    add_night_duration_alternation_terms,
+    add_peds_intern_night_deficit_term,
+    add_second_rest_day_terms,
+    add_trauma_mid_run_terms,
+    add_trauma_second_in_run_terms,
+)
 from solver.model.variables import VarStore, as_literal, resident_candidates
 
 DEFAULT_WEIGHTS_PATH = Path(__file__).resolve().parents[2] / "config" / "default_weights.json"
@@ -331,11 +343,28 @@ def _add_fairness_terms(model, payload: Payload, store: VarStore, group: TermGro
                 _add_spread(model, group, f"fair_holiday[{cohort_name}]", w_holiday, holiday_vals, holiday_ub)
 
 
-# ---- rule 36: nightShape ----
+# ---- rule 36: isolatedNight (batch 2, 2026-08-22: relaxed from "nightShape") ----
 
-def _add_night_shape_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    w = weights["nightShape"]
-    min_cost, max_cost = int(w["minCost"]), int(w["maxCost"])
+def _add_isolated_night_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    """Batch 2's night-run-shape relaxation (plan section B): runs of 2-6
+    nights are now free; ONLY an isolated single night (length exactly 1)
+    still costs anything. Chief's benchmark data showed 61% of his real runs
+    are length 1-3, so the previous `soft_min=4` (penalizing 1-3) was
+    fighting his own actual scheduling pattern -- lowering `soft_min` to 2
+    keeps `add_soft_sequence_constraint`'s per-length cost formula
+    `min_cost * (soft_min - length)` at exactly `min_cost` for length 1 and
+    0 for every length >= 2.
+
+    Renamed from `nightShape` to `isolatedNight` (config key too) since that
+    is now an accurate description of what it penalizes -- it no longer
+    shapes anything about runs of 2 or more. `hard_max == soft_max == 6`
+    (the real max-6-nights-per-run cap, enforced HARD by circadian.py's own
+    sliding window) makes `add_soft_sequence_constraint`'s "over soft_max"
+    cost branch structurally unreachable (its range is empty whenever
+    `soft_max == hard_max`) -- true before this rewrite too, so `max_cost`
+    is passed as a fixed 0 rather than kept as dead config surface.
+    """
+    coef = int(weights["isolatedNight"]["perUnit"])
     for resident in payload.residents:
         if resident.night_exempt:
             continue
@@ -344,12 +373,12 @@ def _add_night_shape_term(model, payload: Payload, store: VarStore, group: TermG
             continue
         cost_lits, cost_coefs = add_soft_sequence_constraint(
             model, works,
-            hard_min=1, soft_min=4, min_cost=min_cost,
-            soft_max=6, hard_max=6, max_cost=max_cost,
-            prefix=f"nightShape[{resident.id}]",
+            hard_min=1, soft_min=2, min_cost=coef,
+            soft_max=6, hard_max=6, max_cost=0,
+            prefix=f"isolatedNight[{resident.id}]",
         )
-        for lit, coef in zip(cost_lits, cost_coefs):
-            group.add(coef, lit)
+        for lit, c in zip(cost_lits, cost_coefs):
+            group.add(c, lit)
 
 
 # ---- rule 37: workShape ----
@@ -483,6 +512,34 @@ def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup,
     _add_intern_pair_term(model, payload, store, group, weights)
 
 
+# ---- batch 2 (chief round-2 plan, section A/C): trauma-run placement,
+# night-duration alternation, 2nd rest day, intern peds-night target ----
+# All five terms live in solver/model/trauma_runs.py (also owns the hard
+# <=2-trauma-per-run cap, added separately by build.py/elastic.py -- see that
+# module's docstring). Every one is a documented no-op when its payload
+# field(s) are absent/empty/zero, so this call is unconditional here.
+
+def _add_trauma_run_batch2_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_trauma_second_in_run_terms(model, payload, store, group, int(weights["traumaSecondInRun"]["perUnit"]))
+    add_trauma_mid_run_terms(model, payload, store, group, int(weights["traumaMidRun"]["perUnit"]))
+    add_night_duration_alternation_terms(
+        model, payload, store, group, int(weights["nightDurationAlternation"]["perUnit"])
+    )
+    add_second_rest_day_terms(model, payload, store, group, int(weights["secondRestDay"]["perUnit"]))
+    add_peds_intern_night_deficit_term(
+        model, payload, store, group, int(weights["pedsInternNightDeficit"]["perUnit"])
+    )
+
+
+# ---- round 2b: EM-count composition + PGY gating pool-restrict (soft cost
+# translation) -- both live in solver/model/em_composition.py, both
+# documented no-ops when their id-list payload field(s) are absent/empty. ----
+
+def _add_em_composition_round2b_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_em_composition_terms(model, payload, store, group, weights)
+    add_pgy_fallback_terms(model, payload, store, group, weights)
+
+
 # ---- rule 42: dowPreference ----
 
 def _add_dow_preference_term(payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
@@ -502,9 +559,11 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     target_deficit_vars = _add_target_deficit_terms(model, payload, store, group, weights)
     post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, group, weights)
     _add_fairness_terms(model, payload, store, group, weights)
-    _add_night_shape_term(model, payload, store, group, weights)
+    _add_isolated_night_term(model, payload, store, group, weights)
     _add_work_shape_term(model, payload, store, group, weights)
     _add_band8_terms(model, payload, store, group, weights)
+    _add_trauma_run_batch2_terms(model, payload, store, group, weights)
+    _add_em_composition_round2b_terms(model, payload, store, group, weights)
     _add_dow_preference_term(payload, store, group, weights)
 
     total_expr = sum((coef * expr for coef, expr in group.terms), start=0)

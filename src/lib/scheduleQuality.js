@@ -53,6 +53,40 @@ function assignedCount(schedule, rid, dates) {
   return n;
 }
 
+// Trauma-night-within-run penalty (mirrors ResidentScheduler.jsx's candidatePool traumaRunCapped
+// hard exclusion and score()'s traumaSecondInRun/traumaMidRun soft terms — the retrospective
+// counterpart of that same chief-directed rule): for ONE night run, count TRAUMA-N placements
+// sitting strictly mid-run (not first/last position within the run) PLUS max(0, trauma-nights-in-
+// run - 1) — i.e. every trauma night beyond the first, wherever it sits. `run` is
+// `{start, end, len}` (indices into `dates`), matching nightShapePenalty's own run-detection
+// shape. Exported for direct unit testing (src/lib/scheduleQuality.test.js).
+export function traumaRunPenaltyFor(rs, run, dates) {
+  const shiftIds = [];
+  for (let i = run.start; i <= run.end; i++) shiftIds.push(rs[dates[i]]);
+  const traumaCount = shiftIds.filter(sid => sid === 'TRAUMA-N').length;
+  if (traumaCount === 0) return 0;
+  let midRunCount = 0;
+  shiftIds.forEach((sid, idx) => {
+    if (sid === 'TRAUMA-N' && idx > 0 && idx < shiftIds.length - 1) midRunCount++;
+  });
+  return midRunCount + Math.max(0, traumaCount - 1);
+}
+
+// Second-rest-day penalty (mirrors score()'s secondRestDay soft term — the retrospective
+// counterpart): a night run of >=3 nights whose 1st following date is a genuine rest day (empty)
+// but whose 2nd following date is WORKED counts once — the chief's own data shows a modal 2-day
+// gap after a night run, so leaving only one is a real (if soft) deviation. Block-edge exempt: if
+// the 2nd following date falls outside the block's own date range at all, there's nothing to
+// observe, so this is not counted as a violation. Exported for direct unit testing.
+export function secondRestDayPenaltyFor(rs, run, dates, lastIdx) {
+  if (run.len < 3) return 0;
+  const day2Idx = run.end + 2;
+  if (day2Idx > lastIdx) return 0; // block-edge exempt — 2nd following date isn't in this block
+  const day1Idx = run.end + 1;
+  if (rs[dates[day1Idx]]) return 0; // day 1 was also worked — not the "exactly 1 rest day" shape
+  return rs[dates[day2Idx]] ? 1 : 0;
+}
+
 // computeQualityMetrics: derives every scoring fact directly from `schedule` (+ coverage/dates/
 // residents/targets/nightRules/weekendPairs), except seniorGapCount/restCompromiseCount, which
 // arrive pre-computed by the caller from the final (post-repair) schedule.
@@ -275,6 +309,8 @@ export function computeQualityMetrics({
   // touching the block's first or last date is exempt from all penalties (edge policy mirrors the
   // validator, which tolerates short runs that may continue into the adjacent block).
   let nightShapePenalty = 0;
+  let traumaRunPenalty = 0;
+  let secondRestDayPenalty = 0;
   const lastIdx = dates.length - 1;
   for (const r of residents) {
     if (nightOnlyIds.has(r.id)) continue;
@@ -293,21 +329,25 @@ export function computeQualityMetrics({
       runs.push({ start, end: j, len: j - start + 1 });
       i = j + 1;
     }
+    // Second-rest-day penalty is checked against every run (only the run's OWN end matters — a
+    // run touching the block's START but not its end is still fully checkable), unlike the
+    // shortness/fragmentation/trauma-position penalties below, which are edge-exempt on BOTH
+    // sides (see traumaRunPenaltyFor/secondRestDayPenaltyFor's own comments for why).
+    for (const run of runs) secondRestDayPenalty += secondRestDayPenaltyFor(rs, run, dates, lastIdx);
     const interior = runs.filter(run => run.start > 0 && run.end < lastIdx);
     interior.forEach((run, idx) => {
       const { len } = run;
-      // Below minRun: penalty derived from NIGHT_RULES.minRun, not hardcoded lengths — this used
-      // to be the literals 3/2/1 for len 1/2/3, which was only correct because minRun was 4 at
-      // the time (minRun - len === 3,2,1). Deriving it keeps the ladder in sync with minRun
-      // (bumped 4→5) instead of silently leaving the new minRun-1 length (4) unmatched and
-      // scoring 0 — better than a compliant minRun-length run's 0.25.
-      if (len < nightRules.minRun) nightShapePenalty += (nightRules.minRun - len);
-      else if (len <= nightRules.maxRun) {
-        nightShapePenalty += 0.25 * (nightRules.idealRun - len);
-      }
-      // else: len > maxRun (or otherwise unmatched) — validateAll's hard rule already forbids
-      // this; not this scorer's job to penalize twice.
+      // Night-run SHAPE relaxation (chief-directed — mirrors ResidentScheduler.jsx's own
+      // nightCluster relaxation in score(): his real hand-built schedules run mostly 1-3 nights,
+      // 61% of real runs, not the aspirational 5-6 NIGHT_RULES ideal). Runs of 2-6 now incur NO
+      // shortness penalty at all; only a genuinely ISOLATED single night (run length 1) is still
+      // penalized, at the same magnitude as before. Fragmentation (every run beyond the first,
+      // below) and the block-edge exemption are both UNCHANGED.
+      if (len === 1) nightShapePenalty += (nightRules.minRun - 1);
+      // len 2..maxRun: no shortness penalty. len > maxRun: validateAll's hard rule already
+      // forbids this; not this scorer's job to penalize twice.
       if (idx > 0) nightShapePenalty += 2; // fragmentation: every run beyond the first
+      traumaRunPenalty += traumaRunPenaltyFor(rs, run, dates);
     });
   }
 
@@ -409,6 +449,8 @@ export function computeQualityMetrics({
     ayCarryoverConfidence: confidence,
     nightShapePenalty,
     workShapePenalty,
+    traumaRunPenalty,
+    secondRestDayPenalty,
   };
 }
 
@@ -451,6 +493,15 @@ export function computeQualityVector(metrics, rulePriority) {
   // `?? 0` guards callers built before this metric existed (several tests construct metrics
   // objects by hand) — undefined would poison the whole sum to NaN and silently make every
   // comparison false rather than failing loudly.
+  //
+  // traumaRunPenalty/secondRestDayPenalty (chief-directed trauma-run rules — see their own
+  // computeQualityMetrics comments) join this SAME existing slot too, at small coefficients (2
+  // and 1 respectively) — never a new slot, same reasoning as workShapePenalty/holidaySpread
+  // above: these are shape/preference concerns and must never outrank coverage/seniority/rest.
+  // 2 (trauma-run position/count) sits below nightShapePenalty's implicit 1.0-per-unit-length but
+  // is still meaningfully larger than 1 (second-rest-day), since a mid-run/3rd-trauma placement is
+  // a more concrete deviation from the chief's benchmark than a single missed rest day. `?? 0`
+  // guards the same hand-built-metrics-object test callers as the other optional fields above.
   const fairnessPlusShape =
     2 * metrics.underTargetTotal +
     10 * metrics.deficitSpread +
@@ -458,7 +509,9 @@ export function computeQualityVector(metrics, rulePriority) {
     6 * metrics.nightSpread +
     4 * metrics.weekendSpread +
     metrics.nightShapePenalty +
-    0.5 * metrics.workShapePenalty;
+    0.5 * metrics.workShapePenalty +
+    2 * (metrics.traumaRunPenalty ?? 0) +
+    1 * (metrics.secondRestDayPenalty ?? 0);
   return [n0, n1, n2, fairnessPlusShape];
 }
 

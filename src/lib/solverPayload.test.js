@@ -72,8 +72,10 @@ describe('buildSolverPayload', () => {
   it('coverage omits a shift/date that does not run at all that weekday (SHIFT_DOW)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
-    // PED-S only exists Mon/Tue/Thu/Fri (SHIFT_DOW) — 2026-07-11 is a Saturday.
-    expect(payload.coverage['PED-S']?.['2026-07-11']).toBeUndefined();
+    // TRAUMA-D only exists Sun/Tue/Thu/Sat (SHIFT_DOW) — 2026-07-08 is a Wednesday. (PED-S used
+    // to be the SHIFT_DOW example here too, but it now exists all 7 days — chief-confirmed
+    // against live QGenda, dropped from SHIFT_DOW entirely — so it no longer demonstrates this.)
+    expect(payload.coverage['TRAUMA-D']?.['2026-07-08']).toBeUndefined();
   });
 
   it('locked[] reflects every pre-seeded schedule cell, none invented', () => {
@@ -169,6 +171,65 @@ describe('buildSolverPayload', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
     expect(payload.rulePriority.sort()).toEqual(['coverageMin', 'postNightRest', 'seniorComposition'].sort());
+  });
+
+  // ── Batch 2 / Round 2b optional fields (see PAYLOAD_SCHEMA.md's "Batch 2"/"Round 2b" headers) ──
+  it('traumaNightShiftIds/pedsNightShiftIds are the fixed single-id lists', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.traumaNightShiftIds).toEqual(['TRAUMA-N']);
+    expect(payload.pedsNightShiftIds).toEqual(['PED-N']);
+  });
+
+  it('pedsSplitInternIds contains exactly the TRAUMA_PEDS/PEDS_TRAUMA split residents, and pedsInternNightTarget is 5', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.pedsSplitInternIds).toContain('syn_alpha'); // EM_HOME PGY-1, blockType TRAUMA_PEDS
+    expect(payload.pedsSplitInternIds).not.toContain('syn_mike'); // plain EM_HOME PGY-3, not split
+    expect(payload.pedsInternNightTarget).toBe(5);
+  });
+
+  it('emResidentIds is exactly EM_HOME/EM_BAMC schedulable residents, any PGY', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.emResidentIds).toEqual(expect.arrayContaining(['syn_alpha', 'syn_mike', 'syn_golf', 'syn_sierra', 'syn_tango']));
+    expect(payload.emResidentIds).not.toContain('syn_uniform'); // FM
+    expect(payload.emResidentIds).not.toContain('syn_whiskey'); // PEDS
+  });
+
+  it('emPgy2ResidentIds/emPgy3ResidentIds are EM_HOME-only, matching pgy — mirrors narrowForPgyGate (EM_BAMC never gates)', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.emPgy2ResidentIds).toContain('syn_golf'); // EM_HOME PGY-2
+    expect(payload.emPgy2ResidentIds).not.toContain('syn_mike'); // PGY-3
+    expect(payload.emPgy3ResidentIds).toContain('syn_mike'); // EM_HOME PGY-3
+    expect(payload.emPgy3ResidentIds).not.toContain('syn_golf'); // PGY-2
+    // EM_BAMC is never in either list, regardless of pgy — SENIOR_COMPOSITION/isSeniorFor/
+    // narrowForPgyGate only ever gate EM_HOME.
+    expect(payload.emPgy2ResidentIds).not.toContain('syn_sierra');
+    expect(payload.emPgy3ResidentIds).not.toContain('syn_sierra');
+  });
+
+  it('alternationExemptDates is empty with no 12h windows configured (no-op guarantee)', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.alternationExemptDates).toEqual([]);
+  });
+
+  it('alternationExemptDates fires exactly on the boundary dates of a configured 12h window', () => {
+    const fixture = makeFixture('standard');
+    const ayConf = {
+      twelveHourWindows: [
+        { id: 'w1', label: 'Conf', start: '2026-07-13', end: '2026-07-15', areas: ['POD'], mode: 'replace' },
+      ],
+    };
+    const payload = buildSolverPayload({ ...fixture, ayConf });
+    // The window starts 07-13 (differs from 07-12) and ends 07-15 (07-16 differs from 07-15) —
+    // both boundary dates land in the exempt set; an ordinary mid-window or mid-non-window date does not.
+    expect(payload.alternationExemptDates).toContain('2026-07-13');
+    expect(payload.alternationExemptDates).toContain('2026-07-16');
+    expect(payload.alternationExemptDates).not.toContain('2026-07-14');
+    expect(payload.alternationExemptDates).not.toContain('2026-07-20');
   });
 });
 

@@ -34,8 +34,8 @@ describe('PED-N / PED-N-FM split', () => {
 });
 
 describe('SHIFT_DOW', () => {
-  it('PED-S only exists Mon/Tue/Thu/Fri', () => {
-    expect(SHIFT_DOW['PED-S']).toEqual([1, 2, 4, 5]);
+  it('PED-S has no day-of-week restriction — it now exists all 7 days (chief-confirmed against live QGenda)', () => {
+    expect(SHIFT_DOW['PED-S']).toBeUndefined();
   });
 
   it('a shift absent from SHIFT_DOW has no day-of-week restriction', () => {

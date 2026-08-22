@@ -77,19 +77,31 @@ describe('composeCoverage: a plain date', () => {
   });
 });
 
-describe('composeCoverage: SHIFT_DOW (PED-S only exists Mon/Tue/Thu/Fri)', () => {
+describe('composeCoverage: SHIFT_DOW (TRAUMA-D only exists Sun/Tue/Thu/Sat)', () => {
   const allResidents = [resident('r1', 'EM_HOME', 2)];
 
-  it('PED-S is absent from a Wednesday entry', () => {
+  it('TRAUMA-D is absent from a Wednesday entry', () => {
     const out = composeCoverage({ dates: ['2026-06-03'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Wed
-    expect(out['2026-06-03']['PED-S']).toBeUndefined();
+    expect(out['2026-06-03']['TRAUMA-D']).toBeUndefined();
   });
 
-  it('PED-S is present on a Monday entry', () => {
-    const out = composeCoverage({ dates: ['2026-06-01'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Mon
-    expect(out['2026-06-01']['PED-S']).toBeDefined();
-    expect(out['2026-06-01']['PED-S'].min).toBe(DEFAULT_COVERAGE['PED-S'].min);
-    expect(out['2026-06-01']['PED-S'].max).toBe(DEFAULT_COVERAGE['PED-S'].max);
+  it('TRAUMA-D is present on a Tuesday entry', () => {
+    const out = composeCoverage({ dates: ['2026-06-02'], schedule: {}, allResidents, coverage: {}, ayConf: {} }); // Tue
+    expect(out['2026-06-02']['TRAUMA-D']).toBeDefined();
+    expect(out['2026-06-02']['TRAUMA-D'].min).toBe(DEFAULT_COVERAGE['TRAUMA-D'].min);
+    expect(out['2026-06-02']['TRAUMA-D'].max).toBe(DEFAULT_COVERAGE['TRAUMA-D'].max);
+  });
+
+  // PED-S used to be Mon/Tue/Thu/Fri-only via this same mechanism — it now exists all 7 days
+  // (chief-confirmed against live QGenda, dropped from SHIFT_DOW entirely), so a Wednesday entry
+  // must be present, not absent, and every other weekday too.
+  it('PED-S is present on every day of the week, including Wednesday, now that it has no SHIFT_DOW entry', () => {
+    for (const ds of ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07']) {
+      const out = composeCoverage({ dates: [ds], schedule: {}, allResidents, coverage: {}, ayConf: {} });
+      expect(out[ds]['PED-S'], `PED-S missing on ${ds}`).toBeDefined();
+      expect(out[ds]['PED-S'].min).toBe(DEFAULT_COVERAGE['PED-S'].min);
+      expect(out[ds]['PED-S'].max).toBe(DEFAULT_COVERAGE['PED-S'].max);
+    }
   });
 });
 

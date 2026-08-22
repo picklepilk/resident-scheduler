@@ -9,6 +9,8 @@ import {
   computeQualityVector,
   compareVectors,
   betterQuality,
+  traumaRunPenaltyFor,
+  secondRestDayPenaltyFor,
 } from './scheduleQuality.js';
 
 const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
@@ -33,6 +35,8 @@ function makeMetrics(overrides) {
     // they all resolve at tuple index 0-2, before slot 3 is ever compared; any test that reads slot
     // 3 directly (see the holidaySpread weighting block) needs it finite.
     workShapePenalty: 0,
+    traumaRunPenalty: 0,
+    secondRestDayPenalty: 0,
     ...overrides,
   };
 }
@@ -127,34 +131,37 @@ describe('computeQualityMetrics — night-run shape', () => {
 
     expect(fragmented.nightShapePenalty).toBeGreaterThan(clustered.nightShapePenalty);
     // Sanity-check the exact numbers per the documented formula:
-    // fragmented: 3 runs × (+3 for len1) + 2 fragmentation bonuses (beyond-first) × +2 = 9 + 4 = 13
+    // fragmented: 3 runs × (+(minRun-1) for len1, minRun=4 here) + 2 fragmentation bonuses
+    // (beyond-first) × +2 = 9 + 4 = 13
     expect(fragmented.nightShapePenalty).toBeCloseTo(13, 5);
-    // clustered: single len-5 run in [minRun,maxRun] -> 0.25*(6-5) = 0.25
-    expect(clustered.nightShapePenalty).toBeCloseTo(0.25, 5);
+    // clustered: single len-5 run — inside the relaxed 2-6 no-shortness-penalty band (see the
+    // dedicated relaxation test below) -> 0.
+    expect(clustered.nightShapePenalty).toBeCloseTo(0, 5);
   });
 
-  it('interior run one below minRun scores worse than a compliant run at minRun (regression: minRun 4→5)', () => {
-    // The app's real NIGHT_RULES.minRun is 5, not this file's local minRun-4 constant — exercise
-    // the ladder at the real value so a 4-run (structurally short) and a 5-run (compliant) are
-    // both covered and the 4-run must score worse, never equal or better.
+  it('night-run SHAPE relaxation: runs of 2-6 score zero shortness penalty; only an isolated single night is still penalized', () => {
+    // Chief-directed relaxation (mirrors ResidentScheduler.jsx's score() nightCluster relaxation):
+    // his own real hand-built schedules run mostly 1-3 nights (61% of real runs), not the
+    // aspirational 5-6 NIGHT_RULES ideal. This is the regression guard for that change — it used
+    // to be that every length below minRun(5) scored (minRun-len), so a length-4 run scored 1 and
+    // a length-2 run scored 3. Now only length-1 (a genuinely isolated night) is penalized at all.
     const rules = { minRun: 5, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
-    const dates = mkDates('2026-01-01', 9); // indices 0..8
+    const dates = mkDates('2026-01-01', 12); // indices 0..11, well clear of the block edges
 
-    // Interior 4-night run (idx 2..5) — one below minRun(5).
-    const fourRunSchedule = {
-      r1: Object.fromEntries([2, 3, 4, 5].map(i => [dates[i], 'POD-N'])),
-    };
-    // Interior 5-night run (idx 2..6) — exactly minRun, compliant.
-    const fiveRunSchedule = {
-      r1: Object.fromEntries([2, 3, 4, 5, 6].map(i => [dates[i], 'POD-N'])),
-    };
+    const runOf = (startIdx, len) => ({
+      r1: Object.fromEntries(Array.from({ length: len }, (_, k) => startIdx + k).map(i => [dates[i], 'POD-N'])),
+    });
 
-    const fourRun = computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: fourRunSchedule, dates });
-    const fiveRun = computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: fiveRunSchedule, dates });
+    const penaltyForLen = len =>
+      computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: runOf(2, len), dates }).nightShapePenalty;
 
-    expect(fourRun.nightShapePenalty).toBeGreaterThan(fiveRun.nightShapePenalty);
-    expect(fourRun.nightShapePenalty).toBeCloseTo(1, 5); // minRun(5) - len(4)
-    expect(fiveRun.nightShapePenalty).toBeCloseTo(0.25, 5); // 0.25*(idealRun(6)-len(5))
+    // Isolated single night (len 1) — still penalized, same minRun-1 magnitude as before.
+    expect(penaltyForLen(1)).toBeCloseTo(rules.minRun - 1, 5);
+    // Runs of length 2 through 6 (the maxRun cap) — NO shortness penalty at all under the
+    // relaxation, including the two lengths (2, 4) that used to be penalized (3 and 1 respectively).
+    for (let len = 2; len <= 6; len++) {
+      expect(penaltyForLen(len), `length-${len} run should score 0`).toBeCloseTo(0, 5);
+    }
   });
 
   it('a night run touching the block start or end is exempt, even at length 1', () => {
@@ -173,6 +180,133 @@ describe('computeQualityMetrics — night-run shape', () => {
     const interiorSingle = { r1: { [dates[1]]: 'POD-N' } };
     const interiorMetrics = computeQualityMetrics({ ...baseInput, schedule: interiorSingle, dates });
     expect(interiorMetrics.nightShapePenalty).toBeGreaterThan(0);
+  });
+});
+
+describe('traumaRunPenaltyFor — pure helper', () => {
+  // dates only need enough entries to index into; the helper reads rs[dates[i]] for i in
+  // [run.start, run.end].
+  const dates = mkDates('2026-01-01', 6); // indices 0..5
+
+  it('a pure-trauma run of length 2 is not "mid-run" (no interior position) but still counts the 2nd trauma night', () => {
+    const rs = { [dates[0]]: 'TRAUMA-N', [dates[1]]: 'TRAUMA-N' };
+    const run = { start: 0, end: 1, len: 2 };
+    // traumaCount=2, midRunCount=0 (idx 0 and 1 are both an end of a 2-long run) -> 0 + max(0,2-1) = 1
+    expect(traumaRunPenaltyFor(rs, run, dates)).toBe(1);
+  });
+
+  it('a TRAUMA-N sitting strictly mid-run of a mixed 3-night run is penalized', () => {
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'TRAUMA-N', [dates[2]]: 'POD-N' };
+    const run = { start: 0, end: 2, len: 3 };
+    // traumaCount=1, midRunCount=1 (idx 1 is strictly interior) -> 1 + max(0,1-1) = 1
+    expect(traumaRunPenaltyFor(rs, run, dates)).toBe(1);
+  });
+
+  it('a TRAUMA-N at the START or END of a mixed run is free (not mid-run)', () => {
+    const startRs = { [dates[0]]: 'TRAUMA-N', [dates[1]]: 'POD-N', [dates[2]]: 'POD-N' };
+    const endRs = { [dates[0]]: 'POD-N', [dates[1]]: 'POD-N', [dates[2]]: 'TRAUMA-N' };
+    const run = { start: 0, end: 2, len: 3 };
+    expect(traumaRunPenaltyFor(startRs, run, dates)).toBe(0);
+    expect(traumaRunPenaltyFor(endRs, run, dates)).toBe(0);
+  });
+
+  it('a 1-night run is always free, trauma or not', () => {
+    const rs = { [dates[0]]: 'TRAUMA-N' };
+    const run = { start: 0, end: 0, len: 1 };
+    expect(traumaRunPenaltyFor(rs, run, dates)).toBe(0);
+  });
+
+  it('a run with no trauma nights at all scores 0', () => {
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'MT-N', [dates[2]]: 'FLEX-N' };
+    const run = { start: 0, end: 2, len: 3 };
+    expect(traumaRunPenaltyFor(rs, run, dates)).toBe(0);
+  });
+});
+
+describe('secondRestDayPenaltyFor — pure helper', () => {
+  const dates = mkDates('2026-01-01', 8); // indices 0..7
+
+  it('a run of >=3 followed by exactly 1 rest day then a worked day is penalized', () => {
+    // Run ends at idx 2 (len 3, idx 0..2); idx 3 empty (1st rest day); idx 4 worked (breaks the
+    // would-be 2nd rest day).
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'POD-N', [dates[2]]: 'POD-N', [dates[4]]: 'POD-D' };
+    const run = { start: 0, end: 2, len: 3 };
+    expect(secondRestDayPenaltyFor(rs, run, dates, dates.length - 1)).toBe(1);
+  });
+
+  it('a run of >=3 followed by 2 genuine rest days is not penalized', () => {
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'POD-N', [dates[2]]: 'POD-N' };
+    const run = { start: 0, end: 2, len: 3 };
+    expect(secondRestDayPenaltyFor(rs, run, dates, dates.length - 1)).toBe(0);
+  });
+
+  it('a run shorter than 3 is never penalized, even with the same 1-rest-day-then-work shape', () => {
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'POD-N', [dates[3]]: 'POD-D' };
+    const run = { start: 0, end: 1, len: 2 };
+    expect(secondRestDayPenaltyFor(rs, run, dates, dates.length - 1)).toBe(0);
+  });
+
+  it('block-edge exempt: a run whose 2nd following date falls outside the block is not penalized', () => {
+    // dates.length is 8 (idx 0..7); a run ending at idx 6 has its "2nd day after" at idx 8, out
+    // of range — nothing to observe, so this must not count as a violation.
+    const rs = { [dates[4]]: 'POD-N', [dates[5]]: 'POD-N', [dates[6]]: 'POD-N' };
+    const run = { start: 4, end: 6, len: 3 };
+    expect(secondRestDayPenaltyFor(rs, run, dates, dates.length - 1)).toBe(0);
+  });
+
+  it('day 1 also worked is a different shape (not "exactly 1 rest day") and is not penalized', () => {
+    const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'POD-N', [dates[2]]: 'POD-N', [dates[3]]: 'POD-D', [dates[4]]: 'POD-D' };
+    const run = { start: 0, end: 2, len: 3 };
+    expect(secondRestDayPenaltyFor(rs, run, dates, dates.length - 1)).toBe(0);
+  });
+});
+
+describe('computeQualityMetrics — trauma-run / second-rest-day integration', () => {
+  const residents = [{ id: 'r1', category: 'EM_HOME', pgy: 2 }];
+  const baseInput = {
+    coverage: {},
+    residents,
+    targets: { r1: null },
+    nightOnlyIds: new Set(),
+    nightRules: NIGHT_RULES,
+    weekendPairs: [],
+    seniorGapCount: 0,
+    restCompromiseCount: 0,
+  };
+
+  it('a mid-run TRAUMA-N placement surfaces as a nonzero traumaRunPenalty', () => {
+    const dates = mkDates('2026-01-01', 9);
+    const schedule = { r1: { [dates[2]]: 'POD-N', [dates[3]]: 'TRAUMA-N', [dates[4]]: 'POD-N' } };
+    const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
+    expect(metrics.traumaRunPenalty).toBeGreaterThan(0);
+  });
+
+  it('a clean 1-trauma-night run (at a run end) scores zero traumaRunPenalty', () => {
+    const dates = mkDates('2026-01-01', 9);
+    const schedule = { r1: { [dates[2]]: 'TRAUMA-N', [dates[3]]: 'POD-N', [dates[4]]: 'POD-N' } };
+    const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
+    expect(metrics.traumaRunPenalty).toBe(0);
+  });
+
+  it('breaking the 2nd rest day after a >=3-night run surfaces as a nonzero secondRestDayPenalty', () => {
+    const dates = mkDates('2026-01-01', 10);
+    const schedule = { r1: {
+      [dates[2]]: 'POD-N', [dates[3]]: 'POD-N', [dates[4]]: 'POD-N',
+      [dates[6]]: 'POD-D',
+    } };
+    const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
+    expect(metrics.secondRestDayPenalty).toBeGreaterThan(0);
+  });
+
+  it('traumaRunPenalty and secondRestDayPenalty both fold into the EXISTING last vector slot, not a new one', () => {
+    const priority = ['coverageMin', 'seniorComposition', 'postNightRest'];
+    const withPenalty = makeMetrics({ traumaRunPenalty: 3, secondRestDayPenalty: 2 });
+    const withoutPenalty = makeMetrics({});
+    const vecWith = computeQualityVector(withPenalty, priority);
+    const vecWithout = computeQualityVector(withoutPenalty, priority);
+    expect(vecWith).toHaveLength(4);
+    // 2 * traumaRunPenalty(3) + 1 * secondRestDayPenalty(2) = 6 + 2 = 8
+    expect(vecWith[3] - vecWithout[3]).toBeCloseTo(8, 10);
   });
 });
 

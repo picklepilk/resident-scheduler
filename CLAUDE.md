@@ -304,6 +304,28 @@ policy.
   grows: an eligibility carve-out enforced only inside the generator's `candidatePool` (not inside
   `getEligibleShifts` itself) needs the same extra filter added to `buildSolverPayload`, or the
   solver silently doesn't know about it.
+- **Round 2b optional payload fields** (all documented in PAYLOAD_SCHEMA.md's own "Batch 2"/
+  "Round 2b" headers; every one defaults to empty/zero and every consuming solver term is a
+  documented no-op under that default, so an older JS build that never sends them behaves
+  byte-for-byte as before): `buildSolverPayload` now populates `traumaNightShiftIds` (`['TRAUMA-N']`),
+  `pedsNightShiftIds` (`['PED-N']`), `pedsSplitInternIds` (schedulable residents where
+  `isTraumaPedsSplitResident` is true), `pedsInternNightTarget` (flat `5`, matches `score()`'s own
+  `pedsInternNightDeficit` target), `alternationExemptDates` (every block date whose resolved
+  `twelveHourStateFor` — `replaceAreas`/`addAreas` — differs from the PRIOR calendar date's,
+  computed against one day before `dates[0]` too so a window starting exactly on day 1 still
+  counts as a boundary), `emResidentIds` (schedulable EM_HOME/EM_BAMC, any PGY — mirrors
+  `isEmResident`), and `emPgy2ResidentIds`/`emPgy3ResidentIds` (EM_HOME-only, filtered by pgy —
+  mirrors `narrowForPgyGate`'s own gate, which never considers EM_BAMC either, same as
+  `isSeniorFor`). Covered in `src/lib/solverPayload.test.js`.
+- **Chief benchmark fixture** (`src/lib/__fixtures__/chiefBenchmark.json`,
+  `src/lib/chiefBenchmark.test.js` + `.solver.test.js`): an ANONYMIZED (R-label ids only — public
+  repo, see "Data model & conventions" below) reproduction of the chief's own best-ever hand-built
+  7/27–8/23 block, verified against live QGenda screenshots — the source the Round 2b trauma-run/
+  night-shape/PED-N rules above were mined from. The tests run both engines against it and assert
+  match-or-beat the chief's own numbers on hard-error count, min-fill %, trauma-position compliance
+  rate, and night-run shape distribution, with floor asserts (≥95% min slots filled, 0 hard errors)
+  independent of the comparison — the `.solver.test.js` half gated the same
+  `SOLVER_PARITY=1`-style way as `solverParity.test.js`, so plain `npm test` never needs Python.
 - **Feasibility report UI** (only present when a solve's `mode === 'relaxed'` — the solver could
   only reach a feasible schedule by relaxing one or more rules; rides into
   `block.generationReport.feasibility` unchanged via `mapSolverResult`): a **"BEST EFFORT — rules
@@ -662,7 +684,13 @@ names below rather than trusting offsets.
   mouseup. Deliberately **not** wired into `ResidentForm` — nested-modal interaction there was left
   unverified, a known gap. `SHIFT MATRIX TAB` (rotation-aware shift matrix),
   `RULES TAB` ("Scheduling Rules" in UI — day/rotation rules plus Daily Shift Coverage
-  editor, now paired min/max inputs per shift, consumed by generator), `SHIFT PICKER MODAL`
+  editor, now paired min/max inputs per shift, consumed by generator — Round 2b replaced the raw
+  `w-12` native number spinners with a reusable `Stepper` UI primitive (near `SectionCard`):
+  `[-]`/`[+]` buttons at the 36px (`h-9 w-9`) accessibility-minimum tap target, `tabular-nums`
+  value, same clamping (`maxCap` 1 for TRAUMA else 10, min/max mutually adjust the sibling) and
+  sparse-override `update()`/overridden-highlight/reset-button semantics as before, just a
+  controlled `value`/`onChange` component instead of a bare `<input type="number">` — mobile-usable
+  now, still inside the existing `overflow-x-auto` table wrapper for narrow screens), `SHIFT PICKER MODAL`
   (its violation aggregator is module-level `cellViolations(resident, dateStr, sid, block,
   eligOverrides, appSettings, dayRules)`, shared with grid's drag-and-drop below so both
   surfaces can't drift apart on what counts as violation) + `SCHEDULE GRID` (main editing grid;
@@ -672,7 +700,21 @@ names below rather than trusting offsets.
   `violMap` memo rather than second `validateAll` run — or `ScheduleCalendarView` — continuous
   Sunday-start week rows for whole block via `buildWeekRows` (no month-pagination; block
   routinely spans two calendar months), with per-shift-area filter, chip clicks opening
-  same `ShiftPickerModal` grid uses; grid also renders **daily coverage footer** — one
+  same `ShiftPickerModal` grid uses. **Progress overlay** (Round 2b, ephemeral component state —
+  `genActive`/`genStageLabel`/`genElapsedSec`, `startGenProgress`/`stopGenProgress`, not persisted):
+  a `fixed inset-0 z-[100]` dimmed/blurred overlay shown for the duration of `runGenerate`/
+  `runPartialRegenerate` (both wrap their body in `startGenProgress`/`stopGenProgress(...)` inside
+  a `finally`, so it ALWAYS closes even on error/exception) — a spinning `RefreshCw`, a pulsing
+  indeterminate bar, an elapsed-seconds counter ticking off a `setInterval`, and stage text updated
+  by `generateViaSolverOrLocal` itself as the pipeline moves through "Preparing…" → "Optimizing
+  schedule — up to ~30s…" (solver in flight) → "Validating…" (solver responded) → done, or
+  "Optimizer unavailable — using built-in generator…" on fallback / "Generating (built-in
+  engine)…" when the solver is off entirely. Sits at z-100 — above the grid's own 10/20/30 ladder
+  and the `fullscreen` promotion (60), below the toast (200), per the z-ladder note below. Because
+  `generateScheduleBest` is a long synchronous CPU-bound call that would otherwise block the paint
+  of its own "Generating…" label, a `yieldToPaint()` helper (`await` two nested
+  `requestAnimationFrame`s) is awaited right before every synchronous generator call so the stage
+  text is actually on screen before the main thread blocks. grid also renders **daily coverage footer** — one
   summary row of `filled/minTotal` per date via module-level `computeCoverageByDate` (shared
   with Dashboard stat tiles and Calendar view so none of three can drift), computed
   directly from full schedule, never category-filtered rows, plus click-to-expand
@@ -687,7 +729,8 @@ names below rather than trusting offsets.
   to be `overflow-x-auto` with no height, so it never scrolled vertically and `top-0` never engaged
   (vertical scroll happened on `<main>`, outside the sticky ancestor chain) — **don't remove that
   height bound**. Z-ladder inside the grid: cells/badges 10 → header row + footer 20 → the two
-  corner cells 30, all below the app header (50) and toast (200). The corner cells set z via an
+  corner cells 30, all below the app header (50), the `fullscreen` promotion (60), the Round 2b
+  progress overlay (100, see above), and the toast (200). The corner cells set z via an
   INLINE `zIndex`, not a Tailwind class: `.grid-sticky` is UNLAYERED css and beats `@layer
   utilities` regardless of specificity, so a `z-30` class silently loses to its `z-index:10`.
   A `fullscreen` state promotes the grid to `fixed inset-0 z-[60]` (Esc exits) — in-app overlay,
@@ -857,6 +900,21 @@ names below rather than trusting offsets.
   hues (`indigo`/`sky`/`emerald`/`yellow`/`orange`/`pink`/`violet`/`teal`/`stone` — see
   `CATEGORIES`). Wrapped in `@media screen` so print/PDF output always stays light regardless of
   viewer's theme. `res_dark_mode` excluded from `LS_BACKUP_KEYS` — see "Persistence" above.
+  **Round 2b audited the WHOLE app, not just the header** (`src/RequestsTab.jsx`,
+  `src/AppGate.jsx`, `src/residentRequests/*.jsx` too — all three render inside AppGate's own
+  `.dark`-wrapping div, reading the same `res_dark_mode` key, so they need the identical
+  treatment): grepped every literal `bg-*`/`text-*`/`border-*`/`ring-*`/`divide-*` color class
+  across those files, diffed against `index.css`'s existing `.dark` rules, and added the missing
+  ones for `amber-100`, `indigo-50/100`, `rose-50/60` (bg); `amber-100/300`, `gray-50/400`,
+  `green-200/300`, `indigo-200`, `orange-200`, `rose-200`, `teal-200`, `violet-200` (border);
+  `amber-100`, `gray-50/100` (specific-color `divide-*`); and `green-600/800/900`,
+  `indigo-600/700`, `orange-600`, `rose-700` (text) — same rgba/hex conventions the existing sheet
+  already uses per shade (see the "Round 2b dark-mode audit" comment block in `index.css`).
+  Deliberately left UNCHANGED: solid `-500/600/700` "button" backgrounds (paired with
+  `text-white`, contrast-safe by construction on either theme), decorative `ring-*`/`outline-*`
+  accents (vivid mid-tone, stays legible on both), the `bg-black/40|50` modal scrims, and anything
+  inside `SidebarNav`/`DAY_MARKERS`' own `dark` field (that sidebar is a solid dark-navy surface in
+  every theme, already exempt — see the `DAY_MARKERS` bullet below).
 - **Dashboard/Home merge**: the Home tab is GONE — `TABS` no longer has a `'home'` entry, default
   landing `tab` is now `'dashboard'` (a one-line `useEffect` redirects any stale persisted
   `tab==='home'` to `'dashboard'`; `reconcileTabOrder`'s existing unknown-id guard already
@@ -881,7 +939,10 @@ names below rather than trusting offsets.
   existing snapshot's `published` flag when re-saving same block id (snapshot replaced
   wholesale, easy to lose this). Header light shell (white bar, gradient indigo
   logo tile) mirroring `em-scheduler`'s layout language with this app's own indigo accent (em uses
-  rose), plus `AutosaveIndicator` pill next to CSV/PDF export buttons.
+  rose), plus `AutosaveIndicator` pill next to CSV/PDF export buttons. **The "DRAFT v0.4" badge
+  next to the block name is GONE (Round 2b)** — a stale hardcoded marker with no version source
+  wired to it; if you're hunting for it in an old screenshot/doc, it no longer exists anywhere in
+  the header.
 
 ## Data model & conventions
 - Shift IDs follow `AREA-TYPE` (e.g. `POD-D`, `MT-N`, `TRAUMA-D` — note TRAUMA has no evening shift;
@@ -961,25 +1022,36 @@ names below rather than trusting offsets.
   those cells are labelled the **in-window** default, not an outside-window one.
 - **PED-N SPLIT INTO TWO SHIFT IDS (2026-08-18).** One `PED-N` used to model two different
   real-world shifts, at the wrong hours for one of them. They are now separate:
-  - **`PED-N` "Peds Night", 19:00–04:00, EM_HOME_1/2/3 only, Thu–Sun.** Confined by the
-    `overrideImmune` `ped_n_em_window` shiftGate (`allowedDays: [0,4,5,6]` — Sun/Thu/Fri/Sat, i.e.
-    Thu-through-Sun; the gate ALSO stops an EM resident being placed on it Mon/Tue/Wed, when the
-    19:00 shift does not exist at all, which is why the gate is still needed post-split). PGY-1 is
-    soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`.
+  - **`PED-N` "Peds Night", 19:00–04:00.** Originally confined to EM_HOME_1/2/3 Thu–Sun via an
+    `overrideImmune` `ped_n_em_window` shiftGate. **Round 2b (2026-08-22) removed that gate
+    entirely** — chief-confirmed against live QGenda staffing (Peds-Brown/Chapagain/Villareal/
+    Kanegi, BAMC-Armstrong/Gannon/Manalang, FM1-Mancera, plus EM residents all actually work it):
+    PED-N now runs **all 7 nights**, open to EM_HOME_1/2/3, EM_BAMC_1, FM_1, and PEDS_2/PEDS_3
+    (Peds rotators), enforced purely by `BASE_ELIGIBILITY` membership + the derived
+    `PED_GUARD_LEGITIMATE_OWNER` guard — same mechanism every other guarded shift id already used,
+    no bespoke gate needed once the day-window restriction was gone. The gate's frozen pre-removal
+    shape lives in `LEGACY_DAY_RULE_DEFAULTS` (one snapshot per EM_HOME_1/2/3/EM_BAMC_1/FM_1 key)
+    so an old chief customization that happens to equal the old Thu-Sun shape is auto-corrected
+    rather than masking the fix forever — see "Rule-default migration" below. PGY-1 EM Home is
+    still soft-deprioritized via `score()`'s `pedNPgy1Deprioritize` unless `hasPriorPedsTrauma`.
   - **`PED-N-FM` "Peds Night (FM Only)", 23:00–08:00, FM_3 only, Mon/Tue/Wed.** `BASE_ELIGIBILITY.FM_3`
     is now `['PED-N-FM']` — `PED-N12` was dropped (19:00–07:00, the 12h variant of the *EM* timing,
     never FM's). Accepted tradeoff: under a `mode:'replace'` PED 12h window, `twelveHourAllows`
     strips `PED-N-FM` and FM-3 has zero eligibility those dates.
   Both stay `{min:0,max:1}` (best-effort, not required — chief: "does not HAVE to be someone
-  scheduled"), both stay `type:'night'` (FM-3's `isNightOnlyResident` exemption depends on it), and
-  `PED_GUARD_LEGITIMATE_OWNER` is now `{'PED-N': ['EM_HOME_1','EM_HOME_2','EM_HOME_3'],
-  'PED-N-FM': 'FM_3', 'PED-S': 'EM_HOME_2'}` — back to single-owner for the FM shift.
+  scheduled"), both stay `type:'night'` (FM-3's `isNightOnlyResident` exemption depends on it).
+  `PED_GUARD_LEGITIMATE_OWNER` is now derived automatically (`Object.fromEntries` over
+  `['PED-N','PED-N-FM','PED-S'].map(...)`, near `BASE_ELIGIBILITY`) rather than hand-listed, so a
+  future BASE_ELIGIBILITY grant/removal for any of these three ids can't drift out of sync with its
+  guard — genuinely multi-owner for PED-N/PED-S, single-owner (`FM_3`) for PED-N-FM.
   **Three non-obvious consequences of the split, all load-bearing:**
   1. **`shiftOverlapsJC('PED-N')` flipped false→true** (it is `startH < 21 && startH+durationH > 18`;
-     false at 23:00, true at 19:00). Currently **LATENT** — `ped_n_em_window` confines PED-N to
-     Thu–Sun and Journal Club defaults to first Tuesdays, so an EM resident can't be on it on a
-     default JC date. It goes live the moment the chief moves a JC date onto a Thu–Sun. Don't
-     promise changed JC counts.
+     false at 23:00, true at 19:00). Was **latent** while `ped_n_em_window` confined PED-N to
+     Thu–Sun and Journal Club defaulted to first Tuesdays. **The Round 2b window-gate removal makes
+     this LIVE** — PED-N can now land on any weekday, including a first-Tuesday JC date — so an EM
+     resident on PED-N that night now counts as having worked Journal Club and a JC presenter's own
+     PED-N that evening is hard-stripped, same as any other JC-overlapping shift. Not merely a
+     someday-risk anymore; re-verify JC counts after this change if the chief reports a surprise.
   2. **Ending at 04:00 made night→evening-next-day legal for the first time** — `checkRestViolations`
      passes (10–11h ≥ the 9h `durationH`) and the circadian hard rules only covered eve→day/day→eve.
      `checkCircadianViolations`' backward `postNightRest` scan was widened from `newType === 'day'`
@@ -997,11 +1069,15 @@ names below rather than trusting offsets.
      cloud row's still-unmigrated `res_current_block`/`res_blocks_history` with no second chance.
      Any future one-shot-marker migration needs the same gate; the `LEGACY_*_DEFAULTS` prune effect
      above it does NOT, because it stores no marker and simply re-runs on the next mount.
-  **PED-S (Peds Swing) is still
-  EM-Home-PGY-2-on-EM/TOX-or-EM/EMS-only program-wide** — no other category/PGY ever eligible,
-  including via Shift Matrix rotation override (`overrideImmune: true`); PED-S coverage is now
-  `{min:0,max:1}` too (chief: "no priority for peds swing shift to be filled"). Add a new
-  eligibility entry, don't add PED-S to it (PED-N's guard is now intentionally multi-owner).
+  **PED-S (Peds Swing, 11:00–20:00) also went from EM-Home-PGY-2-on-EM/TOX-or-EM/EMS-only,
+  Mon/Tue/Thu/Fri, to all 7 days (dropped from `SHIFT_DOW` entirely) and open to EM_HOME_1/2/3,
+  EM_BAMC_1, PEDS_2/PEDS_3, and FM_1** — same chief-confirmed live-QGenda staffing evidence as
+  PED-N above (Round 2b, 2026-08-22). The old `ped_s_rotation_gate`/`ped_s_day_window` shiftGate
+  pair is gone from the live default the same way `ped_n_em_window` is — frozen pre-removal shape
+  pushed onto `LEGACY_DAY_RULE_DEFAULTS`. PED-S coverage stays `{min:0,max:1}` (chief: "no priority
+  for peds swing shift to be filled"). Ownership resolves through the same derived
+  `PED_GUARD_LEGITIMATE_OWNER` as PED-N — add a new `BASE_ELIGIBILITY` grant, don't hand-edit the
+  guard map.
 - **EM_HOME_2's EM/EMS ↔ EM/TOX weekday windows swap on 2026-08-01** (chief-directed change, not
   bug): before that date EM/EMS covers Mon/Tue, EM/TOX covers Thu/Fri; from that date on it's
   reversed. Both variants live in `DEFAULT_DAY_RULES.EM_HOME_2.shiftGates` simultaneously,
@@ -1033,6 +1109,38 @@ names below rather than trusting offsets.
   average and hard-excludes candidates who'd exceed it (`reason: 'hoursCapped'`) — `validateAll`'s
   `weeklyHourStats` warn remains the authoritative retrospective check for edge cases the
   pro-ration approximates.
+- **Trauma nights within a night run** (Round 2b, chief's hand-built-schedule analysis, both
+  engines): **hard, at most 2 `TRAUMA-N` per contiguous night run** — `candidatePool` excludes a
+  candidate who'd take a 3rd (reason `'traumaRunCapped'`, `traumaNightRunCount`), `validateAll`
+  hard-errors an already-3+ run built by hand/import, and the solver's `traumaRunCap` (rule 43,
+  `solver/model/trauma_runs.py`) is config-independent and never relaxed by pass 2 — same
+  never-relax tier as `seniorComposition`. Below that hard floor, three SOFT tie-breaks (both
+  engines; JS: `score()`'s `traumaSecondInRun`(5)/`traumaMidRun`(6)/`nightDurationAlternation`(2),
+  classified in `SCORE_TIERS`'s `traumaNight`/always-on groups; solver: `traumaSecondInRun`/
+  `traumaMidRun`/`nightDurationAlternation` objective terms, same weights) — a 2nd trauma night in
+  one run is discouraged (1 preferred), a trauma night strictly INTERIOR to a mixed run (not
+  first/last) is discouraged (pure-trauma runs, 1-night runs, and start/end placements are free),
+  and alternating different-DURATION night shifts on adjacent dates within a run is discouraged
+  (generalizes trauma-vs-9h mixing, also covers D12/N12 conference-window edges) — exempt for any
+  date pair touching a 12h-window boundary (`alternationExemptDates`, calendar-forced mixing, see
+  `buildSolverPayload`'s own field below).
+- **Night-run shape relaxation** (Round 2b, chief's real hand-built schedules run mostly 1-3
+  nights — 61% of real runs — not the aspirational `NIGHT_RULES` 5-6 ideal): the generator's
+  `score()` `nightCluster` term and `src/lib/scheduleQuality.js`'s `nightShapePenalty` metric
+  (renamed `isolatedNight` in the solver's rule registry, PAYLOAD_SCHEMA.md rule 36) both stopped
+  penalizing runs of length 2-6 — only a genuinely ISOLATED single night (run length exactly 1,
+  about to be started or about to be stranded) still costs anything; starting a 2nd/3rd+ separate
+  STINT is a different, unchanged axis (`priorRunCount`). **This is a SCORING-only relaxation —
+  `NIGHT_RULES.minRun`(5)/`maxRun`(6) themselves are untouched, and so is `validateAll`'s own
+  advisory "Isolated night stint" warning**, which still fires for any run `< NIGHT_RULES.minRun`
+  (i.e. still nudges the chief toward 5-6 even though the ranker no longer penalizes a clean 2-4
+  night run internally) — don't conflate the two; see `nightCluster`'s own header comment in
+  `ResidentScheduler.jsx` for why they were deliberately left to diverge. **New soft "2nd rest day"
+  preference** (`secondRestDay`, weight 1, `PREFERENCE_ALWAYS`): after a night run of 3+ nights
+  ends, a 2nd full day off is mildly preferred before the next shift (chief's modal real gap is 2
+  days) — `secondRestDayPenaltyFor` in `scheduleQuality.js` scores it retrospectively, `score()`'s
+  own `secondRestDay` term nudges the generator the same way at fill time; both engines, small
+  weight, ranked below coverage.
 - **Soft Rule Priority** (`appSettings.rulePriority`, `SOFT_RULES`, `DEFAULT_RULE_PRIORITY`,
   `normalizeRulePriority`, `ruleRank` — all near `NIGHT_RULES`): chief-orderable ranking of three
   soft rules — `coverageMin`, `seniorComposition`, `postNightRest` — edited on Rules tab
@@ -1173,6 +1281,39 @@ names below rather than trusting offsets.
   coverage exception in the app; the Rules-tab coverage EDITOR stays simple/non-dow-aware, just
   has a caption noting the Mon/Tue bump). `score()` gives a soft +15 bonus to an EM Home/BAMC
   PGY-1 filling POD's 2nd/3rd slot once a PGY-3 is already present (`podPgy1SecondSlot`).
+- **EM-count composition (2b-1, SOFT, both engines) — distinct from the hard PGY-CLASS requirement
+  above.** POD staffed at 2 wants both bodies to be EM (EM_HOME/EM_BAMC, `isEmResident`); POD at 3
+  wants ≥2 EM (3rd free to be off-service); FLEX at any staffing wants ≥1 EM. Below the 2-body
+  (POD)/1-body (FLEX) staffing threshold, zero penalty either way — this only steers a fill that's
+  already happening, never blocks one. JS: `score()`'s `podEmComposition`/`flexEmComposition`
+  terms (weight 6 each, `SCORE_WEIGHTS`, `pod`/`flex` tiers) plus a matching `validateAll`
+  WARNING (not error) using the existing senior-composition loop shape, counting
+  `assignedHere.filter(isEmResident)`. Solver: `emResidentIds` payload field (schedulable
+  EM_HOME/EM_BAMC ids, any PGY) drives the same-named `podEmComposition`/`flexEmComposition`
+  objective terms in `solver/model/em_composition.py` — inert (zero cost) when the field is
+  absent/empty, same no-op guarantee as every other Round 2b optional field. 3rd-slot preferences:
+  POD's 3rd EM body already preferred PGY-1 over PGY-3 via the pre-existing `podPgy1SecondSlot`;
+  FLEX's 3rd slot gained a small new `flexPgy2ThirdSlot` weight preferring PGY-2 over PGY-1.
+- **PGY gating pool-restrict (2b-2, generator + validateAll; solver gets a soft-cost mirror, not a
+  pool restriction — CP-SAT has no "restrict, but only if a fallback exists" primitive).**
+  `narrowForPgyGate(pool, shift, ds, blockStart, appSettings, ayConf)` (near `isSeniorFor`):
+  PGY-2 is excluded from a POD candidate pool while the day's requirement can be met without them
+  (an EM_HOME PGY-3, or the Wellness-Wednesday/conference-away substitute, already qualifies) —
+  falls back to including PGY-2 only when no PGY-3 is available, recording the fallback in
+  `report.pgyFallbacks` (`{residentId, name, dateStr, shiftId, area, pgy}`, distinct array from the
+  dormant `seniorGaps`, surfaced on the Violations tab). Mirrors for FLEX: PGY-3 excluded while a
+  PGY-2 can cover it, falls back to PGY-3 otherwise. **EM_HOME only, never EM_BAMC** — same gate
+  `isSeniorFor`/`SENIOR_COMPOSITION` already uses; `emPgy2ResidentIds`/`emPgy3ResidentIds` in
+  `buildSolverPayload` mirror this exactly (EM_HOME-only, filtered by pgy) so the solver's
+  `podPgy2Fallback`/`flexPgy3Fallback` soft per-assignment costs target the identical population.
+  `validateAll` runs its OWN independent check (not a replay of the generator's `pgyFallbacks`
+  report) — deliberately the CONSERVATIVE proxy: it warns on a gated PGY (POD PGY-2/FLEX PGY-3)
+  only when a genuine PRIMARY-PGY resident is ALSO already covering that shift's hard senior
+  requirement, i.e. this extra body plainly wasn't needed for composition — rather than a fuller
+  whole-roster "was a free primary sitting idle" scan, which would risk false positives from
+  target headroom/eligibility/time-off edge cases already handled inside `narrowForPgyGate`. Same
+  warn-not-block posture as the EM-composition rule above, since both are steering preferences
+  layered on top of the hard PGY-CLASS/senior-composition requirement, not new hard requirements.
 - **Wellness Wednesdays** (`computedDayRules: [{type:'wellnessWednesday', ordinal:N}]`,
   `nthWeekdayOnOrAfter` helper): EM_HOME_1 gets the block's 1st Wednesday off day/eve, EM_HOME_2
   the 2nd, EM_HOME_3 the 3rd (night shift starting that Wednesday still allowed — only day/eve
@@ -1266,6 +1407,18 @@ names below rather than trusting offsets.
   `jeopardyDates: []` was dropped from both off-service creation paths (`ImportMatrixModal`'s
   off-service rows, `ImportRosterModal`'s off-service import) — a new off-service record shouldn't
   carry a field nothing reads any more.
+- **Deferred: jeopardy long-block pattern (documented, not yet modeled).** The chief's real
+  practice for `schedulable:false` categories (ADMIN/METRO/ELECTIVE — see `BLOCK_TARGETS`/
+  `EM_HOME_BLOCK_TYPES_BY_PGY`) is to run them as 6-12-day jeopardy STREAKS with a single token
+  clinical shift at the block's end, not day-by-day jeopardy assignment the way EM Home/BAMC
+  residents get it. Nothing in `jeopardyCandidatesFor`/`fillJeopardy`/the jeopardy tab currently
+  represents a multi-day streak as one unit, and — per "Off-service residents have no jeopardy"
+  above — these residents are excluded from the jeopardy TRACK entirely today (jeopardy is
+  EM_HOME/EM_BAMC-only by category gate). Modeling this would need at minimum: a way to mark a
+  non-EM resident jeopardy-eligible for a bounded date range, a "streak" concept distinct from the
+  current per-date `jeopardyDates` list, and a rule for the token end-of-block clinical shift's own
+  eligibility/coverage interaction. Explicitly out of scope for Round 2b — recorded here so it
+  isn't re-discovered from scratch next time the chief brings it up.
 - **Jeopardy & sick-call ledger** (`appSettings.jeopardyLog`, `src/lib/jeopardyLedger.js`,
   `JeopardySickCallsCard` on the Dashboard): ONE incident record per real event —
   `{id, date, shiftId, sickResidentId, activatedResidentId, note, at}` — with both the sick-call
@@ -1334,17 +1487,26 @@ names below rather than trusting offsets.
   TRAUMA_PEDS/PEDS_TRAUMA enforced as two separate protected sub-targets (8 trauma-half shifts,
   11 peds-half shifts) via per-resident sub-caps in generator's `candidatePool`, not just
   single combined number — peds half (filled first, since Trauma Day generated last) can no
-  longer silently consume trauma half's budget. **`appSettings.allowSplitPedsNights`** (default
-  `false`, Rules tab toggle) lets the peds half additionally take `PED-N` (9h, Thu-Sun) — the
-  trauma half stays Trauma-Day-only UNCONDITIONALLY, no exceptions (there is no trauma-side
-  sub-target budget to charge a peds night to), and `PED-N12` is deliberately excluded — the chief
-  asked for the 9h shift only. The only thing ever blocking this was `getEligibleShifts` step 5's
-  hardcoded peds-half whitelist (`PED-D`/`PED-E` only); everything upstream already allowed it
-  (`PED-N` is already in `BASE_ELIGIBILITY.EM_HOME_1`, the `ped_n_em_window` shiftGate already
-  confines it to Thu-Sun, it already charges the 11-shift peds sub-target via `candidatePool`'s
-  `shift.area==='PED'` filter, and `score()`'s `pedNPgy1Deprioritize` is already 0 for these
-  residents). Read as `?? false` everywhere so an old backup with no such key stays off;
-  default-off means generation is bit-for-bit unchanged.
+  longer silently consume trauma half's budget. **`appSettings.allowSplitPedsNights`** (Rules tab
+  toggle) lets the peds half additionally take `PED-N` (9h; no longer Thu-Sun-only — see PED-N/
+  PED-S "all 7 nights/days" change above) — the trauma half stays Trauma-Day-only
+  UNCONDITIONALLY, no exceptions (there is no trauma-side sub-target budget to charge a peds night
+  to), and `PED-N12` is deliberately excluded — the chief asked for the 9h shift only. The only
+  thing ever blocking this was `getEligibleShifts` step 5's hardcoded peds-half whitelist
+  (`PED-D`/`PED-E` only); everything upstream already allowed it (`PED-N` is already in
+  `BASE_ELIGIBILITY.EM_HOME_1`, it already charges the 11-shift peds sub-target via
+  `candidatePool`'s `shift.area==='PED'` filter, and `score()`'s `pedNPgy1Deprioritize` is already
+  0 for these residents). **Default flipped `false` → `true` in Round 2b** (`?? true` at all three
+  read sites — `DEFAULT_SETTINGS`, the generator's own read, and the Rules-tab checkbox — chief
+  hand-schedules 5-6 PED-N per split intern, this is his normal practice, not an opt-in edge case;
+  **an old backup/cloud row with no such key now turns this ON**, the opposite of the original
+  default-off posture — if a chief's saved settings never explicitly set it, generation is no
+  longer bit-for-bit unchanged from before this flip). Soft target: `score()`'s
+  `pedsInternNightDeficit` term pushes a TRAUMA_PEDS/PEDS_TRAUMA intern toward **5** `PED-N` shifts
+  (matches chief's real 5-6/split-intern count, `(pedNCount[r.id]||0) < 5`), and the solver gets
+  the same push via `pedsSplitInternIds`/`pedsNightShiftIds`/`pedsInternNightTarget:5` in
+  `buildSolverPayload` (PAYLOAD_SCHEMA.md rule 48, `pedsInternNightDeficit` objective term) — both
+  engines target the identical number so neither can drift ahead of the other.
 - **BAMC residents schedulable by default.** `isSchedulable` falls back to `'EM'` rotation
   for EM_HOME/EM_BAMC residents with no `blockType` set — this makes BAMC residents added
   via Off-Service tab (never assigns `blockType`) actually appear in generated

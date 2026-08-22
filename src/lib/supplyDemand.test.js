@@ -11,14 +11,16 @@ import { computeTotalCoverageSupply, computeTotalTargetDemand, getShiftTarget } 
 describe('computeTotalCoverageSupply', () => {
   it('sums default per-shift coverage MAX for a single ordinary Wednesday, respecting SHIFT_DOW and the Wednesday POD-D/FLEX-D drop', () => {
     // 2026-07-08 is a Wednesday. With coverage={} (all defaults) and ayConf={} (no 12h window
-    // active anywhere): TRAUMA-D/TRAUMA-N/PED-S are excluded by SHIFT_DOW (none of their allowed
-    // weekdays include Wednesday); every 12h id resolves to max 0 (either DEFAULT_COVERAGE_MINMAX's
-    // explicit {0,0} for PED-D12/PED-N12, or the "12h id in no window" {0,0} branch for the other
-    // six). What remains: POD-D(2, DOW_COVERAGE_OVERRIDE forces max 2 same as base) + POD-E(2) +
-    // POD-N(2) + PED-D(1) + PED-E(1) + PED-N(1) + PED-N-FM(1) + FLEX-D(2, DOW_COVERAGE_OVERRIDE
-    // drops base max 3 -> 2) + FLEX-E(3) + FLEX-N(3) + MT-D(1) + MT-E(1) + MT-N(1) = 21.
+    // active anywhere): TRAUMA-D/TRAUMA-N are excluded by SHIFT_DOW (neither's allowed weekdays
+    // include Wednesday) — PED-S is NOT excluded here any more (chief-confirmed against live
+    // QGenda, dropped from SHIFT_DOW entirely — it now exists all 7 days); every 12h id resolves
+    // to max 0 (either DEFAULT_COVERAGE_MINMAX's explicit {0,0} for PED-D12/PED-N12, or the "12h
+    // id in no window" {0,0} branch for the other six). What remains: POD-D(2,
+    // DOW_COVERAGE_OVERRIDE forces max 2 same as base) + POD-E(2) + POD-N(2) + PED-D(1) + PED-E(1)
+    // + PED-N(1) + PED-N-FM(1) + PED-S(1) + FLEX-D(2, DOW_COVERAGE_OVERRIDE drops base max 3 -> 2)
+    // + FLEX-E(3) + FLEX-N(3) + MT-D(1) + MT-E(1) + MT-N(1) = 22.
     const supply = computeTotalCoverageSupply(['2026-07-08'], {}, {});
-    expect(supply).toBe(21);
+    expect(supply).toBe(22);
   });
 
   it('is additive across dates (two ordinary Wednesdays = double one)', () => {
@@ -27,9 +29,10 @@ describe('computeTotalCoverageSupply', () => {
     expect(two).toBe(one * 2);
   });
 
-  it('drops TRAUMA-D/TRAUMA-N/PED-S contribution on a day SHIFT_DOW excludes them, but includes it on an allowed day', () => {
+  it('drops TRAUMA-D/TRAUMA-N contribution on a day SHIFT_DOW excludes them, but includes it on an allowed day', () => {
     // 2026-07-09 is a Thursday: TRAUMA-D's allowed days are [Sun,Tue,Thu,Sat] (includes Thursday),
-    // so TRAUMA-D(max 1) and PED-S(max 1) both contribute there but not on the Wednesday above.
+    // so TRAUMA-D(max 1) contributes there but not on the Wednesday above (PED-S now contributes
+    // equally on both days — it has no SHIFT_DOW entry any more).
     const wed = computeTotalCoverageSupply(['2026-07-08'], {}, {});
     const thu = computeTotalCoverageSupply(['2026-07-09'], {}, {});
     expect(thu).toBeGreaterThan(wed);

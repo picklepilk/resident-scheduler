@@ -6,6 +6,22 @@ solver receives resolved sets/numbers and never re-implements eligibility/day-ru
 Rule ids below reference the registry in the approved plan
 (`~/.claude/plans/refactor-this-app-s-scheduling-stateless-locket.md` §1).
 
+**Batch 2 (2026-08-22, "Confirmed rule changes" A–C of that plan)** added five OPTIONAL top-level
+request fields — `traumaNightShiftIds`, `pedsSplitInternIds`, `pedsNightShiftIds`,
+`pedsInternNightTarget`, `alternationExemptDates` (documented inline in the request shape below).
+Payload `version` stays `1`: every field defaults to empty/zero, and every constraint/objective term
+that consumes it (`solver/model/trauma_runs.py`) is a documented no-op under that default, so an
+older JS build that never sends them behaves byte-for-byte as before.
+
+**Round 2b (items 2b-1/2b-2 of the same plan)** added three more OPTIONAL top-level request fields
+— `emResidentIds`, `emPgy2ResidentIds`, `emPgy3ResidentIds` (documented inline below). Same
+posture: `version` stays `1`, every field defaults to empty, and both term families that consume
+them (`solver/model/em_composition.py`) are documented no-ops under those defaults. Unlike batch 2's
+hard rules, EM-count composition and PGY gating are soft everywhere on the JS side too — see rules
+49–50 below and `em_composition.py`'s own module docstring for why both become pure objective cost
+terms here rather than pool restrictions (CP-SAT has no equivalent to "restrict the pool, but only
+if a fallback exists").
+
 Division of labor:
 
 | Resolved in JS (shipped as data) | Derived in Python (from shipped timing/type tables) |
@@ -18,6 +34,7 @@ Division of labor:
 | Locked/kept cells — rule 14 | postNightRest soft pairs (rule 34) |
 | Fairness cohorts + AY carryover constants — rule 35 | Weekend (Sat+Sun) pairs from date DOW (rule 38) |
 | Preference bonus tuples — rule 42 | Night clustering / work shape sequences (rules 36–37) |
+| EM/PGY-2/PGY-3 resident id lists — rules 49–50 | EM headcount + PGY-gated headcount per (shift, date), reified from those id lists |
 
 ## Request — `POST /solve`
 
@@ -122,7 +139,27 @@ Division of labor:
   "settings": {
     "enforceRest": true,             // false → skip rule 17 (pairwise rest) ONLY; rules 18-23 always on
     "enforceWeekendOff": true        // false → drop rule 38 term
-  }
+  },
+
+  // ---- batch 2 (2026-08-22): all five OPTIONAL, all default to empty/zero,
+  // every consuming term a documented no-op under that default. ----
+  "traumaNightShiftIds": ["TRAUMA-N"],   // rule 43 (hard <=2/run) + 44 (soft 2nd-in-run) + 45 (soft mid-run)
+  "pedsSplitInternIds": ["r_x"],         // rule 48: TRAUMA_PEDS/PEDS_TRAUMA interns getting the soft night-count push
+  "pedsNightShiftIds": ["PED-N"],        // which shift ids count toward that push (rule 48)
+  "pedsInternNightTarget": 5,            // soft target per resident in pedsSplitInternIds (rule 48); 0/absent = off
+  "alternationExemptDates": ["2026-07-31"],  // rule 46: dates where a 12h-conference-window boundary
+                                             // falls -- duration-alternation penalty skipped for any
+                                             // night pair touching one of these dates (calendar-forced mixing)
+
+  // ---- round 2b: three OPTIONAL id lists, all default to empty, every
+  // consuming term (solver/model/em_composition.py) a documented no-op
+  // under that default. ----
+  "emResidentIds": ["r_abc", "r_x"],     // rule 49: EM_HOME/EM_BAMC resident ids, any PGY --
+                                          // podEmComposition/flexEmComposition's EM headcount
+  "emPgy2ResidentIds": ["r_abc"],        // rule 50: EM Home PGY-2 ids -- podPgy2Fallback's per-
+                                          // assignment cost when one works a POD shift
+  "emPgy3ResidentIds": ["r_y"]           // rule 50: EM Home PGY-3 ids -- flexPgy3Fallback's mirror
+                                          // per-assignment cost when one works a FLEX shift
 }
 ```
 
@@ -180,7 +217,7 @@ Division of labor:
 
 | id | plan § | tier |
 |---|---|---|
-| `eligibility`, `dayOff`, `vacation`, `availability`, `locked`, `seniorComposition`, `coverageMax`, `traumaSolo` | 1–16, 25 | never relax |
+| `eligibility`, `dayOff`, `vacation`, `availability`, `locked`, `seniorComposition`, `coverageMax`, `traumaSolo`, `traumaRunCap` | 1–16, 25, 43 | never relax |
 | `restGap` | 17 | 1 |
 | `circadianPair`, `nightRunMax` | 18 | 1 |
 | `consecutiveWork` | 19 | 1 |
@@ -195,7 +232,37 @@ Division of labor:
 | `pedsMixMax` | 29 | 3 |
 | `traumaPedsSplit` | 30 | 3 |
 | `targetCeiling` | 31 | 3 |
-| soft: `targetDeficit`, `postNightRest`, `fairness`, `nightShape`, `workShape`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `dowPreference` | 33–42 | objective |
+| soft: `targetDeficit`, `postNightRest`, `fairness`, `isolatedNight`, `workShape`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `dowPreference`, `traumaSecondInRun`, `traumaMidRun`, `nightDurationAlternation`, `secondRestDay`, `pedsInternNightDeficit`, `podEmComposition`, `flexEmComposition`, `podPgy2Fallback`, `flexPgy3Fallback` | 33–42, 44–50 | objective |
+
+`traumaRunCap` (rule 43, hard, never relax — `solver/model/trauma_runs.add_trauma_run_hard_cap`,
+config-independent, no weight): at most 2 trauma nights (`traumaNightShiftIds`) per contiguous
+night run. Never wrapped by pass-2 elastic relaxation, same posture as `seniorComposition` — it
+therefore never appears in a `feasibility.violations` entry (only relaxable families do), and
+`solver/validate.py`'s own `traumaRunCap` check is a second, independently-written opinion that
+must find nothing in either pass, not a family that participates in the elastic mismatch guard.
+
+`isolatedNight` (renamed from `nightShape` 2026-08-22, rule 36): batch 2 relaxed the night-run
+shape penalty — runs of 2–6 nights now cost nothing; only an isolated single night (length exactly
+1) still does. `traumaSecondInRun`/`traumaMidRun` (rule 44/45) penalize a 2nd trauma night in one
+run and a trauma night strictly interior to a mixed run, respectively. `nightDurationAlternation`
+(rule 46) penalizes alternating different-duration night shifts on adjacent dates within a run
+(generalizes trauma-vs-other-duration mixing; also covers D12/N12 conference-window edges), exempt
+for any date pair touching `alternationExemptDates`. `secondRestDay` (rule 47) penalizes working a
+shift on the 2nd rest day after a night run of 3+ nights ends. `pedsInternNightDeficit` (rule 48)
+is a soft max-equality push toward `pedsInternNightTarget` peds-night shifts
+(`pedsNightShiftIds`) for every resident in `pedsSplitInternIds` — pushes TOWARD assignment, like
+`targetDeficit`, not away from one.
+
+`podEmComposition`/`flexEmComposition` (rule 49, round 2b, distinct from `seniorComposition`'s hard
+PGY-CLASS requirement on the shift's first body): once a POD shift reaches 2 assigned bodies, or a
+FLEX shift reaches 1, the shortfall between the area's required EM (`emResidentIds`) headcount and
+the actual EM headcount is charged per (shift, date) — POD wants 2 EM at 2+ staffed (2-body: both
+EM; 3-body: at least 2, third free to be off-service), FLEX wants ≥1 EM at any staffing. Zero below
+that threshold regardless of who's assigned. `podPgy2Fallback`/`flexPgy3Fallback` (rule 50, round
+2b, the soft-cost translation of the JS generator's `narrowForPgyGate` pool-restrict-with-fallback):
+a flat per-assignment cost for every EM PGY-2 (`emPgy2ResidentIds`) placed on a POD shift, or EM
+PGY-3 (`emPgy3ResidentIds`) placed on FLEX — no reification, just a weighted sum over the relevant
+x-vars. Both rule families live in `solver/model/em_composition.py`.
 
 ## Objective tiers (high → low; integer weights derived at build time with ratchet separation)
 
@@ -204,10 +271,14 @@ Division of labor:
 3. `postNightRest` count  — tiers 1–3 reorder according to `rulePriority`
 4. `targetDeficit` (non-core)
 5. `fairness` (deficit 10 / holiday 8 / night 6 / weekend 4, cohort max−min, AY constants added)
-6. `nightShape` (soft sequence: runs 4–6 good, isolated nights and 2nd segment penalized)
+6. `isolatedNight` (soft sequence: runs 2–6 free since batch 2, isolated single nights and 2nd
+   segment penalized)
 7. `workShape` (isolated 1-day runs, excess fragmentation beyond ceil(worked/6))
 8. `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`
-9. `dowPreference` (shipped tuples)
+9. `traumaSecondInRun`, `traumaMidRun`, `nightDurationAlternation`, `secondRestDay`,
+   `pedsInternNightDeficit` (batch 2, 2026-08-22)
+10. `podEmComposition`, `flexEmComposition`, `podPgy2Fallback`, `flexPgy3Fallback` (round 2b)
+11. `dowPreference` (shipped tuples)
 
 Pass-2 relaxation penalties sit **above** tier 1, themselves tiered: tier-1 rules (duty-hour)
 ≫ tier-2 (coverageMin strict mode) ≫ tier-3 (policy caps) ≫ all soft weights.

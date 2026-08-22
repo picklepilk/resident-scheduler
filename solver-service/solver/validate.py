@@ -25,6 +25,9 @@ MAX_CONSECUTIVE_WORK_DAYS = 6
 NIGHT_RUN_MAX = 6
 NIGHT_SEGMENTS_MAX = 2
 REQUIRED_REST_AFTER_RUN_MIN = 24 * 60
+TRAUMA_PER_RUN_MAX = 2  # batch 2: mirrors trauma_runs.TRAUMA_PER_RUN_HARD_CAP,
+                        # re-declared per this file's own "independent
+                        # re-implementation" philosophy (see module docstring)
 JC_WINDOW_START_H = 18
 JC_WINDOW_END_H = 21
 WEDNESDAY = 2
@@ -118,6 +121,7 @@ def validate_schedule(payload: Payload, schedule: dict) -> list:
         failures += _check_rest_gap(payload, schedule)
     failures += _check_circadian_pairs(payload, schedule)
     failures += _check_night_run_and_cap_and_segments(payload, schedule)
+    failures += _check_trauma_run_cap(payload, schedule)
     failures += _check_consecutive_work(payload, schedule)
     failures += _check_post_run6_rest(payload, schedule)
     failures += _check_hours_cap(payload, schedule)
@@ -239,6 +243,38 @@ def _check_night_run_and_cap_and_segments(payload: Payload, schedule: dict) -> l
         segments = _runs_touching_block(payload.all_dates, flags, block_dates)
         if segments > NIGHT_SEGMENTS_MAX:
             failures.append(_fail("nightSegments", [resident.id], [], [], f"{segments} night-run segments"))
+    return failures
+
+
+def _check_trauma_run_cap(payload: Payload, schedule: dict) -> list:
+    """Batch 2, rule A hard cap: no contiguous night run may hold more than
+    `TRAUMA_PER_RUN_MAX` trauma nights (`payload.trauma_night_shift_ids`).
+    Walks each resident's own night/trauma sequence directly -- independent
+    of `trauma_runs.py`'s BIG-M window encoding, per this module's own
+    "second, independently-written opinion" philosophy (see module
+    docstring). One failure per offending run (not one per date past the
+    cap), listing every trauma date in that run for the detail string."""
+    failures = []
+    for resident in payload.residents:
+        night_flags = _night_flags(payload, resident, schedule)
+        trauma_dates_in_run = []
+        flagged = False
+        for d in payload.all_dates:
+            if not night_flags.get(d):
+                trauma_dates_in_run = []
+                flagged = False
+                continue
+            sid = _shift_on(payload, resident, d, schedule)
+            if sid in payload.trauma_night_shift_ids:
+                trauma_dates_in_run.append(d)
+            if len(trauma_dates_in_run) > TRAUMA_PER_RUN_MAX and not flagged:
+                failures.append(
+                    _fail(
+                        "traumaRunCap", [resident.id], list(trauma_dates_in_run), [],
+                        f"{len(trauma_dates_in_run)} trauma nights in one run (cap {TRAUMA_PER_RUN_MAX})",
+                    )
+                )
+                flagged = True
     return failures
 
 

@@ -130,6 +130,25 @@ class Payload:
     rule_priority: list
     settings: Settings
 
+    # ---- batch 2 (chief round-2 rules): all five default to empty/zero, and
+    # every constraint/term consuming them (solver/model/trauma_runs.py) is a
+    # documented no-op under those defaults -- additive, payload version
+    # stays 1. See docs/PAYLOAD_SCHEMA.md's request shape for the field docs.
+    trauma_night_shift_ids: frozenset = field(default_factory=frozenset)
+    peds_split_intern_ids: frozenset = field(default_factory=frozenset)
+    peds_night_shift_ids: frozenset = field(default_factory=frozenset)
+    peds_intern_night_target: int = 0
+    alternation_exempt_dates: frozenset = field(default_factory=frozenset)
+
+    # ---- round 2b (EM-count composition + PGY gating pool-restrict): three
+    # OPTIONAL id lists, all default to empty -- solver/model/em_composition.py
+    # is a documented no-op under those defaults (each of its two term
+    # families guards on its own list(s) being non-empty). Additive, payload
+    # version stays 1. See docs/PAYLOAD_SCHEMA.md.
+    em_resident_ids: frozenset = field(default_factory=frozenset)
+    em_pgy2_resident_ids: frozenset = field(default_factory=frozenset)
+    em_pgy3_resident_ids: frozenset = field(default_factory=frozenset)
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
@@ -284,6 +303,14 @@ def parse_payload(raw: dict) -> Payload:
             preferences=_parse_preferences(raw.get("preferences", [])),
             rule_priority=list(raw.get("rulePriority", []) or []),
             settings=settings,
+            trauma_night_shift_ids=frozenset(raw.get("traumaNightShiftIds", ()) or ()),
+            peds_split_intern_ids=frozenset(raw.get("pedsSplitInternIds", ()) or ()),
+            peds_night_shift_ids=frozenset(raw.get("pedsNightShiftIds", ()) or ()),
+            peds_intern_night_target=int(raw.get("pedsInternNightTarget", 0) or 0),
+            alternation_exempt_dates=frozenset(raw.get("alternationExemptDates", ()) or ()),
+            em_resident_ids=frozenset(raw.get("emResidentIds", ()) or ()),
+            em_pgy2_resident_ids=frozenset(raw.get("emPgy2ResidentIds", ()) or ()),
+            em_pgy3_resident_ids=frozenset(raw.get("emPgy3ResidentIds", ()) or ()),
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

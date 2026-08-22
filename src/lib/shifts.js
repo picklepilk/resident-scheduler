@@ -75,9 +75,11 @@ export const SHIFTS = [
   { id: 'FLEX-N12', label: 'FLEX Night 12h',area:'FLEX', hours: '18:00–06:00', type: 'night', chip: AREA_COLORS.FLEX.chip.night, short: 'N12' },
   { id: 'PED-D12',  label: 'PED Day 12h',  area: 'PED',  hours: '07:00–19:00', type: 'day',   chip: AREA_COLORS.PED.chip.day, short: 'D12' },
   { id: 'PED-N12',  label: 'PED Night 12h',area: 'PED',  hours: '19:00–07:00', type: 'night', chip: AREA_COLORS.PED.chip.night, short: 'N12' },
-  // Staffed exclusively by EM-Home PGY-2 on EM/TOX or EM/EMS, Mon/Tue/Thu/Fri only — see
-  // SHIFT_DOW and the ped_s_* gates on EM_HOME_2's day rules. type:'swing' (not 'eve') so it
-  // isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
+  // Open to EM Home (all 3 PGYs), BAMC, FM-1, and Peds PGY-2/3, all 7 days (see
+  // PED_GUARD_LEGITIMATE_OWNER/BASE_ELIGIBILITY) — used to be EM-Home-PGY-2-on-EM/TOX-or-EM/EMS,
+  // Mon/Tue/Thu/Fri only, but chief-confirmed against live QGenda that PED Swing genuinely runs
+  // every day and every one of these categories actually staffs it. type:'swing' (not 'eve') so
+  // it isn't subject to the eve→day-next-day circadian rule (it ends at 20:00, well clear of it).
   { id: 'PED-S',    label: 'PED Swing',    area: 'PED',    hours: '11:00–20:00', type: 'swing', chip: AREA_COLORS.PED.chip.swing, short: 'S' },
 ];
 export const SHIFT_MAP = Object.fromEntries(SHIFTS.map(s => [s.id, s]));
@@ -120,7 +122,11 @@ export const SHIFT_TIMING = {
 // shiftGates in DEFAULT_DAY_RULES) exactly, so this doesn't change WHO can work trauma, only stops
 // coverage from demanding a min:1 body on a day the shift structurally can't be staffed at all
 // (previously a phantom unfilled slot on every non-window day of every block).
-export const SHIFT_DOW = { 'PED-S': [1, 2, 4, 5], 'TRAUMA-D': [0, 2, 4, 6], 'TRAUMA-N': [0, 1, 5, 6] };
+// PED-S used to be Mon/Tue/Thu/Fri-only here (its old TOX/EMS rotation window) — chief-confirmed
+// against live QGenda that PED Swing genuinely runs all 7 days, so PED-S carries no entry at all
+// now (absence = unrestricted, per the "missing key" convention every SHIFT_DOW consumer already
+// implements). Coverage stays {min:0,max:1}; most off-window days genuinely have nobody on it.
+export const SHIFT_DOW = { 'TRAUMA-D': [0, 2, 4, 6], 'TRAUMA-N': [0, 1, 5, 6] };
 
 // Millisecond timestamp for the START of a shift on a given date
 export function shiftStartMs(shiftId, dateStr) {
