@@ -5,7 +5,37 @@
 // showUnscheduled: Schedule tab's "hide off-rotation residents with no shifts" toggle (see
 // CLAUDE.md Phase 8) — default OFF (hidden), same device/viewer-preference posture as
 // tabOverflow/cardOpen above.
-export const DEFAULT_UI_PREFS = { tabOverflow: [], cardOpen: {}, showUnscheduled: false };
+// gridZoom (percent) / gridColExtra (px added to each date column): Schedule-grid readability
+// controls. Same posture again — how big someone wants the grid on THEIR screen is a display
+// preference, not chief scheduling data, so it never rides LS_BACKUP_KEYS or the res_state sync.
+// Persisted rather than left as component state on purpose: the sibling em-scheduler app ships a
+// "default matrix zoom" setting its matrix never reads, so the value silently resets on every
+// mount — one source of truth here instead.
+export const GRID_ZOOM_MIN = 50;
+export const GRID_ZOOM_MAX = 150;
+export const GRID_ZOOM_DEFAULT = 100;
+export const GRID_COL_EXTRA_MAX = 120;
+
+export const DEFAULT_UI_PREFS = {
+  tabOverflow: [], cardOpen: {}, showUnscheduled: false,
+  gridZoom: GRID_ZOOM_DEFAULT, gridColExtra: 0,
+};
+
+// Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
+// localStorage, a bound changed in a later build) is pulled back in range rather than dropped, so
+// an out-of-range zoom can never render the grid at an unusable size with no way back.
+// Deliberately typeof-checked rather than Number()-coerced: Number(true) is 1 and Number([]) is 0,
+// so a coercing clamp would silently turn junk into a REAL (minimum) zoom instead of the default,
+// leaving the grid at 50% with nothing to explain why.
+export function clampGridZoom(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return GRID_ZOOM_DEFAULT;
+  return Math.min(GRID_ZOOM_MAX, Math.max(GRID_ZOOM_MIN, Math.round(v)));
+}
+
+export function clampGridColExtra(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.min(GRID_COL_EXTRA_MAX, Math.max(0, Math.round(v)));
+}
 
 // Guards against an untrusted shape (hand-edited localStorage, a stale/foreign `profiles.ui_prefs`
 // row from a future build) — same discipline as `reconcileTabOrder`/`normalizeCoverageEntry`
@@ -21,5 +51,7 @@ export function normalizeUiPrefs(raw) {
     }
   }
   const showUnscheduled = typeof raw?.showUnscheduled === 'boolean' ? raw.showUnscheduled : false;
-  return { tabOverflow, cardOpen, showUnscheduled };
+  const gridZoom = raw?.gridZoom == null ? GRID_ZOOM_DEFAULT : clampGridZoom(raw.gridZoom);
+  const gridColExtra = raw?.gridColExtra == null ? 0 : clampGridColExtra(raw.gridColExtra);
+  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra };
 }

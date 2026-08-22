@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SHIFTS } from './shifts.js';
+import { SHIFTS, SHIFT_TIMING } from './shifts.js';
 import {
   QGENDA_TASKS, qgendaTaskFor, QGENDA_NAME_FORMATS, qgendaName, QGENDA_VARIANTS,
 } from './qgenda.js';
@@ -172,6 +172,59 @@ describe('QGENDA_VARIANTS', () => {
       expect(variant.id).toBe(key);
       expect(typeof variant.label).toBe('string');
       expect(variant.label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// Ground-truth lock. Every string below was transcribed from a cell of the chief's real QGenda
+// export ("Grid By Staff", 7/27/2026-8/23/2026). QGenda matches its Task column EXACTLY, so a
+// well-meaning cleanup of the inconsistent casing ("Midtrack night", "(FM only)") or a stripped
+// '*' prefix silently breaks every import — the failure mode is "QGenda invented 14 new tasks",
+// which nobody notices until a shift has nobody on it. This test exists to make that edit fail
+// loudly instead. src/lib/qgendaImport.js derives its reverse lookup from the same map, so these
+// strings are also what the QGenda-workbook importer round-trips against.
+describe('QGENDA_TASKS ground truth', () => {
+  const OBSERVED = {
+    'POD-D': 'MC Team Day 7a-4p',
+    'POD-E': 'MC Team Eve 3p-12a',
+    'POD-N': 'MC Team Night 11p-8a',
+    'FLEX-D': 'Flex Team Day 6a-3p',
+    'FLEX-E': 'Flex Team Eve 2p-11p',
+    'FLEX-N': 'Flex Team Night 10p-7a',
+    'MT-D': 'Midtrack Day 7a-4p',
+    'MT-E': 'Midtrack Evening 3p-12a',
+    'MT-N': 'Midtrack night 11p-8a',
+    'PED-D': '*Peds Day 7a-4p',
+    'PED-E': '*Peds Eve 3p-12a',
+    'PED-S': '*Peds Swing 11a-8p',
+    'PED-N': '*Peds Night 7p-4a',
+    'PED-N-FM': '*Peds Night (FM only) 11p-8a',
+    'TRAUMA-N': 'Trauma Night-PGY2+3',
+  };
+
+  it('matches the strings observed in the real export, byte for byte', () => {
+    for (const [id, expected] of Object.entries(OBSERVED)) {
+      expect(QGENDA_TASKS[id]).toBe(expected);
+    }
+  });
+
+  it('TRAUMA-D PGY-1 resolves to the observed intern task name', () => {
+    expect(qgendaTaskFor('TRAUMA-D', { pgy: 1 }).task).toBe('Trauma Day-Intern');
+  });
+
+  // The 14 timed tasks carry their hours in the name. If SHIFT_TIMING and the string ever
+  // disagree, the export tells QGenda a shift runs hours the app does not schedule.
+  it('every timed task name agrees with SHIFT_TIMING', () => {
+    const h12 = n => (n % 12 === 0 ? 12 : n % 12);
+    const ampm = n => (n % 24 < 12 ? 'a' : 'p');
+    const stamp = n => `${h12(n)}${ampm(n)}`;
+    for (const s of SHIFTS) {
+      const name = QGENDA_TASKS[s.id];
+      if (typeof name !== 'string') continue;            // 12h ids, TRAUMA-D function
+      const m = /(d{1,2}[ap])-(d{1,2}[ap])$/.exec(name);
+      if (!m) continue;                                  // the two Trauma tasks carry no hours
+      const t = SHIFT_TIMING[s.id];
+      expect(`${m[1]}-${m[2]}`).toBe(`${stamp(t.startH)}-${stamp(t.startH + t.durationH)}`);
     }
   });
 });

@@ -14,7 +14,7 @@
 // they're currently poking at.
 import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo, createElement } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient.js';
-import { DEFAULT_UI_PREFS, normalizeUiPrefs } from './lib/uiPrefs.js';
+import { DEFAULT_UI_PREFS, normalizeUiPrefs, clampGridZoom, clampGridColExtra } from './lib/uiPrefs.js';
 
 export const UI_PREFS_KEY = 'res_ui_prefs';
 export { normalizeUiPrefs } from './lib/uiPrefs.js';
@@ -124,13 +124,29 @@ export function useUiPrefs(viewer) {
     setPrefs(p => ({ ...p, showUnscheduled: !!v }));
   }, []);
 
+  // Schedule-grid zoom / column width. Takes an updater so the +/- buttons and the ctrl-wheel
+  // handler can all express "relative to whatever it is now" without reading prefs first, and
+  // clamps on WRITE so no code path — button, wheel, or pinch — can store a value the others
+  // can't reach. em-scheduler clamps per input path instead: its wheel/pinch allow 40-120 while
+  // its + button is `Math.min(100, z + 10)`, so above 100 that button SNAPS ZOOM DOWN to 100
+  // instead of raising it. Clamping in the setter makes that shape unrepresentable.
+  const setGridZoom = useCallback(next => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => ({ ...p, gridZoom: clampGridZoom(typeof next === 'function' ? next(p.gridZoom) : next) }));
+  }, []);
+
+  const setGridColExtra = useCallback(next => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => ({ ...p, gridColExtra: clampGridColExtra(typeof next === 'function' ? next(p.gridColExtra) : next) }));
+  }, []);
+
   // Memoized so consumers reading this via UiPrefsContext (~20 CollapsibleCard call sites plus
   // SidebarNav) don't all re-render on every root render — only when prefs actually change (the
   // four callbacks are already stable via useCallback([]), so in practice this only changes when
   // `prefs` does).
   return useMemo(
-    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled }),
-    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled]
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra]
   );
 }
 
@@ -145,7 +161,7 @@ export function UiPrefsProvider({ viewer, children }) {
   return createElement(UiPrefsContext.Provider, { value }, children);
 }
 
-const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {} };
+const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {} };
 
 export function useUiPrefsContext() {
   return useContext(UiPrefsContext) || NOOP_UI_PREFS;

@@ -28,17 +28,20 @@ import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/j
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
+import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote } from './lib/solverClient.js';
 import { qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS } from './lib/qgenda.js';
+import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
+import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -954,8 +957,16 @@ const MATRIX_ROWS = [
 ];
 
 const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-const CELL_W = 52;
+// Base width of one date column. ScheduleGrid derives its own `CELL_W` from this plus the viewer's
+// `gridColExtra` preference, so every width/scroll calculation inside that component reads the
+// live value from one local const rather than threading a number through fourteen call sites.
+// Other grids (CoverageTab) keep their own separate constants — they are not user-resizable.
+const CELL_W_BASE = 52;
 const NAME_W = 210;
+// Height of the week-band header tier, in px. Declared (not measured) so the DOW/date row beneath
+// it can be `sticky` at exactly this offset — the same trade-off em-scheduler makes with its own
+// ROW1_H. Keep it in sync with the band's rendered height (h-5 = 20px + 1px bottom border).
+const WEEK_BAND_H = 21;
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 // parseDate/addDays/toDateStr/getBlockDates/getBlockWeekends/getAcademicYearFor/
@@ -8382,6 +8393,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   // ── Current Block editor state (relocated from the old Home tab) ──
   const [blockOpen, setBlockOpen] = useState(true);
   const [showImportMatrix, setShowImportMatrix] = useState(false);
+  const [showImportQGenda, setShowImportQGenda] = useState(false);
   const [confirmClearSchedule, setConfirmClearSchedule] = useState(false);
   const [confirmResetBlock, setConfirmResetBlock] = useState(false);
   const [confirmDeleteBlock, setConfirmDeleteBlock] = useState(false);
@@ -8447,6 +8459,10 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
             <button onClick={() => setShowImportMatrix(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
               <Upload size={12}/> Import Master Matrix
+            </button>
+            <button onClick={() => setShowImportQGenda(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
+              <Upload size={12}/> Import QGenda Schedule
             </button>
             <Button variant="dangerOutline" size="sm" icon={Trash2} disabled={curShiftCount === 0}
               onClick={() => setConfirmClearSchedule(true)}>
@@ -8514,6 +8530,16 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
           appSettings={appSettings} showToast={showToast}
           onClose={() => setShowImportMatrix(false)}
+          setImportLog={setImportLog}
+        />
+      )}
+
+      {showImportQGenda && (
+        <ImportQGendaModal
+          emRoster={emRoster} setEmRoster={setEmRoster}
+          blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
+          appSettings={appSettings} showToast={showToast}
+          onClose={() => setShowImportQGenda(false)}
           setImportLog={setImportLog}
         />
       )}
@@ -9685,6 +9711,272 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave, 
 // Bulk-import wrapper — paste or upload roster text, preview, then commit new rows only.
 // Shared by the EM Residents and Off-Service tabs; `allowedCategoryIds` scopes which
 // categories are accepted (EM_HOME only, vs the 8 off-service specialties).
+// ─── QGENDA SCHEDULE IMPORT ───────────────────────────────────────────────────
+// Reads the chief's own QGenda "Grid By Staff" .xlsx export back INTO the app — the inverse of
+// the QGenda CSV export. All parsing lives in src/lib/qgendaImport.js (pure + unit-tested); this
+// component is upload, preview, and commit only.
+//
+// Three deliberate boundaries, each matching a rule this app already enforces elsewhere:
+//   1. NEVER touches the live/current block. It writes a saved snapshot (blk_qgenda_<start>) the
+//      chief opens from the Dashboard block calendar, exactly as ImportMatrixModal does. A QGenda
+//      download is evidence, not a command to overwrite whatever is on screen.
+//   2. Res_Call rows become jeopardyDates, NEVER schedule cells — validateAll hard-errors a
+//      clinical shift on a jeopardy date, so folding them into the schedule would manufacture one
+//      hard error per cell (73 of them on the real 7/27-8/23 export).
+//   3. Nothing is invented. QGenda carries no category or PGY, and only a handful of residents
+//      reveal a PGY (via Res_Call PGYn or the intern-specific Trauma Day task), so an unmatched
+//      name is created ONLY if the chief picks a category for it. Everything else is reported.
+//
+// If a saved snapshot already covers the same start date (typically the Master Matrix import for
+// that block), its rotation assignments and off-service roster are carried forward and its
+// off-service residents join the name-matching pool — otherwise every off-service rotator in the
+// QGenda file would read as "no roster match", since they live on the block, not on emRoster.
+function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast, setImportLog }) {
+  const [fileName, setFileName] = useState('');
+  const [fileSizeBytes, setFileSizeBytes] = useState(0);
+  const [preview, setPreview] = useState(null);   // { built, baseSnap }
+  const [assign, setAssign] = useState({});       // unmatched rowIndex -> { categoryId, pgy }
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  function pickFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setFileSizeBytes(file.size || 0);
+    setError(''); setPreview(null); setAssign({});
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const XLSX = await import('xlsx');
+        const wb = XLSX.read(reader.result, { type: 'array' });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+        const parsed = parseQGendaGrid(rows);
+        if (parsed.error) { setError(`${parsed.error} — is this a QGenda "Grid By Staff" export?`); return; }
+        if (!parsed.entries.length) { setError('No resident rows with assignments were found in this workbook.'); return; }
+
+        // An existing snapshot for the same block start supplies rotation assignments and the
+        // off-service roster this file has no way to carry.
+        const baseSnap = blocksHistory.find(s => s.id === `blk_import_${parsed.dates[0]}`)
+          || blocksHistory.find(s => s.startDate === parsed.dates[0]) || null;
+        const pool = [...emRoster, ...(baseSnap?.data?.offServiceResidents || [])];
+        setPreview({ built: buildQGendaImport(parsed, pool), baseSnap });
+      } catch (err) {
+        setError(`Couldn't read this file — ${err?.message || 'is it a valid .xlsx workbook?'}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  }
+
+  const built = preview?.built;
+  const shiftCells = built ? built.matched.reduce((a, m) => a + m.shifts.length, 0) : 0;
+  const jeopardyCells = built ? built.matched.reduce((a, m) => a + m.jeopardyDates.length, 0) : 0;
+  const creatable = built ? built.unmatched.filter(u => u.firstName && u.lastName) : [];
+  const chosenCount = creatable.filter(u => assign[u.rowIndex]?.categoryId).length;
+
+  function setRow(rowIndex, patch) {
+    setAssign(prev => ({ ...prev, [rowIndex]: { ...(prev[rowIndex] || {}), ...patch } }));
+  }
+
+  function commit() {
+    if (!built || !built.dateRange) return;
+    const { start, end } = built.dateRange;
+    const baseSnap = preview.baseSnap;
+
+    // Ids are minted BEFORE anything is written so the schedule, the roster row, and the
+    // off-service record all agree on one id per created resident.
+    const creations = creatable
+      .filter(u => assign[u.rowIndex]?.categoryId)
+      .map(u => {
+        const choice = assign[u.rowIndex];
+        const cat = CAT_MAP[choice.categoryId];
+        const pgy = Number(choice.pgy) || cat?.pgyOptions?.[0] || 1;
+        return { id: uuid(), entry: u, categoryId: choice.categoryId, pgy };
+      });
+    const isEmCat = c => c.categoryId === 'EM_HOME' || c.categoryId === 'EM_BAMC';
+    const newEm = creations.filter(isEmCat);
+    const newOff = creations.filter(c => !isEmCat(c));
+
+    const allMatched = [...built.matched, ...creations.map(c => ({ ...c.entry, residentId: c.id }))];
+
+    // One functional update that both appends the created EM residents and folds every matched
+    // resident's Res_Call dates into jeopardyDates. Off-service ids are simply absent from
+    // emRoster, so the merge skips them — which is correct: isJeopardyDate ignores non-EM
+    // categories anyway (see CLAUDE.md, "Off-service residents have no jeopardy").
+    const jeopardyById = new Map(allMatched.filter(m => m.jeopardyDates?.length).map(m => [m.residentId, m.jeopardyDates]));
+    if (newEm.length || jeopardyById.size) {
+      setEmRoster(prev => {
+        const added = newEm.map(c => ({
+          id: c.id, firstName: c.entry.firstName, lastName: c.entry.lastName,
+          category: c.categoryId, pgy: c.pgy,
+          blockType: 'EM', isCCUNights: false, chiefRole: null,
+          approvedDatesOff: [], jeopardyDates: [], jcPresentDates: [], grLectureDates: [], vacationDates: [],
+          availabilityMode: 'full', availableRanges: [], canWorkDates: [],
+        }));
+        return [...prev, ...added].map(r => {
+          const j = jeopardyById.get(r.id);
+          if (!j?.length) return r;
+          return { ...r, jeopardyDates: [...new Set([...(r.jeopardyDates || []), ...j])].sort() };
+        });
+      });
+    }
+
+    const schedule = buildScheduleFromImport(allMatched);
+
+    // Carry forward whatever the same-block Master Matrix import already established, then make
+    // sure every EM resident carrying shifts has SOME assignment record — an absent one reads as
+    // blockType 'EM' via isSchedulable's fallback, but an explicit record keeps the block's own
+    // roster list honest about who is on it.
+    const emIds = new Set([...emRoster.map(r => r.id), ...newEm.map(c => c.id)]);
+    const emBlockAssignments = { ...(baseSnap?.data?.emBlockAssignments || {}) };
+    for (const m of allMatched) {
+      if (emIds.has(m.residentId) && !emBlockAssignments[m.residentId]) emBlockAssignments[m.residentId] = { blockType: 'EM' };
+    }
+    const offServiceResidents = [
+      ...(baseSnap?.data?.offServiceResidents || []),
+      ...newOff.map(c => ({
+        id: c.id, firstName: c.entry.firstName, lastName: c.entry.lastName,
+        category: c.categoryId, pgy: c.pgy, blockType: 'EM', isCCUNights: false,
+        approvedDatesOff: [], availabilityMode: 'ranges',
+        availableRanges: [{ start, end }], canWorkDates: [],
+      })),
+    ];
+
+    const name = `QGenda import (${prettyDate(start)}–${prettyDate(end)})`;
+    const snap = {
+      id: `blk_qgenda_${start}`, name, academicYear: getAcademicYearFor(start),
+      startDate: start, endDate: end, savedAt: new Date().toISOString(),
+      residentCount: Object.keys(emBlockAssignments).length + offServiceResidents.length,
+      shiftCount: Object.values(schedule).reduce((a, row) => a + Object.keys(row).length, 0),
+      data: {
+        emBlockAssignments, offServiceResidents, schedule,
+        specialDays: { codeBlueDays: [], advocacyDays: [], procDays: [], anesDays: [] },
+        conferences: { acepStart: '', acepEnd: '', iteDate: '', aaemStart: '', aaemEnd: '', saemStart: '', saemEnd: '' },
+        generationReport: null, startDate: start, endDate: end, name, academicYear: getAcademicYearFor(start),
+      },
+    };
+    setBlocksHistory(prev => [snap, ...prev.filter(b => b.id !== snap.id)].slice(0, appSettings?.maxSavedBlocks ?? 24));
+
+    // Import History entry — counts and the date range only, never a resident name list (see
+    // src/lib/importLog.js header comment).
+    if (setImportLog) {
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('qgenda', {
+        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
+        summary: `${prettyDate(start)}–${prettyDate(end)} · ${allMatched.length} residents, ${snap.shiftCount} shifts, ${jeopardyCells} jeopardy dates · ${creations.length} new resident${creations.length !== 1 ? 's' : ''} created, ${built.unmatched.length - creations.length} skipped`,
+      })));
+    }
+
+    showToast(`Imported ${snap.shiftCount} shifts into a new saved block — open it from the block calendar`, 'green');
+    onClose();
+  }
+
+  return (
+    <Modal title="Import QGenda Schedule" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Upload a QGenda <strong>Grid By Staff</strong> export (.xlsx). This reads the real schedule back
+          into the app as a new <strong>saved block</strong> — it never touches the block you currently have
+          open. <em>Res_Call</em> rows are recorded as <strong>jeopardy dates</strong>, not as shifts.
+        </p>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
+            <Upload size={12}/> Choose .xlsx file
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx" onChange={pickFile} className="hidden"/>
+          {fileName && <span className="text-xs text-gray-500">{fileName}</span>}
+        </div>
+
+        {error && <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>}
+
+        {built && (
+          <div className="space-y-3">
+            <div className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 space-y-0.5">
+              <div><strong>{prettyDate(built.dateRange.start)} – {prettyDate(built.dateRange.end)}</strong> ({built.dates.length} days)</div>
+              <div>{built.matched.length} resident{built.matched.length !== 1 ? 's' : ''} matched · {shiftCells} shift{shiftCells !== 1 ? 's' : ''} · {jeopardyCells} jeopardy date{jeopardyCells !== 1 ? 's' : ''}</div>
+              {preview.baseSnap && <div className="text-gray-500">Rotations and off-service roster carried over from “{preview.baseSnap.name}”.</div>}
+            </div>
+
+            {/* The workbook prints a weekday under every date. A disagreement means the month/year
+                inference is wrong and every imported date is suspect — worth blocking on. */}
+            {built.dowMismatches.length > 0 && (
+              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                <strong>Dates don’t match the weekdays printed in the file</strong> ({built.dowMismatches.length} column{built.dowMismatches.length !== 1 ? 's' : ''}).
+                {' '}First: {built.dowMismatches[0].date} resolves to {built.dowMismatches[0].actual}, file says {built.dowMismatches[0].printed}. Don’t import this file.
+              </div>
+            )}
+
+            {built.unknownTasks.length > 0 && (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <div className="font-semibold mb-1">{built.unknownTasks.length} unrecognized task name{built.unknownTasks.length !== 1 ? 's' : ''} — these cells will not be imported:</div>
+                <ul className="list-disc ml-4 space-y-0.5">
+                  {built.unknownTasks.map(u => <li key={u.task}><span className="font-mono">{u.task}</span> ×{u.count}</li>)}
+                </ul>
+                <div className="mt-1 text-amber-700">Add the exact string to <span className="font-mono">QGENDA_TASKS</span> (or Settings → QGenda Task Names) if it should map to a shift.</div>
+              </div>
+            )}
+
+            {built.unmatched.length > 0 && (
+              <div className="text-xs border border-gray-200 rounded-lg">
+                <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 font-semibold text-gray-600">
+                  {built.unmatched.length} name{built.unmatched.length !== 1 ? 's' : ''} not on the roster
+                  <span className="font-normal text-gray-500"> — pick a category to create them, or leave blank to skip. QGenda carries no category or PGY, so nothing is guessed.</span>
+                </div>
+                <div className="max-h-64 overflow-auto divide-y divide-gray-100">
+                  {built.unmatched.map(u => {
+                    const choice = assign[u.rowIndex] || {};
+                    const cat = choice.categoryId ? CAT_MAP[choice.categoryId] : null;
+                    const pgyOptions = cat?.pgyOptions || [1, 2, 3];
+                    return (
+                      <div key={u.rowIndex} className="px-3 py-2 flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-gray-700 min-w-40">{u.rawName}</span>
+                        <span className="text-gray-400">{u.shifts.length} shift{u.shifts.length !== 1 ? 's' : ''}{u.jeopardyDates.length ? `, ${u.jeopardyDates.length} jeopardy` : ''}</span>
+                        {u.reason !== 'No roster match' && <span className="text-amber-700">{u.reason}</span>}
+                        <select value={choice.categoryId || ''} className="ml-auto text-xs border border-gray-300 rounded px-1.5 py-1"
+                          onChange={ev => {
+                            const id = ev.target.value;
+                            const opts = id ? (CAT_MAP[id]?.pgyOptions || []) : [];
+                            // Pre-fill the PGY only where the file actually revealed one (Res_Call
+                            // PGYn, or the intern-specific Trauma Day task) and that PGY is valid
+                            // for the chosen category; otherwise fall back to the category's first.
+                            const inferred = u.inferredPgy && opts.includes(u.inferredPgy) ? u.inferredPgy : opts[0];
+                            setRow(u.rowIndex, { categoryId: id, pgy: inferred });
+                          }}>
+                          <option value="">— skip —</option>
+                          {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                        </select>
+                        <select value={choice.pgy || ''} disabled={!cat} className="text-xs border border-gray-300 rounded px-1.5 py-1 disabled:opacity-40"
+                          onChange={ev => setRow(u.rowIndex, { pgy: Number(ev.target.value) })}>
+                          {pgyOptions.map(p => <option key={p} value={p}>PGY-{p}</option>)}
+                        </select>
+                        {u.inferredPgy && <span className="text-emerald-700" title="PGY read from this resident's Res_Call or intern trauma shift">PGY-{u.inferredPgy} in file</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <button onClick={commit} disabled={built.dowMismatches.length > 0 || (!built.matched.length && !chosenCount)}
+                className="px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg">
+                Import as saved block
+              </button>
+              <span className="text-xs text-gray-500">
+                {built.matched.length + chosenCount} resident{built.matched.length + chosenCount !== 1 ? 's' : ''} will be imported
+                {chosenCount ? ` (${chosenCount} newly created)` : ''}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
 function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport, onClose, setImportLog }) {
   const [text, setText] = useState('');
   const [preview, setPreview] = useState(null);
@@ -9868,19 +10160,6 @@ function extractVacationDateCells(row, headerRow) {
   return cells;
 }
 
-function stripVacationNameSuffix(raw) { return String(raw ?? '').replace(/\s*\([^)]*\)\s*$/, '').trim(); }
-
-function vacTokenSet(str) { return new Set(String(str ?? '').trim().split(/\s+/).map(normalizeToken).filter(Boolean)); }
-function vacTokensIntersect(a, b) { for (const x of a) if (b.has(x)) return true; return false; }
-
-// Tolerant match: last-name TOKEN SETS intersect AND first-name TOKEN SETS intersect — handles
-// "Avila, Anthony Joseph" (file) vs roster "Avila, Anthony" (extra middle name), "Bamback
-// Shrestha, Niva" (file) vs roster "Shrestha, Niva" (extra last-name token), etc. Returns every
-// roster resident that matches — caller treats >1 as ambiguous rather than guessing.
-function matchVacationRoster(firstName, lastName, emRoster) {
-  const lastTokens = vacTokenSet(lastName), firstTokens = vacTokenSet(firstName);
-  return emRoster.filter(r => vacTokensIntersect(lastTokens, vacTokenSet(r.lastName)) && vacTokensIntersect(firstTokens, vacTokenSet(r.firstName)));
-}
 
 // Parses the whole workbook into { matched, unmatched, skipped } — matched/unmatched/skipped
 // mirror the modal's own preview categories 1:1 so the standalone verification script can
@@ -9891,7 +10170,7 @@ function parseVacationWorkbook(sheetRows, ayStartYear, emRoster) {
   for (const section of sections) {
     for (const row of section.rows) {
       const rawName = row.nameCell.trim();
-      const cleaned = stripVacationNameSuffix(rawName);
+      const cleaned = stripNameSuffix(rawName);
       const name = splitName(cleaned);
       if (!name) { unmatched.push({ rawName, reason: 'Could not parse "Last, First" name' }); continue; }
 
@@ -9905,7 +10184,7 @@ function parseVacationWorkbook(sheetRows, ayStartYear, emRoster) {
       if (badCells.length) { unmatched.push({ rawName, reason: `Unparseable date range(s): ${badCells.join(', ')}` }); continue; }
       if (isoDates.size === 0) { skipped.push({ rawName }); continue; }
 
-      const candidates = matchVacationRoster(name.firstName, name.lastName, emRoster);
+      const candidates = matchRosterByName(name.firstName, name.lastName, emRoster);
       if (candidates.length === 0) { unmatched.push({ rawName, reason: 'No roster match' }); continue; }
       if (candidates.length > 1) {
         unmatched.push({ rawName, reason: 'Ambiguous — multiple roster matches', candidates: candidates.map(c => `${c.lastName}, ${c.firstName} (PGY-${c.pgy})`) });
@@ -10090,7 +10369,7 @@ function parseLectureImportDate(raw) {
   return `${yr}-${pad(mo)}-${pad(da)}`;
 }
 
-// Tries a strict first+last token-set match (same shape as matchVacationRoster) under both
+// Tries a strict first+last token-set match (matchRosterByName, lib/nameMatch.js) under both
 // possible word-order readings of a pasted name — this paste format is "First Last", but a
 // chief could paste "Last First" by habit — then, only if neither strict reading lands a unique
 // hit, falls back to last-name-token-only matching. The fallback tier exists because real names
@@ -10103,13 +10382,13 @@ function matchLectureRosterName(rawName, emRoster) {
   const asFirstLast = { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
   const asLastFirst = { firstName: parts.slice(1).join(' '), lastName: parts[0] };
 
-  const strictA = matchVacationRoster(asFirstLast.firstName, asFirstLast.lastName, emRoster);
+  const strictA = matchRosterByName(asFirstLast.firstName, asFirstLast.lastName, emRoster);
   if (strictA.length === 1) return { candidates: strictA, tier: 'strict' };
-  const strictB = matchVacationRoster(asLastFirst.firstName, asLastFirst.lastName, emRoster);
+  const strictB = matchRosterByName(asLastFirst.firstName, asLastFirst.lastName, emRoster);
   if (strictB.length === 1) return { candidates: strictB, tier: 'strict' };
 
-  const lastTokens = vacTokenSet(asFirstLast.lastName);
-  const lastOnly = emRoster.filter(r => vacTokensIntersect(lastTokens, vacTokenSet(r.lastName)));
+  const lastTokens = nameTokenSet(asFirstLast.lastName);
+  const lastOnly = emRoster.filter(r => tokensIntersect(lastTokens, nameTokenSet(r.lastName)));
   if (lastOnly.length === 1) return { candidates: lastOnly, tier: 'lastNameOnly' };
   if (lastOnly.length > 1) return { candidates: lastOnly, tier: 'ambiguous' };
   if (strictA.length > 1) return { candidates: strictA, tier: 'ambiguous' };
@@ -12185,8 +12464,16 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
-  const { prefs: uiPrefs, setShowUnscheduled } = useUiPrefsContext();
+  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra } = useUiPrefsContext();
   const showUnscheduled = uiPrefs.showUnscheduled;
+  // Readability controls (persisted per viewer in res_ui_prefs, never in a backup or the shared
+  // cloud document — how large someone wants this grid on their own screen is not chief data).
+  const gridZoom = uiPrefs.gridZoom;
+  const gridColExtra = uiPrefs.gridColExtra;
+  // Shadows nothing: the module-level constant is CELL_W_BASE. Every width, scroll-offset and
+  // min-width expression below already reads `CELL_W`, so widening a column is this one line.
+  const CELL_W = CELL_W_BASE + gridColExtra;
+  const zoomScale = gridZoom / 100;
   // Resolved once for the whole grid rather than per rendered day cell.
   const jcDaySet = useMemo(
     () => new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })),
@@ -12279,6 +12566,43 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return () => window.removeEventListener('keydown', onKey);
   }, [fullscreen]);
 
+  // Ctrl/Cmd+wheel and two-finger pinch zoom, bound to the grid wrapper. Registered with
+  // {passive:false} because both handlers call preventDefault — the browser's own page zoom
+  // (ctrl+wheel) and pinch-scroll would otherwise fight this one. Both paths go through
+  // setGridZoom, which owns the clamp, so no input route can reach a zoom the +/- buttons can't.
+  const gridWrapRef = useRef(null);
+  useEffect(() => {
+    const el = gridWrapRef.current;
+    if (!el) return;
+    const onWheel = e => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setGridZoom(z => z - Math.sign(e.deltaY) * 5);
+    };
+    let lastDist = null;
+    const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const onTouchStart = e => { if (e.touches.length === 2) lastDist = dist(e.touches); };
+    const onTouchMove = e => {
+      if (e.touches.length !== 2 || lastDist == null) return;
+      e.preventDefault();
+      const d = dist(e.touches);
+      const delta = d - lastDist;
+      lastDist = d;
+      setGridZoom(z => z + delta * 0.3);
+    };
+    const onTouchEnd = () => { lastDist = null; };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [setGridZoom]);
+
   // Ref on the grid's own scroll container — used by the week-scroll buttons and the
   // jump-to-date select, and by nothing else (no drag-to-pan here, see CLAUDE.md scope note:
   // the grid already uses HTML5 drag for shift chips and the two would fight).
@@ -12328,6 +12652,31 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const sd = block.specialDays || {};
   const jeoBlock = (appSettings?.jeopardyPolicy ?? 'warn') === 'block';
   const dates = useMemo(()=>getBlockDates(block.startDate,block.endDate),[block.startDate,block.endDate]);
+  // Contiguous MONDAY-started runs of the block's dates, for the week-band header tier.
+  //
+  // Monday, not Sunday (which is what ScheduleCalendarView's own week rows use): a Sunday-started
+  // band puts the divider between Saturday and Sunday and splits the weekend across two bands,
+  // which is precisely the pair a chief scans for. Monday-start also lands the divider on the
+  // block boundary, since blocks start on a Monday.
+  //
+  // A band is only 7 days when it's a whole week — the last one is usually partial — so `count`
+  // is carried explicitly and the band's pixel width is CELL_W × count.
+  const weekBands = useMemo(()=>{
+    const bands = [];
+    for (const ds of dates) {
+      const d = parseDate(ds);
+      if (!bands.length || d.getDay() === 1) bands.push({ start: ds, end: ds, count: 0 });
+      const b = bands[bands.length-1];
+      b.end = ds; b.count++;
+    }
+    return bands.map(b => {
+      const s = parseDate(b.start), e = parseDate(b.end);
+      const label = s.getMonth() === e.getMonth()
+        ? `${MONTH_ABBR[s.getMonth()]} ${s.getDate()}–${e.getDate()}`
+        : `${MONTH_ABBR[s.getMonth()]} ${s.getDate()} – ${MONTH_ABBR[e.getMonth()]} ${e.getDate()}`;
+      return { ...b, label };
+    });
+  },[dates]);
   const prevTail = useMemo(() => prevBlockTailSchedules(block, blocksHistory), [block.id, block.startDate, blocksHistory]);
   // Final-Sunday overnight transition rule (see nextBlockRotationFor/RULE_NOTES) — resolved once
   // per resident here, mirroring prevTail above, and threaded via ctx/props to every
@@ -12856,7 +13205,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           const gapsWords = shift && !lockMode
             ? [gaps?.prev && gapWords(gaps.prev,'prev'), gaps?.next && gapWords(gaps.next,'next')].filter(Boolean).join('; ')
             : '';
-          let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':isWknd?'bg-gray-50':elig.length===0?'bg-gray-50':'bg-white';
+          // Weekend cells are bg-slate-100, not the bg-gray-50 that also means "nothing is
+          // eligible here" — those two states used to be the same swatch, so a weekend column and
+          // a structurally-unfillable one were indistinguishable. Slate also carries enough weight
+          // to read as a band across a sideways-scrolling grid, which gray-50 did not.
+          let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':isWknd?'bg-slate-100':elig.length===0?'bg-gray-50':'bg-white';
           if(hasV) bg='bg-red-50';
           const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
@@ -12884,7 +13237,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 gapsWords,
                 hasRelaxed?`Rule relaxed by optimizer: ${[...new Set(relaxedHere.map(v=>v.ruleLabel||v.rule))].join(', ')}`:'',
               ].filter(Boolean).join(' — ')}
-              className={`relative group border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              className={`relative group ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.OFF.chip}`}>OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.VAC.chip}`}>VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.J.chip}`}>J</span></div>}
@@ -12921,7 +13274,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   }
 
   return (
-    <div className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
+    <div ref={gridWrapRef} className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
       {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
           promotion (60), below the toast (200); see the DAY_MARKERS z-ladder note in CLAUDE.md. */}
       {genActive && (
@@ -13063,6 +13416,23 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             {dates.map(ds=><option key={ds} value={ds}>{formatDisplayDate(ds)}</option>)}
           </select>
           <Button variant="ghost" size="sm" onClick={()=>scrollRef.current?.scrollBy({left:CELL_W*7, behavior:'smooth'})} title="Scroll forward one week">▶</Button>
+          <span className="w-px h-5 bg-border mx-0.5"/>
+          {/* Zoom + column width. Both persist per viewer (res_ui_prefs), so the grid comes back
+              the size you left it — unlike a component-state control that silently resets on
+              every tab switch. */}
+          <span className="text-xs text-gray-500 select-none">Zoom</span>
+          <Button variant="ghost" size="sm" onClick={()=>setGridZoom(z=>z-10)} disabled={gridZoom<=GRID_ZOOM_MIN} title="Zoom out (or Ctrl+scroll)">−</Button>
+          <span className="text-xs tabular-nums text-gray-600 w-9 text-center">{gridZoom}%</span>
+          <Button variant="ghost" size="sm" onClick={()=>setGridZoom(z=>z+10)} disabled={gridZoom>=GRID_ZOOM_MAX} title="Zoom in (or Ctrl+scroll)">+</Button>
+          {gridZoom!==100 && (
+            <Button variant="ghost" size="sm" onClick={()=>setGridZoom(100)} title="Reset zoom to 100%">Reset</Button>
+          )}
+          <span className="text-xs text-gray-500 select-none ml-1">Columns</span>
+          <Button variant="ghost" size="sm" onClick={()=>setGridColExtra(w=>w-12)} disabled={gridColExtra<=0} title="Narrower date columns">−</Button>
+          <Button variant="ghost" size="sm" onClick={()=>setGridColExtra(w=>w+12)} disabled={gridColExtra>=GRID_COL_EXTRA_MAX} title="Wider date columns">+</Button>
+          {gridColExtra>0 && (
+            <Button variant="ghost" size="sm" onClick={()=>setGridColExtra(0)} title="Reset column width">Reset</Button>
+          )}
         </div>
       )}
 
@@ -13212,9 +13582,40 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             values are viewport-relative on purpose rather than a flex `height:100%` chain, which
             would require also re-plumbing every intermediate ancestor's own height — not verifiable
             without a browser, so this was the more conservative call (see report). */}
-        <div ref={scrollRef} className="overflow-auto schedule-scroll" style={{maxHeight: fullscreen ? 'calc(100vh - 12rem)' : 'calc(100vh - 20rem)'}}>
+        {/* Zoom is CSS `zoom`, deliberately NOT `transform: scale`. A transform creates a new
+            containing block, which breaks `position: sticky` — and this grid's sticky header row,
+            sticky name column and sticky coverage footer are exactly what makes it readable at
+            all. CSS lengths on a zoomed element render at ×zoom, so the maxHeight bound is
+            divided back out; that keeps the bound in pure CSS instead of the JS
+            getBoundingClientRect measurement em-scheduler needs for the same effect. Do not
+            remove the height bound — see CLAUDE.md ("STICKY AXES"): without it the sticky
+            top-0 header never engages. */}
+        <div ref={scrollRef} className="overflow-auto schedule-scroll"
+          style={{ zoom: zoomScale, maxHeight: `calc((100vh - ${fullscreen ? '12rem' : '20rem'}) / ${zoomScale})` }}>
           <div style={{minWidth:NAME_W+CELL_W*dates.length}}>
-            <div className="flex bg-gray-50 border-b border-gray-200 sticky top-0 z-20">
+            {/* Week band — the top tier of a two-tier header. Dates are COLUMNS here, so this is
+                the analog of em-scheduler's cohort colspan row, except divs have no colSpan: each
+                band's width is explicit arithmetic over the days it covers. It gives the eye a
+                seven-column rhythm to latch onto on a grid that otherwise scrolls sideways as one
+                undifferentiated run of 52px columns. */}
+            {/* The height goes on the ROW, not its children: Tailwind's preflight sets
+                box-sizing:border-box, so 21px here INCLUDES the border-bottom and the row's total
+                is exactly WEEK_BAND_H — which is what the next tier sticks at. Height on the
+                children instead left the border outside the measurement, and the second tier
+                covered the last sub-pixel of it once zoom scaled the difference up. */}
+            <div className="flex bg-gray-100 border-b border-gray-200 sticky top-0 z-20" style={{height:WEEK_BAND_H}}>
+              <div className="grid-sticky bg-gray-100 border-r border-gray-200" style={{width:NAME_W,minWidth:NAME_W,zIndex:30}}/>
+              {weekBands.map(b=>(
+                <div key={b.start} style={{width:CELL_W*b.count,minWidth:CELL_W*b.count}}
+                  className="flex items-center justify-center border-r-2 border-gray-300 text-[10px] font-semibold text-gray-500 tracking-wide whitespace-nowrap overflow-hidden">
+                  {b.label}
+                </div>
+              ))}
+            </div>
+            {/* Second tier sticks BELOW the band, so its offset is the band's declared height
+                rather than 0. Same hand-declared-constant trade-off as em-scheduler's ROW1_H:
+                measuring the rendered height would be more robust but needs a browser. */}
+            <div className="flex bg-gray-50 border-b border-gray-200 sticky z-20" style={{top:WEEK_BAND_H}}>
               <div className="grid-sticky bg-gray-50 border-r border-gray-200 flex items-center px-3" style={{width:NAME_W,minWidth:NAME_W,zIndex:30}}>
                 <span className="font-display text-xs font-semibold text-gray-400 uppercase tracking-wide">Resident</span>
               </div>
@@ -13223,7 +13624,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 const dsLocked=colLockedDates.has(ds);
                 return (
                   <div key={ds} style={{width:CELL_W,minWidth:CELL_W}}
-                    className={`relative group flex flex-col items-center justify-center py-1 border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-gray-100':'bg-gray-50'}`}>
+                    className={`relative group flex flex-col items-center justify-center py-1 ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-gray-100 ${isWed?'bg-yellow-50':isWknd?'bg-slate-200':'bg-gray-50'}`}>
                     <span className={`text-xs font-bold ${isWed?'text-yellow-700':isWknd?'text-gray-500':'text-gray-500'}`}>{DOW[dow]}</span>
                     <span className={`text-xs ${isWed?'text-yellow-600':isWknd?'text-gray-400':'text-gray-400'}`}>{d.getMonth()+1}/{d.getDate()}</span>
                     {/* Says out loud that this date runs 12h shifts — an unset window used to be a
@@ -14798,6 +15199,7 @@ const IMPORT_KIND_META = {
   matrix:   { label: 'Master Matrix', badge: 'bg-indigo-100 text-indigo-700 border border-indigo-200' },
   vacation: { label: 'Vacation',      badge: 'bg-teal-100 text-teal-700 border border-teal-200' },
   lectures: { label: 'Lecture / JC',  badge: 'bg-purple-100 text-purple-700 border border-purple-200' },
+  qgenda:   { label: 'QGenda',        badge: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
 };
 
 // One entry per roster/matrix/vacation/lecture import (see src/lib/importLog.js and the four

@@ -20,21 +20,40 @@ import { SHIFT_MAP } from './shifts.js';
 // they're a conference-week opt-in the chief hasn't exported yet. Do not guess a name for them;
 // let qgendaTaskFor's fallback (SHIFT_MAP label) carry them until a real name is confirmed, then
 // add it here.
+// TRANSCRIBED VERBATIM from a real QGenda export — "UT Health San Antonio - Grid By Staff -
+// 7/27/2026 to 8/23/2026". Every one of these 16 strings was copied out of a cell of that
+// workbook, not typed from memory. DO NOT "tidy" them. The odd bits are all real:
+//   - the leading '*' on every Peds task,
+//   - the lowercase 'night' in "Midtrack night" and the lowercase 'only' in "(FM only)",
+//   - the trailing hour range on all but the two Trauma tasks.
+// The previous values here were written from memory and omitted the hour suffix on 14 of 16
+// entries — precisely the "nothing imports" failure this module's header comment anticipates:
+// QGenda does not recognize "MC Team Day", only "MC Team Day 7a-4p".
+//
+// The hour ranges agree exactly with SHIFT_TIMING (./shifts.js) for all 14 timed tasks — Flex Day
+// 6a-3p = 06:00 + 9h, Peds Night 7p-4a = 19:00 + 9h, Peds Swing 11a-8p = 11:00 + 9h. If a shift is
+// ever retimed, retime the string here in the same commit, or the export silently keeps claiming
+// hours the app no longer schedules.
+//
+// TRAUMA-D stays a function, but only its PGY-1 branch is CONFIRMED: "Trauma Day-Intern" appears
+// in the export and a bare "Trauma Day" never does, because TRAUMA-D is PGY-1-only by
+// eligibility. The non-intern branch is left in place as a safe default rather than deleted,
+// since nothing guarantees that eligibility rule is permanent.
 export const QGENDA_TASKS = {
-  'POD-D': 'MC Team Day',
-  'POD-E': 'MC Team Eve',
-  'POD-N': 'MC Team Night',
-  'FLEX-D': 'Flex Team Day',
-  'FLEX-E': 'Flex Team Eve',
-  'FLEX-N': 'Flex Team Night',
-  'MT-D': 'Midtrack Day',
-  'MT-E': 'Midtrack Evening',
-  'MT-N': 'Midtrack Night',
-  'PED-D': 'Peds Day',
-  'PED-E': 'Peds Eve',
-  'PED-S': 'Peds Swing',
-  'PED-N': 'Peds Night',
-  'PED-N-FM': 'Peds Night (FM Only)',
+  'POD-D': 'MC Team Day 7a-4p',
+  'POD-E': 'MC Team Eve 3p-12a',
+  'POD-N': 'MC Team Night 11p-8a',
+  'FLEX-D': 'Flex Team Day 6a-3p',
+  'FLEX-E': 'Flex Team Eve 2p-11p',
+  'FLEX-N': 'Flex Team Night 10p-7a',
+  'MT-D': 'Midtrack Day 7a-4p',
+  'MT-E': 'Midtrack Evening 3p-12a',
+  'MT-N': 'Midtrack night 11p-8a',
+  'PED-D': '*Peds Day 7a-4p',
+  'PED-E': '*Peds Eve 3p-12a',
+  'PED-S': '*Peds Swing 11a-8p',
+  'PED-N': '*Peds Night 7p-4a',
+  'PED-N-FM': '*Peds Night (FM only) 11p-8a',
   'TRAUMA-N': 'Trauma Night-PGY2+3',
   'TRAUMA-D': (r) => (r?.pgy === 1 ? 'Trauma Day-Intern' : 'Trauma Day'),
 };

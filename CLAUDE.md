@@ -247,9 +247,12 @@ npm run preview
 npm test          # vitest — src/lib/*.js (dates/shifts/coverage/parse/rng/scheduleQuality/
                    # journalClub/holidays/eligibilityOverrides/qgenda/jeopardyLedger/
                    # coverageComposition/dateSetPaint) plus
-                   # generator.harness.test.js + generator.baseline.<variant>.test.js (3 of these
-                   # currently fail on purpose — see "Jeopardy may never collide with a clinical
-                   # shift" below, not yet regenerated) + monthPagerInitialMonth.test.js/
+                   # generator.harness.test.js + generator.baseline.<variant>.test.js (all three
+                   # were regenerated after the jeopardy-collision change and PASS again —
+                   # standard/vacationHeavy last in 6aeda41, understaffed in 15cd9f7 — the whole
+                   # suite is green as of 2026-08-22: 930 passed, 2 skipped, the skips being the
+                   # two SOLVER_PARITY=1/Python-gated files) + nameMatch/qgendaImport/uiPrefs +
+                   # monthPagerInitialMonth.test.js/
                    # traumaPedsSplitPedN.test.js, which all import
                    # the generator/validateAll/useMonthPager/getEligibleShifts
                    # named exports straight out of ResidentScheduler.jsx (jsdom env, verified
@@ -734,7 +737,44 @@ names below rather than trusting offsets.
   INLINE `zIndex`, not a Tailwind class: `.grid-sticky` is UNLAYERED css and beats `@layer
   utilities` regardless of specificity, so a `z-30` class silently loses to its `z-index:10`.
   A `fullscreen` state promotes the grid to `fixed inset-0 z-[60]` (Esc exits) — in-app overlay,
-  NOT `requestFullscreen()`. **CELL LOCKING**: `block.lockedCells[residentId][dateStr] = true`,
+  NOT `requestFullscreen()`.
+  **READABILITY CONTROLS (2026-08-22)**, ported from the sibling em-scheduler's MatrixTab, which
+  the chief finds markedly easier to read. Layout is UNCHANGED — residents stay rows, dates stay
+  columns; only density and header structure changed.
+  · **Zoom 50-150%** via toolbar +/- , Ctrl/Cmd+wheel, and two-finger pinch. Applied as CSS
+    `zoom` on the scroll container, **never `transform: scale`** — a transform creates a new
+    containing block and would break every sticky axis described above, which is the single
+    load-bearing constraint here (em-scheduler records the same finding). CSS lengths on a zoomed
+    element render at x zoom, so the `maxHeight` bound is divided back out in the same `calc()`
+    — pure CSS, no `getBoundingClientRect` measurement effect. **All three input paths share ONE
+    clamp**, inside `setGridZoom`. em-scheduler clamps per input path instead — its wheel/pinch
+    allow 40-120 (`EMScheduler.jsx:8907,8927`) while its + button is `Math.min(100, z + 10)`
+    (`:9532`) — so above 100, pressing + SNAPS ZOOM DOWN to 100 rather than raising it. One clamp
+    in the setter makes that shape unrepresentable.
+  · **Column width** `gridColExtra` 0-120px in steps of 12 (`CELL_W` 52-172). The module-level
+    constant was renamed `CELL_W_BASE` and `ScheduleGrid` declares a local
+    `const CELL_W = CELL_W_BASE + gridColExtra` — all fourteen width/scroll/min-width call sites
+    inside that component already read `CELL_W`, so making it dynamic is one line, not fourteen
+    threaded props. `COVERAGE_TAB_CELL_W`/`_NAME_W` are separate and NOT user-resizable.
+  · **Both persist in `res_ui_prefs`** (`gridZoom`/`gridColExtra`, clamped in
+    `normalizeUiPrefs`), the same device/viewer-preference posture as `res_dark_mode` — never in
+    `LS_BACKUP_KEYS`, never in the shared cloud document. Deliberately persisted rather than left
+    as component state: em-scheduler ships a "default matrix zoom" setting its matrix never reads,
+    so the value silently resets on every mount. `clampGridZoom` is typeof-checked, not
+    `Number()`-coerced — `Number(true)` is 1 and `Number([])` is 0, so a coercing clamp would
+    turn junk into a REAL 50% zoom instead of the default.
+  · **Two-tier header**: a week band (`weekBands`, MONDAY-started runs) above the existing
+    DOW+M/D row, which now sticks at `top: WEEK_BAND_H` instead of 0. Divs have no `colSpan`, so
+    each band's width is explicit `CELL_W x count` arithmetic. **The height goes on the band ROW,
+    not its children** — Tailwind's preflight sets `box-sizing: border-box`, so the declared 21px
+    includes the border-bottom and the next tier's sticky offset matches exactly; height on the
+    children left the border outside the measurement and the second tier covered its last
+    sub-pixel once zoom scaled the difference up. **Monday-started, not Sunday** (which is what
+    `ScheduleCalendarView`'s own week rows use): a Sunday-started band puts the divider between
+    Saturday and Sunday and splits the weekend across two bands, and blocks start on a Monday.
+  · **Weekend banding**: weekend cells moved `bg-gray-50` -> `bg-slate-100`. They previously
+    shared a swatch with "nothing is eligible here", making a weekend column and a structurally
+    unfillable one indistinguishable. A `border-l-2` on each Monday marks the week boundary. **CELL LOCKING**: `block.lockedCells[residentId][dateStr] = true`,
   inside the block object, so it rides `res_current_block`/backup/cloud sync with no new key; undo
   pairs `{schedule, lockedCells}` because a lock toggle changes only the latter. The generator knows
   NOTHING about locks — `runPartialRegenerate` clears only unlocked cells and calls
@@ -1470,10 +1510,19 @@ names below rather than trusting offsets.
   reported "nothing imports, unreadable" and has **no QGenda admin rights, so he cannot trial-run**.
   Every choice here is therefore biased toward *he can fix it himself without a redeploy*:
   - `src/lib/qgenda.js` (pure, must never import `ResidentScheduler.jsx`) owns `QGENDA_TASKS`
-    (our shift id → his REAL QGenda task name: `POD-*` → "MC Team …", `FLEX-*` → "Flex Team …",
-    `MT-*` → "Midtrack …", `PED-N-FM` → "Peds Night (FM Only)", `TRAUMA-N` → "Trauma Night-PGY2+3";
-    **`TRAUMA-D` is a FUNCTION** — "Trauma Day-Intern" for PGY-1 else "Trauma Day"), plus
-    `qgendaTaskFor()`, `qgendaName()`, and `QGENDA_VARIANTS`.
+    (our shift id → his REAL QGenda task name), plus `qgendaTaskFor()`, `qgendaName()`, and
+    `QGENDA_VARIANTS`. **`TRAUMA-D` is a FUNCTION** — "Trauma Day-Intern" for PGY-1 else
+    "Trauma Day"; only the PGY-1 branch is confirmed (TRAUMA-D is PGY-1-only by eligibility, so a
+    bare "Trauma Day" appears nowhere in the one real export examined, 7/27-8/23/2026).
+  - **CORRECTED 2026-08-22 against a real export** ("Grid By Staff", 7/27/2026-8/23/2026). The
+    original values were written from memory and were WRONG in 14 of 16 cases — they omitted the
+    trailing hour range ("MC Team Day" vs. the real "MC Team Day 7a-4p"), the leading `*` on all
+    five Peds tasks, and the odd casing in "Midtrack night" / "(FM only)". QGenda matches its Task
+    column exactly, so that WAS the "nothing imports" report: the export was asking QGenda to
+    create 14 tasks it had never heard of. **Do not "tidy" the inconsistent casing or strip the
+    asterisks** — `qgenda.test.js`'s "QGENDA_TASKS ground truth" block pins all 16 strings, and a
+    companion test re-derives each hour suffix from `SHIFT_TIMING` so a retimed shift can't
+    silently desync from its own exported name.
   - **The eight 12h ids are deliberately absent** from `QGENDA_TASKS` and fall back to our own
     label with `source:'fallback'`, which raises a pre-export warning through the EXISTING
     `exportConfirm` dialog. Never blank (most likely to fail the whole import), never a silent
@@ -1493,6 +1542,48 @@ names below rather than trusting offsets.
   - **The demo guards test `kind === 'qgenda'` by EQUALITY**, so the variant is threaded as a
     SECOND argument (`requestExport(kind, variant)`) and never folded into the kind string —
     folding it in would silently stop guarding and let the sandbox emit real resident names.
+- **QGenda "Grid By Staff" IMPORT (2026-08-22)** — `src/lib/qgendaImport.js` (pure, unit-tested)
+  plus `ImportQGendaModal` on the Dashboard, next to Import Master Matrix. Reads the chief's own
+  QGenda export back in so his real block exists in the app at all (previously it lived only in
+  QGenda and could not be compared against generated output).
+  - `QGENDA_TASK_TO_SHIFT` is **DERIVED from `QGENDA_TASKS`**, never hand-listed, so import and
+    export cannot drift; it keys on a normalized form (trim / lowercase / collapse spaces / strip
+    leading `*`) so IMPORT tolerates casing drift even though EXPORT stays byte-exact.
+    `TRAUMA-D` being a function means both of its outputs get registered.
+  - **Rows are found by CONTENT, never by row number.** The day-number header is located by "a row
+    of 1..31 integers with a row of weekday names directly beneath it" (a printed date or a page
+    number also looks like small integers; only the real header has Mon/Tue/Wed under it), and a
+    person row qualifies by having at least one non-blank date cell — which is what excludes the
+    ~158 attending/`MD OPEN`/section-marker rows without hardcoding the resident block's offset.
+  - **The month/year walk is cross-checked against the export's own weekday row**
+    (`dowMismatches`). Dates come from a sparse month band plus a roll-forward on any backward
+    day jump; that is inference, and a wrong year would produce dates that still look structurally
+    valid. A mismatch is surfaced in the modal and **disables the import button**. Dates are built
+    from integers via string concatenation, never `toDateStr(new Date(...))` — that goes through
+    `toISOString` and shifts by a day for any viewer east of UTC.
+  - **`Res_Call PGY1/2/3` → `jeopardyDates`, never `block.schedule`.** `validateAll` hard-errors
+    a clinical shift on a jeopardy date under every policy but `'off'`, so folding those cells
+    into the schedule would manufacture one hard error each (73 of them on the real export).
+  - **Nothing is invented.** QGenda carries no category or PGY, and only 8 of 49 residents reveal
+    one at all — 6 via `Res_Call PGYn` plus 2 more whose `Trauma Day-Intern` cell implies PGY-1. Unmatched names are listed with
+    a category+PGY picker, pre-filled ONLY where the file actually revealed a PGY, and a name is
+    created only if the chief picks a category. An ambiguous roster match is reported, never
+    auto-resolved.
+  - **Writes a saved snapshot (`blk_qgenda_<start>`), never the live block** — same rule and same
+    `blk_*_<start>` id convention as `ImportMatrixModal`, so a re-upload updates in place and the
+    chief opens it from `BlockCalendarSection`. If a snapshot already covers the same start date
+    (typically that block's Master Matrix import) its `emBlockAssignments` and
+    `offServiceResidents` are carried forward, AND its off-service residents join the
+    name-matching pool — otherwise every off-service rotator reads as "no roster match", since
+    they live on the block, not on `emRoster`.
+  - Unrecognized task strings are reported with counts, never dropped silently — a dropped cell is
+    a shift that quietly vanishes and resurfaces later as an unexplained coverage hole.
+  - New import-history kind `'qgenda'` in `IMPORT_KIND_META`; no new `LS_BACKUP_KEYS` entry.
+- **`src/lib/nameMatch.js`** — `stripNameSuffix` / `nameTokenSet` / `tokensIntersect` /
+  `matchRosterByName`, extracted verbatim from `ImportVacationModal`'s private helpers when the
+  QGenda importer needed the same logic. Both the vacation importer and the lecture importer's
+  `matchLectureRosterName` now call through it. A second matcher next to a second importer is
+  exactly how two call sites drift on what counts as the same person.
 - **QGenda CSV `Start`/`End` are derived from `SHIFT_TIMING[sid].startH/durationH`**
   (numeric source of truth), not by splitting the shift's DISPLAY label string on an en-dash —
   the old approach broke silently if a label's formatting ever changed and had no
