@@ -310,8 +310,20 @@ describe('chief benchmark — (b) generator vs benchmark', () => {
   // shorter stretches. A genuinely worse regression would move this by more than one slot, not
   // exactly one; raising by exactly the observed +1 keeps the ratchet meaningful rather than
   // padding it for comfort.
+  // UPDATE (FLEX-N second night area for FM_1/NEURO_1/ANES_1/PSYCH_1/POD_1, chief-directed
+  // 2026-08-22 — see BASE_ELIGIBILITY): TIGHTENED 9 -> 8 (ceiling 24 -> 23). Deterministic
+  // re-measurement (same fixed baseSeed) moved isolated runs DOWN one slot, 24 -> 23 — this is the
+  // hypothesis behind the change working as intended: giving each of those single-night-area
+  // categories a second night option (FLEX-N, not capped at 1 body/night like PED-N/MT-N) lets a
+  // resident's run continue instead of being forced to alternate with another resident wanting
+  // nights, which is exactly what manufactures isolated single-night runs. The effect is real but
+  // small on this fixture (only 1 slot) since the five affected categories are a small slice of the
+  // roster; tightened to the exact new measured value with zero extra margin because
+  // generateScheduleBest is deterministic under a fixed baseSeed (verified above/below by the
+  // determinism harness tests) — no seed-to-seed noise to buffer against here, unlike the averaged
+  // quality-baseline vectors elsewhere in this repo.
   const CHIEF_ISOLATED_RUNS = 15;
-  const ISOLATED_RUN_SLACK = 9;
+  const ISOLATED_RUN_SLACK = 8;
 
   it(`isolated single-night runs stay within chief benchmark + ${ISOLATED_RUN_SLACK} slack`, () => {
     const isolated = genRuns.filter(r => r.len === 1).length;

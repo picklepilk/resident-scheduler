@@ -125,8 +125,10 @@ const BASE_ELIGIBILITY = {
   PEDS_2:     ['PED-D','PED-E','PED-N','PED-S','PED-D12'],
   PEDS_3:     ['PED-D','PED-E','PED-N','PED-S','PED-D12'],
   // FM-1: POD default + PED-D/E as fill-in PRN, plus PED-N (all 7 nights) and PED-S (all 7 days),
-  // both chief-directed.
-  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','POD-D12','POD-N12','PED-D12'],
+  // both chief-directed. FLEX-N added (chief-directed, 2026-08-22): a second night area lets a
+  // run continue instead of forcing residents wanting nights to alternate around PED-N/MT-N's
+  // 1-body/night cap — see NEURO_1 comment below for the FLEX-N12 tradeoff, same accepted gap here.
+  FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-N','POD-D12','POD-N12','PED-D12'],
   // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
   // PED-N-FM those three days; EM Home covers the separate PED-N id Thu-Sun (see BASE_ELIGIBILITY
   // comment above). PED-N12 dropped deliberately: it's the 12h variant of PED-N's (EM) 19:00-07:00
@@ -136,13 +138,17 @@ const BASE_ELIGIBILITY = {
   FM_3:       ['PED-N-FM'],
   // IM: POD + FLEX, no Peds/MT/Trauma
   IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
-  // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D — verify exact matrix with chief. FLEX-D is
-  // day-only for these four keys (no FLEX-E) — deliberately no FLEX-12h ids added (chief's
-  // conservative default); no PED ids either since none of these keys have PED eligibility at all.
-  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
-  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
-  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
-  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','POD-D12','POD-N12'],
+  // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D, plus FLEX-N (chief-directed, 2026-08-22) —
+  // a second night area besides POD-N so a resident wanting nights isn't forced into an isolated
+  // single-night run by PED-N/MT-N's 1-body/night cap. FLEX-D stays day-only (no FLEX-E) —
+  // deliberately no FLEX-12h ids added (chief's conservative default, unchanged); no PED ids
+  // either since none of these keys have PED eligibility at all. Accepted tradeoff: during a
+  // chief-defined mode:'replace' FLEX 12-hour window, twelveHourAllows strips FLEX-N for these
+  // residents on those dates (same posture already documented for FM_3/PED-N-FM above).
+  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
+  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
+  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
+  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
 };
 
 // Chief-editable day-of-week / block-type scheduling rules — see the Scheduling Rules tab.
@@ -681,6 +687,9 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
     // Pre-PED-S shape (no PED-S at all) — the live default immediately before FM-1 gained PED-S
     // eligibility (chief-confirmed against live QGenda).
     ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','POD-D12','POD-N12','PED-D12'],
+    // Pre-FLEX-N shape (no FLEX ids at all) — the live default immediately before FM-1 gained a
+    // second night area (chief-directed, 2026-08-22 — see BASE_ELIGIBILITY.FM_1).
+    ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','POD-D12','POD-N12','PED-D12'],
   ],
   // Pre-12h-conference-shift shape — the live default immediately before the conference-week 12h
   // shift feature was added (see the six entries below), plus the pre-PED-N-FM-split shape (before
@@ -693,6 +702,9 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
   // renameDiffShiftIds, not this list.
   FM_3:    [['PED-N'], ['PED-N','PED-N12']],
   IM_2:    [['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N']],
+  // Pre-FLEX-N shape (FLEX-D only, no FLEX-N) — the live default immediately before these four
+  // off-service keys gained a second night area (chief-directed, 2026-08-22 — see
+  // BASE_ELIGIBILITY.NEURO_1/ANES_1/PSYCH_1/POD_1).
   NEURO_1: [['POD-D','POD-E','POD-N','FLEX-D']],
   ANES_1:  [['POD-D','POD-E','POD-N','FLEX-D']],
   PSYCH_1: [['POD-D','POD-E','POD-N','FLEX-D']],

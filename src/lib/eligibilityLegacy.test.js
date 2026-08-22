@@ -95,6 +95,32 @@ describe('legacy eligibility overrides vs. later-added shift ids', () => {
   });
 });
 
+describe('FLEX-N second night area for single-night-area categories (chief-directed, 2026-08-22)', () => {
+  // FM-1/NEURO-1/ANES-1/PSYCH-1/POD-1 could each only ever work one night shift area (POD-N, plus
+  // PED-N for FM-1) — since PED-N/MT-N are capped at 1 body/night, two residents from the same
+  // category wanting nights were forced to alternate, manufacturing isolated single-night runs.
+  // FLEX-N gives each a second night area so a run can continue. Dates below are picked to avoid
+  // each category's own DEFAULT_DAY_RULES restrictions (e.g. PSYCH_1/POD_1 both restrict Monday).
+  const cases = [
+    { category: 'FM', pgy: 1, dateStr: '2026-08-24' },     // Monday
+    { category: 'NEURO', pgy: 1, dateStr: '2026-08-24' },  // Monday
+    { category: 'ANES', pgy: 1, dateStr: '2026-08-24' },   // Monday
+    { category: 'PSYCH', pgy: 1, dateStr: '2026-08-27' },  // Thursday
+    { category: 'POD', pgy: 1, dateStr: '2026-08-27' },    // Thursday
+  ];
+
+  for (const { category, pgy, dateStr } of cases) {
+    it(`${category}_${pgy} is eligible for FLEX-N (no override, live default)`, () => {
+      const resident = { id: `test_${category}_${pgy}`, category, pgy };
+      const elig = getEligibleShifts(resident, dateStr, {}, {}, {}, {}, {});
+      expect(elig).toContain('FLEX-N');
+      // The 12h variant is deliberately NOT granted — see BASE_ELIGIBILITY's own comment for these
+      // five keys (no FLEX-12h ids added, conservative default kept).
+      expect(elig).not.toContain('FLEX-N12');
+    });
+  }
+});
+
 describe('diff-shaped overrides (the current storage format)', () => {
   it('a diff resolves through getEligibleShifts the same as an equivalent snapshot', () => {
     const f = acepFixture({ EM_HOME_2: { added: [], removed: ['MT-E'] } });
