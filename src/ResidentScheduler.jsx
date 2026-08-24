@@ -20,10 +20,10 @@ import {
 // side-effect-import gotcha (still applies under dynamic import — the plugin patches the shared
 // jsPDF class regardless of which import site pulls jspdf-autotable in).
 import RequestsTab from './RequestsTab';
-import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
+import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
-import { getCoverageFor, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
+import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
@@ -352,22 +352,17 @@ function computeCoverageByDate(dates, sched, coverage, allResidents, ayConf) {
   const m = {};
   for (const ds of dates) {
     const dow = parseDate(ds).getDay();
-    // Unconditional: twelveHourStateFor always returns a state object, and passing `undefined`
-    // instead would read as "no date context" and let every 12h shift's DEFAULT_COVERAGE minimum
-    // go live here — painting the calendar strips, stat tiles and coverage footer red.
-    const conf12 = twelveHourStateFor(ds, ayConf || {});
     let filled = 0, minTotal = 0;
     const perShift = {};
     const belowMin = [], aboveMax = [];
-    for (const s of SHIFTS) {
-      if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue;
-      const cov = getCoverageFor(s.id, coverage, dow, conf12);
-      const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===s.id ? 1 : 0), 0);
-      perShift[s.id] = { count, min: cov.min, max: cov.max };
+    // SHIFT_DOW skip + once-per-date 12h resolution both live in shiftCoverageForDate.
+    for (const cov of shiftCoverageForDate(ds, dow, coverage, ayConf, SHIFTS, SHIFT_DOW)) {
+      const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===cov.id ? 1 : 0), 0);
+      perShift[cov.id] = { count, min: cov.min, max: cov.max };
       minTotal += cov.min;
       filled += count;
-      if (cov.min > 0 && count < cov.min) belowMin.push(`${s.id} ${count}/${cov.min}`);
-      if (count > cov.max) aboveMax.push(`${s.id} ${count}/${cov.max}`);
+      if (cov.min > 0 && count < cov.min) belowMin.push(`${cov.id} ${count}/${cov.min}`);
+      if (count > cov.max) aboveMax.push(`${cov.id} ${count}/${cov.max}`);
     }
     m[ds] = { perShift, filled, minTotal, belowMin, aboveMax };
   }
@@ -15133,7 +15128,6 @@ const SUPABASE_ANON_RAW = (typeof globalThis !== 'undefined' && globalThis.__SUP
 // — a same-origin relative URL the browser resolves to something that isn't JSON (often this
 // app's own index.html via the SPA redirect) — and JSON.parse would throw, landing the app in a
 // permanent "Sync error" instead of the intended clean local-only fallback.
-const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
 const SUPABASE_URL     = isUnresolvedToken(SUPABASE_URL_RAW)  ? '' : SUPABASE_URL_RAW;
 const SUPABASE_ANON    = isUnresolvedToken(SUPABASE_ANON_RAW) ? '' : SUPABASE_ANON_RAW;
 export const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);

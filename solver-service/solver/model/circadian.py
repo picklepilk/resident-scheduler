@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from solver.io.payload import Payload
 from solver.model import timing
-from solver.model.variables import VarStore, as_literal, forbid_pair, resident_candidates
+from solver.model.variables import VarStore, as_literal, forbid_pair, candidates_by_date, resident_candidates
 
 NIGHT_RUN_WINDOW = 7   # sliding window length; hard cap is window-1 = 6 consecutive nights
 NIGHT_RUN_MAX = 6
@@ -63,9 +63,7 @@ def _add_eve_day_pairs(model, payload: Payload, store: VarStore, enforcement=Non
     forbidden per the rule registry, independent of plain rest-hour math).
     """
     for resident in payload.residents:
-        by_date = {}
-        for date_str, shift_id, var in resident_candidates(payload, store, resident.id):
-            by_date.setdefault(date_str, []).append((shift_id, var))
+        by_date = candidates_by_date(payload, store, resident.id)
         date_set = set(by_date.keys())
 
         for date1 in by_date:

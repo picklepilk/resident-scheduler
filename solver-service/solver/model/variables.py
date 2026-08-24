@@ -125,6 +125,20 @@ def resident_candidates(payload: Payload, store: VarStore, resident_id: str):
             yield date_str, shift_id, var
 
 
+def candidates_by_date(payload: Payload, store: VarStore, resident_id: str) -> dict:
+    """resident_candidates() bucketed by date: {date_str: [(shiftId, var_or_None)]}.
+
+    Every pairwise-forbid rule that walks "everything this resident could be
+    doing on date D" wants this shape rather than the flat stream, and rest.py,
+    circadian.py and objective.py each rebuilt it with an identical
+    setdefault loop.
+    """
+    by_date: dict = {}
+    for date_str, shift_id, var in resident_candidates(payload, store, resident_id):
+        by_date.setdefault(date_str, []).append((shift_id, var))
+    return by_date
+
+
 def as_literal(model, term):
     """Normalize a rolling-window/sequence term (python int OR a real BoolVar)
     into something usable in add_bool_and/add_bool_or/OnlyEnforceIf calls.

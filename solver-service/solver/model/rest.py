@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from solver.io.payload import Payload
 from solver.model import timing
-from solver.model.variables import VarStore, forbid_pair, resident_candidates
+from solver.model.variables import VarStore, forbid_pair, candidates_by_date, resident_candidates
 
 _SCAN_DAYS = (1, 2)  # date2 - date1 in {1, 2}; 0 handled by at-most-one already
 FAMILY = "restGap"
@@ -47,10 +47,7 @@ def add_rest_constraints(model, payload: Payload, store: VarStore, enforcement=N
         return
 
     for resident in payload.residents:
-        candidates = resident_candidates(payload, store, resident.id)
-        by_date = {}
-        for date_str, shift_id, var_or_none in candidates:
-            by_date.setdefault(date_str, []).append((shift_id, var_or_none))
+        by_date = candidates_by_date(payload, store, resident.id)
 
         dates_sorted = sorted(by_date.keys())
         date_set = set(dates_sorted)

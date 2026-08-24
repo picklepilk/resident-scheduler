@@ -33,7 +33,7 @@
 
 import { SHIFTS, SHIFT_DOW } from './shifts.js';
 import { CAT_MAP } from './parse.js';
-import { getCoverageFor, twelveHourStateFor } from './coverage.js';
+import { getCoverageFor, shiftCoverageForDate, twelveHourStateFor } from './coverage.js';
 import { parseDate } from './dates.js';
 
 // Coarse category grouping used by the view's summary columns. Every category not EM_HOME or
@@ -80,14 +80,12 @@ export function composeCoverage({ dates, schedule, allResidents, coverage, ayCon
 
   for (const ds of dates || []) {
     const dow = parseDate(ds).getDay();
-    // Resolved ONCE per date, per the guard above -- never leave this undefined for a real date.
-    const conf12 = twelveHourStateFor(ds, ayConf || {});
     const byShift = {};
 
-    for (const s of SHIFTS) {
-      if (SHIFT_DOW[s.id] && !SHIFT_DOW[s.id].includes(dow)) continue; // shift doesn't exist today
-
-      const { min, max } = getCoverageFor(s.id, cov, dow, conf12);
+    // Both guards (SHIFT_DOW skip, once-per-date 12h resolution) come from the shared
+    // shiftCoverageForDate so this view and computeCoverageByDate cannot disagree.
+    for (const s of shiftCoverageForDate(ds, dow, cov, ayConf, SHIFTS, SHIFT_DOW)) {
+      const { min, max } = s;
       const buckets = {};
       const groups = { home: 0, bamc: 0, offservice: 0 };
       const residentIds = [];

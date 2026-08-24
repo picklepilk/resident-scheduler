@@ -67,6 +67,7 @@ held to.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,7 +84,7 @@ from solver.model.trauma_runs import (
     add_trauma_mid_run_terms,
     add_trauma_second_in_run_terms,
 )
-from solver.model.variables import VarStore, as_literal, resident_candidates
+from solver.model.variables import VarStore, as_literal, candidates_by_date, resident_candidates
 
 DEFAULT_WEIGHTS_PATH = Path(__file__).resolve().parents[2] / "config" / "default_weights.json"
 
@@ -99,7 +100,14 @@ PRIORITY_WEIGHT_KEY = {"coverageMin": "perSlack", "postNightRest": "perViolation
 PRIORITY_DEMOTION_DIVISOR = 10
 
 
+@lru_cache(maxsize=1)
 def load_default_weights() -> dict:
+    """Static config, read once per process rather than per solve.
+
+    Cached safely because `merged_weights` already copies every sub-dict
+    before any caller mutates it -- nothing hands the cached object itself
+    out to be modified.
+    """
     with open(DEFAULT_WEIGHTS_PATH, encoding="utf-8") as f:
         return json.load(f)
 
@@ -253,9 +261,7 @@ def _add_post_night_rest_term(model, payload: Payload, store: VarStore, group: T
     penalties = []
 
     for resident in payload.residents:
-        by_date = {}
-        for date_str, shift_id, var in resident_candidates(payload, store, resident.id):
-            by_date.setdefault(date_str, []).append((shift_id, var))
+        by_date = candidates_by_date(payload, store, resident.id)
         date_set = set(by_date.keys())
 
         for date1 in sorted(by_date.keys()):

@@ -314,3 +314,25 @@ export function getCoverageFor(shiftId, coverage = {}, dow, state) {
   const base = normalizeCoverageEntry(coverage[shiftId]) ?? DEFAULT_COVERAGE[shiftId] ?? { min: 0, max: 0 };
   return applyTraumaClampAndDow(shiftId, base, dow);
 }
+
+// The two guards every per-date coverage view must apply, in one place: skip shifts that
+// structurally don't exist on this weekday (SHIFT_DOW), and resolve the 12h window state ONCE
+// per date before asking getCoverageFor for numbers.
+//
+// computeCoverageByDate (ResidentScheduler.jsx) and composeCoverage (coverageComposition.js)
+// each reimplemented this pair and were kept in sync by comment discipline alone; getting the
+// twelveHourStateFor half wrong once cost 280 phantom coverage misses in fixtures, which is
+// exactly why it now has a single implementation.
+//
+// `shifts` / `shiftDow` are passed in rather than imported so this module keeps no dependency
+// on the shift catalog.
+export function shiftCoverageForDate(ds, dow, coverage, ayConf, shifts, shiftDow) {
+  const conf12 = twelveHourStateFor(ds, ayConf || {});
+  const entries = [];
+  for (const s of shifts) {
+    if (shiftDow[s.id] && !shiftDow[s.id].includes(dow)) continue;
+    const { min, max } = getCoverageFor(s.id, coverage, dow, conf12);
+    entries.push({ id: s.id, min, max });
+  }
+  return entries;
+}
