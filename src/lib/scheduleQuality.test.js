@@ -11,6 +11,7 @@ import {
   betterQuality,
   traumaRunPenaltyFor,
   secondRestDayPenaltyFor,
+  AREA_CONCENTRATION_FLOOR,
 } from './scheduleQuality.js';
 
 const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
@@ -881,3 +882,98 @@ describe('computeQualityVector — holidaySpread weighting', () => {
     expect(v[3]).toBe(0);
   });
 });
+
+// ─── areaSpread ─────────────────────────────────────────────────────────────
+// Block-aggregate area concentration. Added after a generated block parked one resident on
+// POD-E eleven times: mixShare only sees day/eve/night, so POD-E/MT-E/FLEX-E are one
+// indistinguishable "eve" to it and area concentration went entirely unscored.
+describe('computeQualityMetrics — areaSpread', () => {
+  const residents = [{ id: 'r1', category: 'EM_HOME', pgy: 2 }];
+  const areaBase = {
+    coverage: {},
+    residents,
+    targets: { r1: null },
+    nightOnlyIds: new Set(),
+    nightRules: NIGHT_RULES,
+    weekendPairs: [],
+    seniorGapCount: 0,
+    restCompromiseCount: 0,
+  };
+  // Same worked days in every case below, so only the AREA mix varies. Day shifts throughout —
+  // this metric is deliberately blind to shift type, which is mixShare's axis, not this one.
+  const run = (dates, ids) => ({ r1: Object.fromEntries(ids.map((id, i) => [dates[i], id])) });
+  const spreadOf = (dates, ids) =>
+    computeQualityMetrics({ ...areaBase, schedule: run(dates, ids), dates }).areaSpread;
+
+  it('charges nothing when no single area passes the floor', () => {
+    const dates = mkDates('2026-01-01', 10);
+    // 10 worked days, 5 POD — exactly ceil(10 * 0.5) = 5, so the excess is 0, not negative.
+    const ids = ['POD-D', 'POD-D', 'POD-D', 'POD-D', 'POD-D', 'PED-D', 'PED-D', 'MT-D', 'MT-D', 'FLEX-D'];
+    expect(spreadOf(dates, ids)).toBe(0);
+  });
+
+  it('charges only the excess past the floor, not the whole count', () => {
+    const dates = mkDates('2026-01-01', 12);
+    // 12 worked days, 10 POD -> 10 - ceil(12 * 0.5) = 10 - 6 = 4.
+    const ids = [...Array(10).fill('POD-D'), 'PED-D', 'MT-D'];
+    expect(spreadOf(dates, ids)).toBe(4);
+  });
+
+  it('a whole block in one area scores strictly worse than the same days spread out', () => {
+    const dates = mkDates('2026-01-01', 12);
+    const allOneArea = Array(12).fill('POD-D');
+    const mixed = ['POD-D', 'POD-D', 'POD-D', 'PED-D', 'PED-D', 'PED-D',
+      'MT-D', 'MT-D', 'MT-D', 'FLEX-D', 'FLEX-D', 'FLEX-D'];
+    expect(spreadOf(dates, allOneArea)).toBeGreaterThan(spreadOf(dates, mixed));
+    expect(spreadOf(dates, mixed)).toBe(0);
+  });
+
+  it('is blind to WHICH days the area lands on — only the aggregate mix counts', () => {
+    // Two schedules with identical area tallies but opposite day-to-day shapes: one clumped into
+    // same-area runs, one alternating. They must score the SAME here. That is what keeps this
+    // metric orthogonal to the within-run area-churn charge in workShapePenalty, which pulls the
+    // other way — the two are only compatible because they measure different axes. If this ever
+    // starts caring about ordering, the two terms are in direct opposition and the fill-time
+    // areaShare term will start regressing workShapePenalty (see its comment in score()).
+    const dates = mkDates('2026-01-01', 8);
+    const clumped = ['POD-D', 'POD-D', 'POD-D', 'POD-D', 'POD-D', 'POD-D', 'PED-D', 'PED-D'];
+    const alternating = ['POD-D', 'PED-D', 'POD-D', 'PED-D', 'POD-D', 'POD-D', 'POD-D', 'POD-D'];
+    expect(spreadOf(dates, clumped)).toBe(spreadOf(dates, alternating));
+  });
+
+  it('the floor constant is the real one, not a restatement', () => {
+    const dates = mkDates('2026-01-01', 10);
+    const ids = [...Array(8).fill('POD-D'), 'PED-D', 'MT-D'];
+    expect(spreadOf(dates, ids)).toBe(8 - Math.ceil(10 * AREA_CONCENTRATION_FLOOR));
+  });
+});
+
+describe('computeQualityVector — areaSpread weighting', () => {
+  const priority = ['coverageMin', 'seniorComposition', 'postNightRest'];
+
+  it('joins the existing last slot at coefficient 2 rather than adding a 5th element', () => {
+    const without = computeQualityVector(makeMetrics({ areaSpread: 0 }), priority);
+    const with3 = computeQualityVector(makeMetrics({ areaSpread: 3 }), priority);
+    expect(with3).toHaveLength(without.length);
+    expect(with3.length).toBe(4);
+    expect(with3[3] - without[3]).toBeCloseTo(6, 5);
+  });
+
+  it('tolerates a metrics object built before the field existed', () => {
+    // makeMetrics deliberately omits areaSpread — the `?? 0` guard must keep slot 3 finite rather
+    // than poisoning every comparison to NaN (the exact bug workShapePenalty once had here).
+    const legacy = makeMetrics({});
+    delete legacy.areaSpread;
+    expect(Number.isFinite(computeQualityVector(legacy, priority)[3])).toBe(true);
+  });
+
+  it('cannot outrank a real target-fairness regression', () => {
+    // deficitSpread sits at coefficient 10 against areaSpread's 2, so spreading areas must never
+    // buy its way past worse target fairness.
+    const spreadBadly = makeMetrics({ areaSpread: 4, deficitSpread: 0 });
+    const fairnessWorse = makeMetrics({ areaSpread: 0, deficitSpread: 1 });
+    expect(computeQualityVector(spreadBadly, priority)[3])
+      .toBeLessThan(computeQualityVector(fairnessWorse, priority)[3]);
+  });
+});
+

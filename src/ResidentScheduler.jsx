@@ -1500,6 +1500,27 @@ const SCORE_WEIGHTS = {
   deficit: 100,             // distance from the resident's own shift target — the primary driver
   nightCluster: 40,         // circadian night-run shaping (extend a run / don't strand a short one)
   mixShare: 20,             // day/eve/night variety within a resident's own assignments
+  // The AREA-axis twin of mixShare, for DAY/EVE shifts only (see the gate at its use site).
+  // mixShare cannot see area concentration at all — POD-E, MT-E and FLEX-E are one
+  // indistinguishable "eve" to it — so a resident could take POD-E eleven times in a block and pay
+  // nothing for it. Measured on the committed fixtures before this term existed: residents
+  // eligible for ALL FIVE areas finishing an 18-shift block at maxAreaShare 1.00, and a mean
+  // busiest-area share of 0.618 averaged across all three variants.
+  //
+  // WEIGHT 15, chosen by A/B over 5 seeds x 3 fixtures against a hard constraint, not by feel.
+  // 25 measured best on concentration (mean 0.600) but FAILS chiefBenchmark's isolated-single-
+  // -night-run guard (24 vs the 23 ceiling); 15 and 10 both pass, and 15 keeps the better
+  // workShapePenalty of the two. At 15, vs master: mean busiest-area share 0.618 -> 0.606,
+  // workShapePenalty 777 -> 741 summed over the three fixtures, and errors / coverageMiss /
+  // underTarget / restCompromises all flat. The small-N counts that move alongside those
+  // (whole-block-in-one-area 15 -> 10) sit inside Poisson noise for 15 runs and are NOT the
+  // evidence this weight rests on — the mean, averaged over ~265 resident-blocks, is.
+  //
+  // Deliberately absent from PREFERENCE_GROUPS/PREFERENCE_ALWAYS: scoreWeights.test.js derives
+  // structuralKeys as "every key that is not a preference key", so this lands in the STRUCTURAL
+  // tier automatically — the same tier as mixShare, the term it parallels, and correctly so
+  // (parking a resident in one area for a month is not a nicety, it is a bad schedule).
+  areaShare: 15,
   streakOver3: 15,          // trim consecutive-workday runs past 3
   pedsMixNeedsMore: 25,     // Peds/EM PGY-2 must reach PEDS_EM_MIX.min before other rotations sap slots
   fm1OnPeds: 15,            // FM-1s default to POD; peds is fill-in PRN only
@@ -4484,6 +4505,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // Night-area diversity (item 5, see nightAreaDiversityTerm): per-resident count of night shifts
   // already worked in each of the four "diversity" areas this block, read by score().
   const nightAreaCount = {};
+  // All-shift per-area counts (NOT night-only, unlike nightAreaCount above) — the running input to
+  // score()'s areaShare term. Maintained at exactly the same four sites as nightAreaCount: this
+  // seed loop, fillDayPass's commit, and repairPass's unassignCell/assignCell. Those last two must
+  // stay an exact inverse pair or a reverted repair move leaves the counts permanently skewed.
+  const areaCount = {};
   // Yearly trauma-night count (published blocks this AY) — used only as a soft nudge to balance
   // trauma-night load between PGY-2/3 across the year (see traumaNightPgyPrefersDow in score()).
   const traumaNightYearly = {};
@@ -4510,6 +4536,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     nightCount[r.id] = 0;
     bamcWedNightCount[r.id] = 0;
     nightAreaCount[r.id] = Object.fromEntries(NIGHT_DIVERSITY_AREAS.map(a => [a, 0]));
+    areaCount[r.id] = Object.fromEntries(SHIFT_AREAS.map(a => [a, 0]));
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
     traumaNightYearly[r.id] = isTraumaCapSubject(r) ? countPublishedTraumaNights(r.id, block.academicYear, blocksHistory, block.id) : 0;
     // Unlike traumaNightYearly this is NOT gated on a rotation predicate — a holiday is a holiday
@@ -4534,6 +4561,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sid === 'PED-N') pedNCount[r.id]++;
       if (sh?.type === 'night') nightCount[r.id]++;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[r.id][sh.area]++;
+      if (sh?.area) areaCount[r.id][sh.area]++;
       if (r.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(sDs).getDay() === 3) bamcWedNightCount[r.id]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
       if (isHolidayDay(sDs)) holidayYearly[r.id] = (holidayYearly[r.id] || 0) + 1;
@@ -5051,6 +5079,36 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const areaContinuity =
       ((prevSid && SHIFT_MAP[prevSid]?.area === shift.area) ? 1 : 0) +
       ((nextSid && SHIFT_MAP[nextSid]?.area === shift.area) ? 1 : 0);
+    // Area concentration — same denominator as mixShare above, so the two read as one question on
+    // two axes: "what fraction of this resident's block is already this?". mixShare cannot see
+    // this axis at all (POD-E/MT-E/FLEX-E are one indistinguishable "eve" to it), which is how a
+    // resident ends up with eleven POD-E and no penalty.
+    //
+    // GATED ON areaContinuity, and that gate is the whole design — do not remove it. Ungated, this
+    // term penalizes repeating an area even in the MIDDLE of a run, putting it in direct opposition
+    // to the within-run area-churn charge in scheduleQuality.js. A/B'd over 5 seeds x 3 committed
+    // fixtures (measured at weight 25, before the night exemption below), ungating cost +46.6 /
+    // +17.6 / +27.4 workShapePenalty (standard / understaffed / vacationHeavy) against the gated
+    // form and also worsened deficitSpread (0.012 -> 0.028, 0.050 -> 0.067) — leaving it WORSE THAN
+    // NO TERM AT ALL on two of the three variants. That is precisely how the Phase 2.3 type-churn
+    // term failed: two fill-time terms pulling on the same axis just perturb greedy tie-breaks.
+    //
+    // Suppressed while a same-area neighbour exists, the term instead speaks only when a NEW run is
+    // being started, where picking a fresh area carries no churn cost at all. Continuity governs
+    // WITHIN a run, areaShare governs ACROSS runs, and the shape they jointly want — POD-POD-POD
+    // then PED-PED-PED — is the one the chief asks for.
+    // DAY/EVE ONLY. Nights already have their own area-spread term, nightAreaDiversity, which is
+    // pinned at weight 2 precisely so it can never compete with nightCluster's run-shaping at
+    // weight 40 (see NIGHT_DIVERSITY_AREAS' comment, which says not to raise it without
+    // re-checking that ordering). areaShare at 25 is exactly the competition that comment warns
+    // about: applied to nights it spreads each resident's night areas thinner, shortens their
+    // runs, and chiefBenchmark.test.js caught it directly — isolated single-night runs went 25 vs
+    // the benchmark's allowed 23. Nights are therefore left entirely to the pair that already
+    // governs them, and this term covers the day/eve gap nothing else was watching (which is where
+    // the reported eleven-POD-E block lived anyway).
+    const areaShare = (areaContinuity > 0 || shift.type === 'night')
+      ? 0
+      : (areaCount[r.id][shift.area] || 0) / Math.max(1, assigned[r.id]);
     // Don't butt a shift against time off (travel/rest day on either side of vacation or an
     // approved day off). Symmetric — no evidence yet that one side matters more.
     const offAdjacency =
@@ -5072,6 +5130,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // sign is a property of how the term is applied, not of the weight's magnitude.
     const W = SCORE_WEIGHTS;
     return W.deficit * deficit + W.nightCluster * nightCluster - W.mixShare * mixShare
+      - W.areaShare * areaShare
       - W.streakOver3 * Math.max(0, streak - 3)
       + W.pedsMixNeedsMore * pedsMixNeedsMore + W.splitPedsHalfBoost * splitPedsHalfBoost
       - W.fm1OnPeds * fm1OnPeds + W.seniorAdj * seniorAdj - W.jcNearCap * jcNearCap
@@ -5328,6 +5387,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (slot.shift.id === 'PED-N') pedNCount[best.id]++;
       if (slot.shift.type === 'night') nightCount[best.id]++;
       if (slot.shift.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(slot.shift.area)) nightAreaCount[best.id][slot.shift.area]++;
+      if (slot.shift.area) areaCount[best.id][slot.shift.area]++;
       if (best.category === 'EM_BAMC' && slot.shift.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[best.id]++;
       if (slot.shift.id === 'TRAUMA-N') traumaNightYearly[best.id] = (traumaNightYearly[best.id] || 0) + 1;
       if (isHolidayDay(ds)) holidayYearly[best.id] = (holidayYearly[best.id] || 0) + 1;
@@ -5388,6 +5448,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sid === 'PED-N') pedNCount[rid]--;
       if (sh?.type === 'night') nightCount[rid]--;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
+      if (sh?.area) areaCount[rid][sh.area]--;
       const r = residentById.get(rid);
       if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
@@ -5406,6 +5467,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sid === 'PED-N') pedNCount[rid]++;
       if (sh?.type === 'night') nightCount[rid]++;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
+      if (sh?.area) areaCount[rid][sh.area]++;
       const r = residentById.get(rid);
       if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;

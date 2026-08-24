@@ -15,6 +15,13 @@ import { SHIFT_MAP, SHIFT_DOW, isNightShiftId } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 
+// Share of a resident's worked block that may sit in a single shift AREA before areaSpread starts
+// charging. 0.5 is deliberately generous rather than tight: POD and FLEX each carry roughly a
+// third of the daily coverage minimum, so a half-POD block is unremarkable and must cost nothing.
+// Only genuine concentration — the "eleven POD-E in one block" case this metric was added for —
+// should score. Exported so a test can assert against the real number instead of restating it.
+export const AREA_CONCENTRATION_FLOOR = 0.5;
+
 // Population standard deviation (denominator = N, not N-1) — we're measuring spread within a
 // fixed, fully-known group (every resident in that category/pgy cohort on this block), not
 // estimating a sample statistic, so population stddev is the correct measure here.
@@ -364,6 +371,17 @@ export function computeQualityMetrics({
   // legally-mandated structure. Instead, runs are compared against the theoretical minimum
   // ceil(worked / maxConsecutiveWorkDays), and only the excess is penalized.
   let workShapePenalty = 0;
+  // areaSpread: block-AGGREGATE area concentration, the selection-time mirror of
+  // SCORE_WEIGHTS.areaShare at fill time. Without it, a fill-time term alone cannot steer
+  // generateScheduleBest, which picks among its 20 seeded attempts purely by quality vector.
+  //
+  // Deliberately a DIFFERENT AXIS from the area-churn charge further down this same loop, which
+  // pulls the other way: churn asks "did today's area differ from yesterday's", areaSpread asks
+  // "did one area swallow the whole block". Both are satisfied at once by runs of a single area
+  // that DIFFER from run to run — POD-POD-POD then PED-PED-PED — so they do not fight. That axis
+  // separation is precisely what the reverted Phase 2.3 type-churn term lacked: it opposed
+  // mixShare on mixShare's own axis and consistently made workShapePenalty worse.
+  let areaSpread = 0;
   for (const r of residents) {
     const rs = schedule[r.id] || {};
     const offDates = new Set([...(r.vacationDates || []), ...(r.approvedDatesOff || [])]);
@@ -386,6 +404,19 @@ export function computeQualityMetrics({
       i = j + 1;
     }
     if (!runs.length) continue;
+
+    // Charge only the EXCESS over AREA_CONCENTRATION_FLOOR, so ordinary area-heaviness is free.
+    // A resident whose eligibility offers no real alternative (off-service categories, narrow
+    // rotation overrides) sits at the same concentration in EVERY candidate schedule, so their
+    // contribution is an identical constant across all 20 seeds and cancels in the comparison
+    // rather than distorting it — which is why this needs no eligibility plumbing to be fair.
+    const areaTally = {};
+    for (const ds of dates) {
+      const a = SHIFT_MAP[rs[ds]]?.area;
+      if (a) areaTally[a] = (areaTally[a] || 0) + 1;
+    }
+    const topArea = Math.max(0, ...Object.values(areaTally));
+    areaSpread += Math.max(0, topArea - Math.ceil(worked * AREA_CONCENTRATION_FLOOR));
 
     // Block-edge exemption mirrors nightShapePenalty: a run touching the first or last date may
     // legitimately continue into the adjacent block, so its shape can't be judged from here.
@@ -449,6 +480,7 @@ export function computeQualityMetrics({
     ayCarryoverConfidence: confidence,
     nightShapePenalty,
     workShapePenalty,
+    areaSpread,
     traumaRunPenalty,
     secondRestDayPenalty,
   };
@@ -510,6 +542,12 @@ export function computeQualityVector(metrics, rulePriority) {
     4 * metrics.weekendSpread +
     metrics.nightShapePenalty +
     0.5 * metrics.workShapePenalty +
+    // areaSpread joins this SAME existing slot at 2 — never a 5th tuple element, same reasoning as
+    // workShapePenalty/holidaySpread above. 2 matches traumaRunPenalty: both are concrete,
+    // countable deviations from the shape the chief asks for, and both must stay far below
+    // deficitSpread (10) so spreading areas can never buy its way past a real target-fairness
+    // regression. The nullish guard covers hand-built metrics objects in tests, as above.
+    2 * (metrics.areaSpread ?? 0) +
     2 * (metrics.traumaRunPenalty ?? 0) +
     1 * (metrics.secondRestDayPenalty ?? 0);
   return [n0, n1, n2, fairnessPlusShape];
