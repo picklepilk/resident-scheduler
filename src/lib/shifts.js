@@ -134,6 +134,17 @@ export const SHIFT_TIMING = {
 // implements). Coverage stays {min:0,max:1}; most off-window days genuinely have nobody on it.
 export const SHIFT_DOW = { 'TRAUMA-D': [0, 2, 4, 6], 'TRAUMA-N': [0, 1, 5, 6] };
 
+// Does this shift structurally exist on this weekday at all? Encodes the "missing key means
+// unrestricted" convention that every SHIFT_DOW consumer had been re-implementing inline
+// (`SHIFT_DOW[id] && !SHIFT_DOW[id].includes(dow)`, negated, at six call sites in
+// ResidentScheduler.jsx). Callers that iterate SHIFTS x dates must consult this BEFORE
+// getCoverageFor, which deliberately reports a shift's configured min/max without regard to
+// whether the shift runs that day (see lib/coverage.test.js).
+export function shiftActiveOnDow(shiftId, dow) {
+  const days = SHIFT_DOW[shiftId];
+  return !days || days.includes(dow);
+}
+
 // Millisecond timestamp for the START of a shift on a given date
 export function shiftStartMs(shiftId, dateStr) {
   const t = SHIFT_TIMING[shiftId];

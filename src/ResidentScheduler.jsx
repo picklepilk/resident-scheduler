@@ -22,7 +22,7 @@ import {
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
-import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
+import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -3459,7 +3459,7 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   // days) — applies to both the manual picker and the generator; the generator already skips
   // these dates separately in fillDayPass, but the picker had no equivalent check, so it offered
   // the shift on invalid days.
-  eligible = eligible.filter(s => !SHIFT_DOW[s] || SHIFT_DOW[s].includes(dow));
+  eligible = eligible.filter(s => shiftActiveOnDow(s, dow));
 
   // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
   // per-resident assignment, not a category/PGY default): no evening/night shifts on Tuesdays.
@@ -4027,7 +4027,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     const dsDow = parseDate(ds).getDay();
     const conf12 = twelveHourStateFor(ds, ayConf || {});
     for (const shift of SHIFTS) {
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
+      if (!shiftActiveOnDow(shift.id, dsDow)) continue;
       const cov = getCoverageFor(shift.id, coverage, dsDow, conf12);
       const count = countsByDateShift[`${ds}__${shift.id}`] || 0;
       if (cov.min > 0 && count < cov.min)
@@ -5163,7 +5163,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const dsDow = parseDate(ds).getDay();
     const conf12 = conf12For(ds);
     for (const shift of SHIFTS.filter(includeShift)) {
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dsDow)) continue;
+      if (!shiftActiveOnDow(shift.id, dsDow)) continue;
       const already = allResidents.filter(r => schedule[r.id][ds] === shift.id).length;
       // TRAUMA-D/TRAUMA-N are clamped to at most 1 inside getCoverageFor itself (single source of
       // truth shared with validateAll/computeCoverageByDate — see lib/coverage.js).
@@ -5944,7 +5944,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     const byDate = {};
     for (const ds of dates) {
       const dow = parseDate(ds).getDay();
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dow)) continue;
+      if (!shiftActiveOnDow(shift.id, dow)) continue;
       const cov = getCoverageFor(shift.id, coverage, dow, conf12For(ds));
       if (cov.min > 0 || cov.max > 0) byDate[ds] = cov;
     }
@@ -5964,7 +5964,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       const byDate = {};
       for (const ds of dates) {
         const dow = parseDate(ds).getDay();
-        if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dow)) continue;
+        if (!shiftActiveOnDow(shift.id, dow)) continue;
         if (seniorCompositionExempt(shift, ds)) continue; // exempt (s,d) => no entry at all
         byDate[ds] = schedulableResidents
           .filter(r => (eligible[r.id][ds] || []).includes(shift.id))
@@ -6541,7 +6541,7 @@ export function computeTotalCoverageSupply(dates, coverage, ayConf = {}) {
     const dow = parseDate(ds).getDay();
     const state = twelveHourStateFor(ds, ayConf || {});
     for (const shift of SHIFTS) {
-      if (SHIFT_DOW[shift.id] && !SHIFT_DOW[shift.id].includes(dow)) continue;
+      if (!shiftActiveOnDow(shift.id, dow)) continue;
       supply += getCoverageFor(shift.id, coverage, dow, state).max;
     }
   }
