@@ -38,7 +38,7 @@
 // is exactly what should make you a stronger candidate for Christmas — the opposite of treating
 // approved time off as a free pass that also earns credit.
 
-import { parseDate, addDays, ayWindowFor } from './dates.js';
+import { parseDate, addDays, ayWindowFor, formatAY } from './dates.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -172,7 +172,7 @@ export function holidayNameForDateAnyAy(dateStr, ayData) {
   const [y, m] = dateStr.split('-').map(Number);
   if (!y || !m) return null;
   const startYear = m >= 7 ? y : y - 1;
-  const ay = `AY${String(startYear).slice(2)}/${String(startYear + 1).slice(2)}`;
+  const ay = formatAY(startYear);
   for (const h of resolveHolidays(ayData[ay])) {
     if (expandHolidayDates(h).includes(dateStr)) return h.name;
   }

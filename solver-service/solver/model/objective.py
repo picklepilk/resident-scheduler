@@ -280,7 +280,7 @@ def _add_post_night_rest_term(model, payload: Payload, store: VarStore, group: T
                     for shift_id2, var2 in target_entries:
                         shift2 = payload.shifts[shift_id2]
                         gap = timing.gap_between(date1, shift1, date2, shift2)
-                        if gap >= 24 * 60:
+                        if gap >= payload.post_night_day_rest_h * 60:
                             continue
                         if var1 is None and var2 is None:
                             continue  # both historical -- var2 None+var1 real is impossible (tail always precedes block)
@@ -469,34 +469,34 @@ def _add_weekend_off_term(model, payload: Payload, store: VarStore, group: TermG
         group.add(coef, has_off_weekend.negated())
 
 
-def _add_peds_mix_min_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    coef = int(weights["pedsMixMin"]["perUnit"])
-    for resident in payload.residents:
-        cap = resident.caps.peds_mix_min
-        if cap is None or cap <= 0:
-            continue
-        peds_terms = terms_for(payload, store, resident.id, lambda sid: payload.shifts[sid].area == "PED", lambda d: True)
-        assigned = sum(peds_terms) if peds_terms else 0
-        shortfall = model.new_int_var(0, cap, f"peds_min_shortfall[{resident.id}]")
-        model.add_max_equality(shortfall, [cap - assigned, 0])
-        group.add(coef, shortfall)
-
-
-def _add_fm1_peds_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    coef = int(weights["fm1Peds"]["perUnit"])
+def _add_peds_mix_and_fm1_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    """Combines pedsMixMin (soft floor on PED-area shifts for peds-mix
+    residents) and fm1Peds (soft ceiling on PED-area shifts for FM-1
+    residents) -- previously two separate functions that each ran their own
+    terms_for(...) PED-area scan for the same resident when both caps
+    applied. Scans at most once per resident, only when at least one of the
+    two caps is actually in play for them."""
+    mix_coef = int(weights["pedsMixMin"]["perUnit"])
+    fm1_coef = int(weights["fm1Peds"]["perUnit"])
     D = len(payload.block.dates)
     for resident in payload.residents:
-        cap = resident.caps.fm1_peds_max
-        if cap is None:
-            continue
-        ub = max(D - cap, 0)
-        if ub == 0:
+        mix_cap = resident.caps.peds_mix_min
+        fm1_cap = resident.caps.fm1_peds_max
+        want_mix = mix_cap is not None and mix_cap > 0
+        fm1_ub = max(D - fm1_cap, 0) if fm1_cap is not None else 0
+        want_fm1 = fm1_ub > 0
+        if not want_mix and not want_fm1:
             continue
         peds_terms = terms_for(payload, store, resident.id, lambda sid: payload.shifts[sid].area == "PED", lambda d: True)
         assigned = sum(peds_terms) if peds_terms else 0
-        overage = model.new_int_var(0, ub, f"fm1_peds_overage[{resident.id}]")
-        model.add_max_equality(overage, [assigned - cap, 0])
-        group.add(coef, overage)
+        if want_mix:
+            shortfall = model.new_int_var(0, mix_cap, f"peds_min_shortfall[{resident.id}]")
+            model.add_max_equality(shortfall, [mix_cap - assigned, 0])
+            group.add(mix_coef, shortfall)
+        if want_fm1:
+            overage = model.new_int_var(0, fm1_ub, f"fm1_peds_overage[{resident.id}]")
+            model.add_max_equality(overage, [assigned - fm1_cap, 0])
+            group.add(fm1_coef, overage)
 
 
 def _add_intern_pair_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
@@ -513,8 +513,7 @@ def _add_intern_pair_term(model, payload: Payload, store: VarStore, group: TermG
 
 def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
     _add_weekend_off_term(model, payload, store, group, weights)
-    _add_peds_mix_min_term(model, payload, store, group, weights)
-    _add_fm1_peds_term(model, payload, store, group, weights)
+    _add_peds_mix_and_fm1_terms(model, payload, store, group, weights)
     _add_intern_pair_term(model, payload, store, group, weights)
 
 

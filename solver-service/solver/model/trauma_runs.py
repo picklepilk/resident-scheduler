@@ -180,6 +180,22 @@ def _trauma_possible_indices(payload: Payload, store: VarStore, resident) -> fro
     return frozenset(indices)
 
 
+def _trauma_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
+    """Per-store, per-resident memoization of `_trauma_possible_indices` --
+    the three consumers below (`add_trauma_run_hard_cap`,
+    `add_trauma_second_in_run_terms`, `add_trauma_mid_run_terms`) each loop
+    every resident and previously recomputed this same frozenset from
+    scratch per function; computed once here and cached on `store` (a fresh
+    VarStore per solve, so the cache's lifetime is exactly one solve's)."""
+    cache = getattr(store, "_trauma_possible_cache", None)
+    if cache is None:
+        cache = {}
+        store._trauma_possible_cache = cache
+    if resident.id not in cache:
+        cache[resident.id] = _trauma_possible_indices(payload, store, resident)
+    return cache[resident.id]
+
+
 def _night_possible_indices(payload: Payload, store: VarStore, resident) -> frozenset:
     """Same idea as `_trauma_possible_indices`, for `_night_term_for_position`
     (any NIGHT-type shift, not just trauma) -- used by the two soft terms
@@ -201,6 +217,20 @@ def _night_possible_indices(payload: Payload, store: VarStore, resident) -> froz
                 indices.add(idx)
                 break
     return frozenset(indices)
+
+
+def _night_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
+    """Per-store, per-resident memoization of `_night_possible_indices` --
+    shared by `add_night_duration_alternation_terms` and
+    `add_second_rest_day_terms`, same cache mechanism as
+    `_trauma_possible_indices_cached` above."""
+    cache = getattr(store, "_night_possible_cache", None)
+    if cache is None:
+        cache = {}
+        store._night_possible_cache = cache
+    if resident.id not in cache:
+        cache[resident.id] = _night_possible_indices(payload, store, resident)
+    return cache[resident.id]
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +285,7 @@ def add_trauma_run_hard_cap(model, payload: Payload, store: VarStore) -> None:
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
-        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        trauma_idx = _trauma_possible_indices_cached(payload, store, resident)
         if not trauma_idx:
             # trauma[r,d] == 0 for every date (see _link_trauma) -- every
             # window's constraint below would reduce to "0 <= 2 + M*(...)",
@@ -299,7 +329,7 @@ def add_trauma_second_in_run_terms(model, payload: Payload, store: VarStore, gro
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
-        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        trauma_idx = _trauma_possible_indices_cached(payload, store, resident)
         if not trauma_idx:
             continue  # trauma[r,d] == 0 everywhere -- every AND below is provably 0
         for a in range(n):
@@ -342,7 +372,7 @@ def add_trauma_mid_run_terms(model, payload: Payload, store: VarStore, group, co
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
-        trauma_idx = _trauma_possible_indices(payload, store, resident)
+        trauma_idx = _trauma_possible_indices_cached(payload, store, resident)
         if not trauma_idx:
             continue  # trauma[r,d] == 0 everywhere -- every AND below is provably 0
         for idx in range(max(tail_len, 1), n - 1):
@@ -394,7 +424,7 @@ def add_night_duration_alternation_terms(model, payload: Payload, store: VarStor
     exempt = payload.alternation_exempt_dates
 
     for resident in payload.residents:
-        night_idx = _night_possible_indices(payload, store, resident)
+        night_idx = _night_possible_indices_cached(payload, store, resident)
         if not night_idx:
             continue  # night[r,d] == 0 everywhere -- every nightclass term below is provably 0
         for idx in range(n - 1):
@@ -435,7 +465,7 @@ def add_second_rest_day_terms(model, payload: Payload, store: VarStore, group, c
     n = len(payload.all_dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
-        night_idx = _night_possible_indices(payload, store, resident)
+        night_idx = _night_possible_indices_cached(payload, store, resident)
         if not night_idx:
             continue  # night[r,d] == 0 everywhere -- run_end is provably 0 at every e
         for e in range(2, n - 2):

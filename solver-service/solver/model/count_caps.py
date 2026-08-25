@@ -29,8 +29,6 @@ from solver.model import timing
 from solver.model.variables import VarStore
 
 WEDNESDAY = 2  # datetime.date.weekday(): Monday=0 ... Sunday=6
-JC_WINDOW_START_H = 18
-JC_WINDOW_END_H = 21
 
 # spec.name -> rule-registry family id, for pass 2's per-(resident, family)
 # enforcement literal (solver/model/elastic.py). `targetCeiling` keeps the
@@ -64,7 +62,9 @@ def _build_simple_specs(payload: Payload) -> list:
         CapSpec(
             name="jcRemaining",
             cap_getter=lambda r: r.caps.jc_remaining,
-            shift_pred=lambda sid: timing.overlaps_hour_window(payload.shifts[sid], JC_WINDOW_START_H, JC_WINDOW_END_H),
+            shift_pred=lambda sid: timing.overlaps_hour_window(
+                payload.shifts[sid], payload.jc_window_start_h, payload.jc_window_end_h
+            ),
             date_pred=lambda d: d in payload.jc_dates,
         ),
         CapSpec(

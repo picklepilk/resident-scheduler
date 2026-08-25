@@ -149,6 +149,15 @@ class Payload:
     em_pgy2_resident_ids: frozenset = field(default_factory=frozenset)
     em_pgy3_resident_ids: frozenset = field(default_factory=frozenset)
 
+    # ---- altitude fix: two constants the JS side already names (shifts.js's JC_WINDOW_START_H/
+    # END_H, ResidentScheduler.jsx's NIGHT_RULES.postNightDayRestH) that this module used to
+    # independently re-derive as bare/hardcoded numbers. OPTIONAL, additive: default here matches
+    # the value every existing payload (pre-dating these fields) implicitly assumed, so an old JS
+    # build that never sends them behaves identically.
+    jc_window_start_h: int = 18
+    jc_window_end_h: int = 21
+    post_night_day_rest_h: int = 24
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
@@ -311,6 +320,9 @@ def parse_payload(raw: dict) -> Payload:
             em_resident_ids=frozenset(raw.get("emResidentIds", ()) or ()),
             em_pgy2_resident_ids=frozenset(raw.get("emPgy2ResidentIds", ()) or ()),
             em_pgy3_resident_ids=frozenset(raw.get("emPgy3ResidentIds", ()) or ()),
+            jc_window_start_h=int(raw.get("jcWindowStartH", 18) or 18),
+            jc_window_end_h=int(raw.get("jcWindowEndH", 21) or 21),
+            post_night_day_rest_h=int(raw.get("postNightDayRestH", 24) or 24),
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

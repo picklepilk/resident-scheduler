@@ -151,9 +151,17 @@ export function shiftEndMs(shiftId, dateStr) {
 
 export function isNightShiftId(sid) { return SHIFT_MAP[sid]?.type === 'night'; }
 
+// Journal Club window (18:00-21:00). Named so buildSolverPayload (ResidentScheduler.jsx) can thread
+// these through the solver payload as jcWindowStartH/jcWindowEndH rather than the Python side
+// independently re-deriving them as its own hardcoded JC_WINDOW_START_H/END_H (solver-service's
+// solver/model/count_caps.py) — the payload field defaults to 18/21 there when absent, so an older
+// JS build still behaves identically.
+export const JC_WINDOW_START_H = 18;
+export const JC_WINDOW_END_H = 21;
+
 export function shiftOverlapsJC(sid) {
   const t = SHIFT_TIMING[sid];
-  return !!t && t.startH < 21 && t.startH + t.durationH > 18;
+  return !!t && t.startH < JC_WINDOW_END_H && t.startH + t.durationH > JC_WINDOW_START_H;
 }
 
 // "Who else is around this shift" lookup for the grid's hover card / ShiftPickerModal's inline

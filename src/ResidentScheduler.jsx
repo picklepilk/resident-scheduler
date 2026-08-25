@@ -22,7 +22,7 @@ import {
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
-import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
+import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -355,9 +355,17 @@ function computeCoverageByDate(dates, sched, coverage, allResidents, ayConf) {
     let filled = 0, minTotal = 0;
     const perShift = {};
     const belowMin = [], aboveMax = [];
+    // Single pass over allResidents builds shiftId -> filled count for this date, replacing what
+    // used to be a full allResidents.reduce(...) per shift per date (O(dates x shifts x residents)
+    // -> O(dates x (residents + shifts))).
+    const countsBySid = new Map();
+    for (const r of allResidents) {
+      const sid = sched[r.id]?.[ds];
+      if (sid) countsBySid.set(sid, (countsBySid.get(sid) || 0) + 1);
+    }
     // SHIFT_DOW skip + once-per-date 12h resolution both live in shiftCoverageForDate.
     for (const cov of shiftCoverageForDate(ds, dow, coverage, ayConf, SHIFTS, SHIFT_DOW)) {
-      const count = allResidents.reduce((n,r)=> n + (sched[r.id]?.[ds]===cov.id ? 1 : 0), 0);
+      const count = countsBySid.get(cov.id) || 0;
       perShift[cov.id] = { count, min: cov.min, max: cov.max };
       minTotal += cov.min;
       filled += count;
@@ -2068,7 +2076,7 @@ function getFm1PedsCap(target) { return target != null ? Math.ceil(target / 3) :
 // this matches how EM Home residents already default (see the roster creation sites) and fixes
 // EM_BAMC residents added via the Off-Service tab, which never assigns them a blockType at all.
 function isSchedulable(resident) {
-  if (resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') {
+  if (isEmResident(resident)) {
     const bt = BLOCK_TYPE_MAP[resident.blockType || 'EM'];
     return bt ? bt.schedulable : false;
   }
@@ -2239,18 +2247,15 @@ function streakBounds(block, prevTail) {
     max: block.endDate,
   };
 }
-// Finds the snapshot prevBlockTailSchedules should read from: prefers a published snapshot
-// covering the day before block.startDate; falls back to the most recently saved one. Extracted
-// so callers needing only "did a previous block exist at all" (e.g. streakBounds) don't have to
-// duplicate this search.
-function findPrevBlockSnapshot(block, blocksHistory = []) {
-  if (!block?.startDate) return null;
-  const dayBefore = toDateStr(addDays(parseDate(block.startDate), -1));
+// Shared filter+tie-break for findPrevBlockSnapshot/findNextBlockSnapshot: the snapshot whose
+// [start,end] range contains boundaryDate, excluding `block` itself, preferring a published
+// snapshot over an unpublished one and then the most recently saved.
+function findAdjacentBlockSnapshot(boundaryDate, block, blocksHistory = []) {
   const candidates = (blocksHistory || []).filter(snap => {
     if (!snap || snap.id === block.id) return false;
     const start = snap.startDate || snap.data?.startDate;
     const end = snap.endDate || snap.data?.endDate;
-    return start && end && start <= dayBefore && dayBefore <= end;
+    return start && end && start <= boundaryDate && boundaryDate <= end;
   });
   if (!candidates.length) return null;
   candidates.sort((a, b) => {
@@ -2258,6 +2263,15 @@ function findPrevBlockSnapshot(block, blocksHistory = []) {
     return new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime();
   });
   return candidates[0];
+}
+// Finds the snapshot prevBlockTailSchedules should read from: prefers a published snapshot
+// covering the day before block.startDate; falls back to the most recently saved one. Extracted
+// so callers needing only "did a previous block exist at all" (e.g. streakBounds) don't have to
+// duplicate this search.
+function findPrevBlockSnapshot(block, blocksHistory = []) {
+  if (!block?.startDate) return null;
+  const dayBefore = toDateStr(addDays(parseDate(block.startDate), -1));
+  return findAdjacentBlockSnapshot(dayBefore, block, blocksHistory);
 }
 // Tail (last 14 days before block.startDate) of the immediately-preceding saved block's schedule,
 // per resident — lets the streak walk see across a block boundary (a resident who worked the tail
@@ -2310,18 +2324,7 @@ export function finalSundayOf(block) {
 function findNextBlockSnapshot(block, blocksHistory = []) {
   if (!block?.endDate) return null;
   const dayAfter = toDateStr(addDays(parseDate(block.endDate), 1));
-  const candidates = (blocksHistory || []).filter(snap => {
-    if (!snap || snap.id === block.id) return false;
-    const start = snap.startDate || snap.data?.startDate;
-    const end = snap.endDate || snap.data?.endDate;
-    return start && end && start <= dayAfter && dayAfter <= end;
-  });
-  if (!candidates.length) return null;
-  candidates.sort((a, b) => {
-    if (!!a.published !== !!b.published) return a.published ? -1 : 1;
-    return new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime();
-  });
-  return candidates[0];
+  return findAdjacentBlockSnapshot(dayAfter, block, blocksHistory);
 }
 // Whether `resident` continues on a schedulable EM rotation in the block immediately following
 // `block`. Returns { known, blockType, continuingEM }:
@@ -2965,7 +2968,7 @@ export function getShiftTarget(resident, appSettings = {}) {
 // consumer (the allResidents composition seam, tests) still calls — it alone collapses a
 // zero/absent delta to null, preserving its exact original contract.
 export function offServiceWindowStatus(resident, block, blocksHistory = []) {
-  if (!resident || resident.category === 'EM_HOME' || resident.category === 'EM_BAMC') return null;
+  if (!resident || isEmResident(resident)) return null;
   if ((resident.availabilityMode || 'full') !== 'ranges') return null;
   const ranges = (resident.availableRanges || []).filter(rg => rg.start && rg.end && rg.start <= rg.end);
   if (!ranges.length || !block?.startDate || !block?.endDate) return null;
@@ -3124,7 +3127,7 @@ function eligBaseFor(key, eligOverrides = {}) {
 
 function getEffectiveEligibility(resident, eligOverrides = {}) {
   const key = `${resident.category}_${resident.pgy}`;
-  const isEM = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
+  const isEM = isEmResident(resident);
   if (isEM && resident.blockType) {
     const rotKey = `${key}__${resident.blockType}`;
     if (eligOverrides[rotKey] != null) {
@@ -3724,7 +3727,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const overrideNote = hasDelta
           ? ` (target ${target} = ${target - d} ${d < 0 ? '-' : '+'} ${Math.abs(d)}, ${resident.targetIsBuyDown ? 'buy-down' : (d < 0 ? 'reduction' : 'increase')})`
           : '';
-        const isHardCategory = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
+        const isHardCategory = isEmResident(resident);
         const blocksNote = isHardCategory
           ? ' — blocks export; expected while the schedule is still being built, but must be resolved before finalizing'
           : '';
@@ -5991,7 +5994,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // PAYLOAD_SCHEMA.md) and is what the JS local generator's own `report.underTarget` (~line 5661)
     // and validateAll already achieve by gating on isSchedulable before ever computing a deficit.
     const target = isSchedulable(r) ? getShiftTarget(r, appSettings) : null;
-    const isEmCore = r.category === 'EM_HOME' || r.category === 'EM_BAMC';
+    const isEmCore = isEmResident(r);
     const traumaCapSubject = isTraumaCapSubject(r);
     const splitResident = isTraumaPedsSplitResident(r, traumaBlocks);
     const pedsMix = isPedsEmMix(r);
@@ -6175,6 +6178,14 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     emResidentIds,
     emPgy2ResidentIds,
     emPgy3ResidentIds,
+    // Journal Club window (rule 28's jcRemaining cap, solver-service/solver/model/count_caps.py) and
+    // the post-night rest threshold (rule 34/postNightRest, solver/model/objective.py) — both used
+    // to be independently hardcoded on the Python side (18/21 and 24h respectively) rather than
+    // reading these two JS-side sources of truth. OPTIONAL fields, additive: an older solver build
+    // that doesn't parse them falls back to the same 18/21/24 values, so behavior is unchanged today.
+    jcWindowStartH: JC_WINDOW_START_H,
+    jcWindowEndH: JC_WINDOW_END_H,
+    postNightDayRestH: NIGHT_RULES.postNightDayRestH,
   };
 }
 
@@ -8890,9 +8901,16 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     }))];
     setEmRoster(mergedRoster);
 
+    // Built once (not re-normalized per assignment inside the blocks/assignments loop below).
+    // First occurrence wins on a name collision, matching the old mergedRoster.find(...) semantics.
+    const residentIdByKey = new Map();
+    for (const r of mergedRoster) {
+      const key = normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName);
+      if (!residentIdByKey.has(key)) residentIdByKey.set(key, r.id);
+    }
     const findResidentId = (firstName, lastName) => {
       const key = normalizeToken(firstName) + '|' + normalizeToken(lastName);
-      return mergedRoster.find(r => normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName) === key)?.id ?? null;
+      return residentIdByKey.get(key) ?? null;
     };
 
     const academicYear = formatAY(ayStartYear);
@@ -11865,11 +11883,20 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
   const [view, setView] = useState('coverage');
   const [typeQuery, setTypeQuery] = useState('');
 
-  // Find which types are active this block
-  const activeTypes = useMemo(() => {
-    const s = new Set();
-    for (const r of allResidents) { if (isSchedulable(r)) s.add(eligKey(r)); }
-    return s;
+  // Find which types are active this block, and group their active residents by type key in the
+  // same pass — the "types" view below reads residentsByKey once per displayed row instead of
+  // re-filtering the whole allResidents array per row.
+  const { activeTypes, residentsByKey } = useMemo(() => {
+    const types = new Set();
+    const byKey = new Map();
+    for (const r of allResidents) {
+      if (!isSchedulable(r)) continue;
+      const key = eligKey(r);
+      types.add(key);
+      const list = byKey.get(key);
+      if (list) list.push(r); else byKey.set(key, [r]);
+    }
+    return { activeTypes: types, residentsByKey: byKey };
   }, [allResidents]);
 
   const displayRows = showAll ? MATRIX_ROWS : MATRIX_ROWS.filter(r => activeTypes.has(r.key));
@@ -12139,8 +12166,8 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         const generatedDayRules = [...describeDayRules(dr), ...describeShiftGates({...dr, __traumaBlocks: traumaBlocks})
           .map(g=>({label: g.ids[0]==='ALL' ? 'All rotations' : g.ids.map(id=>BLOCK_TYPE_MAP[id]?.label||id).join('/'), rule: g.note, type: 'restrict'}))];
 
-        // Find active residents of this type
-        const active = allResidents.filter(r => eligKey(r) === row.key && isSchedulable(r));
+        // Active residents of this type
+        const active = residentsByKey.get(row.key) || [];
 
         return (
           <div key={row.key} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -12547,22 +12574,20 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmUnlockAll, setConfirmUnlockAll] = useState(false);
   const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
-  // Computed once per relevant state change (not on every re-render while the modal happens to be
-  // open) — checkGenerateReadiness scans every resident's day rules plus every Journal Club date in
-  // the block for JC presenters, which isn't free to redo on an unrelated re-render (a toast
-  // dismissing, a picker closing elsewhere).
-  const regenReadiness = useMemo(
-    () => confirmRegen ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
-    [confirmRegen, allResidents, block, dayRules, ayConf]
-  );
   // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
   // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
   const [rangeStart, setRangeStart] = useState('');
   const [rangeEnd, setRangeEnd] = useState('');
   const [confirmPartialRegen, setConfirmPartialRegen] = useState(null); // {kind:'unlocked'} | {kind:'range', start, end} | null
-  const partialRegenReadiness = useMemo(
-    () => confirmPartialRegen ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
-    [confirmPartialRegen, allResidents, block, dayRules, ayConf]
+  // Computed once per relevant state change (not on every re-render while a modal happens to be
+  // open) — checkGenerateReadiness scans every resident's day rules plus every Journal Club date in
+  // the block for JC presenters, which isn't free to redo on an unrelated re-render (a toast
+  // dismissing, a picker closing elsewhere). Shared by the Clear & Regenerate confirm modal AND the
+  // partial-regenerate confirm modal — same inputs, same warnings either way, so one memo gated on
+  // "either confirm modal is open" replaces what used to be two identical memos.
+  const generateReadiness = useMemo(
+    () => (confirmRegen || confirmPartialRegen) ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
+    [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf]
   );
   // What-If Optimization Sweep — see runOptimizationSweep. sweepResult/sweepRunning/sweepOpen are
   // ephemeral (not persisted, not part of the block) — a fresh Generate/Regenerate invalidates any
@@ -12788,7 +12813,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const coverageByDate = useMemo(()=>computeCoverageByDate(dates, sched, coverage, allResidents, ayConf),[dates, sched, coverage, allResidents, ayConf]);
   const activeCoverageShifts = useMemo(()=>getActiveCoverageShifts(dates, coverageByDate),[dates, coverageByDate]);
 
-  const filtered = catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter);
+  // Memoized so hiddenUnscheduled/visibleResidents/grouped (chained off `filtered` below) get a
+  // stable reference across renders that don't actually change allResidents/catFilter — a plain
+  // statement here handed each of those three useMemos a fresh array every render, quietly
+  // recomputing all three every time.
+  const filtered = useMemo(
+    () => catFilter==='ALL'?allResidents:allResidents.filter(r=>r.category===catFilter),
+    [allResidents, catFilter]
+  );
   // Hide-unscheduled (Phase 8): a resident who is off-rotation this block (!isSchedulable) AND has
   // no shift assigned anywhere in it is hidden from every resident-list-driven view by default —
   // data is never invisible, just default-collapsed, so anyone with even one manually-placed shift
@@ -13197,6 +13229,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // off-service resident whose window doesn't straddle this block, i.e. the common case.
     const offStatus=offServiceWindowStatus(res, block, blocksHistory);
     const offSummary=offServiceWindowSummary(offStatus);
+    // Wellness Wednesday ordinal depends only on res.category/res.pgy/dayRules — not on the date —
+    // so it's hoisted here instead of being recomputed inside the per-date dates.map loop below.
+    const wwOrdinal = res.category==='EM_HOME'
+      ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
+      : null;
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
         <div className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
@@ -13249,9 +13286,6 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           // date, or disabled the feature — see effectiveWellnessWednesdayDate). WW takes
           // visual priority over the JC/GR cues there (more specific: it additionally strips
           // evenings), rather than stacking multiple badges in one cell.
-          const wwOrdinal = res.category==='EM_HOME'
-            ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
-            : null;
           const wwDate = wwOrdinal!=null ? effectiveWellnessWednesdayDate(res, block.startDate, dayRules, appSettings) : null;
           const isWW = !!wwDate && ds===wwDate;
           const shift=sid?SHIFT_MAP[sid]:null;
@@ -13581,7 +13615,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               This clears <strong>all current assignments — including ones you entered manually</strong> — and
               regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
             </p>
-            <ReadinessWarningPanel issues={regenReadiness}/>
+            <ReadinessWarningPanel issues={generateReadiness}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
@@ -13598,7 +13632,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
                 : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
             </p>
-            <ReadinessWarningPanel issues={partialRegenReadiness}/>
+            <ReadinessWarningPanel issues={generateReadiness}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
@@ -14362,7 +14396,7 @@ function TimeOffModal({ resident, allResidents, block, pendingByResident, onPatc
   // Jeopardy is an EM-rotation obligation only (isJeopardyDate's own category guard) — a
   // chief-directed rule landed earlier today that off-service residents have no jeopardy at all,
   // so a mode that can never take effect is hidden rather than shown-and-ignored.
-  const jeopardyEligible = resident.category === 'EM_HOME' || resident.category === 'EM_BAMC';
+  const jeopardyEligible = isEmResident(resident);
   const modes = jeopardyEligible ? TIME_OFF_MODES : TIME_OFF_MODES.filter(m => m.id !== 'J');
   const [mode, setMode] = useState(modes[0].id);
   const activeField = (modes.find(m => m.id === mode) || modes[0]).field;
@@ -15140,12 +15174,12 @@ let syncSuspended = false;
 const sbFetch = async (path, opts = {}) => {
   // Bound every request so a stalled (not failed — hung) network can't block indefinitely: the
   // mount load, the debounced save, and especially import/clear (which await before reloading)
-  // all surface a timeout as a normal error instead of hanging the UI forever.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  // all surface a timeout as a normal error instead of hanging the UI forever. Delegates the
+  // actual fetch + abort/timeout wrapping to fetchWithTimeout (FEEDBACK ADMIN section) — same
+  // 15s bound, one implementation.
   let res;
   try {
-    res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+    res = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1${path}`, {
       headers: {
         'apikey': SUPABASE_ANON,
         'Authorization': `Bearer ${SUPABASE_ANON}`,
@@ -15155,12 +15189,9 @@ const sbFetch = async (path, opts = {}) => {
       },
       method: opts.method || 'GET',
       body: opts.body ? JSON.stringify(opts.body) : undefined,
-      signal: controller.signal,
     });
   } catch (e) {
-    throw new Error(controller.signal.aborted ? `Supabase ${opts.method || 'GET'} ${path}: timed out` : e.message);
-  } finally {
-    clearTimeout(timer);
+    throw new Error(e.name === 'AbortError' ? `Supabase ${opts.method || 'GET'} ${path}: timed out` : e.message);
   }
   if (!res.ok) {
     const msg = await res.text().catch(() => res.statusText);
