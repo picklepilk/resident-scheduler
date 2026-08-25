@@ -4389,6 +4389,24 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // key off that version instead, same idiom as conf12Cache just above.
   const scheduleVersion = {};
   for (const r of allResidents) scheduleVersion[r.id] = 0;
+  // hasSenior/pedsClassOnDate read EVERY resident's row, not just one, so they can't key off a
+  // per-resident scheduleVersion the way the caches below do — any resident's assignment can
+  // change their answer. They key off this whole-schedule counter instead, bumped by the same
+  // bumpScheduleVersion() that bumps the per-resident ones, so both families invalidate on
+  // exactly the same three mutation sites (fillDayPass's commit, repairPass's
+  // assignCell/unassignCell) and neither can drift from the other.
+  let wholeScheduleVersion = 0;
+  const bumpScheduleVersion = rid => { scheduleVersion[rid]++; wholeScheduleVersion++; };
+  const wholeScheduleCache = { v: -1, map: new Map() };
+  const cachedWholeSchedule = (key, compute) => {
+    if (wholeScheduleCache.v !== wholeScheduleVersion) {
+      wholeScheduleCache.v = wholeScheduleVersion;
+      wholeScheduleCache.map = new Map(); // version bump replaces the whole map, never patches it
+    }
+    let hit = wholeScheduleCache.map.get(key);
+    if (hit === undefined) { hit = compute(); wholeScheduleCache.map.set(key, hit); }
+    return hit;
+  };
   const nightSegCache = {}; // rid -> { v, segments }
   const cachedNightRunSegments = rid => {
     const v = scheduleVersion[rid];
@@ -4614,13 +4632,18 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   }
 
   function hasSenior(shiftId, ds) {
-    return allResidents.some(r => schedule[r.id][ds] === shiftId && isSeniorFor(SHIFT_MAP[shiftId].area, r));
+    return cachedWholeSchedule(`sen|${shiftId}|${ds}`, () =>
+      allResidents.some(r => schedule[r.id][ds] === shiftId && isSeniorFor(SHIFT_MAP[shiftId].area, r)));
   }
   // Peds class-balance (chief feedback): true if any resident (self or another) of this exact
   // category+PGY already has a Peds shift on ds — used to avoid stacking the same experience
   // level on consecutive peds days.
+  // score() asks this twice per candidate per slot (the day before and the day after ds), each an
+  // O(residents) scan, and every candidate of the same category+pgy asks the identical question —
+  // so the same handful of keys get recomputed hundreds of times between two mutations.
   function pedsClassOnDate(category, pgy, ds) {
-    return allResidents.some(other => other.category === category && other.pgy === pgy && SHIFT_MAP[schedule[other.id]?.[ds]]?.area === 'PED');
+    return cachedWholeSchedule(`ped|${category}|${pgy}|${ds}`, () =>
+      allResidents.some(other => other.category === category && other.pgy === pgy && SHIFT_MAP[schedule[other.id]?.[ds]]?.area === 'PED'));
   }
   // One full weekend off (chief feedback): true when ds falls in a weekend pair that's still
   // fully free for r AND it's the only such pair r has left — assigning here would consume it.
@@ -5377,7 +5400,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         if (poolIds[sid].delete(best.id) && compIds[sid]?.has(best.id)) compCount[sid]--;
       }
       if (compIds[slot.shift.id]?.has(best.id)) compDone[slot.shift.id] = true;
-      scheduleVersion[best.id]++;
+      bumpScheduleVersion(best.id);
       assigned[best.id]++;
       typeCount[best.id][slot.shift.type]++;
       if (slot.shift.area === 'TRAUMA') traumaCount[best.id]++;
@@ -5437,7 +5460,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const sid = schedule[rid][ds];
       if (!sid) return null;
       delete schedule[rid][ds];
-      scheduleVersion[rid]++;
+      bumpScheduleVersion(rid);
       assigned[rid]--;
       const sh = SHIFT_MAP[sid];
       if (sh) typeCount[rid][sh.type]--;
@@ -5456,7 +5479,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     function assignCell(rid, sid, ds) {
       schedule[rid][ds] = sid;
-      scheduleVersion[rid]++;
+      bumpScheduleVersion(rid);
       assigned[rid]++;
       const sh = SHIFT_MAP[sid];
       if (sh) typeCount[rid][sh.type]++;
