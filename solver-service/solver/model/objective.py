@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from itertools import product
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -275,24 +276,27 @@ def _add_post_night_rest_term(model, payload: Payload, store: VarStore, group: T
                 target_entries = [(sid, v) for sid, v in by_date[date2] if payload.shifts[sid].type in ("day", "eve")]
                 if not target_entries:
                     continue
-                for shift_id1, var1 in night_entries:
-                    shift1 = payload.shifts[shift_id1]
-                    for shift_id2, var2 in target_entries:
-                        shift2 = payload.shifts[shift_id2]
-                        gap = timing.gap_between(date1, shift1, date2, shift2)
-                        if gap >= payload.post_night_day_rest_h * 60:
-                            continue
-                        if var1 is None and var2 is None:
-                            continue  # both historical -- var2 None+var1 real is impossible (tail always precedes block)
-                        term1 = 1 if var1 is None else var1
-                        p = model.new_int_var(
-                            0, 1, f"postNightRest[{resident.id},{date1},{shift_id1},{date2},{shift_id2}]"
-                        )
-                        model.add(p >= term1 + var2 - 1)
-                        group.add(coef, p)
-                        penalties.append(
-                            PostNightRestPenalty(resident.id, date1, shift_id1, date2, shift_id2, gap, p)
-                        )
+                # The night x day/eve cross-product was two further nested levels inside an
+                # already 3-deep function. product() yields the same pairs in the same order,
+                # so the vars emitted here and their names are unchanged -- this flattens the
+                # loop, it does not reorder the model.
+                for (shift_id1, var1), (shift_id2, var2) in product(night_entries, target_entries):
+                    gap = timing.gap_between(
+                        date1, payload.shifts[shift_id1], date2, payload.shifts[shift_id2]
+                    )
+                    if gap >= payload.post_night_day_rest_h * 60:
+                        continue
+                    if var1 is None and var2 is None:
+                        continue  # both historical -- var2 None+var1 real is impossible (tail always precedes block)
+                    term1 = 1 if var1 is None else var1
+                    p = model.new_int_var(
+                        0, 1, f"postNightRest[{resident.id},{date1},{shift_id1},{date2},{shift_id2}]"
+                    )
+                    model.add(p >= term1 + var2 - 1)
+                    group.add(coef, p)
+                    penalties.append(
+                        PostNightRestPenalty(resident.id, date1, shift_id1, date2, shift_id2, gap, p)
+                    )
     return penalties
 
 
