@@ -282,7 +282,7 @@ describe('1.9 Under-target enforcement in validateAll', () => {
   it('EM Home under target is a hard error that mentions it blocks export', () => {
     const r = res({ id: 'r1', category: 'EM_HOME', pgy: 3, blockType: 'EM' });
     const issues = validateAll([r], { r1: {} }, block);
-    const u = issues.find(i => i.residentId === 'r1' && i.message.startsWith('Under target'));
+    const u = issues.find(i => i.residentId === 'r1' && i.rule === 'underTarget');
     expect(u).toBeTruthy();
     expect(u.level).toBe('error');
     expect(u.message).toContain('blocks export');
@@ -291,14 +291,14 @@ describe('1.9 Under-target enforcement in validateAll', () => {
   it('EM BAMC under target is also a hard error', () => {
     const r = res({ id: 'r1', category: 'EM_BAMC', pgy: 1, blockType: 'EM' });
     const issues = validateAll([r], { r1: {} }, block);
-    const u = issues.find(i => i.residentId === 'r1' && i.message.startsWith('Under target'));
+    const u = issues.find(i => i.residentId === 'r1' && i.rule === 'underTarget');
     expect(u?.level).toBe('error');
   });
 
   it('Peds under target is a warning, not an error, and does not claim to block export', () => {
     const r = res({ id: 'r1', category: 'PEDS', pgy: 2 });
     const issues = validateAll([r], { r1: {} }, block);
-    const u = issues.find(i => i.residentId === 'r1' && i.message.startsWith('Under target'));
+    const u = issues.find(i => i.residentId === 'r1' && i.rule === 'underTarget');
     expect(u).toBeTruthy();
     expect(u.level).toBe('warn');
     expect(u.message).not.toContain('blocks export');
@@ -310,7 +310,7 @@ describe('1.9 Under-target enforcement in validateAll', () => {
     // without that guard every METRO/ADMIN/OB_VAC resident would raise a false hard error.
     const r = res({ id: 'r1', category: 'EM_HOME', pgy: 3, blockType: 'METRO' });
     const issues = validateAll([r], { r1: {} }, block);
-    expect(issues.some(i => i.residentId === 'r1' && i.message.startsWith('Under target'))).toBe(false);
+    expect(issues.some(i => i.residentId === 'r1' && i.rule === 'underTarget')).toBe(false);
   });
 
   it('over target is unaffected (still a warning) for a hard category', () => {

@@ -29,7 +29,7 @@ const RUN_PARITY = process.env.SOLVER_PARITY === '1' || process.env.SOLVER_PARIT
 // — an "Under target: " error is an expected property of a small single-block fixture solved from
 // scratch with no repair-equivalent pass, not a parity failure. Any OTHER hard error is real.
 function structuralErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule !== 'underTarget').length;
 }
 
 // Mirrors ResidentScheduler.jsx's own `allResidents` useMemo — see chiefBenchmark.test.js's own
@@ -123,7 +123,7 @@ const PYTHON = path.join(SOLVER_DIR, '.venv', 'Scripts', 'python.exe');
       const issues = validateAll(
         allResidents, res.schedule, block, {}, {}, {}, {}, [], {}
       );
-      const structural = issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target'));
+      const structural = issues.filter(i => i.level === 'error' && i.rule !== 'underTarget');
       if (structural.length) {
         // eslint-disable-next-line no-console
         console.error('Structural validateAll errors on solver output:', structural.slice(0, 10));

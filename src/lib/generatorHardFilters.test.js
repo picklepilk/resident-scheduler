@@ -89,7 +89,7 @@ describe('item 4 — end-to-end sanity (no crash, no new structural errors)', ()
       const { schedule, report } = generateSchedule({ ...fixture, rng: mulberry32(seed) });
       expect(report.unfilled.length).toBeGreaterThanOrEqual(0); // ran to completion
       const issues = validateAll(fixture.allResidents, schedule, fixture.block, fixture.eligOverrides, fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf);
-      const structural = issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target'));
+      const structural = issues.filter(i => i.level === 'error' && i.rule !== 'underTarget');
       expect(structural).toEqual([]);
     });
   }

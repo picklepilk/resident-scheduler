@@ -11,7 +11,7 @@
 // FINAL schedule (post-repair), not raw fill-time bookkeeping — see ResidentScheduler.jsx's
 // `buildQualityInput` for how those are produced.
 
-import { SHIFT_MAP, SHIFT_DOW, isNightShiftId } from './shifts.js';
+import { SHIFT_MAP, shiftActiveOnDow, isNightShiftId } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 
@@ -152,18 +152,29 @@ export function computeQualityMetrics({
     // Resolved once per date, not per shift — twelveHourStateFor re-walks every configured window
     // on each call, and there are ~40 shift ids to check against the same date.
     const twelveHourState = twelveHourStateFor(ds, ayConf);
+    // One pass over the roster builds shiftId -> headcount for this date, replacing what used to be
+    // a full scheduleResidentIds scan per shift per date (O(dates x shifts x residents) ->
+    // O(dates x (residents + shifts))). Same fix, and the same Map idiom, that computeCoverageByDate
+    // in ResidentScheduler.jsx already applies to the identical "count who is on this shift today"
+    // question — this module just never had it back-ported. Worth doing here specifically because
+    // computeQualityMetrics runs once per generateScheduleBest ATTEMPT (21x per call), so the old
+    // shape cost ~611k comparisons per generation on the standard fixture.
+    const countsBySid = new Map();
+    for (const rid of scheduleResidentIds) {
+      const sid = schedule[rid]?.[ds];
+      if (sid) countsBySid.set(sid, (countsBySid.get(sid) || 0) + 1);
+    }
     for (const shiftId of Object.keys(SHIFT_MAP)) {
       // A shift absent from SHIFT_DOW on this weekday doesn't exist at all today (e.g.
       // TRAUMA-D/TRAUMA-N only run specific weekdays) — same guard as computeCoverageByDate/
       // composeCoverage/generator.harness.test.js, or every non-existent day charges a phantom
-      // coverage miss the generator never had a chance to fill.
-      if (SHIFT_DOW[shiftId] && !SHIFT_DOW[shiftId].includes(dow)) continue;
+      // coverage miss the generator never had a chance to fill. Expressed via the shared
+      // shiftActiveOnDow helper rather than re-inlining the SHIFT_DOW lookup, so this file and the
+      // six call sites in ResidentScheduler.jsx can't drift on what "exists today" means.
+      if (!shiftActiveOnDow(shiftId, dow)) continue;
       const { min } = getCoverageFor(shiftId, coverage, dow, twelveHourState);
       if (min <= 0) continue;
-      let filled = 0;
-      for (const rid of scheduleResidentIds) {
-        if (schedule[rid]?.[ds] === shiftId) filled++;
-      }
+      const filled = countsBySid.get(shiftId) || 0;
       if (filled < min) coverageMiss += (min - filled);
     }
   }

@@ -32,7 +32,7 @@ const RUN_PARITY = process.env.SOLVER_PARITY === '1' || process.env.SOLVER_PARIT
 // senior composition, etc.) is a real regression — either in buildSolverPayload's resolved
 // inputs, mapSolverResult's reshaping, or the solver itself.
 function structuralErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule !== 'underTarget').length;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,7 +78,7 @@ const PYTHON = path.join(SOLVER_DIR, '.venv', 'Scripts', 'python.exe');
         fixture.allResidents, res.schedule, fixture.block, fixture.eligOverrides,
         fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
       );
-      const structural = issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target'));
+      const structural = issues.filter(i => i.level === 'error' && i.rule !== 'underTarget');
       if (structural.length) {
         // eslint-disable-next-line no-console
         console.error('Structural validateAll errors on solver output:', structural.slice(0, 10));

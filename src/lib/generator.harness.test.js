@@ -28,11 +28,11 @@ const VARIANTS = ['standard', 'understaffed', 'vacationHeavy'];
 // shifts, composition, rest/circadian, coverage, etc.) rather than zero errors outright, so a
 // genuine regression in any other rule still fails loudly.
 function structuralErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule !== 'underTarget').length;
 }
 
 function underTargetErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule === 'underTarget').length;
 }
 
 function stripVolatile(report) {

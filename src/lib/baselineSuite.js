@@ -55,10 +55,10 @@ function errorCount(issues) {
 // hide inside the aggregate as long as a simultaneous drop in under-target errors keeps the total
 // at/below the floor, and the two error classes are not remotely interchangeable in severity.
 function structuralErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && !i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule !== 'underTarget').length;
 }
 function underTargetErrorCount(issues) {
-  return issues.filter(i => i.level === 'error' && i.message.startsWith('Under target')).length;
+  return issues.filter(i => i.level === 'error' && i.rule === 'underTarget').length;
 }
 
 function captureOnce(variant, baseSeed) {
