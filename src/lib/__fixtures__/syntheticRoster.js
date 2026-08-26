@@ -166,8 +166,27 @@ function makeBlock(variant) {
   };
 }
 
+// `conferenceBlock` variant: the standard roster and block, plus a real ACEP window sitting inside
+// the block's own date range. Every other variant leaves `ayConf` empty, which means NOTHING in the
+// committed fixtures ever exercised the 12-hour conference machinery — resolveTwelveHourWindows
+// falls back to implicitConferenceWindows, which derives a POD/MT/FLEX 'replace' window from these
+// exact date fields, so setting them is all that's required to turn it on.
+//
+// 2026-07-20..2026-07-23 (Mon-Thu) is chosen to sit clear of the two features the other variants
+// already occupy: the Journal Club Tuesday (2026-07-07) and VACATION_WEEK (07-13..07-19). ACEP's
+// `who` is 'PGY-3 attend', so this also exercises isConferenceAwayFor's POD senior-composition
+// fallback (POD hard-requires a PGY-3), which is the other half of what a real conference block
+// does to the schedule.
+//
+// What this variant is FOR: inside a 'replace' window the POD/MT/FLEX 9h D/E/N shifts are suppressed
+// in favour of the 12h D12/N12 pair. A 12h shift still credits exactly +1 toward a resident's
+// shift-count target but consumes 12h rather than 9h of the ACGME 80h rolling cap, so `hoursCapped`
+// binds about a third sooner for everyone working that week — which is precisely the mechanism
+// behind residents finishing a conference block under target.
+const CONFERENCE_AY_CONF = { acepStart: '2026-07-20', acepEnd: '2026-07-23' };
+
 /**
- * @param {'standard'|'understaffed'|'vacationHeavy'} variant
+ * @param {'standard'|'understaffed'|'vacationHeavy'|'conferenceBlock'} variant
  * @returns {{allResidents:object[], block:object, coverage:object, eligOverrides:object,
  *   appSettings:object, dayRules:object, blocksHistory:object[], ayConf:object}}
  */
@@ -182,7 +201,8 @@ export function makeFixture(variant = 'standard') {
         ? { ...r, vacationDates: [...new Set([...r.vacationDates, ...VACATION_WEEK])].sort() }
         : r
     );
-  } else if (variant !== 'standard') {
+  } else if (variant !== 'standard' && variant !== 'conferenceBlock') {
+    // conferenceBlock differs only in ayConf (below), not in the roster.
     throw new Error(`makeFixture: unknown variant "${variant}"`);
   }
 
@@ -194,6 +214,6 @@ export function makeFixture(variant = 'standard') {
     appSettings: makeDefaultAppSettings(),
     dayRules: {},
     blocksHistory: [],
-    ayConf: {},
+    ayConf: variant === 'conferenceBlock' ? { ...CONFERENCE_AY_CONF } : {},
   };
 }
