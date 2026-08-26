@@ -15,10 +15,18 @@ export const GRID_ZOOM_MIN = 50;
 export const GRID_ZOOM_MAX = 150;
 export const GRID_ZOOM_DEFAULT = 100;
 export const GRID_COL_EXTRA_MAX = 120;
+// gridGroupBy: which axis the Schedule tab banners rows by — see lib/scheduleGrouping.js. Same
+// device/viewer-preference posture as everything else here (how one person likes to read the grid
+// on their own screen is not chief scheduling data), so it rides res_ui_prefs and never
+// LS_BACKUP_KEYS. Re-exported from the grouping module rather than restated, so the allowed values
+// and the code that acts on them can't drift apart.
+export { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
+import { GRID_GROUP_MODES as GROUP_MODES, GRID_GROUP_MODE_DEFAULT as GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
 
 export const DEFAULT_UI_PREFS = {
   tabOverflow: [], cardOpen: {}, showUnscheduled: false,
   gridZoom: GRID_ZOOM_DEFAULT, gridColExtra: 0,
+  gridGroupBy: GROUP_MODE_DEFAULT,
 };
 
 // Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
@@ -53,5 +61,9 @@ export function normalizeUiPrefs(raw) {
   const showUnscheduled = typeof raw?.showUnscheduled === 'boolean' ? raw.showUnscheduled : false;
   const gridZoom = raw?.gridZoom == null ? GRID_ZOOM_DEFAULT : clampGridZoom(raw.gridZoom);
   const gridColExtra = raw?.gridColExtra == null ? 0 : clampGridColExtra(raw.gridColExtra);
-  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra };
+  // Membership test rather than a numeric clamp, but the same refusal to coerce: an unknown string
+  // (a mode removed in a later build, a hand-edited value) falls back to the default instead of
+  // being passed through to render an empty grid.
+  const gridGroupBy = GROUP_MODES.includes(raw?.gridGroupBy) ? raw.gridGroupBy : GROUP_MODE_DEFAULT;
+  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy };
 }

@@ -42,6 +42,7 @@ import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sam
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
+import { groupResidents } from './lib/scheduleGrouping.js';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -3632,6 +3633,12 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
   // resident-independent — resolved once per BLOCK here (see nextRotationFromSnapshot's comment).
   const finalSunday = finalSundayOf(block);
   const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
+  // Conferences overlapping this block (chief-directed tolerance, see the under-target branch
+  // below). Resident-independent, so resolved once per block rather than once per resident, same
+  // as blockDates/blockWeekends/finalSunday above. Reuses getConferencesInBlock rather than
+  // re-deriving the ranges, so "does this block touch a conference" has exactly one answer here,
+  // on the Dashboard card, and in the readiness gate.
+  const blockConferences = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   for (const resident of allResidents) {
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
@@ -3728,12 +3735,30 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           ? ` (target ${target} = ${target - d} ${d < 0 ? '-' : '+'} ${Math.abs(d)}, ${resident.targetIsBuyDown ? 'buy-down' : (d < 0 ? 'reduction' : 'increase')})`
           : '';
         const isHardCategory = isEmResident(resident);
-        const blocksNote = isHardCategory
+        // Conference tolerance (chief-directed): during a block that overlaps ACEP/AAEM/SAEM,
+        // finishing exactly ONE shift short is acceptable "for schedule health" — the resident
+        // should still work their full complement wherever possible, so the TARGET is deliberately
+        // left untouched and the generator keeps aiming for it; only the export-blocking severity
+        // relaxes. Scoped to a shortfall of exactly 1 (2+ is still a real problem) and to blocks
+        // that actually touch a conference. The mechanism this exists for: inside a 'replace'
+        // 12-hour window the POD/MT/FLEX 9h shifts become 12h ones, which still credit +1 toward a
+        // shift-count target but burn 12h of the ACGME 80h rolling cap instead of 9h — so
+        // hoursCapped binds roughly a third sooner for everyone working that week.
+        const toleratedConferenceShortfall = isHardCategory && (target - count) === 1 && blockConferences.length > 0;
+        const blocksNote = isHardCategory && !toleratedConferenceShortfall
           ? ' — blocks export; expected while the schedule is still being built, but must be resolved before finalizing'
           : '';
+        const conferenceNote = toleratedConferenceShortfall
+          ? ` — 1 short during ${blockConferences.map(c => c.name).join('/')}; allowed, does not block export`
+          : '';
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Under target: ${count}/${target} shifts${overrideNote}${blocksNote}`,
-          level: isHardCategory ? 'error' : 'warn' });
+          // `rule` lets consumers classify this by id instead of sniffing the message prefix (which
+          // is what baselineSuite.js/generator.harness.test.js used to do, and what the tolerance
+          // below would otherwise silently break).
+          rule: 'underTarget',
+          ...(toleratedConferenceShortfall ? { conferenceTolerated: true } : {}),
+          message: `Under target: ${count}/${target} shifts${overrideNote}${blocksNote}${conferenceNote}`,
+          level: isHardCategory && !toleratedConferenceShortfall ? 'error' : 'warn' });
       }
     }
 
@@ -5863,6 +5888,60 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       } : {}),
     }));
 
+  // Per-resident shortfall diagnostic. "Under target: 17/19" is a HARD, export-blocking error for
+  // EM Home/BAMC, and on its own it reads as a generator failure the chief is expected to fix by
+  // regenerating — which is misleading, because it usually isn't one. Measured across the three
+  // committed fixtures, every under-target EM resident still had 3-4 dates where they were free and
+  // rotation-eligible for a shift that had coverage headroom left, and candidatePool rejected them
+  // on 100% of those slots (54/54 and 97/97 attempts) — always for a HARD rule: `allRestBlocked`
+  // (rest-hours), `streakBlocked` (6-consecutive-day ACGME cap), `nightCapped`/`nightStintCapped`,
+  // or `halfTargetMet` (the trauma/peds sub-cap doing its job). There was no legal placement left to
+  // find, so no amount of re-generating or repair swapping can close the gap: the target and the
+  // safety rules are in genuine conflict for that resident, and the chief's real options are a
+  // targetDelta buy-down or a coverage change.
+  //
+  // `blockedBy` names which rule, and `openSlots` says how many candidate placements were examined,
+  // so the Violations tab can say "3 open slots, all blocked by the 24h rest rule" instead of just
+  // "17/19". Reasons come from candidatePool's own vocabulary (KNOWN_UNFILLED_REASONS) rather than a
+  // second hand-written list, so the two can't drift.
+  //
+  // ACCURACY LIMIT, deliberate: candidatePool only names a reason when the pool empties COMPLETELY,
+  // which is what happens in every measured case here (the rules involved are per-resident, and
+  // these are the last few unfilled slots, so the pool is down to this one resident anyway). When
+  // the pool is non-empty but excludes this resident, the specific filter isn't recoverable without
+  // threading per-resident tracing through all 19 filters — that case is labelled 'ruleBlocked'
+  // rather than guessed at.
+  if (report.underTarget.length > 0) {
+    for (const u of report.underTarget) {
+      const r = residentById.get(u.residentId);
+      if (!r) continue;
+      const blockedBy = {};
+      let openSlots = 0;
+      for (const ds of dates) {
+        if (schedule[r.id][ds]) continue;             // already working that date
+        const dsDow = parseDate(ds).getDay();
+        for (const shift of SHIFTS) {
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          // Own-eligibility screen first: candidatePool's very first filter is this same test, so
+          // a shift this resident's rotation/day-rules never allow is not an "open slot they
+          // missed" and must not be counted as one.
+          if (!eligCache[r.id][ds].has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          let filled = 0;
+          for (const x of allResidents) if (schedule[x.id][ds] === shift.id) filled++;
+          if (filled >= cov.max) continue;            // no headroom — not a missed opportunity
+          openSlots++;
+          const pool = candidatePool(shift, ds);
+          if (pool.candidates.includes(r)) continue;  // legal but simply not chosen
+          const why = pool.reason || 'ruleBlocked';
+          blockedBy[why] = (blockedBy[why] || 0) + 1;
+        }
+      }
+      u.openSlots = openSlots;
+      u.blockedBy = blockedBy;
+    }
+  }
+
   // Supply-vs-demand diagnostic (item 6): only worth computing when residents were actually left
   // under target — a schedule with no under-target residents has no capacity problem to explain.
   // pushRec shape ({reason, text, slots}), same convention as summarizeGenerationReport's per-shift
@@ -6342,7 +6421,20 @@ function scoreGenerationResult(res, args, rulePriority) {
     args.appSettings, args.dayRules, args.coverage, args.blocksHistory, args.ayConf
   );
   const errorCount = issues.filter(i => i.level === 'error').length;
-  const blockingWarnCount = issues.filter(i => EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length;
+  // `conferenceTolerated` under-target warnings are counted here even though they are NOT in
+  // EXPORT_BLOCKING_RULE_IDS, and this asymmetry is the whole point. The conference tolerance
+  // downgrades a 1-shift shortfall from 'error' to 'warn' so it stops blocking export — but
+  // errorCount is ALSO slot 0 of betterQuality's lexicographic tuple, so a plain downgrade would
+  // additionally delete the generator's incentive to reach the full target during a conference
+  // block, which is the opposite of the chief's actual instruction ("full complement preferably,
+  // ok to drop by 1 if needed"). Folding it into slot 1 keeps best-of-N strictly preferring an
+  // attempt that hits 19/19 over one that settles for 18/19, while the export gate
+  // (issueCounts.restWarns) still sees only the genuinely export-blocking rules. Two callers ask
+  // two different questions of the same issue list and each owns its own answer — the same idiom
+  // twelveHourAllows uses for its `undefined` state.
+  const blockingWarnCount = issues.filter(i =>
+    EXPORT_BLOCKING_RULE_IDS.has(i.rule) || i.conferenceTolerated
+  ).length;
   const qInput = buildQualityInput({
     schedule: res.schedule, report: res.report, allResidents: args.allResidents,
     block: args.block, appSettings: args.appSettings, eligOverrides: args.eligOverrides,
@@ -6593,6 +6685,33 @@ export function computeTotalTargetDemand(allResidents, appSettings = {}) {
 // `if (reasonCounts.X) pushRec('X', ...)` lines below. Anything else (e.g. the solver-service's
 // own 'coverageShort' — see mapSolverResult) falls through to a generic catch-all instead of
 // silently getting no explanation at all.
+// Plain-language names for the candidatePool reasons that turn up in an under-target resident's
+// `blockedBy` histogram (see generateSchedule's per-resident shortfall diagnostic). Deliberately a
+// SEPARATE, sparse map rather than an extension of KNOWN_UNFILLED_REASONS' recommendation text
+// below: that text answers "how do I fill this SHIFT" ("cover it with a resident starting a new
+// run"), whereas this answers "why can't this PERSON work any more" — same vocabulary, opposite
+// subject, so one string can't serve both. Anything absent falls through to the raw reason id
+// rather than being dropped, so a newly added candidatePool reason degrades to something readable
+// instead of vanishing from the explanation.
+const UNDER_TARGET_BLOCK_LABELS = {
+  allRestBlocked:       'rest-period rule',
+  streakBlocked:        '6-day work limit',
+  sixDayRunRestBlocked: 'rest after 6-day run',
+  circadianBlocked:     'circadian rule',
+  nightCapped:          'night cap for the block',
+  nightStintCapped:     'night-run limit',
+  hoursCapped:          '80-hour limit',
+  traumaCapped:         'trauma cap',
+  traumaRunCapped:      'trauma-nights-per-run cap',
+  halfTargetMet:        'trauma/peds split sub-target met',
+  pedsMixCapped:        'peds-shift cap',
+  jcCapped:             'Journal Club cap',
+  bamcWedNightCapped:   'BAMC Wednesday-night limit',
+  jeopardyConflict:     'jeopardy call that day',
+  allWorking:           'already working that day',
+  allAtTarget:          'everyone else already at target',
+  ruleBlocked:          'a scheduling rule',
+};
 const KNOWN_UNFILLED_REASONS = new Set([
   'noEligible', 'allAtTarget', 'allRestBlocked', 'allWorking', 'selfCoverOnly', 'traumaCapped',
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
@@ -12571,7 +12690,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
-  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra } = useUiPrefsContext();
+  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy } = useUiPrefsContext();
   const showUnscheduled = uiPrefs.showUnscheduled;
   // Readability controls (persisted per viewer in res_ui_prefs, never in a backup or the shared
   // cloud document — how large someone wants this grid on their own screen is not chief data).
@@ -12859,11 +12978,20 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const hiddenIds = new Set(hiddenUnscheduled.map(r=>r.id));
     return filtered.filter(r => !hiddenIds.has(r.id));
   }, [filtered, hiddenUnscheduled, showUnscheduled]);
-  const grouped = useMemo(()=>{
-    const g=[];
-    for (const cat of CATEGORIES) { const m=visibleResidents.filter(r=>r.category===cat.id); if(m.length) g.push({cat,members:m}); }
-    return g;
-  },[visibleResidents]);
+  // Row grouping. Partition logic lives in lib/scheduleGrouping.js (pure, unit-tested); the tables
+  // it needs are passed in rather than imported there, since BLOCK_TYPES_EM/BLOCK_TYPE_MAP/
+  // isEmResident live in this file and lib/* may never import it. The returned shape is still
+  // `[{cat, members}]` in every mode — `cat` is a synthesized {id,label,badge,rowBg} descriptor for
+  // PGY/rotation — which is why the banner render below and ResidentCardsView both work unchanged.
+  // Runs on visibleResidents, i.e. AFTER catFilter/showUnscheduled, so grouping composes with the
+  // category pills for free: filtering to one category and grouping by rotation simply yields that
+  // category's rotations.
+  const grouped = useMemo(
+    () => groupResidents(visibleResidents, uiPrefs.gridGroupBy, {
+      categories: CATEGORIES, blockTypes: BLOCK_TYPES_EM, isEm: isEmResident,
+    }),
+    [visibleResidents, uiPrefs.gridGroupBy]
+  );
 
   function assign(resId,ds,sid) {
     updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
@@ -13461,6 +13589,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       ]}/>
       </div>
 
+      {/* Row grouping. A SECOND SubTabs rather than more of the category filter pills below,
+          because these answer different questions: the pills choose WHICH residents to show (a
+          filter), this chooses HOW to band the ones already showing (a partition). They compose —
+          `grouped` runs on visibleResidents, downstream of the pills. Only rendered for the two
+          views that consume `grouped`; the calendar views are per-date, not per-resident-row. */}
+      {(view === 'grid' || view === 'resident') && (
+        <div className="no-print flex items-center gap-2 -mt-2">
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Group by</span>
+          <SubTabs value={uiPrefs.gridGroupBy} onChange={setGridGroupBy} options={[
+            {id:'category', label:'Category'},
+            {id:'pgy',      label:'PGY'},
+            {id:'rotation', label:'Rotation'},
+          ]}/>
+        </div>
+      )}
+
       <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
         {['ALL',...CATEGORIES.map(c=>c.id)].map(cid=>{
           const cat=CAT_MAP[cid];
@@ -13767,6 +13911,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 <div className={`flex border-b border-gray-100 ${cat.rowBg}`}>
                   <div className="grid-sticky px-3 py-1.5 border-r border-gray-200" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded ${cat.badge}`}>{cat.label}</span>
+                    <span className="text-xs text-gray-400 ml-1.5 tabular-nums">{members.length}</span>
                   </div>
                   <div style={{flex:1}}/>
                 </div>
@@ -14908,7 +15053,29 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
             <span className="text-xs font-semibold text-gray-600">Residents left under target</span>
             <ul className="mt-1 space-y-0.5">
               {report.underTarget.map(u=>(
-                <li key={u.residentId} className="text-xs text-gray-600">{u.name} — {u.assigned}/{u.target}</li>
+                <li key={u.residentId} className="text-xs text-gray-600">
+                  {u.name} — {u.assigned}/{u.target}
+                  {/* Why they're short, not just that they are. See generateSchedule's per-resident
+                      shortfall diagnostic: openSlots===0 means the schedule physically had nowhere
+                      left to put them (coverage maxes reached, or their rotation allows no shift on
+                      any free date), while a non-empty blockedBy means slots DID exist and a hard
+                      safety rule refused every one — a genuine target-vs-rules conflict the chief
+                      resolves with a buy-down or a coverage change, not by regenerating. Older
+                      reports (and solver results) carry neither field, so both are optional. */}
+                  {typeof u.openSlots === 'number' && u.openSlots === 0 && (
+                    <span className="text-gray-400"> — no open slots they could fill</span>
+                  )}
+                  {u.blockedBy && Object.keys(u.blockedBy).length > 0 && (
+                    <span className="text-gray-400">
+                      {' '}— {u.openSlots} open slot{u.openSlots === 1 ? '' : 's'}, all blocked: {
+                        Object.entries(u.blockedBy)
+                          .sort((a,b)=>b[1]-a[1])
+                          .map(([why,n])=>`${UNDER_TARGET_BLOCK_LABELS[why] || why} (${n})`)
+                          .join(', ')
+                      }
+                    </span>
+                  )}
+                </li>
               ))}
             </ul>
           </div>

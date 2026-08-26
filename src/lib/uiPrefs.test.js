@@ -3,13 +3,29 @@ import { normalizeUiPrefs, DEFAULT_UI_PREFS, clampGridZoom, clampGridColExtra, G
 
 describe('normalizeUiPrefs', () => {
   it('defaults on null/undefined', () => {
-    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0 });
-    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0 });
+    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
+    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
   });
 
   it('passes through a well-formed shape', () => {
     const raw = { tabOverflow: ['guide', 'whatsnew'], cardOpen: { 'dash-equity': false, 'settings-qgenda': true }, showUnscheduled: true };
-    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0 });
+    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
+  });
+
+  // gridGroupBy is validated by SET MEMBERSHIP, not coerced — an unknown mode (one removed in a
+  // later build, or a hand-edited localStorage value) must fall back to the default rather than
+  // reach groupResidents, which would render an unrecognized mode as the category fallback anyway
+  // but leave the toolbar showing no active tab.
+  it('accepts every known gridGroupBy mode', () => {
+    for (const mode of ['category', 'pgy', 'rotation']) {
+      expect(normalizeUiPrefs({ gridGroupBy: mode }).gridGroupBy).toBe(mode);
+    }
+  });
+
+  it('falls back to category for an unknown or non-string gridGroupBy', () => {
+    for (const bad of ['PGY', 'sortByName', '', 3, true, null, undefined, {}, ['pgy']]) {
+      expect(normalizeUiPrefs({ gridGroupBy: bad }).gridGroupBy).toBe('category');
+    }
   });
 
   it('drops non-string entries from tabOverflow', () => {

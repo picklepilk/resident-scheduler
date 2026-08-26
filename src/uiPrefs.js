@@ -14,7 +14,7 @@
 // they're currently poking at.
 import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo, createElement } from 'react';
 import { supabase, AUTH_ENABLED } from './supabaseClient.js';
-import { DEFAULT_UI_PREFS, normalizeUiPrefs, clampGridZoom, clampGridColExtra } from './lib/uiPrefs.js';
+import { DEFAULT_UI_PREFS, normalizeUiPrefs, clampGridZoom, clampGridColExtra, GRID_GROUP_MODES } from './lib/uiPrefs.js';
 
 export const UI_PREFS_KEY = 'res_ui_prefs';
 export { normalizeUiPrefs } from './lib/uiPrefs.js';
@@ -124,6 +124,14 @@ export function useUiPrefs(viewer) {
     setPrefs(p => ({ ...p, showUnscheduled: !!v }));
   }, []);
 
+  // Schedule-tab row grouping (category / PGY / rotation). Validated on WRITE as well as on read
+  // (normalizeUiPrefs), for the same reason setGridZoom clamps on write: no caller should be able
+  // to store a value the rest of the app can't render.
+  const setGridGroupBy = useCallback(v => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => (GRID_GROUP_MODES.includes(v) ? { ...p, gridGroupBy: v } : p));
+  }, []);
+
   // Schedule-grid zoom / column width. Takes an updater so the +/- buttons and the ctrl-wheel
   // handler can all express "relative to whatever it is now" without reading prefs first, and
   // clamps on WRITE so no code path — button, wheel, or pinch — can store a value the others
@@ -145,8 +153,8 @@ export function useUiPrefs(viewer) {
   // four callbacks are already stable via useCallback([]), so in practice this only changes when
   // `prefs` does).
   return useMemo(
-    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra }),
-    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra]
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy]
   );
 }
 
@@ -161,7 +169,7 @@ export function UiPrefsProvider({ viewer, children }) {
   return createElement(UiPrefsContext.Provider, { value }, children);
 }
 
-const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {} };
+const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {} };
 
 export function useUiPrefsContext() {
   return useContext(UiPrefsContext) || NOOP_UI_PREFS;
