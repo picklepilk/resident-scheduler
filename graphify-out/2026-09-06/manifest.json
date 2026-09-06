@@ -186,9 +186,9 @@
     "semantic_hash": "fdee5c88bc960d78441fdaa65d685cf2"
   },
   "CLAUDE.md": {
-    "mtime": 1788033509.9387703,
-    "seen": 1788737000.9470096,
-    "ast_hash": "7e7a1cdcf28dc4054fe25ffc1c2c206e",
+    "mtime": 1787754949.830478,
+    "seen": 1787884436.7055447,
+    "ast_hash": "39636b7b1461f8b0c44eaa6fb33a14ee",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -1119,18 +1119,6 @@
     "mtime": 1787707382.5792334,
     "seen": 1787884436.7055128,
     "ast_hash": "ad25d299b96b9f98b098fd29eec37f29",
-    "semantic_hash": ""
-  },
-  ".claude/skills/imports-exports/SKILL.md": {
-    "mtime": 1788033457.4135718,
-    "seen": 1788737000.9470038,
-    "ast_hash": "e251d14187a905dff8a6de0a4a570910",
-    "semantic_hash": ""
-  },
-  "solver-service/CLAUDE.md": {
-    "mtime": 1788033467.23733,
-    "seen": 1788737000.947019,
-    "ast_hash": "29ffba49fbb44ad13e604267c9a842f1",
     "semantic_hash": ""
   }
 }
