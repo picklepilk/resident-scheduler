@@ -54,17 +54,16 @@ export function groupResidents(residents, mode, { categories, blockTypes, isEm }
   const out = [];
 
   if (mode === 'pgy') {
-    // Sub-order within a PGY bucket follows CATEGORIES order (EM Home/BAMC first, then off-service),
-    // with the resident's original index breaking ties — so the ordering is total and stable, and a
-    // re-render can never reshuffle rows underneath row-level state like the lock button.
+    // Sub-order within a PGY bucket follows CATEGORIES order (EM Home/BAMC first, then off-service).
+    // Residents sharing a category keep their incoming order because Array.prototype.sort is stable
+    // (required since ES2019), so a re-render can never reshuffle rows underneath row-level state
+    // like the lock button — no explicit original-index tie-break needed.
     const catIndex = new Map(categories.map((c, i) => [c.id, i]));
     const rank = r => catIndex.has(r.category) ? catIndex.get(r.category) : categories.length;
     for (const g of PGY_GROUPS) {
       const members = list
-        .map((r, i) => ({ r, i }))
-        .filter(({ r }) => g.pgy === null ? ![1, 2, 3].includes(r.pgy) : r.pgy === g.pgy)
-        .sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i)
-        .map(({ r }) => r);
+        .filter(r => g.pgy === null ? ![1, 2, 3].includes(r.pgy) : r.pgy === g.pgy)
+        .sort((a, b) => rank(a) - rank(b));
       pushNonEmpty(out, g, members);
     }
     return out;

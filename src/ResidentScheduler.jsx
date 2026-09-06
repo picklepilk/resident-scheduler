@@ -4382,7 +4382,7 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // precomputed buildStaticGenContext(...) result — see that function's own header — that
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
-export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null }) {
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
@@ -5911,7 +5911,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // the pool is non-empty but excludes this resident, the specific filter isn't recoverable without
   // threading per-resident tracing through all 19 filters — that case is labelled 'ruleBlocked'
   // rather than guessed at.
-  if (report.underTarget.length > 0) {
+  //
+  // COST, and why generateScheduleBest defers it: the scan calls candidatePool() once per open
+  // slot, and generateScheduleBest throws away 20 of its 21 generateSchedule results. Computing it
+  // eagerly inside every attempt spends ~95% of that work on schedules nobody ever reads. Nothing
+  // in scoring reads openSlots/blockedBy (only GenerationReportCard does), so with
+  // `deferUnderTargetDiagnostics` the scan is parked on the report as a closure and generateSchedule
+  // Best runs it once, on the attempt that actually wins. Only `best` and the attempt in hand are
+  // ever live at once, so at most two of these closures pin a generation scope at a time. Standalone
+  // callers leave the flag off and get the numbers computed inline, exactly as before.
+  function computeUnderTargetDiagnostics() {
     for (const u of report.underTarget) {
       const r = residentById.get(u.residentId);
       if (!r) continue;
@@ -5940,6 +5949,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       u.openSlots = openSlots;
       u.blockedBy = blockedBy;
     }
+  }
+  if (report.underTarget.length > 0) {
+    if (deferUnderTargetDiagnostics) report.computeUnderTargetDiagnostics = computeUnderTargetDiagnostics;
+    else computeUnderTargetDiagnostics();
   }
 
   // Supply-vs-demand diagnostic (item 6): only worth computing when residents were actually left
@@ -6492,16 +6505,25 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
 
   for (let i = 0; i < attempts; i++) {
     const seed = (resolvedBaseSeed + i * 0x9E3779B9) >>> 0;
-    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false, ctx: genCtx });
+    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false, ctx: genCtx, deferUnderTargetDiagnostics: true });
     if (!res) return null;
     const score = scoreGenerationResult(res, args, rulePriority);
     if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
   }
 
   if (repair) {
-    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true, ctx: genCtx });
+    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true, ctx: genCtx, deferUnderTargetDiagnostics: true });
     const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
+  }
+
+  // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
+  // definition in generateSchedule). Deleted afterwards because the report is persisted onto the
+  // block: a function property would be silently dropped by the JSON round-trip, and a report that
+  // still carries one has not had its openSlots/blockedBy filled in.
+  if (best.result.report.computeUnderTargetDiagnostics) {
+    best.result.report.computeUnderTargetDiagnostics();
+    delete best.result.report.computeUnderTargetDiagnostics;
   }
 
   best.result.report.attempts = attempts;

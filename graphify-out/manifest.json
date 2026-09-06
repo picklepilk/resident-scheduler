@@ -36,9 +36,9 @@
     "semantic_hash": ""
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1787754742.395811,
-    "seen": 1787884436.705463,
-    "ast_hash": "4fb10b3df0a069aa58365f4237825846",
+    "mtime": 1788737468.890895,
+    "seen": 1788737910.842506,
+    "ast_hash": "de72af991df36d202c972d2365c1a063",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -186,9 +186,9 @@
     "semantic_hash": "fdee5c88bc960d78441fdaa65d685cf2"
   },
   "CLAUDE.md": {
-    "mtime": 1788033509.9387703,
-    "seen": 1788737000.9470096,
-    "ast_hash": "7e7a1cdcf28dc4054fe25ffc1c2c206e",
+    "mtime": 1788737683.888878,
+    "seen": 1788737910.842506,
+    "ast_hash": "87180a602e132b81ad9f46edceb30232",
     "semantic_hash": ""
   },
   "docs/DESIGN.md": {
@@ -522,9 +522,9 @@
     "semantic_hash": "306ba03cecbe4753879853fb5c63e566"
   },
   "src/lib/uiPrefs.js": {
-    "mtime": 1787707207.3382442,
-    "seen": 1787884436.7055233,
-    "ast_hash": "3465fb4b93dd9e0c5391b6dcad40eef6",
+    "mtime": 1788737423.799714,
+    "seen": 1788737910.842506,
+    "ast_hash": "cc8464ab92b7ea5e2e2fce082acd4ef6",
     "semantic_hash": ""
   },
   "src/lib/uiPrefs.test.js": {
@@ -786,9 +786,9 @@
     "semantic_hash": ""
   },
   "solver-service/solver/model/trauma_runs.py": {
-    "mtime": 1787663962.7633169,
-    "seen": 1787884436.7054381,
-    "ast_hash": "6346a8836f29263e1d20799dd3261694",
+    "mtime": 1788737443.2876532,
+    "seen": 1788737910.842506,
+    "ast_hash": "34d84ab41867782bdf57cf724a95cd22",
     "semantic_hash": ""
   },
   "solver-service/solver/model/variables.py": {
@@ -1110,9 +1110,9 @@
     "semantic_hash": ""
   },
   "src/lib/scheduleGrouping.js": {
-    "mtime": 1787754733.5107753,
-    "seen": 1787884436.7055123,
-    "ast_hash": "0567d15101695db3f7d27711d1047880",
+    "mtime": 1788737412.618444,
+    "seen": 1788737910.842506,
+    "ast_hash": "0bb85b92b83f8d3d4acac4b9687fbd8e",
     "semantic_hash": ""
   },
   "src/lib/scheduleGrouping.test.js": {
@@ -1137,6 +1137,12 @@
     "mtime": 1788737218.2905636,
     "seen": 1788737248.5345106,
     "ast_hash": "4c915b45b579d8a48b028f7f06d7622d",
+    "semantic_hash": ""
+  },
+  "CC-Session-Logs/06-09-2026-18_35-nd-option.md": {
+    "mtime": 1788737882.8320787,
+    "seen": 1788737910.842506,
+    "ast_hash": "4097c519be5735b147d1dae316387950",
     "semantic_hash": ""
   }
 }

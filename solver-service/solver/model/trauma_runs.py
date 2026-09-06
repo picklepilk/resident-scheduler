@@ -180,20 +180,28 @@ def _trauma_possible_indices(payload: Payload, store: VarStore, resident) -> fro
     return frozenset(indices)
 
 
-def _trauma_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
-    """Per-store, per-resident memoization of `_trauma_possible_indices` --
-    the three consumers below (`add_trauma_run_hard_cap`,
-    `add_trauma_second_in_run_terms`, `add_trauma_mid_run_terms`) each loop
-    every resident and previously recomputed this same frozenset from
-    scratch per function; computed once here and cached on `store` (a fresh
-    VarStore per solve, so the cache's lifetime is exactly one solve's)."""
-    cache = getattr(store, "_trauma_possible_cache", None)
+def _cached_indices(store: VarStore, attr: str, resident, compute) -> frozenset:
+    """Per-store, per-resident memoization shared by both index helpers here.
+    `store` is a fresh VarStore per solve, so a cache's lifetime is exactly one
+    solve's; `attr` names the dict slot, keeping the two index sets separate."""
+    cache = getattr(store, attr, None)
     if cache is None:
         cache = {}
-        store._trauma_possible_cache = cache
+        setattr(store, attr, cache)
     if resident.id not in cache:
-        cache[resident.id] = _trauma_possible_indices(payload, store, resident)
+        cache[resident.id] = compute()
     return cache[resident.id]
+
+
+def _trauma_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
+    """Memoized `_trauma_possible_indices` -- the three consumers below
+    (`add_trauma_run_hard_cap`, `add_trauma_second_in_run_terms`,
+    `add_trauma_mid_run_terms`) each loop every resident and previously
+    recomputed this same frozenset from scratch per function."""
+    return _cached_indices(
+        store, "_trauma_possible_cache", resident,
+        lambda: _trauma_possible_indices(payload, store, resident),
+    )
 
 
 def _night_possible_indices(payload: Payload, store: VarStore, resident) -> frozenset:
@@ -220,17 +228,12 @@ def _night_possible_indices(payload: Payload, store: VarStore, resident) -> froz
 
 
 def _night_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
-    """Per-store, per-resident memoization of `_night_possible_indices` --
-    shared by `add_night_duration_alternation_terms` and
-    `add_second_rest_day_terms`, same cache mechanism as
-    `_trauma_possible_indices_cached` above."""
-    cache = getattr(store, "_night_possible_cache", None)
-    if cache is None:
-        cache = {}
-        store._night_possible_cache = cache
-    if resident.id not in cache:
-        cache[resident.id] = _night_possible_indices(payload, store, resident)
-    return cache[resident.id]
+    """Memoized `_night_possible_indices` -- shared by
+    `add_night_duration_alternation_terms` and `add_second_rest_day_terms`."""
+    return _cached_indices(
+        store, "_night_possible_cache", resident,
+        lambda: _night_possible_indices(payload, store, resident),
+    )
 
 
 # ---------------------------------------------------------------------------

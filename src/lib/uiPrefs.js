@@ -20,13 +20,13 @@ export const GRID_COL_EXTRA_MAX = 120;
 // on their own screen is not chief scheduling data), so it rides res_ui_prefs and never
 // LS_BACKUP_KEYS. Re-exported from the grouping module rather than restated, so the allowed values
 // and the code that acts on them can't drift apart.
-export { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
-import { GRID_GROUP_MODES as GROUP_MODES, GRID_GROUP_MODE_DEFAULT as GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
+import { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
+export { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT };
 
 export const DEFAULT_UI_PREFS = {
   tabOverflow: [], cardOpen: {}, showUnscheduled: false,
   gridZoom: GRID_ZOOM_DEFAULT, gridColExtra: 0,
-  gridGroupBy: GROUP_MODE_DEFAULT,
+  gridGroupBy: GRID_GROUP_MODE_DEFAULT,
 };
 
 // Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
@@ -64,6 +64,6 @@ export function normalizeUiPrefs(raw) {
   // Membership test rather than a numeric clamp, but the same refusal to coerce: an unknown string
   // (a mode removed in a later build, a hand-edited value) falls back to the default instead of
   // being passed through to render an empty grid.
-  const gridGroupBy = GROUP_MODES.includes(raw?.gridGroupBy) ? raw.gridGroupBy : GROUP_MODE_DEFAULT;
+  const gridGroupBy = GRID_GROUP_MODES.includes(raw?.gridGroupBy) ? raw.gridGroupBy : GRID_GROUP_MODE_DEFAULT;
   return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy };
 }
