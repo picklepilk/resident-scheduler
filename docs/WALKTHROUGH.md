@@ -5,9 +5,12 @@ the single source the module (`src/walkthrough/`) is meant to be checked against
 
 ## Welcome modal
 
-Shown once, the first time an admin lands on the app after the auth gate passes (see
-`useWalkthroughSeen` for the seen-flag mechanics). Any dismiss — Start walkthrough, Skip, the X,
-or clicking the backdrop — marks it seen; it never re-prompts.
+Shown once, the first time a viewer lands on either surface after the auth gate passes — the
+admin app at `/` (`ResidentScheduler`) and the resident-facing `/requests` page
+(`ResidentRequestsApp`) share the same wording, the same welcome component, and the same
+seen-flag (see `useWalkthroughSeen` for the mechanics, and "Resident walkthrough" below for why
+one flag covers both). Any dismiss — Start walkthrough, Skip, the X, or clicking the backdrop —
+marks it seen; it never re-prompts.
 
 **Title:** EM Residency Scheduler
 
@@ -18,7 +21,7 @@ or clicking the backdrop — marks it seen; it never re-prompts.
 
 **Buttons:** Start walkthrough · Skip
 
-## Walkthrough steps
+## Admin walkthrough steps (`/`)
 
 9 steps. `roles` marks a step admin-only; a step with no `roles` line is shown to every role. In
 this app's current routing, only `profiles.role === 'admin'` ever reaches the shell the
@@ -105,10 +108,75 @@ walkthrough mounts in (see "Decisions" below) — the `roles` tags below match t
   - JSON backup/restore covers the roster, blocks, rules, and coverage in one file.
 - **Target:** `tab-settings` · **Route:** `settings` · **Roles:** admin
 
+## Resident walkthrough (`/requests`)
+
+Round 2: residents are this app's actual majority of users and, until now, `ResidentRequestsApp`
+mounted none of the walkthrough module — this closes that gap. Reuses `src/walkthrough/` verbatim
+(same `Walkthrough`/`WalkthroughWelcome`/`WalkthroughRoot`/spotlight/geometry code as the admin
+surface above) with its own step list (`RESIDENT_WALKTHROUGH_STEPS`, `src/walkthrough/walkthroughSteps.js`)
+and the **same `APP_KEY`/seen-flag** (`walkthrough_seen['resident-scheduler']`) as the admin
+steps — a product decision from review, not an oversight: a resident and an admin don't share one
+physical login in practice, so one flag covering both surfaces has no real double-count case
+today. See "Decisions" for the one edge case (a linked admin visiting both `/` and `/requests`).
+
+5 steps, single flow — no `roles`, no `route` (this page has no tabs to switch between; each
+step's target is a real form field or list, already on screen). Mounted once `RequestForm` +
+`RequestList` render — i.e. after the auth gate passes AND past `PendingApproval`/the
+admin-account block AND past `ResidentPicker` (an account not yet linked to a roster resident
+never reaches the form the walkthrough narrates).
+
+| # | Title | Target |
+|---|---|---|
+| 1 | Request a day off | `resident-date-field` |
+| 2 | Requesting more than one date | `resident-add-date` |
+| 3 | Reason (optional) | `resident-reason` |
+| 4 | Submit request | `resident-submit` |
+| 5 | Track your requests | `resident-request-list` |
+
+### 1. Request a day off
+- **Headline:** Pick any date you want off and it goes straight to the chief for a decision.
+- **Bullets:**
+  - Use the date field to add a single day, or one row per day for a stretch.
+  - e.g. click the date field and pick Oct 12 for a single day off.
+- **Target:** `resident-date-field`
+
+### 2. Requesting more than one date
+- **Headline:** "+ Add another date" adds a new row — each date is its own line in the request.
+- **Bullets:**
+  - There's no limit on how many dates one request can cover.
+  - e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three separate rows.
+- **Target:** `resident-add-date`
+
+### 3. Reason (optional)
+- **Headline:** A short reason is optional, but it's the only context the chief sees when deciding.
+- **Bullets:**
+  - Nothing here is required — an empty reason is a perfectly normal request.
+  - e.g. type "sister's wedding" so the chief has context without you having to explain in person.
+- **Target:** `resident-reason`
+
+### 4. Submit request
+- **Headline:** Submitting sends the request immediately — there is no draft or save-for-later.
+- **Bullets:**
+  - A request within 8 weeks of that block still submits — you just get a heads-up that the chief
+    has less flexibility.
+  - e.g. a date that falls on a tracked holiday shows a note too; it still submits the same way.
+- **Target:** `resident-submit`
+
+### 5. Track your requests
+- **Headline:** Every request you've submitted lists below, grouped by which block it falls in.
+- **Bullets:**
+  - Status shows as pending (amber), approved (green), or denied (red) as the chief decides.
+  - e.g. click the × next to a still-pending request to withdraw it yourself before a decision is
+    made.
+- **Target:** `resident-request-list`
+
 ## Replay
 
-**User Guide tab → "Getting Started" section → "Replay walkthrough" button.** Starts at step 0
-regardless of the seen-flag.
+- **Admin (`/`):** User Guide tab → "Getting Started" section → "Replay walkthrough" button.
+- **Resident (`/requests`):** a small "Getting Started" line at the bottom of the page (below the
+  request list, deliberately unobtrusive — no card, no border box) → "Replay walkthrough".
+
+Both start at step 0 regardless of the seen-flag.
 
 ## Decisions
 
@@ -146,3 +214,29 @@ regardless of the seen-flag.
   `filterStepsForRole` and the `user_metadata` merge helper directly, since those are the two
   places a silent regression (a role leak, or a clobbered sibling-app flag) would be easy to miss
   in an end-to-end run and hard to assert precisely against a live Supabase project.
+
+### Round 2 (resident walkthrough)
+
+- **`WalkthroughRoot` generalized, not forked:** added an optional `steps` prop (default
+  `WALKTHROUGH_STEPS`, the admin list) and made `setActiveTab` default to a no-op, so
+  `ResidentScheduler.jsx`'s existing call site needed zero changes — "keep the admin-side steps as
+  they are" held literally, not just in content.
+- **Shared seen-flag, one known edge case:** an admin account that's ALSO linked to a resident
+  (`profile.role === 'admin' && profile.resident_id` — the fallthrough case in both
+  `AppGate.jsx` and `ResidentRequestsApp.jsx`'s own comments) would see only one combined welcome
+  across `/` and `/requests`, whichever they open first, since both read/write the same
+  `walkthrough_seen['resident-scheduler']` key. Per the coordinator's explicit instruction to reuse
+  the same `APP_KEY`/flag — not overridden here.
+- **`(a)` tab-overflow / Replay target — confirmed not an issue:** the admin "Getting Started"
+  section lives inside `UserGuideTab`'s own panel content (the `<main>` area), not in the sidebar
+  tab strip `SidebarNav` renders — `res_ui_prefs.tabOverflow`'s "Other" grouping only reorders/
+  hides tab-strip buttons, never panel content. The User Guide tab button itself could move into
+  "Other," but the Replay button inside its panel is unaffected either way.
+- **`(b)`/`(c)`:** left as-is per the coordinator's ruling (inert admin role tags kept; the
+  unconditional `createPortal` in `Walkthrough.jsx` kept as-is).
+- **Resident unit tests are pure-logic, not component-rendered:** mirrors the admin tests'
+  approach (no `@testing-library/react`/jsdom-render harness exists in this repo — `CLAUDE.md`
+  is explicit that UI/tabs here have no render-level tests, and `package.json` carries no RTL
+  dependency). "Welcome shows/hides" and "replay opens step 0" are instead covered by the
+  Playwright pass against `/requests` below, the same division of labor round 1 used for the
+  admin surface (pure logic → vitest, real DOM interaction → Playwright).

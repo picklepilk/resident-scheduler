@@ -62,16 +62,17 @@ export default function RequestForm({ residentId, onSubmitted }) {
         // min-w-0 on the input lets the native date control shrink instead of forcing the row
         // wider than a 375px screen; the Remove button is shrink-0 with a real tap area.
         <div key={i} className="flex items-center gap-2 mb-2">
-          <input type="date" value={d} onChange={e => updateDate(i, e.target.value)} className="input-field min-w-0 flex-1" />
+          <input type="date" value={d} onChange={e => updateDate(i, e.target.value)} className="input-field min-w-0 flex-1"
+            data-tour={i === 0 ? 'resident-date-field' : undefined} />
           {dates.length > 1 && (
             <button type="button" onClick={() => removeDateField(i)}
               className="shrink-0 px-2 py-2 text-xs text-gray-400 hover:text-red-500">Remove</button>
           )}
         </div>
       ))}
-      <button type="button" onClick={addDateField} className="text-xs text-primary font-medium mb-3">+ Add another date</button>
+      <button type="button" onClick={addDateField} data-tour="resident-add-date" className="text-xs text-primary font-medium mb-3">+ Add another date</button>
       <label className="block text-xs font-medium text-gray-700 mb-1">Reason (optional)</label>
-      <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2}
+      <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} data-tour="resident-reason"
         className="input-field w-full mb-3" placeholder="Optional — let the chief know why, if you'd like" />
       {holidayHits.length > 0 && (
         <p className="text-xs text-amber-700 mb-3">
@@ -88,7 +89,7 @@ export default function RequestForm({ residentId, onSubmitted }) {
         </p>
       )}
       {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
-      <button type="submit" disabled={busy}
+      <button type="submit" disabled={busy} data-tour="resident-submit"
         className="bg-primary text-white text-sm font-medium rounded-md px-4 py-2 disabled:opacity-50">
         {busy ? 'Submitting…' : 'Submit request'}
       </button>

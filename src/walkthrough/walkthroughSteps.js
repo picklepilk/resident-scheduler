@@ -128,6 +128,66 @@ export const WALKTHROUGH_STEPS = [
 ];
 
 /**
+ * Round 2: residents are this app's actual majority of users, and until now they got nothing —
+ * `/requests` (ResidentRequestsApp.jsx) mounts none of the above; it's a single-flow page (no
+ * tabs, no `route`s to switch), so these steps omit `route` entirely and never carry `roles`
+ * (nothing else reaches this surface — a linked admin visiting `/requests` gets the identical
+ * self-service form, see AppGate.jsx/ResidentRequestsApp.jsx's own comments). Reuses the SAME
+ * `APP_KEY` and seen-flag as the admin steps above, per product decision — a resident and an
+ * admin never share one physical account in practice, so the shared flag has no real double-count
+ * case today.
+ *
+ * @type {WalkthroughStep[]}
+ */
+export const RESIDENT_WALKTHROUGH_STEPS = [
+  {
+    title: 'Request a day off',
+    headline: 'Pick any date you want off and it goes straight to the chief for a decision.',
+    bullets: [
+      'Use the date field to add a single day, or one row per day for a stretch.',
+      'e.g. click the date field and pick Oct 12 for a single day off.',
+    ],
+    target: 'resident-date-field',
+  },
+  {
+    title: 'Requesting more than one date',
+    headline: '"+ Add another date" adds a new row — each date is its own line in the request.',
+    bullets: [
+      "There's no limit on how many dates one request can cover.",
+      'e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three separate rows.',
+    ],
+    target: 'resident-add-date',
+  },
+  {
+    title: 'Reason (optional)',
+    headline: "A short reason is optional, but it's the only context the chief sees when deciding.",
+    bullets: [
+      'Nothing here is required — an empty reason is a perfectly normal request.',
+      'e.g. type "sister\'s wedding" so the chief has context without you having to explain in person.',
+    ],
+    target: 'resident-reason',
+  },
+  {
+    title: 'Submit request',
+    headline: 'Submitting sends the request immediately — there is no draft or save-for-later.',
+    bullets: [
+      'A request within 8 weeks of that block still submits — you just get a heads-up that the chief has less flexibility.',
+      'e.g. a date that falls on a tracked holiday shows a note too; it still submits the same way.',
+    ],
+    target: 'resident-submit',
+  },
+  {
+    title: 'Track your requests',
+    headline: 'Every request you\'ve submitted lists below, grouped by which block it falls in.',
+    bullets: [
+      'Status shows as pending (amber), approved (green), or denied (red) as the chief decides.',
+      'e.g. click the × next to a still-pending request to withdraw it yourself before a decision is made.',
+    ],
+    target: 'resident-request-list',
+  },
+];
+
+/**
  * Pure. Keeps a step when it carries no `roles` list (everyone sees it), or when `role` is in
  * that list. `role` defaults to 'admin' by every caller here — see the module doc above for why
  * that's the only role that currently reaches this shell.
