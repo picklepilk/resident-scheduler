@@ -43,6 +43,8 @@ import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
+import WalkthroughRoot from './walkthrough/WalkthroughRoot';
+import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 // AREA_COLORS/SHIFTS/SHIFT_MAP/SHIFT_AREAS/SHIFT_TYPES/SHIFT_TIMING/SHIFT_DOW now live in
@@ -16049,6 +16051,7 @@ const GUIDE_SECTIONS = [
 ];
 
 function UserGuideTab({ onNavigate }) {
+  const { start: startWalkthrough } = useWalkthroughContext();
   const [query, setQuery] = useState('');
   const [openMap, setOpenMap] = useState(() => Object.fromEntries(GUIDE_SECTIONS.map(s => [s.id, true])));
   const q = query.trim().toLowerCase();
@@ -16078,6 +16081,19 @@ function UserGuideTab({ onNavigate }) {
       <div>
         <h2 className="text-base font-semibold text-gray-800">User Guide</h2>
         <p className="text-xs text-gray-500 mt-0.5">How to build a monthly resident schedule with this app</p>
+      </div>
+
+      {/* Getting Started — replay entry point for the first-login walkthrough (see
+          src/walkthrough/). Always starts at step 0, regardless of the seen-flag. */}
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-4 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-800">Getting Started</h3>
+          <p className="text-xs text-gray-500 mt-0.5">Replay the guided tour of the tabs above.</p>
+        </div>
+        <button onClick={startWalkthrough}
+          className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg bg-primary text-white hover:opacity-90">
+          Replay walkthrough
+        </button>
       </div>
 
       {/* Search + expand/collapse */}
@@ -17061,7 +17077,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
     return (
       <div key={t.id} role="button" tabIndex={0} onClick={()=>{setTab(t.id); onNavigate?.();}}
         onKeyDown={e=>{ if(e.key==='Enter'||e.key===' ') { e.preventDefault(); setTab(t.id); onNavigate?.(); } }}
-        aria-current={active ? 'page' : undefined}
+        aria-current={active ? 'page' : undefined} data-tour={`tab-${t.id}`}
         onDragOver={(e)=>{e.preventDefault(); setDragOverTabId(t.id);}}
         onDragLeave={(e)=>{if(e.currentTarget.contains(e.relatedTarget))return; setDragOverTabId(p=>p===t.id?null:p);}}
         onDrop={(e)=>{e.preventDefault(); setTabOrder(reorderIds(orderedTabs.map(x=>x.id), dragTabId, t.id)); resetDrag();}}
@@ -18270,6 +18286,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
   return (
+    <WalkthroughRoot session={viewer?.session} role={viewer?.role || 'admin'} setActiveTab={setTab}>
     <UiPrefsProvider viewer={viewer}>
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
@@ -18576,5 +18593,6 @@ export default function ResidentScheduler({ viewer } = {}) {
       <Toast toast={toast} onClose={()=>setToast(null)}/>
     </div>
     </UiPrefsProvider>
+    </WalkthroughRoot>
   );
 }

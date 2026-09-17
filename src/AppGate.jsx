@@ -149,7 +149,10 @@ export default function AppGate() {
   // than re-fetched: AppGate already resolved the session and profile above, and the app otherwise
   // performs the same identity lookup in three separate places.
   if (profile?.role === ROLE.ADMIN) {
-    return <ResidentScheduler viewer={{ email: session.user.email, userId: session.user.id, role: profile.role }} />;
+    // `session` rides along so the walkthrough module can read/write
+    // `user_metadata.walkthrough_seen` without a second getSession() call — see
+    // useWalkthroughSeen.js's own note on why that would be a fourth identity lookup.
+    return <ResidentScheduler viewer={{ email: session.user.email, userId: session.user.id, role: profile.role, session }} />;
   }
 
   // No row yet (upsert in flight/failed) is treated as pending — fail closed, never open.
