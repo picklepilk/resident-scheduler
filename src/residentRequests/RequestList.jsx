@@ -51,7 +51,7 @@ export default function RequestList({ residentId, refreshKey, blocks: blocksProp
   }
 
   if (requests.length === 0) {
-    return <p className="text-sm text-gray-400">No requests submitted yet.</p>;
+    return <p className="text-sm text-gray-400" data-tour="resident-request-list">No requests submitted yet.</p>;
   }
 
   // Grouped by scheduling block, per the design spec — chronological by block start date, with
@@ -60,7 +60,7 @@ export default function RequestList({ residentId, refreshKey, blocks: blocksProp
   const groups = groupByBlock(requests, blocks);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-tour="resident-request-list">
       {error && <p className="text-xs text-red-600">{error}</p>}
       {groups.map(({ label, requests: groupRequests }) => (
         <div key={label}>
