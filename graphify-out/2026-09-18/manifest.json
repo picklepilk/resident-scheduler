@@ -36,9 +36,9 @@
     "semantic_hash": ""
   },
   "src/ResidentScheduler.jsx": {
-    "mtime": 1789748302.3185153,
-    "seen": 1789750210.775001,
-    "ast_hash": "80c1115be1a547daad50e0ef2246b312",
+    "mtime": 1788737468.890895,
+    "seen": 1788737910.842506,
+    "ast_hash": "de72af991df36d202c972d2365c1a063",
     "semantic_hash": ""
   },
   "src/main.jsx": {
@@ -1143,12 +1143,6 @@
     "mtime": 1788737882.8320787,
     "seen": 1788737910.842506,
     "ast_hash": "4097c519be5735b147d1dae316387950",
-    "semantic_hash": ""
-  },
-  "CC-Session-Logs/18-09-2026-11_21-a520850a30cde04cc-users-amade-appdata-local.md": {
-    "mtime": 1789749097.8759596,
-    "seen": 1789750210.7750819,
-    "ast_hash": "d9fc4f3638721cc7446c2b3a9e432648",
     "semantic_hash": ""
   }
 }
