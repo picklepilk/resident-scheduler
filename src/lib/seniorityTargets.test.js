@@ -354,6 +354,25 @@ describe('1.10 getShiftTarget — vacation-rotation BLOCK_TARGETS wins even for 
     const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM_VAC' };
     expect(getShiftTarget(r)).toBe(11);
   });
+
+  // A1: mirror of the chief precedence above — a non-chief EM Home resident on a vacation-type
+  // rotation must also have the reduced BLOCK_TARGETS count win over a Settings targetOverrides[key]
+  // entry (previously the o[key] branch fired first and masked the vacation reduction for anyone
+  // with a per-category Settings override configured).
+  it('a non-chief PGY-3 on EM_VAC still works 11 even with a Settings EM_HOME_3 override set', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM_VAC' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 99 } })).toBe(11);
+  });
+
+  it('a non-chief PGY-2 on EM_VAC still works 12 even with a Settings EM_HOME_2 override set', () => {
+    const r = { category: 'EM_HOME', pgy: 2, blockType: 'EM_VAC' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_2: 0 } })).toBe(12);
+  });
+
+  it('a non-chief resident on a NON-vacation rotation still respects the Settings override (unchanged)', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 5 } })).toBe(5);
+  });
 });
 
 describe('getShiftTarget — explicit-0 override returns null, never 0 (documented contract)', () => {

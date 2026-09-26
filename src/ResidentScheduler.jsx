@@ -2919,15 +2919,24 @@ function effectiveChiefRole(resident) {
 export function getShiftTarget(resident, appSettings = {}) {
   const o = appSettings.targetOverrides || {};
   const key = `${resident.category}_${resident.pgy}`;
+  // Vacation-rotation BLOCK_TARGETS entry (chief-directed reduced count, e.g. PGY-3 EM_VAC = 11)
+  // is computed once here — both the chief branch and the non-chief branch below need it, and
+  // both must let it win over their own next-in-line source (o.CHIEF / o[key] respectively).
+  const vacationKey = resident.blockType && VACATION_BLOCK_TYPES.has(resident.blockType) ? `${key}__${resident.blockType}` : null;
+  const vacationTarget = vacationKey ? BLOCK_TARGETS[vacationKey] : null;
   let base;
   if (effectiveChiefRole(resident)) {
     // Vacation-rotation BLOCK_TARGETS entry wins even for a chief resident (chief-directed: a
     // chief on a vacation block works the REDUCED vacation-block count, e.g. a PGY-3 chief on
     // EM_VAC works 11, not the flat 16) — checked only for the vacation blockTypes
     // (VACATION_BLOCK_TYPES); every other rotation still gets the flat chief target below.
-    const vacationKey = resident.blockType && VACATION_BLOCK_TYPES.has(resident.blockType) ? `${key}__${resident.blockType}` : null;
-    const vacationTarget = vacationKey ? BLOCK_TARGETS[vacationKey] : null;
     base = vacationTarget != null ? vacationTarget : (o.CHIEF ?? 16);
+  } else if (vacationTarget != null) {
+    // Same precedence for a non-chief EM Home resident: the reduced vacation BLOCK_TARGETS count
+    // wins even over a Settings targetOverrides[key] entry (mirrors the chief branch above) — a
+    // vacation block's reduced count reflects a real reduced-shift-count agreement, not something
+    // a generic per-category Settings override should be able to mask.
+    base = vacationTarget;
   } else if (o[key] != null) {
     base = o[key];
   } else if (resident.category === 'EM_HOME' && resident.blockType) {
