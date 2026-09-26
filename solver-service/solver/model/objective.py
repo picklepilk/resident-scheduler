@@ -237,6 +237,24 @@ def _add_coverage_term(payload: Payload, group: TermGroup, coverage_result: Cove
         group.add(coef, slack)
 
 
+# ---- overstaffCoverage: last-resort +1-over-max, mirrors the JS repair
+# pass's Phase 5 `underTargetOverstaff` (see coverage.py's own module
+# docstring for the full policy). `overstaffCoverage.perUnit` (2000, see
+# config/default_weights.json) is chosen deliberately between the largest
+# ordinary preference-only soft-rule weight (podEmComposition/
+# flexEmComposition at 600 -- see _anti_fill_sum) and the smaller of the two
+# targetDeficit weights (5000, non-core) -- so CP-SAT only ever spends the
+# +1 slot after every cheaper soft trade-off is exhausted, and NEVER prefers
+# it over actually meeting a resident's target. coverageMin/postNightRest
+# sit in their own structurally-elevated bracket (rulePriority-orderable)
+# and are intentionally left out of that comparison -- same posture the
+# module docstring above takes toward postNightRest vs targetDeficitCore.
+def _add_overstaff_term(group: TermGroup, coverage_result: CoverageResult, weights: dict) -> None:
+    coef = int(weights["overstaffCoverage"]["perUnit"])
+    for var in coverage_result.overstaff.values():
+        group.add(coef, var)
+
+
 # ---- rule 33: targetDeficit, core and non-core ----
 
 def _add_target_deficit_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> dict:
@@ -565,6 +583,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     group = TermGroup("objective")
 
     _add_coverage_term(payload, group, coverage_result, weights)
+    _add_overstaff_term(group, coverage_result, weights)
     target_deficit_vars = _add_target_deficit_terms(model, payload, store, group, weights)
     post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, group, weights)
     _add_fairness_terms(model, payload, store, group, weights)

@@ -3,6 +3,7 @@
   "targetDeficitCore": { "perUnit": 10000 },
   "postNightRest": { "perViolation": 50000 },
   "targetDeficit": { "perUnit": 5000 },
+  "overstaffCoverage": { "perUnit": 2000 },
   "pedsInternNightDeficit": { "perUnit": 800 },
   "fairness": { "deficit": 100, "holiday": 80, "night": 60, "weekend": 40 },
   "isolatedNight": { "perUnit": 200 },

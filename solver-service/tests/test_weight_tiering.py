@@ -155,6 +155,39 @@ def test_coverage_min_dominates_anti_fill_terms():
 
 
 # ---------------------------------------------------------------------------
+# overstaffCoverage: policy requires "larger than any [ordinary] soft rule,
+# smaller than target shortfall" -- see coverage.py/objective.py's own
+# docstrings for the full rationale. coverageMin/postNightRest are excluded
+# from the "any soft rule" comparison on purpose: both are structurally
+# elevated, rulePriority-orderable terms in their own bracket, not ordinary
+# preference-only soft rules.
+# ---------------------------------------------------------------------------
+
+def test_overstaff_coverage_dominates_ordinary_soft_rules():
+    weights = load_default_weights()
+    ordinary_soft_max = max(
+        weights["isolatedNight"]["perUnit"],
+        weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"],
+        max(weights["fairness"].values()),
+        weights["weekendOff"]["perMissing"],
+        weights["internPair"]["perExcess"],
+        weights["traumaSecondInRun"]["perUnit"], weights["traumaMidRun"]["perUnit"],
+        weights["nightDurationAlternation"]["perUnit"], weights["secondRestDay"]["perUnit"],
+        weights["pedsMixMin"]["perUnit"], weights["fm1Peds"]["perUnit"],
+        weights["podEmComposition"]["perUnit"], weights["flexEmComposition"]["perUnit"],
+        weights["podPgy2Fallback"]["perUnit"], weights["flexPgy3Fallback"]["perUnit"],
+        weights["pedsInternNightDeficit"]["perUnit"],
+    )
+    assert weights["overstaffCoverage"]["perUnit"] > ordinary_soft_max
+
+
+def test_overstaff_coverage_is_cheaper_than_any_target_shortfall():
+    weights = load_default_weights()
+    target_min = min(weights["targetDeficitCore"]["perUnit"], weights["targetDeficit"]["perUnit"])
+    assert weights["overstaffCoverage"]["perUnit"] < target_min
+
+
+# ---------------------------------------------------------------------------
 # (c) positivity
 # ---------------------------------------------------------------------------
 
