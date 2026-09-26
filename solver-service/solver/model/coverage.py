@@ -38,7 +38,7 @@ from solver.model.variables import VarStore
 @dataclass
 class CoverageResult:
     slacks: dict = field(default_factory=dict)  # (shiftId, date) -> IntVar, empty in hard mode
-    overstaff: dict = field(default_factory=dict)  # (shiftId, date) -> BoolVar, only where max>0 and non-TRAUMA
+    overstaff: dict = field(default_factory=dict)  # (shiftId, date) -> BoolVar, only where max>0, non-TRAUMA, not a Peds night
 
 
 def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enforcement=None) -> CoverageResult:
@@ -66,11 +66,15 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
     elastic = payload.config.coverage_min_mode != "hard_then_elastic"
 
     for shift_id, by_date in payload.coverage.items():
-        is_trauma = payload.shifts[shift_id].area == "TRAUMA"
+        shift = payload.shifts[shift_id]
+        # Never overstaffed: TRAUMA (see module docstring) and any Peds night
+        # (PED-N/PED-N-FM/PED-N12) -- chief call 2026-09-26, mirrors repairPass
+        # Phase 5's overstaffFor guard in ResidentScheduler.jsx.
+        no_overstaff = shift.area == "TRAUMA" or (shift.area == "PED" and shift.type == "night")
         for date_str, entry in by_date.items():
             assigned = store.x_sum_for_shift_date(shift_id, date_str)
 
-            if entry.max > 0 and not is_trauma:
+            if entry.max > 0 and not no_overstaff:
                 overstaff = model.new_bool_var(f"overstaff[{shift_id},{date_str}]")
                 model.add(sum(assigned) <= entry.max + overstaff)
                 result.overstaff[(shift_id, date_str)] = overstaff

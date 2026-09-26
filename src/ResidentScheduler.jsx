@@ -6076,6 +6076,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         for (const shift of SHIFTS) {
           if (liftBudget <= 0) return false;
           if (shift.area === 'TRAUMA') continue; // never TRAUMA-D/N
+          if (shift.area === 'PED' && shift.type === 'night') continue; // never a Peds night (PED-N/PED-N-FM/PED-N12) — chief call 2026-09-26; solver coverage.py mirrors
           if (!shiftActiveOnDow(shift.id, dsDow)) continue;
           if (!elig.has(shift.id)) continue;
           const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));

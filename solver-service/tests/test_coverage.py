@@ -73,6 +73,35 @@ def test_max_side_is_hard_for_trauma():
     assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
 
 
+def test_max_side_is_hard_for_peds_night():
+    """Peds nights (PED-N/PED-N-FM/PED-N12) are excluded from the +1-overstaff
+    allowance too -- chief call 2026-09-26, mirrors repairPass Phase 5's
+    overstaffFor guard. A Peds DAY shift still gets the allowance."""
+    shifts = {
+        "PED-N": {"startH": 19, "durationH": 9, "type": "night", "area": "PED"},
+        "PED-D": {"startH": 7, "durationH": 9, "type": "day", "area": "PED"},
+    }
+    raw = make_payload(
+        residents=[make_resident("r1"), make_resident("r2")],
+        shifts=shifts,
+        eligible={"r1": {"2026-01-05": ["PED-N"]}, "r2": {"2026-01-05": ["PED-N"]}},
+        coverage={
+            "PED-N": {"2026-01-05": {"min": 0, "max": 1}},
+            "PED-D": {"2026-01-05": {"min": 0, "max": 1}},
+        },
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    result = add_coverage_constraints(model, payload, store)
+    assert ("PED-N", "2026-01-05") not in result.overstaff
+    assert ("PED-D", "2026-01-05") in result.overstaff
+    model.add(store.get_x("r1", "PED-N", "2026-01-05") == 1)
+    model.add(store.get_x("r2", "PED-N", "2026-01-05") == 1)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+
+
 def test_no_overstaff_var_when_max_is_zero():
     raw = make_payload(
         residents=[make_resident("r1")],
