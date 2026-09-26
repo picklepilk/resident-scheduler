@@ -6224,6 +6224,22 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   return { schedule, report };
 }
 
+// Solver-payload-ONLY nudge (read solely by buildSolverPayload's preferences[] emission below —
+// generateSchedule/candidatePool/score() never read this, so the JS local engine's own behavior
+// is byte-for-byte unchanged). engineHeadToHead.test.js (2026-09-26 measurement) found the CP-SAT
+// solver racking up ~13x as many "Final-Sunday overnight — next block not imported" validateAll
+// advisories as the JS engine across the same 4 fixtures. Root cause: the JS engine has no
+// EXPLICIT score() term for this either — its near-avoidance is an emergent side effect of
+// nightCluster's isolated-run penalty (a night shift freshly started on the block's own last
+// calendar date can never extend into a run of >=2 WITHIN this block, since nightRunAfter has
+// nothing beyond the block to see, so score() already treats it as harshly as any other stranded
+// single night). The solver's objective has no equivalent run-shape-vs-block-boundary interaction,
+// so it had zero cost signal steering it away from an unconfirmed-continuation overnight there.
+// Same preference-tuple mechanism as traumaNightDow/pedNPgy1 just below — deliberately small
+// (between pedNPgy1Deprioritize=25 and nightCluster=40) so it only steers WHICH eligible resident
+// the solver reaches for that one date, never competes with coverageMin/targetDeficit.
+const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
+
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
 // solver-service/docs/PAYLOAD_SCHEMA.md, the authoritative contract this function targets. ALL
@@ -6459,6 +6475,21 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     for (const ds of dates) {
       if ((eligible[r.id]?.[ds] || []).includes('PED-N')) {
         preferences.push({ residentId: r.id, shiftId: 'PED-N', date: ds, bonus: -SCORE_WEIGHTS.pedNPgy1Deprioritize, tag: 'pedNPgy1' });
+      }
+    }
+  }
+  // finalSundayUnconfirmed (solver-only — see FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header
+  // comment for why this has no JS SCORE_WEIGHTS counterpart to mirror). Only residents whose next
+  // rotation is NOT known are targeted: known-and-continuing residents are exactly the ones who'll
+  // never trigger the warning, and known-and-not-continuing residents are already hard-excluded
+  // from `eligible` above (the finalSundayBlocked branch inside getEligibleShifts), so neither
+  // needs a preference entry.
+  if (finalSunday) {
+    for (const r of schedulableResidents) {
+      if (nextRotation[r.id]?.known) continue;
+      for (const sid of eligible[r.id]?.[finalSunday] || []) {
+        if (SHIFT_MAP[sid]?.type !== 'night') continue;
+        preferences.push({ residentId: r.id, shiftId: sid, date: finalSunday, bonus: -FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE, tag: 'finalSundayUnconfirmed' });
       }
     }
   }

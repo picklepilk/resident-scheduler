@@ -256,6 +256,51 @@ describe('buildSolverPayload', () => {
     expect(payload.alternationExemptDates).not.toContain('2026-07-14');
     expect(payload.alternationExemptDates).not.toContain('2026-07-20');
   });
+
+  // engineHeadToHead.test.js (2026-09-26) found the solver placing an overnight on the block's
+  // final Sunday far more often than the JS engine when the next block hasn't been imported — see
+  // FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header comment for why the JS engine's own
+  // near-avoidance is emergent (nightCluster) rather than an explicit score() term, and why the
+  // fix is a solver-only preference nudge in buildSolverPayload instead.
+  describe('finalSundayUnconfirmed preference', () => {
+    it('emits a negative-bonus preference for every night shift a resident is eligible for on the block\'s final Sunday when the next block is unimported', () => {
+      const fixture = makeFixture('standard'); // block ends 2026-08-02, a Sunday; empty blocksHistory
+      const payload = buildSolverPayload(fixture);
+      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
+      expect(finalSundayPrefs.length).toBeGreaterThan(0);
+      for (const p of finalSundayPrefs) {
+        expect(p.date).toBe('2026-08-02');
+        expect(p.bonus).toBeLessThan(0);
+        expect(payload.eligible[p.residentId]?.[p.date] || []).toContain(p.shiftId);
+      }
+      // Never emitted for a day shift, even for a resident who does get a night-shift entry.
+      expect(finalSundayPrefs.some(p => p.shiftId.endsWith('-D') || p.shiftId.endsWith('-D12'))).toBe(false);
+    });
+
+    it('is never emitted when the block does not end on a Sunday (no finalSunday at all)', () => {
+      const fixture = makeFixture('standard');
+      // Shift the block by one day so it no longer ends on a Sunday.
+      const block = { ...fixture.block, startDate: '2026-07-07', endDate: '2026-08-03' };
+      const payload = buildSolverPayload({ ...fixture, block });
+      expect(payload.preferences.some(p => p.tag === 'finalSundayUnconfirmed')).toBe(false);
+    });
+
+    it('is not emitted for a resident whose next-block rotation is already known (continuing or not)', () => {
+      const fixture = makeFixture('standard');
+      const [firstId] = fixture.allResidents.map(r => r.id);
+      // A next-block snapshot naming firstId as continuing on a schedulable EM rotation.
+      const nextBlockSnap = {
+        id: 'next-block',
+        data: {
+          startDate: '2026-08-03', endDate: '2026-08-30',
+          emBlockAssignments: { [firstId]: { blockType: 'EM' } },
+        },
+      };
+      const payload = buildSolverPayload({ ...fixture, blocksHistory: [nextBlockSnap] });
+      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
+      expect(finalSundayPrefs.some(p => p.residentId === firstId)).toBe(false);
+    });
+  });
 });
 
 describe('mapSolverResult', () => {
