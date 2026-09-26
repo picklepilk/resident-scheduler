@@ -18892,7 +18892,10 @@ export default function ResidentScheduler({ viewer } = {}) {
     setPublishConfirm(true);
   }
   function confirmPublishStep() {
-    toggleBlockPublished(block.id);
+    // Explicit set, never toggleBlockPublished: the confirm can sit open while another device
+    // publishes via cloud sync, and a blind flip would then UN-publish behind a green toast.
+    const id = block.id;
+    setBlocksHistory(p => p.map(b => b.id === id ? { ...b, published: true } : b));
     setPublishConfirm(false);
     showToast('Block published', 'green');
   }
