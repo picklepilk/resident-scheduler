@@ -4644,6 +4644,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'jeopardyConflict', reported through the normal unfilled/summarizeGenerationReport path
     // instead), so the old "placed anyway, here's the list" tracking could never fire again.
     unfilled: [], underTarget: [], seniorGaps: [], restCompromises: [], repairs: [], capacityWarnings: [],
+    // Phase 5 (under-target lift, A2) placements that pushed a shift's headcount one over its
+    // coverage max as a last resort — see repairPass' overstaffFor. Always present (even empty) so
+    // downstream consumers (GenerationReportCard) never need an `?? []` guard.
+    overstaffed: [],
     // 2b-2 PGY gating pool-restrict: one entry per slot filled by the "gated" PGY (EM PGY-2 on
     // POD, EM PGY-3 on FLEX) because no qualifying primary-PGY candidate was available in that
     // shift's own pool — see narrowForPgyGate. Distinct array from the dormant seniorGaps (that
@@ -5877,6 +5881,217 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Same re-derivation Phase 1 does: a row fixed as a side effect of a different slot's chain
     // must drop here too, so never trust the array itself after mutation.
     report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+
+    // Phase 5 — under-target lift (A2, fix/under-target-lift). Phases 1-4 only ever repair
+    // COVERAGE (min-slot) gaps; a resident sitting under their own shift-count TARGET with every
+    // coverage min already met was never addressed, and chiefs regularly see it. This phase closes
+    // that gap directly per-resident, most-short-first, trying four escalating moves for each
+    // ADDITIONAL shift a resident still needs: (1) Room — a free date+shift with real headroom
+    // (filled < coverage max) that the resident can legally take; (2) Steal — swap a shift 1-for-1
+    // away from a resident who is OVER target on that exact date+shift (headcount is unchanged, so
+    // this can never create a new coverage gap); (3) Chain — the shift is genuinely full (no
+    // headroom anywhere), so relocate ONE occupant sideways, same day, into a DIFFERENT shift that
+    // itself has headroom, then take the seat that relocation frees (two assignment changes total,
+    // hence "depth-2"); (4) Overstaff — last resort, place the resident on a shift already at max,
+    // pushing headcount one over (never TRAUMA-D/N — hard-clamped to 1 everywhere else in this
+    // file — and never a shift whose max is 0 that date, which also excludes every 12h id outside
+    // its own window). Every move is transactional through the exact same assignCell/unassignCell/
+    // narrowForSeniority/compositionStillSatisfied machinery Phases 1-4 use, so it can never violate
+    // a hard candidatePool rule (hoursCapped, streakBlocked, circadian, nightCapped,
+    // traumaRunCapped, jeopardy, vacation/off, hard seniority composition, ...) — those residents
+    // are left exactly as under-target as they started (see computeUnderTargetDiagnostics — the one
+    // genuinely legal outcome for a resident whose free dates are ALL hard-blocked). Own pool-call
+    // budget, never shared with Phases 1-4's `budget` — a stubborn block that exhausts the 500-call
+    // Phase 1-4 allowance must not starve this phase of its own chance to run, and vice versa.
+    // keptCells are never touched (every occupant/donor candidate is filtered through movable()).
+    let liftBudget = 400;
+    function poolFor5(shift, ds) {
+      streakCache = {};
+      liftBudget--;
+      return candidatePool(shift, ds);
+    }
+    function maxFor(sid, ds) {
+      const dow = parseDate(ds).getDay();
+      return getCoverageFor(sid, coverage, dow, conf12For(ds)).max;
+    }
+
+    // Step 1 — Room: r takes a free date+shift outright, no one else touched. Mirrors
+    // computeUnderTargetDiagnostics' own openSlots scan (dates × SHIFTS, own-eligibility screen,
+    // then a live headroom + candidatePool check) so a resident this step could not help is
+    // guaranteed to also score openSlots===0 in that diagnostic afterwards.
+    function roomFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (filledCount(shift.id, ds) >= cov.max) continue; // no headroom
+          const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+          if (!pool.includes(r)) continue;
+          assignCell(r.id, shift.id, ds);
+          report.repairs.push({ type: 'underTargetRoom', residentId: r.id, dateStr: ds, shiftId: shift.id });
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Step 2 — Steal: a straight 1-for-1 swap on the SAME date+shift, donor out, r in. Headcount
+    // on that shift/date is unchanged before and after (no coverage-min risk, no backfill needed —
+    // that's the whole reason this is simpler than Chain), so the only requirement beyond the usual
+    // hard-rule/composition checks is that the donor stays at or above their OWN target once the
+    // shift is gone.
+    function stealFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const donors = allResidents.filter(d =>
+            d.id !== r.id && schedule[d.id][ds] === shift.id && movable(d.id, ds) &&
+            target[d.id] != null && assigned[d.id] - 1 >= target[d.id]);
+          for (const donor of donors) {
+            if (liftBudget <= 0) return false;
+            unassignCell(donor.id, ds);
+            if (!compositionStillSatisfied(shift.id, ds)) { assignCell(donor.id, shift.id, ds); continue; }
+            const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+            if (!pool.includes(r)) { assignCell(donor.id, shift.id, ds); continue; }
+            assignCell(r.id, shift.id, ds);
+            report.repairs.push({ type: 'underTargetSteal', residentId: r.id, dateStr: ds, shiftId: shift.id, stolenFromResidentId: donor.id });
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Step 3 — Chain: the shift is genuinely full (filled >= max, so Room already can't help, and
+    // Step 2 already tried every over-target donor on it). Relocate ONE occupant sideways — same
+    // day, a DIFFERENT shift with its own real headroom — which frees exactly the one seat r needs
+    // without ever dropping below any shift's min or touching any other date. Bounded to a handful
+    // of occupants/relocation targets per slot so one pathological (shift, date) can't consume the
+    // whole phase budget.
+    const LIFT_CHAIN_MAX_OCCUPANTS = 4;
+    const LIFT_CHAIN_MAX_TARGETS = 4;
+    function chainFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (filledCount(shift.id, ds) < cov.max) continue; // real headroom — Room/Steal already own this case
+          const occupants = allResidents
+            .filter(o => o.id !== r.id && schedule[o.id][ds] === shift.id && movable(o.id, ds))
+            .slice(0, LIFT_CHAIN_MAX_OCCUPANTS);
+          for (const o of occupants) {
+            if (liftBudget <= 0) return false;
+            // o is unassigned exactly once here and stays that way for every zTarget attempt below
+            // (a failed attempt undoes ITS OWN assignCell(z) back to unassigned, never back to
+            // shift.id — reassigning o to shift.id mid-loop would double-count o's counters against
+            // whatever z the next attempt tries). The single final assignCell(o.id, shift.id, ds)
+            // after the loop is the only place o is restored to its original shift.
+            unassignCell(o.id, ds);
+            if (!compositionStillSatisfied(shift.id, ds)) { assignCell(o.id, shift.id, ds); continue; }
+            const zTargets = SHIFTS
+              .filter(z => z.id !== shift.id && shiftActiveOnDow(z.id, dsDow) && eligCache[o.id]?.[ds]?.has(z.id))
+              .slice(0, LIFT_CHAIN_MAX_TARGETS);
+            for (const z of zTargets) {
+              if (liftBudget <= 0) break;
+              if (filledCount(z.id, ds) >= maxFor(z.id, ds)) continue; // no headroom to relocate into
+              const zPool = narrowForSeniority(poolFor5(z, ds).candidates, z, ds);
+              if (!zPool.includes(o)) continue;
+              assignCell(o.id, z.id, ds); // o relocated — tentatively
+              const sPool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+              if (sPool.includes(r)) {
+                assignCell(r.id, shift.id, ds);
+                report.repairs.push({
+                  type: 'underTargetChain', residentId: r.id, dateStr: ds, shiftId: shift.id,
+                  relocatedResidentId: o.id, relocatedTo: z.id,
+                });
+                return true;
+              }
+              // r still can't take the freed seat — undo the relocation (o is unassigned again,
+              // exactly as it was before this z attempt), try the next z.
+              unassignCell(o.id, ds);
+            }
+            assignCell(o.id, shift.id, ds); // no z worked (or none existed) — restore o
+          }
+        }
+      }
+      return false;
+    }
+
+    // Step 4 — Overstaff: last resort, place r on a shift already at (or, after Steps 1-3, still
+    // at) max — accepted as a deliberate, visible exception rather than leaving the resident short.
+    // Never TRAUMA-D/N (hard-clamped to 1 everywhere else — see getCoverageFor's own TRAUMA_SOLO_IDS
+    // clamp) and never a shift whose max is 0 that date (this alone also excludes every 12h id
+    // outside its own chief-defined window — see twelveHourAllows/getCoverageFor). validateAll
+    // already reports count > max as a plain warn with no `rule` id (`Above maximum staffing`), so
+    // it is neither export-blocking nor counted in errorCount/blockingWarnCount — recorded here in
+    // report.overstaffed for the report card to surface explicitly.
+    function overstaffFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (shift.area === 'TRAUMA') continue; // never TRAUMA-D/N
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (cov.max <= 0) continue; // never a shift with max 0 that date (also excludes 12h-outside-window)
+          if (filledCount(shift.id, ds) < cov.max) continue; // real headroom belongs to Room/Steal/Chain, not this
+          const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+          if (!pool.includes(r)) continue;
+          assignCell(r.id, shift.id, ds);
+          report.overstaffed.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, date: ds, shiftId: shift.id });
+          report.repairs.push({ type: 'underTargetOverstaff', residentId: r.id, dateStr: ds, shiftId: shift.id });
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Most-short-first: a resident 4 shifts under target is a bigger visible gap than one 1 short,
+    // so give the scarce lift budget to them first. Re-sorted fresh (not cached) since a Steal can
+    // move another resident's own assigned count, technically outside this phase's own population,
+    // but not one this population itself needs re-ranked by mid-pass — assignedAtStart pins the
+    // sort key so residents this phase itself is actively lifting don't jump around their own order.
+    const shortResidents = allResidents
+      .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
+      .map(r => ({ r, shortfall: target[r.id] - assigned[r.id] }))
+      .sort((a, b) => b.shortfall - a.shortfall)
+      .map(x => x.r);
+
+    for (const r of shortResidents) {
+      while (liftBudget > 0 && target[r.id] != null && assigned[r.id] < target[r.id]) {
+        if (roomFor(r)) continue;
+        if (stealFor(r)) continue;
+        if (chainFor(r)) continue;
+        if (overstaffFor(r)) continue;
+        break; // every move exhausted for this resident — genuinely infeasible, move on
+      }
+    }
   }
 
   // Three passes over the whole block: everything else at minimum coverage first, then Trauma
@@ -15047,6 +15262,19 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
             <ul className="mt-1 space-y-0.5">
               {report.restCompromises.map((c,i)=>(
                 <li key={i} className="text-xs text-gray-700">{formatDisplayDate(c.dateStr)} — {SHIFT_MAP[c.shiftId]?.label || c.shiftId} — {c.name} (reorder Soft Rule Priority on the Rules tab to change this)</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {(report.overstaffed||[]).length > 0 && (
+          <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-amber-700">Placed one over maximum staffing to close a shift-target gap</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.overstaffed.map((o,i)=>(
+                <li key={i} className="text-xs text-gray-700">
+                  {formatDisplayDate(o.date)} — {SHIFT_MAP[o.shiftId]?.label || o.shiftId}{o.name ? ` — ${o.name}` : ''} (last resort — Room/Steal/Chain had no legal option; review before export)
+                </li>
               ))}
             </ul>
           </div>
