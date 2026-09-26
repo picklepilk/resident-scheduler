@@ -6786,6 +6786,43 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   return best.result;
 }
 
+// Engine arbitration between the optional CP-SAT solver and the built-in local engine (prior art:
+// em-scheduler's `pickEngineResult` in src/engine/quality.js — same idea, different tie policy,
+// see below). Both `solverRes`/`localRes` are `{schedule, report}` results (either may be `null` —
+// a failed solver call, or a local generation that short-circuited on an empty date range) and are
+// scored with the exact same `scoreGenerationResult`/`betterQuality` ladder generateScheduleBest
+// uses for its own best-of-N pick, so the solver is held to the identical bar the local engine
+// holds itself to. Unlike em-scheduler (which keeps CP-SAT on a tie), a tie here goes to LOCAL:
+// local is ~10x faster and, unlike a FEASIBLE/RELAXED solver result, exactly replayable from its
+// seed — a solver result must win STRICTLY to be worth the extra latency and the lost replay.
+// `engineComparison` is plain JSON (no functions) because it rides the persisted generation
+// report; callers must not add anything but numbers/strings/arrays to it.
+export function pickEngineResult(solverRes, localRes, args) {
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  const solverScore = solverRes ? scoreGenerationResult(solverRes, args, rulePriority) : null;
+  const localScore = localRes ? scoreGenerationResult(localRes, args, rulePriority) : null;
+
+  const toComparison = score => score
+    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector }
+    : null;
+
+  if (!solverScore && !localScore) return { result: null, winner: null, engineComparison: null };
+  if (!solverScore) {
+    return { result: localRes, winner: 'local', engineComparison: { winner: 'local', solver: null, local: toComparison(localScore) } };
+  }
+  if (!localScore) {
+    return { result: solverRes, winner: 'cpsat', engineComparison: { winner: 'cpsat', solver: toComparison(solverScore), local: null } };
+  }
+
+  const solverStrictlyBetter = betterQuality(solverScore, localScore);
+  const winner = solverStrictlyBetter ? 'cpsat' : 'local';
+  return {
+    result: solverStrictlyBetter ? solverRes : localRes,
+    winner,
+    engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore) },
+  };
+}
+
 // ─── WHAT-IF OPTIMIZATION SWEEP ────────────────────────────────────────────────────────────
 // Decision-support sweep, ported from sibling em-scheduler's `runOptimizationAnalysis`: generates
 // alternate schedule candidates under variant configurations (rulePriority reorderings, extra
@@ -13471,14 +13508,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // Shared by runGenerate/runPartialRegenerate: tries the external CP-SAT solver first when
   // configured (SOLVER_ENABLED — see src/lib/solverClient.js), falling back to the built-in JS
   // generator (generateScheduleBest) on ANY failure — solver not reachable, timeout, a non-200
-  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR; only OPTIMAL/
-  // FEASIBLE/RELAXED are committed). `genBlock` already carries whatever `schedule` this call
-  // should treat as locked/kept (see PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an
-  // emptied schedule for Clear & Regenerate, runPartialRegenerate passes its own pre-cleared
-  // workingSchedule; buildSolverPayload has no separate clearFirst concept of its own, it always
-  // just reads whatever's non-empty in `genBlock.schedule`. Returns `{ schedule, report }` (same
-  // shape generateScheduleBest returns) plus `engineUsed`/`relaxed` for the caller's toast, or
-  // `null` when the block has no valid date range (mirrors generateSchedule's own null return).
+  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR never get this
+  // far). A usable solver status (OPTIMAL/FEASIBLE/RELAXED) is NOT committed unjudged: it's scored
+  // against a real local run and arbitrated via pickEngineResult, since a measurement showed the
+  // solver losing to the local engine on most quality axes despite returning a "usable" status.
+  // `genBlock` already carries whatever `schedule` this call should treat as locked/kept (see
+  // PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an emptied schedule for Clear &
+  // Regenerate, runPartialRegenerate passes its own pre-cleared workingSchedule; buildSolverPayload
+  // has no separate clearFirst concept of its own, it always just reads whatever's non-empty in
+  // `genBlock.schedule`. Returns `{ schedule, report }` (same shape generateScheduleBest returns,
+  // report additionally carrying `engineComparison` on the solver path) plus `engineUsed`/`relaxed`
+  // for the caller's toast, or `null` when the block has no valid date range (mirrors
+  // generateSchedule's own null return).
   async function generateViaSolverOrLocal(genBlock, clearFirst) {
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const hasValidDates = getBlockDates(genBlock.startDate, genBlock.endDate).length > 0;
@@ -13496,8 +13537,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
-        const res = mapSolverResult(json, { block: genBlock, allResidents });
-        return { ...res, engineUsed: 'cpsat', relaxed: json.mode === 'relaxed' };
+        const solverRes = mapSolverResult(json, { block: genBlock, allResidents });
+        // Solver succeeded, but a head-to-head measurement (see engineHeadToHead.test.js) showed
+        // CP-SAT losing to the local engine on most axes and running ~10x slower — so a bare
+        // "solver returned something usable" is no longer enough to ship it. Score it against a
+        // real local run and arbitrate via pickEngineResult before committing to either.
+        setGenStageLabel('Comparing with built-in engine…');
+        await yieldToPaint();
+        const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
+        const scoreArgs = { ...baseArgs, block: genBlock };
+        const { result, winner, engineComparison } = pickEngineResult(solverRes, localRes, scoreArgs);
+        return {
+          ...result,
+          report: { ...result.report, engineComparison },
+          engineUsed: winner === 'cpsat' ? 'cpsat' : 'local-better',
+          relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
+        };
       } catch (e) {
         console.warn('Solver unavailable — falling back to the built-in generator:', e);
         setGenStageLabel('Optimizer unavailable — using built-in generator…');
@@ -13545,9 +13600,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
+      if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -13598,8 +13654,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
+      if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback') ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -15358,6 +15415,18 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
           Filled {report.filled} of {report.totalSlots} minimum coverage slots ({report.keptManual} kept from manual entries){report.optionalFilled > 0 ? `, plus ${report.optionalFilled} optional slots toward each shift's maximum` : ''}.
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
+        {report.engineComparison && (
+          <p className="text-xs text-primary mt-1 flex items-center gap-1.5 flex-wrap">
+            <span className="px-1.5 py-0.5 rounded-full font-bold bg-primary/20">
+              {report.engineComparison.winner === 'cpsat' ? 'Optimizer' : 'Built-in engine'} used
+            </span>
+            <span>
+              optimizer: {report.engineComparison.solver ? `${report.engineComparison.solver.errorCount} error${report.engineComparison.solver.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.solver.blockingWarnCount} blocking warning${report.engineComparison.solver.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
+              {' · '}
+              built-in: {report.engineComparison.local ? `${report.engineComparison.local.errorCount} error${report.engineComparison.local.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.local.blockingWarnCount} blocking warning${report.engineComparison.local.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
+            </span>
+          </p>
+        )}
       </div>
       <div className="p-4 space-y-3">
         {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (report.pgyFallbacks||[]).length === 0 && (
