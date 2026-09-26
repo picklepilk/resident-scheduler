@@ -47,7 +47,7 @@ import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
-import { groupPanelIssues, labelForIssue, isJumpableIssue } from './lib/reviewPanel.js';
+import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -4046,7 +4046,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: 'error' });
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          // anchorDate (not dateStr): the run's first date, so a review-panel row can jump straight
+          // to it — see reviewPanel.js's issueJumpTarget. Deliberately a SEPARATE field from dateStr:
+          // dateStr also feeds violMap (ScheduleGrid's per-cell red-ring/warn-dot lookup, keyed
+          // `${residentId}_${dateStr}`), and this issue has never lit up a single cell there. Reusing
+          // dateStr would start doing that — a real behavior change to the grid — where anchorDate is
+          // inert everywhere except the review panel's own jump target resolution.
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, anchorDate: runStart,
             message: `Isolated night stint of ${runLen} (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — aim for ${NIGHT_RULES.minRun}-${NIGHT_RULES.idealRun} in a row`, level: 'warn' });
         // Trauma-night-within-run rules (chief-directed): at most 2 TRAUMA-N per contiguous night
         // run (hard), and a TRAUMA-N sitting strictly mid-run (not first/last night) of a MIXED
@@ -13081,6 +13087,16 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // path (week-scroll buttons, jump-to-date), and scrollIntoView rides that same real layout instead
   // of recomputing it.
   const cellRefs = useRef(new Map());
+  // Mirror of cellRefs for row-level jumps (P2 follow-up): several review-panel issues name a
+  // resident but no single date (e.g. "Under target", "No full weekend off" — see
+  // reviewPanel.js's issueJumpTarget), so there's no cell to select; jumpToResidentRow scrolls the
+  // resident's own sticky name cell into view instead. Populated by renderResidentRow's name-column
+  // div, one entry per resident id (not per cell, so this stays small regardless of block length).
+  const rowRefs = useRef(new Map());
+  // Which resident's row was most recently jumped to — drives a brief highlight flash on the name
+  // cell (cleared by its own timeout below) so the jump is visible even though, unlike a cell jump,
+  // there's no persistent selection outline to land on. Never persisted.
+  const [highlightedRow, setHighlightedRow] = useState(null);
   const showUnscheduled = uiPrefs.showUnscheduled;
   // Readability controls (persisted per viewer in res_ui_prefs, never in a backup or the shared
   // cloud document — how large someone wants this grid on their own screen is not chief data).
@@ -13092,7 +13108,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const zoomScale = gridZoom / 100;
   // Mobile fix: the resident name column narrows below `sm` (Tailwind's 640px breakpoint) so a
   // 400px-wide phone screen shows more than 2-3 date columns. `NAME_W` shadows the module-level
-  // `NAME_W_BASE` for every one of this component's own usages (all 6 are inside this function —
+  // `NAME_W_BASE` for every one of this component's own usages (all 7 are inside this function —
   // the Coverage tab has its own separate constant). A resize listener (not a CSS media query) is
   // necessary here, not just cosmetic — every place that reads `NAME_W` also does real width
   // ARITHMETIC (e.g. the scroll container's `minWidth:NAME_W+CELL_W*dates.length`), and a CSS-only
@@ -13444,6 +13460,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     requestAnimationFrame(() => requestAnimationFrame(() => {
       cellRefs.current.get(`${residentId}_${dateStr}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     }));
+  }
+
+  // Jump-to-ROW (P2 follow-up): the review panel's counterpart to jumpToCell for an issue that
+  // names a resident but no single date (issueJumpTarget's {type:'row'} — "Under target", "No full
+  // weekend off", etc.). Same category-filter/view-switch setup as jumpToCell, but scrolls the
+  // resident's own sticky name cell (rowRefs, populated by renderResidentRow) into view and flashes
+  // a brief highlight instead of the persistent cell-selection outline — there's no one cell to
+  // outline. `inline:'start'` (not 'center') since the name column doesn't need horizontal centering
+  // the way a date cell buried mid-scroll does; it's already pinned to the left edge.
+  function jumpToResidentRow(residentId) {
+    const res = allResidents.find(r => r.id === residentId);
+    if (res && catFilter !== 'ALL' && res.category !== catFilter) setCatFilter('ALL');
+    setView('grid');
+    setSelectedCell(null);
+    setHighlightedRow(residentId);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      rowRefs.current.get(residentId)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+    }));
+    window.setTimeout(() => setHighlightedRow(r => (r === residentId ? null : r)), 1800);
   }
 
   function assign(resId,ds,sid) {
@@ -13893,7 +13928,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       : null;
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
-        <div className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
+        <div ref={el=>{ if(el) rowRefs.current.set(res.id, el); else rowRefs.current.delete(res.id); }}
+          className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 transition-colors ${highlightedRow===res.id?'bg-primary/20':cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
           <div className="flex-1 min-w-0">
             {narrowNameCol ? (
               // Mobile fix: compact single-line "First L. · PGY-N" instead of the two-row
@@ -13932,13 +13968,17 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           const sid=sched[res.id]?.[ds]||null;
           const isLocked=!!(block.lockedCells?.[res.id]?.[ds]);
           // P2 (review panel): hard errors keep the red ring; a cell whose ONLY issues are warnings
-          // (e.g. postNightRest) gets a small corner dot instead — see the in-grid legend below.
-          // hasV stays "any issue at all" for the things that don't care about the distinction
-          // (red-tinted background, hover title).
+          // gets a small corner dot instead — a bigger/darker one when the warning actually blocks
+          // export, a plain one when it's purely advisory — see the in-grid legend below.
+          // classifyCellIssues is the SAME helper PerResidentMonthView/ResidentCardsView use, so all
+          // three surfaces read this distinction identically. hasV stays "any issue at all" for the
+          // things that don't care about the distinction (red-tinted background, hover title).
           const vKey=`${res.id}_${ds}`; const cellIssuesHere=violMap[vKey]||[];
-          const hasV=!!cellIssuesHere.length;
-          const hasError=cellIssuesHere.some(i=>i.level==='error');
-          const hasWarnOnly=hasV&&!hasError;
+          const cellTone=classifyCellIssues(cellIssuesHere, EXPORT_BLOCKING_RULE_IDS);
+          const hasV=cellTone.hasIssue;
+          const hasError=cellTone.hasError;
+          const hasWarnOnly=cellTone.hasWarn&&!hasError;
+          const hasBlockingWarn=cellTone.hasBlockingWarn;
           const relaxedHere=relaxedCellSet[vKey];
           const hasRelaxed=!!(relaxedHere&&relaxedHere.length);
           const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
@@ -14029,7 +14069,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                   onMouseLeave={cancelHover}
                   onFocus={e=>scheduleHover(res.id, ds, sid, e)}
                   onBlur={cancelHover}
-                  className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                  className={`absolute inset-1 flex items-center justify-center rounded text-[9px] tracking-tighter font-bold whitespace-nowrap overflow-hidden ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
                   {sid}
                 </div>
               )}
@@ -14057,7 +14097,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               {/* P2: soft warns (postNightRest etc.) get a small dot instead of the red ring so hard
                   vs soft reads at a glance — see the in-grid legend below. Centered at the top edge
                   so it never competes with the R/J/lock/day-marker corners. */}
-              {hasWarnOnly && <span className="absolute top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-amber-500 z-10" title="Rule warning — see the review panel"/>}
+              {hasWarnOnly && (
+                hasBlockingWarn
+                  ? <span className="absolute top-0 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full ring-1 ring-white bg-amber-700 z-10" title="Export-blocking rule warning — see the review panel"/>
+                  : <span className="absolute top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-amber-500 z-10" title="Rule warning — see the review panel"/>
+              )}
             </div>
           );
         })}
@@ -14280,7 +14324,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation (error)</span>
         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"/><span className="text-amber-600 font-medium">dot</span></span>
-        <span>= rule warning</span>
+        <span>= rule warning (advisory)</span>
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-400"><span className="w-2.5 h-2.5 rounded-full bg-amber-700"/><span className="text-amber-700 font-medium">dot</span></span>
+        <span>= rule warning (blocks export)</span>
         <span className="px-1.5 py-0.5 rounded border-2 border-dashed border-amber-500 text-amber-600 font-medium">dashed amber</span>
         <span>= rule relaxed by optimizer</span>
         <span className="px-1.5 py-0.5 rounded border border-indigo-300 text-indigo-600 font-medium">indigo ring</span>
@@ -14583,17 +14629,26 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {reviewPanelOpen && (
         <div className="no-print lg:hidden mt-4">
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell}/>
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}/>
         </div>
       )}
       </div>
 
       {/* Desktop sidebar — outside the flex-1 column above, so it sits beside the grid rather than
-          inside its own scroll container. */}
+          inside its own scroll container. `height` (not just `maxHeight`) is load-bearing: ReviewPanel's
+          own root is `h-full`, which only resolves against a parent that has an actual height — against
+          an auto-height parent (maxHeight alone leaves height:auto) a percentage height computes as
+          'auto' too, so the panel grew to fit its content instead of clipping, and a long "Should look
+          at" list overflowed past the viewport with no way to reach the rest in fullscreen. A fixed
+          height gives h-full something concrete to fill; ReviewPanel's own overflow-hidden root plus
+          its inner overflow-y-auto content div then scroll internally instead. Fullscreen needs a
+          smaller subtraction than normal mode — same reason the grid's own scroll container above
+          splits 12rem (fullscreen) vs 20rem (normal): fullscreen replaces the page header/toolbar
+          chrome with just this wrapper's own p-3 padding, so there's more usable height, not less. */}
       {reviewPanelOpen && (
-        <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, maxHeight:'calc(100vh - 8rem)'}}>
+        <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, height:`calc(100vh - ${fullscreen ? '3rem' : '8rem'})`}}>
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell} onClose={()=>setReviewPanelOpen(false)}/>
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}/>
         </div>
       )}
       </div>
@@ -15145,15 +15200,24 @@ function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, app
               const isJC = (res.jcPresentDates||[]).includes(ds);
               const isGR = grWorkDow(res)===dow && !isOff && !isVac;
               const isWW = !!wwDate && ds===wwDate;
-              const hasV = inBlock && !!(violMap[`${res.id}_${ds}`]?.length);
+              // Shared error/blocking-warn/advisory split (classifyCellIssues, same helper
+              // ScheduleGrid's own cells and ResidentCardsView use) — this used to be a bare
+              // "any issue at all" hasV that rang the same red alarm for a hard error and a purely
+              // advisory warning alike.
+              const cellIssuesForDate = inBlock ? (violMap[`${res.id}_${ds}`] || []) : [];
+              const cellTone = classifyCellIssues(cellIssuesForDate, EXPORT_BLOCKING_RULE_IDS);
+              const hasV = cellTone.hasIssue;
               const shift = sid ? SHIFT_MAP[sid] : null;
               let bg = isOff?'bg-orange-50':isVac?'bg-teal-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':'bg-white';
-              if (hasV) bg = 'bg-red-50';
+              if (cellTone.hasError) bg = 'bg-red-50';
               const clickable = inBlock;
+              const ringCls = cellTone.hasError ? 'ring-1 ring-inset ring-red-400'
+                : cellTone.hasBlockingWarn ? 'ring-1 ring-inset ring-amber-500'
+                : cellTone.hasAdvisoryOnly ? 'ring-1 ring-inset ring-amber-300' : '';
               return (
                 <div key={ds} onClick={()=>clickable && onCellClick(res, ds)}
-                  title={[hasV ? violMap[`${res.id}_${ds}`].map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ') || undefined}
-                  className={`relative min-h-[70px] border-r border-gray-100 last:border-r-0 p-1 ${inBlock ? bg : 'bg-gray-50/60 opacity-50'} ${hasV ? 'ring-1 ring-inset ring-red-400' : ''} ${clickable ? 'cursor-pointer hover:brightness-95' : ''}`}>
+                  title={[hasV ? cellIssuesForDate.map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ') || undefined}
+                  className={`relative min-h-[70px] border-r border-gray-100 last:border-r-0 p-1 ${inBlock ? bg : 'bg-gray-50/60 opacity-50'} ${ringCls} ${clickable ? 'cursor-pointer hover:brightness-95' : ''}`}>
                   <span className="text-xs font-semibold text-gray-600">{d.getDate()}</span>
                   {shift && (
                     <div className={`mt-1 text-[10px] font-bold px-1 py-0.5 rounded truncate ${shift.chip}`}>{sid}</div>
@@ -15442,7 +15506,14 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
               {rows.map(({ds,sid,isOff,isVac,isJeo,isJC,isLecture,isGR,isWW})=>{
                 const shift = sid ? SHIFT_MAP[sid] : null;
                 const vKey = `${res.id}_${ds}`;
-                const hasV = !!(violMap[vKey]?.length);
+                // Shared error/blocking-warn/advisory split — see PerResidentMonthView's identical
+                // comment; both views used to fork their own "any issue -> red alarm" hasV.
+                const cellIssuesForDate = violMap[vKey] || [];
+                const cellTone = classifyCellIssues(cellIssuesForDate, EXPORT_BLOCKING_RULE_IDS);
+                const hasV = cellTone.hasIssue;
+                const ringCls = cellTone.hasError ? 'ring-1 ring-inset ring-red-400 bg-red-50'
+                  : cellTone.hasBlockingWarn ? 'ring-1 ring-inset ring-amber-500'
+                  : cellTone.hasAdvisoryOnly ? 'ring-1 ring-inset ring-amber-300' : '';
                 const d = parseDate(ds);
                 const offReason = isOff ? offReasonText(res, ds) : null;
                 // Hours since/until the nearest shift on either side, measured against this
@@ -15455,8 +15526,8 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
                 const nextShort = gaps?.next && gapIsShort(sid, gaps.next.gapH);
                 return (
                   <div key={ds} onClick={()=>onRowClick(res,ds)}
-                    title={[hasV ? violMap[vKey].map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ')}
-                    className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${hasV?'ring-1 ring-inset ring-red-400 bg-red-50':''}`}>
+                    title={[hasV ? cellIssuesForDate.map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ')}
+                    className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${ringCls}`}>
                     <span className="text-[10px] text-gray-400 tabular-nums font-mono w-10 shrink-0">{DOW[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</span>
                     {shift && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${shift.chip}`}>{sid}</span>}
                     {shift && <span className="text-[10px] text-gray-400">{shift.hours}</span>}
@@ -15629,18 +15700,27 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
-      <div className="px-4 py-3 border-b border-border bg-primary/10">
+      {/* bg-blue-50/text-blue-700 (not the design-system bg-primary/10 + text-primary pairing used
+          elsewhere) — that pairing measures under 4.5:1 contrast in dark mode here (text and
+          background both derive from the same --primary hue/lightness, so a thin 10%-opacity tint
+          under text of that same color reads as "blue on blue"). bg-blue-50/text-blue-700 already
+          have their own dark-mode remaps in index.css (picked there specifically for legibility —
+          see the '.dark .text-blue-700' comment) and measure over 7:1 here. Scoped to just this
+          card's header rather than the shared token, since bg-primary/10 + text-primary is a
+          widely-used, already-fine combo elsewhere (usually paired with a solid/opaque background,
+          not another translucent tint of the same hue). */}
+      <div className="px-4 py-3 border-b border-border bg-blue-50">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <span className="text-sm font-semibold text-primary flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
-          <span className="text-xs text-primary">{new Date(report.generatedAt).toLocaleString()}</span>
+          <span className="text-sm font-semibold text-blue-700 flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
+          <span className="text-xs text-blue-700">{new Date(report.generatedAt).toLocaleString()}</span>
         </div>
-        <p className="text-xs text-primary mt-1">
+        <p className="text-xs text-blue-700 mt-1">
           Filled {report.filled} of {report.totalSlots} minimum coverage slots ({report.keptManual} kept from manual entries){report.optionalFilled > 0 ? `, plus ${report.optionalFilled} optional slots toward each shift's maximum` : ''}.
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
         {report.engineComparison && (
-          <p className="text-xs text-primary mt-1 flex items-center gap-1.5 flex-wrap">
-            <span className="px-1.5 py-0.5 rounded-full font-bold bg-primary/20">
+          <p className="text-xs text-blue-700 mt-1 flex items-center gap-1.5 flex-wrap">
+            <span className="px-1.5 py-0.5 rounded-full font-bold bg-blue-100">
               {report.engineComparison.winner === 'cpsat' ? 'Optimizer' : 'Built-in engine'} used
             </span>
             <span>
@@ -15799,15 +15879,27 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
 // Schedule tab's review panel (P2 of the chief-review-loop plan) — lives beside (desktop) or below
 // (mobile) the grid, both wired up in ScheduleGrid's own return. `panelIssues` is
 // groupPanelIssues(issues, EXPORT_BLOCKING_RULE_IDS) computed once in ScheduleGrid from the ROOT
-// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` is
-// ScheduleGrid's own jumpToCell; `onClose` is only supplied by the desktop sidebar (the mobile
-// drawer's own toolbar toggle button already covers closing it there).
-function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onClose }) {
+// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` and
+// `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
+// supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
+// closing it there).
+function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onJumpToRow, onClose }) {
   const { mustFix, orderedWarns } = panelIssues;
   // "Should look at" collapses by default once it's long enough that showing it open would push
   // Generation notes off the initial view — Must fix (the thing that blocks export) always stays
   // visible in full.
   const [warnsOpen, setWarnsOpen] = useState(orderedWarns.length <= 8);
+  // Panel-flood fix: "Should look at" ALWAYS groups by kind (see groupIssuesByKind) — a block with
+  // 129 warnings otherwise rendered 129 individual rows, nearly all repeats of "Isolated night
+  // stint…"/"No full weekend off"/"…separate night stints". Must-fix stays UNGROUPED (one row per
+  // error, unchanged) until it grows past the point grouping actually helps — a short error list is
+  // usually faster to scan directly than through an extra collapse/expand click.
+  const warnGroups = useMemo(() => groupIssuesByKind(orderedWarns, EXPORT_BLOCKING_RULE_IDS), [orderedWarns]);
+  const groupMustFix = mustFix.length > 10;
+  const mustFixGroups = useMemo(
+    () => (groupMustFix ? groupIssuesByKind(mustFix, EXPORT_BLOCKING_RULE_IDS) : null),
+    [groupMustFix, mustFix]
+  );
 
   return (
     <div className="bg-card border border-border rounded-xl shadow-sm flex flex-col h-full overflow-hidden">
@@ -15830,9 +15922,13 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
           </h3>
           {mustFix.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No hard errors.</p>
+          ) : groupMustFix ? (
+            <ul className="space-y-1">
+              {mustFixGroups.map(g => renderIssueOrGroup(g, 'error', onJumpToCell, onJumpToRow))}
+            </ul>
           ) : (
             <ul className="space-y-1">
-              {mustFix.map((issue, i) => <IssueRow key={i} issue={issue} tone="error" onJumpToCell={onJumpToCell}/>)}
+              {mustFix.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone="error" onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>)}
             </ul>
           )}
         </section>
@@ -15844,11 +15940,11 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
             <ChevronDown size={12} className={`shrink-0 transition-transform ${warnsOpen?'rotate-180':''}`}/>
           </button>
           {warnsOpen && (
-            orderedWarns.length === 0 ? (
+            warnGroups.length === 0 ? (
               <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
             ) : (
               <ul className="space-y-1">
-                {orderedWarns.map((issue, i) => <IssueRow key={i} issue={issue} tone="warn" onJumpToCell={onJumpToCell}/>)}
+                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow))}
               </ul>
             )
           )}
@@ -15865,17 +15961,58 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
   );
 }
 
-// One issue row. Jump-to-cell only when the issue actually names a resident+date (isJumpableIssue —
-// several issue kinds, like the Over/Under target totals, carry dateStr:null and have no one cell to
-// select); those rows still render, just without a click handler. `labelForIssue` is the ONLY place
-// this renders "what rule is this" — never issue.rule directly, so an unmapped id can't leak through
-// as a bare programmer string (see lib/reviewPanel.js).
-function IssueRow({ issue, tone, onJumpToCell }) {
-  const jumpable = isJumpableIssue(issue);
+// Renders one groupIssuesByKind() group: a singleton group (count===1) is just its one IssueRow —
+// no point wrapping a single row behind a collapse/expand click — anything bigger becomes a
+// collapsed IssueGroupRow. Shared by both the Must-fix (>10) and Should-look-at group lists so they
+// can't render this decision differently.
+function renderIssueOrGroup(group, tone, onJumpToCell, onJumpToRow) {
+  return group.count === 1
+    ? <IssueRow key={issueKey(group.items[0])} issue={group.items[0]} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>
+    : <IssueGroupRow key={group.key} group={group} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>;
+}
+
+// Collapsed "kind" row for the panel-flood fix (groupIssuesByKind) — "Isolated night stints · 43"
+// collapsed by default, expanding in place to the individual IssueRow list (same click-to-jump
+// behavior per row as the ungrouped rendering, just nested one level).
+function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow }) {
+  const [open, setOpen] = useState(false);
   return (
     <li>
-      <button type="button" disabled={!jumpable} onClick={()=>onJumpToCell(issue.residentId, issue.dateStr)}
-        title={jumpable ? 'Jump to this cell in the grid' : undefined}
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        className={`w-full flex items-center justify-between gap-2 text-left px-2 py-1.5 rounded-lg border text-xs transition-colors ${
+          tone==='error' ? 'border-destructive/20 bg-destructive/5' : 'border-amber-200 bg-amber-50/60'
+        }`}>
+        <span className={tone==='error' ? 'text-destructive font-medium' : 'text-amber-700 font-medium'}>
+          {group.label} · {group.count}
+        </span>
+        <ChevronRight size={12} className={`shrink-0 transition-transform ${open?'rotate-90':''}`}/>
+      </button>
+      {open && (
+        <ul className="mt-1 ml-2 space-y-1 border-l border-border pl-2">
+          {group.items.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>)}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+// One issue row. Jumps to a cell when a specific date is known (dateStr or anchorDate), to the
+// resident's ROW when only a resident is named (e.g. "Under target", "No full weekend off" — see
+// issueJumpTarget), or is disabled when the issue names no resident at all (a block-wide coverage
+// gap). `labelForIssue` is the ONLY place this renders "what rule is this" — never issue.rule
+// directly, so an unmapped id can't leak through as a bare programmer string (see lib/reviewPanel.js).
+function IssueRow({ issue, tone, onJumpToCell, onJumpToRow }) {
+  const target = issueJumpTarget(issue);
+  const jumpable = !!target;
+  const handleClick = () => {
+    if (!target) return;
+    if (target.type === 'cell') onJumpToCell(target.residentId, target.dateStr);
+    else onJumpToRow(target.residentId);
+  };
+  return (
+    <li>
+      <button type="button" disabled={!jumpable} onClick={handleClick}
+        title={jumpable ? (target.type === 'cell' ? 'Jump to this cell in the grid' : "Jump to this resident's row") : undefined}
         className={`w-full text-left px-2 py-1.5 rounded-lg border text-xs transition-colors ${
           tone==='error' ? 'border-destructive/20 bg-destructive/5' : 'border-amber-200 bg-amber-50/60'
         } ${jumpable ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}>

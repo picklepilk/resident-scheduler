@@ -79,6 +79,12 @@
      at the time. Without this it renders near-white in dark mode. Deliberately a touch lighter than
      .bg-gray-100's remap so the weekend band still reads as a distinct stripe. */
   .dark .bg-slate-100 { background-color: #26374f; }
+  /* Schedule grid's DOW/date header weekend band (the two-tier header's second row) — the ONE
+     other call site of a raw slate utility, missed by the same audit that caught bg-slate-100
+     above. Without this it renders near-white in dark mode. One step lighter than bg-slate-100's
+     own remap so the header weekend band still reads distinctly from the body weekend band
+     beneath it, mirroring how bg-gray-200 sits one step lighter than bg-gray-100 below. */
+  .dark .bg-slate-200 { background-color: #334155; }
   .dark .bg-gray-200 { background-color: #334155; }
   .dark .hover\:bg-gray-100:hover { background-color: #1e293b; }
   .dark .hover\:bg-gray-200:hover { background-color: #334155; }
