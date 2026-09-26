@@ -6503,16 +6503,21 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
     dates,
   });
 
+  // Shared by every attempt below and the repair re-run: only `rng`/`repair` differ per call,
+  // so the deferral flag can't drift out of sync between the two sites the way a repeated
+  // literal could.
+  const deferredArgs = { ...args, ctx: genCtx, deferUnderTargetDiagnostics: true };
+
   for (let i = 0; i < attempts; i++) {
     const seed = (resolvedBaseSeed + i * 0x9E3779B9) >>> 0;
-    const res = generateSchedule({ ...args, rng: mulberry32(seed), repair: false, ctx: genCtx, deferUnderTargetDiagnostics: true });
+    const res = generateSchedule({ ...deferredArgs, rng: mulberry32(seed), repair: false });
     if (!res) return null;
     const score = scoreGenerationResult(res, args, rulePriority);
     if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
   }
 
   if (repair) {
-    const repaired = generateSchedule({ ...args, rng: mulberry32(best.seed), repair: true, ctx: genCtx, deferUnderTargetDiagnostics: true });
+    const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(best.seed), repair: true });
     const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
   }
