@@ -46,6 +46,7 @@ import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
+import { deriveBlockSteps } from './lib/blockStatus.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -3180,6 +3181,15 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // id is shown, so a user who skips two releases gets both. Keep entries written for the chief
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
+  {
+    id: '2026-09-26-block-status-rail',
+    date: '2026-09-26',
+    title: 'A block status rail shows what\'s left, and Publish moved to where you review',
+    items: [
+      'The bar above the Schedule/Violations/Coverage/etc. tabs now shows a **step rail** — Set up, Generated, errors, Publish, Export — so you can always tell what\'s left before a block is done at a glance, without digging through tabs.',
+      'You can now **publish a block right from that rail**, not just from the Dashboard\'s Block Calendar — the confirmation spells out exactly what publishing affects: the 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts.',
+    ],
+  },
   {
     id: '2026-08-22-trauma-nights-peds-progress-dark-mode',
     date: '2026-08-22',
@@ -8731,7 +8741,7 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
         <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
           {!unsaved && (
             <button onClick={() => onTogglePublished(snap.id)}
-              title="Published blocks count toward each resident's 3-journal-club-per-year cap"
+              title="Published blocks count toward each resident's 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts"
               className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${snap.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-card border-border text-muted-foreground hover:border-green-300'}`}>
               {snap.published ? 'Published' : 'Publish'}
             </button>
@@ -13957,7 +13967,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="flex items-center gap-2 flex-wrap">
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
-          <Button variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
+          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
           </Button>
@@ -17765,15 +17775,80 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
 // chief can jump straight to EM Residents/Schedule/etc. from a deep link or leftover tab state
 // without first passing through the Dashboard, so this is the one place block identity stays
 // visible on every one of those tabs.
-function BlockContextBar({ block, blockSaveState, onSave, onSwitch }) {
+// One rail item. 'done' renders a check + muted label (nothing to click — it already happened).
+// 'pending' renders a muted label (not reachable yet). 'current' is the ONE primary button in the
+// whole rail — the single next action the chief needs, styled like every other primary CTA in the
+// app (see BUTTON_VARIANTS.primary) so it doesn't invent a second "important button" language.
+// Steps with no `onAction` entry (currently just 'setup' — dates are edited on the Dashboard's
+// Current Block editor, not from this rail) render as plain text even when current.
+function BlockStatusRailStep({ step, onAction, isLast }) {
+  const action = onAction?.[step.id];
   return (
-    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex items-center gap-3 text-xs no-print">
-      <CalendarDays size={14} className="text-primary shrink-0"/>
-      <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
-      <span className="hidden sm:inline text-muted-foreground">
-        {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
-      </span>
-      <SaveStatePill state={blockSaveState}/>
+    <div className="flex items-center gap-1.5 shrink-0">
+      {step.state === 'done' && (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <Check size={12} className="text-green-600 shrink-0"/> {step.label}
+        </span>
+      )}
+      {step.state === 'pending' && (
+        <span className="text-muted-foreground/50">{step.label}</span>
+      )}
+      {step.state === 'current' && (
+        action ? (
+          <Button variant="primary" size="sm" onClick={action}>{step.label}</Button>
+        ) : (
+          <span className="flex items-center gap-1.5 font-medium text-foreground">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0"/> {step.label}
+          </span>
+        )
+      )}
+      {!isLast && <ChevronRight size={12} className="text-muted-foreground/40 shrink-0"/>}
+    </div>
+  );
+}
+
+// Extended (P1 of the chief-review-loop plan) with a compact step rail: Set up -> Generated ->
+// Errors -> Publish -> Export. Pure derivation lives in lib/blockStatus.js (deriveBlockSteps) —
+// this component only supplies the inputs it already has as props and renders the result. The
+// error count comes from the ROOT `issues`/`issueCounts` memo the caller already computed once for
+// the whole app (see ResidentScheduler()'s `issueCounts`) — never a second validateAll pass here.
+function BlockContextBar({ block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+  const steps = useMemo(() => deriveBlockSteps({
+    hasDates: !!(block.startDate && block.endDate),
+    hasReport,
+    errorCount,
+    published,
+    hasSnapshot,
+    lastExportedAt: block.lastExportedAt || null,
+  }), [block.startDate, block.endDate, hasReport, errorCount, published, hasSnapshot, block.lastExportedAt]);
+
+  const stepActions = {
+    generated: onGoToGenerate,
+    errors: onGoToErrors,
+    // 'publish' doubles as "Save block first" while unsaved (see deriveBlockSteps) — either way the
+    // current step's button always needs SOME handler, so route to save whenever there's no snapshot
+    // yet, exactly like the Dashboard's own "Go to Schedule"/"Publish" split does.
+    publish: hasSnapshot ? onPublish : onSave,
+    export: onExport,
+  };
+
+  return (
+    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
+      <div className="flex items-center gap-2 min-w-0 shrink-0">
+        <CalendarDays size={14} className="text-primary shrink-0"/>
+        <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
+        <span className="hidden sm:inline text-muted-foreground">
+          {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
+        </span>
+        <SaveStatePill state={blockSaveState}/>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Block status">
+        {steps.map((step, i) => (
+          <BlockStatusRailStep key={step.id} step={step} onAction={stepActions} isLast={i === steps.length - 1}/>
+        ))}
+      </div>
+
       <div className="ml-auto flex items-center gap-2">
         <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
         <Button variant="ghost" size="sm" onClick={onSwitch}>Switch block…</Button>
@@ -17964,6 +18039,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [pdfPicker, setPdfPicker] = useState(false);
   const [qgendaPicker, setQgendaPicker] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [publishConfirm, setPublishConfirm] = useState(false); // block status rail's "Publish" step
 
   // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
   // A disposable copy of the whole workspace an admin can experiment in without risking the real
@@ -18795,6 +18871,37 @@ export default function ResidentScheduler({ viewer } = {}) {
     });
   }
 
+  // ─── Block status rail actions (BlockContextBar) ────────────────────────────
+  // "Generate" — wiring runGenerate() itself across components is invasive: it's a local closure
+  // inside ScheduleGrid with a lot of local state (progress overlay, solver-vs-local arbitration,
+  // baseArgs) that would need lifting to the parent for one button. Lower-risk option per the plan:
+  // switch tabs and hand focus to the real Generate Schedule button (id="generate-schedule-btn" on
+  // ScheduleGrid) so the chief lands right on it and can press it themselves. Double rAF so the
+  // focus call runs after ScheduleGrid has actually mounted/painted (same idiom as yieldToPaint
+  // inside ScheduleGrid itself), not mid-tab-switch.
+  function goToGenerateStep() {
+    setTab('schedule');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById('generate-schedule-btn')?.focus();
+    }));
+  }
+  function goToErrorsStep() {
+    setTab('validation');
+  }
+  function requestPublishStep() {
+    setPublishConfirm(true);
+  }
+  function confirmPublishStep() {
+    toggleBlockPublished(block.id);
+    setPublishConfirm(false);
+    showToast('Block published', 'green');
+  }
+  function goToExportStep() {
+    // exportMenuOpen already lives at this level (header's own Export dropdown) — no lifting
+    // needed, and the header renders on every block-scoped tab, so no tab switch either.
+    setExportMenuOpen(true);
+  }
+
   function pendingErrorCount() {
     return issueCounts.errors;
   }
@@ -18828,6 +18935,11 @@ export default function ResidentScheduler({ viewer } = {}) {
         return;
       }
     }
+    // Stamps the "Exported" step of the block status rail — rides the block's existing persistence
+    // (no new res_* key, see CLAUDE.md). Untracked: this isn't schedule data, so it shouldn't consume
+    // an undo-stack slot the way updateBlockTracked calls do. Only reached on a successful export —
+    // both early returns above (demo-mode QGenda block, PDF failure) skip it on purpose.
+    updateBlock(b => ({ ...b, lastExportedAt: new Date().toISOString() }));
     setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);
   }
 
@@ -18996,7 +19108,12 @@ export default function ResidentScheduler({ viewer } = {}) {
       )}
 
       {BLOCK_SCOPED_TABS.has(tab) && (
-        <BlockContextBar block={block} blockSaveState={blockSaveState} onSave={saveBlock} onSwitch={()=>setTab('dashboard')}/>
+        <BlockContextBar block={block} blockSaveState={blockSaveState}
+          hasReport={!!block.generationReport} errorCount={issueCounts.errors}
+          published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
+          onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
+          onGoToGenerate={goToGenerateStep} onGoToErrors={goToErrorsStep}
+          onPublish={requestPublishStep} onExport={goToExportStep}/>
       )}
 
       {/* Body: sidebar + content */}
@@ -19065,6 +19182,27 @@ export default function ResidentScheduler({ viewer } = {}) {
               {pendingSnap.startDate && <span className="text-xs text-muted-foreground/70 ml-2">{prettyDate(pendingSnap.startDate)} → {prettyDate(pendingSnap.endDate)}</span>}
             </div>
           )}
+        </ConfirmDialog>
+      )}
+
+      {/* Block status rail's Publish step — same toggleBlockPublished the Dashboard Block Calendar
+          pill already uses (see CLAUDE.md: two surfaces, one state transition). Text spells out the
+          real effects instead of just the JC cap, matching the corrected Dashboard pill tooltip. */}
+      {publishConfirm && (
+        <ConfirmDialog icon={CheckCircle} tone="info" title="Publish this block?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={()=>setPublishConfirm(false)}>Cancel</Button>
+              <Button variant="primary" size="sm" icon={CheckCircle} onClick={confirmPublishStep}>Publish</Button>
+            </>
+          }>
+          <p>Publishing <span className="font-medium text-foreground">"{block.name || 'this block'}"</span> makes it count toward:</p>
+          <ul className="list-disc pl-5 mt-2 space-y-1">
+            <li>each resident's 3-journal-club-per-year cap</li>
+            <li>year-to-date fairness carryover into future blocks</li>
+            <li>holiday and trauma-night yearly counts</li>
+          </ul>
+          <p className="mt-2">You can unpublish later from the Dashboard's Block Calendar if you need to.</p>
         </ConfirmDialog>
       )}
 
