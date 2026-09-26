@@ -6,7 +6,15 @@ from solver.model.variables import build_variables
 from tests.helpers import make_payload, make_resident
 
 
-def test_max_side_is_hard():
+def test_max_side_is_elastic_by_exactly_one_for_non_trauma():
+    """Rule 25's max is no longer a pure hard cap: the app's own "under-target
+    lift" policy (repairPass Phase 5 / `underTargetOverstaff`) allows
+    exceeding coverage max by exactly 1 as a last resort for a non-TRAUMA
+    shift -- see coverage.py's module docstring. 2 candidates forced onto a
+    max:1 POD-area shift is now FEASIBLE (the extra body costs the
+    `overstaffCoverage` objective term, checked separately in
+    test_objective.py), but a 3rd forced candidate still can't fit -- the
+    slack is capped at 1, not unbounded."""
     raw = make_payload(
         residents=[make_resident("r1"), make_resident("r2")],
         eligible={"r1": {"2026-01-05": ["D"]}, "r2": {"2026-01-05": ["D"]}},
@@ -15,11 +23,67 @@ def test_max_side_is_hard():
     payload = parse_payload(raw)
     model = cp_model.CpModel()
     store = build_variables(model, payload)
-    add_coverage_constraints(model, payload, store)
+    result = add_coverage_constraints(model, payload, store)
     model.add(store.get_x("r1", "D", "2026-01-05") == 1)
     model.add(store.get_x("r2", "D", "2026-01-05") == 1)
     solver = cp_model.CpSolver()
+    status = solver.status_name(solver.solve(model))
+    assert status in ("OPTIMAL", "FEASIBLE")
+    assert solver.value(result.overstaff[("D", "2026-01-05")]) == 1
+
+
+def test_max_side_still_caps_at_max_plus_one():
+    raw = make_payload(
+        residents=[make_resident("r1"), make_resident("r2"), make_resident("r3")],
+        eligible={
+            "r1": {"2026-01-05": ["D"]}, "r2": {"2026-01-05": ["D"]}, "r3": {"2026-01-05": ["D"]},
+        },
+        coverage={"D": {"2026-01-05": {"min": 0, "max": 1}}},
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    add_coverage_constraints(model, payload, store)
+    model.add(store.get_x("r1", "D", "2026-01-05") == 1)
+    model.add(store.get_x("r2", "D", "2026-01-05") == 1)
+    model.add(store.get_x("r3", "D", "2026-01-05") == 1)
+    solver = cp_model.CpSolver()
     assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+
+
+def test_max_side_is_hard_for_trauma():
+    """TRAUMA is excluded from the +1-overstaff allowance -- its max is
+    separately hard-clamped to 1 and its run cap (rule 43) is documented
+    "never relaxed"; this module must not quietly reopen that door."""
+    shifts = {"TRAUMA-D": {"startH": 7, "durationH": 9, "type": "day", "area": "TRAUMA"}}
+    raw = make_payload(
+        residents=[make_resident("r1"), make_resident("r2")],
+        shifts=shifts,
+        eligible={"r1": {"2026-01-05": ["TRAUMA-D"]}, "r2": {"2026-01-05": ["TRAUMA-D"]}},
+        coverage={"TRAUMA-D": {"2026-01-05": {"min": 0, "max": 1}}},
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    result = add_coverage_constraints(model, payload, store)
+    assert result.overstaff == {}
+    model.add(store.get_x("r1", "TRAUMA-D", "2026-01-05") == 1)
+    model.add(store.get_x("r2", "TRAUMA-D", "2026-01-05") == 1)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+
+
+def test_no_overstaff_var_when_max_is_zero():
+    raw = make_payload(
+        residents=[make_resident("r1")],
+        eligible={"r1": {}},
+        coverage={"D": {"2026-01-05": {"min": 0, "max": 0}}},
+    )
+    payload = parse_payload(raw)
+    model = cp_model.CpModel()
+    store = build_variables(model, payload)
+    result = add_coverage_constraints(model, payload, store)
+    assert result.overstaff == {}
 
 
 def test_elastic_min_absorbs_shortfall_when_nobody_eligible():

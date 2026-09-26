@@ -145,13 +145,38 @@ def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
         assert "do not correspond 1:1" in str(exc)
 
 
-def test_double_infeasible_never_relax_conflict_stays_infeasible():
-    """Two locked cells that ALSO collide on coverage max (never-relax) can't
-    be fixed by any relaxation -- pass 2 itself must come back INFEASIBLE."""
+def test_double_locked_max_collision_absorbed_by_plus_one_overstaff():
+    """Two locked cells colliding on a non-TRAUMA coverage max by exactly 1
+    are no longer a never-relax conflict -- `solver/model/coverage.py`'s
+    +1-overstaff allowance (mirrors the JS repairPass's
+    `underTargetOverstaff` last resort, see that module's docstring) absorbs
+    it directly in pass 1, before pass 2 is ever reached. This used to be
+    the fixture for "never relax" (coverage max was a pure hard cap); the
+    policy change means this exact scenario is the new allowed case -- see
+    the TRAUMA variant below for a conflict that's still genuinely
+    unfixable."""
     raw = copy.deepcopy(load_fixture("infeasible_rest.json"))
     # Lock r2 into the same D slot on 2026-02-03, where max is 2 -- still
-    # fine on its own. Instead, force a genuine never-relax conflict: clamp
-    # coverage max for D that date to 1 while TWO residents are locked onto it.
+    # fine on its own. Instead, clamp coverage max for D that date to 1
+    # while TWO residents are locked onto it (exceeds max by exactly 1).
+    raw["locked"].append({"residentId": "r2", "date": "2026-02-03", "shiftId": "D"})
+    raw["coverage"]["D"]["2026-02-03"]["max"] = 1
+
+    payload = parse_payload(raw)
+    result = solve(payload)
+
+    assert result.status in ("OPTIMAL", "FEASIBLE", "RELAXED")
+    assert result.schedule["r1"]["2026-02-03"] == "D"
+    assert result.schedule["r2"]["2026-02-03"] == "D"
+
+
+def test_double_locked_max_collision_on_trauma_still_infeasible():
+    """Same double-lock shape as above, but on a TRAUMA-area shift --
+    TRAUMA is excluded from the +1-overstaff allowance (its max is
+    separately hard-clamped to 1 and its run cap is "never relaxed"), so
+    this exact conflict must still come back INFEASIBLE."""
+    raw = copy.deepcopy(load_fixture("infeasible_rest.json"))
+    raw["shifts"]["D"]["area"] = "TRAUMA"
     raw["locked"].append({"residentId": "r2", "date": "2026-02-03", "shiftId": "D"})
     raw["coverage"]["D"]["2026-02-03"]["max"] = 1
 
