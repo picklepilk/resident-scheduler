@@ -3,13 +3,13 @@ import { normalizeUiPrefs, DEFAULT_UI_PREFS, clampGridZoom, clampGridColExtra, G
 
 describe('normalizeUiPrefs', () => {
   it('defaults on null/undefined', () => {
-    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
-    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
+    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
+    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
   });
 
   it('passes through a well-formed shape', () => {
     const raw = { tabOverflow: ['guide', 'whatsnew'], cardOpen: { 'dash-equity': false, 'settings-qgenda': true }, showUnscheduled: true };
-    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category' });
+    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
   });
 
   // gridGroupBy is validated by SET MEMBERSHIP, not coerced — an unknown mode (one removed in a
@@ -54,6 +54,18 @@ describe('normalizeUiPrefs', () => {
 
   it('passes through showUnscheduled: true', () => {
     expect(normalizeUiPrefs({ showUnscheduled: true }).showUnscheduled).toBe(true);
+  });
+
+  // reviewPanelOpen defaults to true (open) — opposite polarity from showUnscheduled on purpose,
+  // see the field's own comment in lib/uiPrefs.js.
+  it('defaults reviewPanelOpen to true when absent or non-boolean', () => {
+    expect(normalizeUiPrefs({}).reviewPanelOpen).toBe(true);
+    expect(normalizeUiPrefs({ reviewPanelOpen: 'no' }).reviewPanelOpen).toBe(true);
+    expect(normalizeUiPrefs({ reviewPanelOpen: 0 }).reviewPanelOpen).toBe(true);
+  });
+
+  it('passes through reviewPanelOpen: false', () => {
+    expect(normalizeUiPrefs({ reviewPanelOpen: false }).reviewPanelOpen).toBe(false);
   });
 });
 

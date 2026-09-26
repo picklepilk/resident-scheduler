@@ -23,10 +23,16 @@ export const GRID_COL_EXTRA_MAX = 120;
 import { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT } from './scheduleGrouping.js';
 export { GRID_GROUP_MODES, GRID_GROUP_MODE_DEFAULT };
 
+// reviewPanelOpen: Schedule tab's right-side review panel (P2 of the chief-review-loop plan) —
+// open/closed state. Same device/viewer-preference posture as everything else here (whether one
+// person wants that panel showing on their own screen is not chief scheduling data), so it rides
+// res_ui_prefs and never LS_BACKUP_KEYS. Defaults to true (open) — the panel is meant to be the
+// normal state, not an opt-in a first-time viewer has to discover.
 export const DEFAULT_UI_PREFS = {
   tabOverflow: [], cardOpen: {}, showUnscheduled: false,
   gridZoom: GRID_ZOOM_DEFAULT, gridColExtra: 0,
   gridGroupBy: GRID_GROUP_MODE_DEFAULT,
+  reviewPanelOpen: true,
 };
 
 // Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
@@ -65,5 +71,6 @@ export function normalizeUiPrefs(raw) {
   // (a mode removed in a later build, a hand-edited value) falls back to the default instead of
   // being passed through to render an empty grid.
   const gridGroupBy = GRID_GROUP_MODES.includes(raw?.gridGroupBy) ? raw.gridGroupBy : GRID_GROUP_MODE_DEFAULT;
-  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy };
+  const reviewPanelOpen = typeof raw?.reviewPanelOpen === 'boolean' ? raw.reviewPanelOpen : true;
+  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy, reviewPanelOpen };
 }

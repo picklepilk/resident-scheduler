@@ -43,10 +43,11 @@ import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
-import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
+import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
+import { groupPanelIssues, labelForIssue, isJumpableIssue } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -871,11 +872,15 @@ const ORDINAL_WORD = { 1: '1st', 2: '2nd', 3: '3rd' };
 //   dark    — SidebarNav's variant — that sidebar is a solid dark-navy surface, not a themed
 //             light one, and legitimately needs its own treatment: bg-white/15 + a light -300
 //             text shade.
+//   dot     — GR/JC/WW only: a small solid-color dot used ON a dense grid chip instead of the
+//             2-letter `onShift` badge (see ScheduleGrid's cornerDotColor/mobile fix note) — the
+//             52×36 chip is too small for a full badge without covering the shift label's text, so
+//             the dot carries the same color cue and the full name stays available via `title`.
 //   title   — hover text. Several markers previously had no title at all in the sidebar/cards.
 const DAY_MARKERS = {
-  GR:  { label: 'GR',  chip: 'bg-yellow-100 text-yellow-700', onShift: 'bg-white text-yellow-700 ring-1 ring-yellow-500', dark: 'bg-white/15 text-yellow-300', title: 'Grand Rounds day (EM Home Wed / BAMC Thu)' },
-  JC:  { label: 'JC',  chip: 'bg-sky-100 text-sky-700',       onShift: 'bg-white text-sky-700 ring-1 ring-sky-500',        dark: 'bg-white/15 text-sky-300',    title: 'Journal Club presenting' },
-  WW:  { label: 'WW',  chip: 'bg-violet-100 text-violet-700', onShift: 'bg-white text-violet-700 ring-1 ring-violet-500', dark: 'bg-white/15 text-violet-300', title: 'Wellness Wednesday — no day/eve shift' },
+  GR:  { label: 'GR',  chip: 'bg-yellow-100 text-yellow-700', onShift: 'bg-white text-yellow-700 ring-1 ring-yellow-500', dark: 'bg-white/15 text-yellow-300', dot: 'bg-yellow-500', title: 'Grand Rounds day (EM Home Wed / BAMC Thu)' },
+  JC:  { label: 'JC',  chip: 'bg-sky-100 text-sky-700',       onShift: 'bg-white text-sky-700 ring-1 ring-sky-500',        dark: 'bg-white/15 text-sky-300',    dot: 'bg-sky-500',    title: 'Journal Club presenting' },
+  WW:  { label: 'WW',  chip: 'bg-violet-100 text-violet-700', onShift: 'bg-white text-violet-700 ring-1 ring-violet-500', dark: 'bg-white/15 text-violet-300', dot: 'bg-violet-500', title: 'Wellness Wednesday — no day/eve shift' },
   OFF: { label: 'OFF', chip: 'bg-orange-100 text-orange-700', onShift: 'bg-white text-orange-700 ring-1 ring-orange-500', dark: 'bg-white/15 text-orange-300', title: 'Approved day off' },
   VAC: { label: 'VAC', chip: 'bg-teal-100 text-teal-700',     onShift: 'bg-white text-teal-700 ring-1 ring-teal-500',     dark: 'bg-white/15 text-teal-300',   title: 'Vacation' },
   J:   { label: 'J',   chip: 'bg-purple-100 text-purple-700', onShift: 'bg-white text-purple-700 ring-1 ring-purple-500', dark: 'bg-white/15 text-purple-300', title: 'Jeopardy call' },
@@ -973,7 +978,12 @@ const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 // live value from one local const rather than threading a number through fourteen call sites.
 // Other grids (CoverageTab) keep their own separate constants — they are not user-resizable.
 const CELL_W_BASE = 52;
-const NAME_W = 210;
+// Base (desktop/tablet) width of the sticky resident-name column. ScheduleGrid shadows this with a
+// narrower, viewport-reactive local `NAME_W` below `sm` (mobile fix — see its own comment) since
+// this is the only grid in the file dense enough at ~400px width for 210px to eat roughly half the
+// screen; the Coverage tab's own grid (COVERAGE_TAB_NAME_W) is a separate, much shorter column and
+// has no such problem.
+const NAME_W_BASE = 210;
 // Height of the week-band header tier, in px. Declared (not measured) so the DOW/date row beneath
 // it can be `sticky` at exactly this offset — the same trade-off em-scheduler makes with its own
 // ROW1_H. Keep it in sync with the band's rendered height (h-5 = 20px + 1px bottom border).
@@ -3181,6 +3191,17 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // id is shown, so a user who skips two releases gets both. Keep entries written for the chief
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
+  {
+    id: '2026-09-26-review-panel',
+    date: '2026-09-26',
+    title: 'A review panel beside the schedule grid, plus several mobile fixes',
+    items: [
+      'The **Schedule tab now has a review panel** next to the grid (below it on narrower screens) — "Must fix" errors, "Should look at" warnings, and Generation notes, all in one place instead of a separate Violations tab visit. Click any issue with a resident and date to jump straight to that cell in the grid.',
+      'The block status rail\'s "errors to fix" button now opens this panel directly on the Schedule tab instead of switching you to Violations.',
+      'On the grid, a **hard error still gets a red ring, but a soft rule warning (like a rest-hours preference) now gets a small dot instead** — so hard vs. soft reads at a glance. The legend below the grid explains every ring/dot/outline now, including locked cells.',
+      'Several small-screen fixes: the app header no longer overlaps the block name and the "Not saved yet" pill at phone widths, the per-cell lock button no longer sits on top of the shift label, day markers (GR/JC/WW) on a shift chip are now a small dot instead of covering the label text, the resident name column narrows on small screens so more date columns fit, and weekend columns are no longer washed-out white in dark mode.',
+    ],
+  },
   {
     id: '2026-09-26-block-status-rail',
     date: '2026-09-26',
@@ -7709,27 +7730,31 @@ function StatCard({ label, value, sub, icon: Icon, tone = "neutral", bar = null 
 // Autosave pill — always shows the local-only "Saving…"/"Saved locally" behavior, plus (when
 // cloud sync is configured — see SUPABASE SYNC) a cloud-aware "Loading…"/"Synced"/"Sync error"
 // state layered on top.
+// Mobile fix: every branch's text collapses to icon-only below `sm` (the icon + `title` tooltip
+// still carry the full meaning) — at ~400px header width this is one of several things competing
+// for space with the block title/status pill, and the icon alone is enough at a glance.
 function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
   const saving = state === 'saving' || (cloudEnabled && dbStatus === 'saving');
   if (cloudEnabled && dbStatus === 'loading') {
     return (
-      <span className="flex items-center gap-1 text-[11px] font-medium text-gray-400">
-        <RefreshCw size={11} className="animate-spin"/> Loading…
+      <span title="Loading…" className="flex items-center gap-1 text-[11px] font-medium text-gray-400">
+        <RefreshCw size={11} className="animate-spin"/> <span className="hidden sm:inline">Loading…</span>
       </span>
     );
   }
   if (cloudEnabled && dbStatus === 'error') {
     return (
-      <span title={dbError} className="flex items-center gap-1 text-[11px] font-medium text-red-500">
-        <AlertCircle size={11}/> Sync error
+      <span title={dbError || 'Sync error'} className="flex items-center gap-1 text-[11px] font-medium text-red-500">
+        <AlertCircle size={11}/> <span className="hidden sm:inline">Sync error</span>
       </span>
     );
   }
+  const label = saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally');
   return (
     <span title={cloudEnabled ? 'Synced across your devices' : "Data auto-saved to this browser's local storage"}
       className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-gray-400'}`}>
       {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
-      {saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally')}
+      <span className="hidden sm:inline">{label}</span>
     </span>
   );
 }
@@ -13041,10 +13066,21 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
-  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy } = useUiPrefsContext();
+  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
+  const reviewPanelOpen = uiPrefs.reviewPanelOpen;
+  // Cell the review panel most recently jumped to — local selection state only (P3 builds the real
+  // cell inspector on top of this later). Cleared implicitly whenever a different jump replaces it;
+  // never persisted.
+  const [selectedCell, setSelectedCell] = useState(null); // {residentId, dateStr} | null
+  // Populated by each rendered cell via a callback ref (see renderResidentRow) so jumpToCell can
+  // find the real DOM node to scroll to without any manual row/column pixel math of its own — the
+  // grid already handles CSS `zoom` and sticky header/name-column layout for every other scroll
+  // path (week-scroll buttons, jump-to-date), and scrollIntoView rides that same real layout instead
+  // of recomputing it.
+  const cellRefs = useRef(new Map());
   const showUnscheduled = uiPrefs.showUnscheduled;
   // Readability controls (persisted per viewer in res_ui_prefs, never in a backup or the shared
   // cloud document — how large someone wants this grid on their own screen is not chief data).
@@ -13054,6 +13090,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // min-width expression below already reads `CELL_W`, so widening a column is this one line.
   const CELL_W = CELL_W_BASE + gridColExtra;
   const zoomScale = gridZoom / 100;
+  // Mobile fix: the resident name column narrows below `sm` (Tailwind's 640px breakpoint) so a
+  // 400px-wide phone screen shows more than 2-3 date columns. `NAME_W` shadows the module-level
+  // `NAME_W_BASE` for every one of this component's own usages (all 6 are inside this function —
+  // the Coverage tab has its own separate constant). A resize listener (not a CSS media query) is
+  // necessary here, not just cosmetic — every place that reads `NAME_W` also does real width
+  // ARITHMETIC (e.g. the scroll container's `minWidth:NAME_W+CELL_W*dates.length`), and a CSS-only
+  // narrowing would leave that arithmetic reserving the old, wider number, opening a blank gap
+  // between the (now-narrower) sticky column and the first date column.
+  const [narrowNameCol, setNarrowNameCol] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+  useEffect(() => {
+    const onResize = () => setNarrowNameCol(window.innerWidth < 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const NAME_W = narrowNameCol ? 108 : NAME_W_BASE;
   // Resolved once for the whole grid rather than per rendered day cell.
   const jcDaySet = useMemo(
     () => new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })),
@@ -13366,6 +13417,34 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     }),
     [visibleResidents, uiPrefs.gridGroupBy]
   );
+
+  // Review panel (P2) — grouped from the ROOT `issues` memo passed in as a prop (see
+  // ResidentScheduler's own `issues` memo and CLAUDE.md "Counts come from the root issues memo,
+  // never a new validateAll call"). EXPORT_BLOCKING_RULE_IDS is the same module-level Set the root
+  // issueCounts memo and the export-confirm gate already read.
+  const panelIssues = useMemo(
+    () => groupPanelIssues(issues || [], EXPORT_BLOCKING_RULE_IDS),
+    [issues]
+  );
+
+  // Jump-to-cell (P2): switches the category filter to All when the target resident is filtered
+  // out, forces Grid view (the only view with per-cell refs registered), marks the cell selected,
+  // then scrolls it into view. scrollIntoView (not manual scrollLeft/scrollTop math) is deliberate:
+  // it walks every scrollable ancestor — the grid's own bounded overflow-auto container AND the
+  // outer page — and already accounts for CSS `zoom` on the grid, which hand-rolled pixel math
+  // would have to reverse itself (see the existing jump-to-date select for the alternative, which
+  // only has to solve the simpler horizontal-only, unzoomed case). `block:'center'/inline:'center'`
+  // (not 'nearest') leaves clearance from the sticky header/name column, which 'nearest' can leave
+  // the target sitting flush against.
+  function jumpToCell(residentId, dateStr) {
+    const res = allResidents.find(r => r.id === residentId);
+    if (res && catFilter !== 'ALL' && res.category !== catFilter) setCatFilter('ALL');
+    setView('grid');
+    setSelectedCell({ residentId, dateStr });
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      cellRefs.current.get(`${residentId}_${dateStr}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }));
+  }
 
   function assign(resId,ds,sid) {
     updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
@@ -13816,20 +13895,32 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
         <div className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
-            <div className="flex items-center gap-1 mt-0.5">
-              <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
-              {res.blockType && res.category!=='PEDS' && (
-                <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
-              )}
-              {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
-              {rowHasDelta && (
-                <span title={res.targetNote || (rowDelta<0?'Target reduced this block':'Target increased this block')}
-                  className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
-                  {rowDelta>0?`+${rowDelta}`:rowDelta}
-                </span>
-              )}
-            </div>
+            {narrowNameCol ? (
+              // Mobile fix: compact single-line "First L. · PGY-N" instead of the two-row
+              // Last,-First + badges layout — full name still available via the row's own `title`
+              // just above (offSummary) and the hover/tap-visible lock button; this line exists so
+              // ≥4 date columns fit alongside it at ~400px width.
+              <div className="text-xs font-medium text-gray-800 truncate" title={`${res.lastName}, ${res.firstName}`}>
+                {res.firstName} {res.lastName.charAt(0)}.<span className="text-gray-400 font-normal"> · PGY-{res.pgy}</span>
+              </div>
+            ) : (
+              <>
+                <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
+                  {res.blockType && res.category!=='PEDS' && (
+                    <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
+                  )}
+                  {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
+                  {rowHasDelta && (
+                    <span title={res.targetNote || (rowDelta<0?'Target reduced this block':'Target increased this block')}
+                      className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
+                      {rowDelta>0?`+${rowDelta}`:rowDelta}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
           <button type="button" onClick={()=>rowLocked?unlockRow(res.id):lockRow(res.id)}
             title={rowLocked?`Unlock all of ${res.lastName}'s locked cells`:`Lock all of ${res.lastName}'s assigned cells`}
@@ -13840,7 +13931,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
           const isLocked=!!(block.lockedCells?.[res.id]?.[ds]);
-          const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
+          // P2 (review panel): hard errors keep the red ring; a cell whose ONLY issues are warnings
+          // (e.g. postNightRest) gets a small corner dot instead — see the in-grid legend below.
+          // hasV stays "any issue at all" for the things that don't care about the distinction
+          // (red-tinted background, hover title).
+          const vKey=`${res.id}_${ds}`; const cellIssuesHere=violMap[vKey]||[];
+          const hasV=!!cellIssuesHere.length;
+          const hasError=cellIssuesHere.some(i=>i.level==='error');
+          const hasWarnOnly=hasV&&!hasError;
           const relaxedHere=relaxedCellSet[vKey];
           const hasRelaxed=!!(relaxedHere&&relaxedHere.length);
           const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
@@ -13879,22 +13977,31 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           // a structurally-unfillable one were indistinguishable. Slate also carries enough weight
           // to read as a band across a sideways-scrolling grid, which gray-50 did not.
           let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':isWknd?'bg-slate-100':elig.length===0?'bg-gray-50':'bg-white';
-          if(hasV) bg='bg-red-50';
+          // Only a hard error tints the whole cell — a warn-only cell keeps its normal background
+          // (day-marker tint, weekend band, etc.) and relies on the corner dot below instead, so a
+          // soft rest-preference nudge doesn't visually outrank a real day-marker cue.
+          if(hasError) bg='bg-red-50';
           const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
           const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
           const wwIsCustom = res.wellnessOverride && res.wellnessOverride !== 'optOut';
           const dayMarkerText = isWW ? (wwIsCustom ? 'Wellness Wednesday (custom date)' : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block)`) : isJC ? 'JC presenting' : isGR ? 'Grand Rounds' : null;
           const cornerLabel = isWW ? 'WW' : isJC ? 'JC' : isGR ? 'GR' : null;
-          const cornerColor = isWW ? DAY_MARKERS.WW.onShift : isJC ? DAY_MARKERS.JC.onShift : DAY_MARKERS.GR.onShift;
+          const cornerDotColor = isWW ? DAY_MARKERS.WW.dot : isJC ? DAY_MARKERS.JC.dot : DAY_MARKERS.GR.dot;
           // Lock-paint mode hijacks click/mousedown/mouseenter on this cell (only when it holds a
           // shift — an empty cell has nothing to lock) instead of opening the picker; see CLAUDE.md
           // "Locking UX" for why the origin cell's toggle happens on mousedown (not click) — a real
           // drag ends its mouseup over a *different* cell than it started on, so click never fires
           // on the origin cell at all.
           const paintable = lockMode && !!sid;
+          // Review-panel jump-to-cell selection (P2) — thick primary outline via inline style so it
+          // can never collide with (or get overridden by) the ring-based error/lock/drag classes
+          // above, all of which are also `ring-*` utilities on this same element.
+          const isSelected = !!selectedCell && selectedCell.residentId===res.id && selectedCell.dateStr===ds;
           return (
-            <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
+            <div key={ds}
+              ref={el=>{ const k=`${res.id}_${ds}`; if(el) cellRefs.current.set(k, el); else cellRefs.current.delete(k); }}
+              style={{width:CELL_W,minWidth:CELL_W,height:36, ...(isSelected?{outline:'3px solid hsl(var(--primary))',outlineOffset:'-3px'}:null)}}
               onClick={()=>{ if(drag||lockMode) return; if(clickable){ cancelHover(); setPicker({resident:res,dateStr:ds}); } }}
               onMouseDown={()=>{ if(!paintable) return; const target=!isLocked; paintValueRef.current=target; toggleLock(res.id, ds); }}
               onMouseEnter={e=>{ if(!paintable||paintValueRef.current===null||e.buttons!==1) return; if(isLocked!==paintValueRef.current) toggleLock(res.id, ds); }}
@@ -13904,9 +14011,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               title={[
                 lockMode?(sid?(isLocked?'Locked — click/drag to unlock':'Click/drag to lock'):''):isApprovedOff?(offReason?`Approved day off — ${offReason}`:'Approved day off'):isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':dayMarkerText?(shift?`${sid} — ${dayMarkerText}`:isWW?`${dayMarkerText} — no day/eve`:dayMarkerText):isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':'',
                 gapsWords,
+                hasV?cellIssuesHere.map(labelForIssue).join('; '):'',
                 hasRelaxed?`Rule relaxed by optimizer: ${[...new Set(relaxedHere.map(v=>v.ruleLabel||v.rule))].join(', ')}`:'',
               ].filter(Boolean).join(' — ')}
-              className={`relative group ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              className={`relative group ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-b border-gray-100 ${bg} ${hasError?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.OFF.chip}`}>OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.VAC.chip}`}>VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.J.chip}`}>J</span></div>}
@@ -13925,16 +14033,31 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                   {sid}
                 </div>
               )}
+              {/* Mobile fix: this used to be opacity-60 (visible, and covering the chip label) by
+                  default on EVERY pointer type. It's now invisible until needed: a hover-capable
+                  pointer reveals it on :hover (via the .chip-lock-toggle rule in index.css, gated
+                  `@media (hover:hover)` so it never engages from a touch tap), and a locked cell (or
+                  Lock Mode being on) forces it visible on every pointer type so there's still a way
+                  to see/reach it on touch. */}
               {shift && (
                 <button type="button" onClick={e=>{ e.stopPropagation(); toggleLock(res.id, ds); }}
                   title={isLocked?'Unlock cell (allow drag/regenerate/edit)':'Lock cell (protect from drag, regenerate, and manual edit)'}
-                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white':'bg-white/70 text-gray-400 opacity-60 group-hover:opacity-100 hover:text-gray-700'}`}>
+                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white opacity-100':lockMode?'bg-white/70 text-gray-400 opacity-100 hover:text-gray-700':'chip-lock-toggle bg-white/70 text-gray-400 opacity-0 hover:text-gray-700 focus-visible:opacity-100'}`}>
                   {isLocked?<Lock size={11}/>:<Unlock size={11}/>}
                 </button>
               )}
-              {shift && cornerLabel && <span className={`absolute bottom-0 left-0 text-[10px] leading-none font-bold rounded-tr px-0.5 py-px z-10 shadow-sm ${cornerColor}`} title={dayMarkerText}>{cornerLabel}</span>}
+              {/* Mobile fix: GR/JC/WW used to render as a 2-letter text badge flush against the
+                  cell's actual corner (0,0), overlapping the centered shift-label text on a 52×36
+                  cell (worst on longer ids like PED-N-FM). A small colored dot carries the same cue
+                  (color matches the marker's own bg-*-50 tint elsewhere) without covering any
+                  character; the full name is still one tap/hover away via `title`. */}
+              {shift && cornerLabel && <span className={`absolute bottom-0.5 left-0.5 w-2 h-2 rounded-full ring-1 ring-white z-10 ${cornerDotColor}`} title={dayMarkerText}/>}
               {isJeopardy&&!isJeoBlocked && <span className={`absolute top-0 right-0 text-[10px] leading-none font-bold rounded-bl px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.J.onShift}`} title={DAY_MARKERS.J.title}>J</span>}
               {isPendingRequest && <span className={`absolute top-0 left-0 text-[10px] leading-none font-bold rounded-br px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.R.onShift}`} title={DAY_MARKERS.R.title}>R</span>}
+              {/* P2: soft warns (postNightRest etc.) get a small dot instead of the red ring so hard
+                  vs soft reads at a glance — see the in-grid legend below. Centered at the top edge
+                  so it never competes with the R/J/lock/day-marker corners. */}
+              {hasWarnOnly && <span className="absolute top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-amber-500 z-10" title="Rule warning — see the review panel"/>}
             </div>
           );
         })}
@@ -14014,9 +14137,23 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full Screen'}
           </Button>
+          {/* P2: the one control that opens/closes the review panel on EVERY screen width — the
+              desktop sidebar also gets its own collapse arrow (see below), but a mobile/tablet
+              viewer has no sidebar to click on, so this toolbar button is the only affordance there. */}
+          <Button variant={reviewPanelOpen?'primary':'ghost'} size="sm" icon={ClipboardList} onClick={()=>setReviewPanelOpen(o=>!o)}
+            title={reviewPanelOpen?'Hide review panel':'Show review panel — errors, warnings, and generation notes'}>
+            Review{panelIssues.mustFix.length>0?` (${panelIssues.mustFix.length})`:''}
+          </Button>
         </span>
       </div>
 
+      {/* P2: review panel sits BESIDE this whole column on desktop (its own flex sibling below,
+          outside every overflow-auto scroll container in here — including the grid's own, per
+          CLAUDE.md's sticky-axis rule) and as a full-width section UNDER it on narrow screens
+          (rendered again below, `lg:hidden`, off the exact same `reviewPanelOpen`/`panelIssues`
+          state — no separate mobile-only state to drift). No CSS transform anywhere in this. */}
+      <div className="flex gap-4 items-start">
+      <div className="flex-1 min-w-0">
       <div className="no-print">
       <SubTabs value={view} onChange={setView} options={[
         {id:'grid', label:'Grid', icon:Table2},
@@ -14141,9 +14278,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.J.chip}`} title={DAY_MARKERS.J.title}>J</span>
         <span>= Grand Rounds day · JC presenting · wellness Wednesday · approved off · vacation · jeopardy call</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
-        <span>= rule violation</span>
+        <span>= rule violation (error)</span>
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"/><span className="text-amber-600 font-medium">dot</span></span>
+        <span>= rule warning</span>
         <span className="px-1.5 py-0.5 rounded border-2 border-dashed border-amber-500 text-amber-600 font-medium">dashed amber</span>
         <span>= rule relaxed by optimizer</span>
+        <span className="px-1.5 py-0.5 rounded border border-indigo-300 text-indigo-600 font-medium">indigo ring</span>
+        <span>= locked</span>
       </div>
       )}
 
@@ -14437,6 +14578,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           dayRules={dayRules} appSettings={appSettings} violMap={violMap} jeopardySchedule={block.jeopardySchedule}
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
+
+      {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. */}
+      {reviewPanelOpen && (
+        <div className="no-print lg:hidden mt-4">
+          <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
+            blockStart={block.startDate} onJumpToCell={jumpToCell}/>
+        </div>
+      )}
+      </div>
+
+      {/* Desktop sidebar — outside the flex-1 column above, so it sits beside the grid rather than
+          inside its own scroll container. */}
+      {reviewPanelOpen && (
+        <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, maxHeight:'calc(100vh - 8rem)'}}>
+          <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onClose={()=>setReviewPanelOpen(false)}/>
+        </div>
+      )}
+      </div>
 
       {dropConfirm && (
         <DragConfirmModal dropConfirm={dropConfirm}
@@ -15440,7 +15600,28 @@ function FeasibilityReportCard({ feasibility, allResidents }) {
   );
 }
 
-function GenerationReportCard({ report, appSettings, blockStart }) {
+// P2 (review panel) — GenerationReportCard's "Generation notes" section, collapsed to a one-line
+// count that expands IN PLACE. `compact=false` (ValidationTab's usage, unchanged) returns `children`
+// untouched — zero markup difference from before this prop existed, so the Violations tab keeps
+// rendering the exact same full card. `compact=true` (the review panel's usage) wraps the SAME
+// existing per-section markup behind a toggle, rather than duplicating it, so the two surfaces can
+// never drift on what a section actually says — only how much of it shows by default.
+function ReportSubsection({ compact, title, count, children }) {
+  const [open, setOpen] = useState(false);
+  if (!compact) return children;
+  return (
+    <div>
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        className="w-full flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground py-1 text-left">
+        <ChevronRight size={12} className={`shrink-0 transition-transform ${open?'rotate-90':''}`}/>
+        {title} ({count})
+      </button>
+      {open && <div className="mt-1 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+function GenerationReportCard({ report, appSettings, blockStart, compact = false }) {
   const summary = useMemo(()=>summarizeGenerationReport(report, appSettings, blockStart),[report,appSettings,blockStart]);
   const realGapGroups = summary.filter(s=>!s.structural);
   const structuralGroups = summary.filter(s=>s.structural);
@@ -15475,22 +15656,27 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
           <p className="text-sm text-green-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
         )}
 
-        {realGapGroups.map(g => (
-          <div key={g.shiftId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFT_MAP[g.shiftId]?.chip}`}>{g.shiftId}</span>
-              <span className="text-xs text-amber-700 font-medium">{g.slots.length} below minimum coverage</span>
-            </div>
-            {g.recommendations.map((r,i)=>(
-              <div key={i} className={i>0 ? 'mt-1.5' : ''}>
-                <p className="text-xs text-gray-500">{r.slots.map(s=>formatDisplayDate(s.dateStr)).join(', ')}</p>
-                <p className="text-xs text-gray-700">→ {r.text}</p>
+        {realGapGroups.length > 0 && (
+          <ReportSubsection compact={compact} title="Coverage gaps below minimum" count={realGapGroups.length}>
+            {realGapGroups.map(g => (
+              <div key={g.shiftId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFT_MAP[g.shiftId]?.chip}`}>{g.shiftId}</span>
+                  <span className="text-xs text-amber-700 font-medium">{g.slots.length} below minimum coverage</span>
+                </div>
+                {g.recommendations.map((r,i)=>(
+                  <div key={i} className={i>0 ? 'mt-1.5' : ''}>
+                    <p className="text-xs text-gray-500">{r.slots.map(s=>formatDisplayDate(s.dateStr)).join(', ')}</p>
+                    <p className="text-xs text-gray-700">→ {r.text}</p>
+                  </div>
+                ))}
               </div>
             ))}
-          </div>
-        ))}
+          </ReportSubsection>
+        )}
 
         {(report.seniorGaps||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="FLEX/POD missing a senior resident" count={report.seniorGaps.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">FLEX/POD missing a senior resident</span>
             <ul className="mt-1 space-y-0.5">
@@ -15499,9 +15685,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {(report.restCompromises||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="24h post-night rest preference broken" count={report.restCompromises.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">24h post-night rest preference broken to fill minimum coverage</span>
             <ul className="mt-1 space-y-0.5">
@@ -15510,9 +15698,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {(report.overstaffed||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="Placed over maximum staffing" count={report.overstaffed.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">Placed one over maximum staffing to close a shift-target gap</span>
             <ul className="mt-1 space-y-0.5">
@@ -15523,9 +15713,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {(report.pgyFallbacks||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="PGY gating fallback" count={report.pgyFallbacks.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">PGY gating fallback — no senior PGY available for these extra POD/FLEX slots</span>
             <ul className="mt-1 space-y-0.5">
@@ -15534,9 +15726,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {structuralCount > 0 && (
+          <ReportSubsection compact={compact} title="Expected gaps (day-of-week rules)" count={structuralCount}>
           <div className="border border-gray-200 bg-gray-50 rounded-lg p-3">
             <span className="text-xs font-medium text-gray-500 px-1.5 py-0.5 rounded bg-gray-200 mr-1.5">Expected</span>
             <span className="text-xs text-gray-500">{structuralCount} shift{structuralCount!==1?'s have':' has'} gaps that match a day-of-week rule (e.g. Trauma window, GR Wednesday) — not a coverage problem.</span>
@@ -15546,9 +15740,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]?.text ?? ''}</p>
             ))}
           </div>
+          </ReportSubsection>
         )}
 
         {(report.capacityWarnings||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="Structural capacity check" count={report.capacityWarnings.length}>
           <div className="border border-rose-200 bg-rose-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-rose-700">Structural capacity check</span>
             <ul className="mt-1 space-y-0.5">
@@ -15557,9 +15753,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {report.underTarget.length > 0 && (
+          <ReportSubsection compact={compact} title="Residents left under target" count={report.underTarget.length}>
           <div className="border border-gray-200 rounded-lg p-3">
             <span className="text-xs font-semibold text-gray-600">Residents left under target</span>
             <ul className="mt-1 space-y-0.5">
@@ -15590,10 +15788,107 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
       </div>
     </div>
+  );
+}
+
+// Schedule tab's review panel (P2 of the chief-review-loop plan) — lives beside (desktop) or below
+// (mobile) the grid, both wired up in ScheduleGrid's own return. `panelIssues` is
+// groupPanelIssues(issues, EXPORT_BLOCKING_RULE_IDS) computed once in ScheduleGrid from the ROOT
+// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` is
+// ScheduleGrid's own jumpToCell; `onClose` is only supplied by the desktop sidebar (the mobile
+// drawer's own toolbar toggle button already covers closing it there).
+function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onClose }) {
+  const { mustFix, orderedWarns } = panelIssues;
+  // "Should look at" collapses by default once it's long enough that showing it open would push
+  // Generation notes off the initial view — Must fix (the thing that blocks export) always stays
+  // visible in full.
+  const [warnsOpen, setWarnsOpen] = useState(orderedWarns.length <= 8);
+
+  return (
+    <div className="bg-card border border-border rounded-xl shadow-sm flex flex-col h-full overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
+        <span className="text-sm font-semibold text-foreground">Review</span>
+        {onClose && (
+          <button type="button" onClick={onClose} title="Collapse review panel"
+            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
+            <ChevronRight size={16}/>
+          </button>
+        )}
+      </div>
+      <div className="overflow-y-auto flex-1 p-3 space-y-4 text-sm">
+        <section>
+          {/* tabIndex + id: goToErrorsStep (BlockContextBar's rail button) focuses this heading
+              directly so "N errors to fix" always lands somewhere visible, not just "panel opened". */}
+          <h3 id="review-panel-must-fix" tabIndex={-1}
+            className="text-xs font-bold uppercase tracking-wide text-destructive mb-1.5">
+            Must fix ({mustFix.length})
+          </h3>
+          {mustFix.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">No hard errors.</p>
+          ) : (
+            <ul className="space-y-1">
+              {mustFix.map((issue, i) => <IssueRow key={i} issue={issue} tone="error" onJumpToCell={onJumpToCell}/>)}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <button type="button" onClick={()=>setWarnsOpen(o=>!o)}
+            className="w-full flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wide text-amber-600 mb-1.5">
+            <span>Should look at ({orderedWarns.length})</span>
+            <ChevronDown size={12} className={`shrink-0 transition-transform ${warnsOpen?'rotate-180':''}`}/>
+          </button>
+          {warnsOpen && (
+            orderedWarns.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
+            ) : (
+              <ul className="space-y-1">
+                {orderedWarns.map((issue, i) => <IssueRow key={i} issue={issue} tone="warn" onJumpToCell={onJumpToCell}/>)}
+              </ul>
+            )
+          )}
+        </section>
+
+        {report && (
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Generation notes</h3>
+            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} compact/>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One issue row. Jump-to-cell only when the issue actually names a resident+date (isJumpableIssue —
+// several issue kinds, like the Over/Under target totals, carry dateStr:null and have no one cell to
+// select); those rows still render, just without a click handler. `labelForIssue` is the ONLY place
+// this renders "what rule is this" — never issue.rule directly, so an unmapped id can't leak through
+// as a bare programmer string (see lib/reviewPanel.js).
+function IssueRow({ issue, tone, onJumpToCell }) {
+  const jumpable = isJumpableIssue(issue);
+  return (
+    <li>
+      <button type="button" disabled={!jumpable} onClick={()=>onJumpToCell(issue.residentId, issue.dateStr)}
+        title={jumpable ? 'Jump to this cell in the grid' : undefined}
+        className={`w-full text-left px-2 py-1.5 rounded-lg border text-xs transition-colors ${
+          tone==='error' ? 'border-destructive/20 bg-destructive/5' : 'border-amber-200 bg-amber-50/60'
+        } ${jumpable ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}>
+        {(issue.name || issue.dateStr || issue.shiftId) && (
+          <div className="text-muted-foreground text-[11px] mb-0.5">
+            {[issue.name, issue.dateStr && formatDisplayDate(issue.dateStr), issue.shiftId].filter(Boolean).join(' · ')}
+          </div>
+        )}
+        <div className={tone==='error' ? 'text-destructive font-medium' : 'text-amber-700 font-medium'}>
+          {labelForIssue(issue)}
+        </div>
+      </button>
+    </li>
   );
 }
 
@@ -18020,6 +18315,11 @@ export function migratePedsPgy1ToPgy2(list) {
 // and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
 // session at all, and the header simply omits the identity chip in that case.
 export default function ResidentScheduler({ viewer } = {}) {
+  // Called here (not inside <UiPrefsProvider> below) so this component's own body — specifically
+  // goToErrorsStep, which needs to open the Schedule tab's review panel from OUTSIDE the Provider's
+  // rendered subtree — can read/write prefs directly. See UiPrefsProvider's own comment in
+  // src/uiPrefs.js for why the Provider takes this value instead of calling the hook itself.
+  const uiPrefsApi = useUiPrefs(viewer);
   const [tab, setTab] = useState('dashboard');
   // Defensive fallback: the Home tab was removed and merged into Dashboard. `tab` itself isn't
   // persisted today, but guard anyway in case a future change (deep link, restored session, etc.)
@@ -18885,8 +19185,16 @@ export default function ResidentScheduler({ viewer } = {}) {
       document.getElementById('generate-schedule-btn')?.focus();
     }));
   }
+  // Retargeted for P2 (chief-review-loop plan): the rail's error step used to send the chief to the
+  // whole separate Violations tab. Now it opens/focuses the Schedule tab's review panel instead —
+  // same tab the grid itself lives on, no round trip. Works identically whether the chief is
+  // already on the Schedule tab (setTab is a no-op re-set) or on a different one (switches first).
   function goToErrorsStep() {
-    setTab('validation');
+    setTab('schedule');
+    uiPrefsApi.setReviewPanelOpen(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById('review-panel-must-fix')?.focus();
+    }));
   }
   function requestPublishStep() {
     setPublishConfirm(true);
@@ -18972,7 +19280,7 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   return (
     <WalkthroughRoot session={viewer?.session} role={viewer?.role || 'admin'} setActiveTab={setTab}>
-    <UiPrefsProvider viewer={viewer}>
+    <UiPrefsProvider value={uiPrefsApi}>
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
       <header className="bg-card border-b border-border shrink-0 no-print relative z-50">
@@ -18986,10 +19294,21 @@ export default function ResidentScheduler({ viewer } = {}) {
               <CalendarDays size={18}/>
             </div>
             <div className="flex flex-col min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
+              {/* Mobile fix: hidden below sm — at ~400px width there isn't room for both this
+                  eyebrow line and the block name + Not-saved pill without them overlapping, and the
+                  block status rail (BlockContextBar, on every block-scoped tab) already repeats the
+                  block name, so nothing is lost. */}
+              <p className="hidden sm:block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
               <div className="flex items-center gap-2 min-w-0">
-                <h1 className="text-base font-semibold text-foreground truncate">{block.name || 'Untitled block'}</h1>
-                <SaveStatePill state={blockSaveState}/>
+                {/* Mobile fix: `truncate` on a flex child does nothing without `min-w-0` on that
+                    SAME element — without it the child refuses to shrink below its full-text
+                    intrinsic width in a flex row, which is what was pushing the "Not saved yet"
+                    pill into (or past) the title at narrow widths. */}
+                <h1 className="text-base font-semibold text-foreground truncate min-w-0">{block.name || 'Untitled block'}</h1>
+                {/* Mobile fix: hidden below sm — BlockContextBar's own SaveStatePill already covers
+                    this on every block-scoped tab; the header's copy is a nice-to-have on wider
+                    screens, not something 400px width has room for right next to a truncated title. */}
+                <span className="hidden sm:inline shrink-0"><SaveStatePill state={blockSaveState}/></span>
                 <span className="hidden lg:inline text-xs text-muted-foreground shrink-0">
                   {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
                 </span>
@@ -19151,7 +19470,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}

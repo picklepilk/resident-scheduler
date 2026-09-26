@@ -148,13 +148,23 @@ export function useUiPrefs(viewer) {
     setPrefs(p => ({ ...p, gridColExtra: clampGridColExtra(typeof next === 'function' ? next(p.gridColExtra) : next) }));
   }, []);
 
+  // Schedule tab's review panel (P2 of the chief-review-loop plan) open/closed state — same
+  // boolean-toggle shape as setShowUnscheduled. Exposed at this top level (not just via
+  // UiPrefsContext) because the app header's block-status rail lives in ResidentScheduler's own
+  // function body, OUTSIDE the <UiPrefsProvider> subtree it renders — see useUiPrefs's call site
+  // there for why this hook is invoked directly rather than only through the context.
+  const setReviewPanelOpen = useCallback(v => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => ({ ...p, reviewPanelOpen: !!(typeof v === 'function' ? v(p.reviewPanelOpen) : v) }));
+  }, []);
+
   // Memoized so consumers reading this via UiPrefsContext (~20 CollapsibleCard call sites plus
   // SidebarNav) don't all re-render on every root render — only when prefs actually change (the
-  // four callbacks are already stable via useCallback([]), so in practice this only changes when
+  // callbacks are already stable via useCallback([]), so in practice this only changes when
   // `prefs` does).
   return useMemo(
-    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy }),
-    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy]
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen]
   );
 }
 
@@ -164,12 +174,17 @@ export function useUiPrefs(viewer) {
 // outside the provider (e.g. a future isolated test of CollapsibleCard) rather than throwing.
 const UiPrefsContext = createContext(null);
 
-export function UiPrefsProvider({ viewer, children }) {
-  const value = useUiPrefs(viewer);
+// `value` is the object useUiPrefs(viewer) already returns — ResidentScheduler calls that hook
+// itself (see its own top-level `useUiPrefs(viewer)` call) and passes the result straight through
+// here, rather than this Provider calling the hook a second, independent time. A second call would
+// mean two separate `prefs` states with their own competing localStorage/cloud-save effects — this
+// single call site is the only thing that made `goToErrorsStep` (outside the Provider's own
+// subtree) able to open the review panel without a second, drifting copy of the prefs state.
+export function UiPrefsProvider({ value, children }) {
   return createElement(UiPrefsContext.Provider, { value }, children);
 }
 
-const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {} };
+const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {}, setReviewPanelOpen: () => {} };
 
 export function useUiPrefsContext() {
   return useContext(UiPrefsContext) || NOOP_UI_PREFS;
