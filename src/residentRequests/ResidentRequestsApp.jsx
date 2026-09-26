@@ -4,6 +4,24 @@ import LoginScreen from './LoginScreen';
 import ResidentPicker from './ResidentPicker';
 import RequestForm from './RequestForm';
 import RequestList from './RequestList';
+import WalkthroughRoot from '../walkthrough/WalkthroughRoot';
+import { useWalkthroughContext } from '../walkthrough/Walkthrough';
+import { RESIDENT_WALKTHROUGH_STEPS } from '../walkthrough/walkthroughSteps';
+
+// Unobtrusive replay entry point — the admin surface has a whole User Guide tab to put this in;
+// this single-flow page doesn't, so it's a small divider line at the bottom rather than its own
+// card. Must render inside <WalkthroughRoot> to reach `start()`.
+function GettingStartedFooter() {
+  const { start } = useWalkthroughContext();
+  return (
+    <div className="mt-6 pt-3 border-t border-gray-200 flex items-center justify-between">
+      <span className="text-[11px] text-gray-400">Getting Started</span>
+      <button type="button" onClick={start} className="text-xs text-primary font-medium hover:underline">
+        Replay walkthrough
+      </button>
+    </div>
+  );
+}
 
 export default function ResidentRequestsApp() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
@@ -81,9 +99,12 @@ export default function ResidentRequestsApp() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
-      <RequestForm residentId={profile.resident_id} onSubmitted={() => setRefreshKey(k => k + 1)} />
-      <RequestList residentId={profile.resident_id} refreshKey={refreshKey} />
-    </div>
+    <WalkthroughRoot session={session} role="resident" steps={RESIDENT_WALKTHROUGH_STEPS}>
+      <div className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
+        <RequestForm residentId={profile.resident_id} onSubmitted={() => setRefreshKey(k => k + 1)} />
+        <RequestList residentId={profile.resident_id} refreshKey={refreshKey} />
+        <GettingStartedFooter />
+      </div>
+    </WalkthroughRoot>
   );
 }
