@@ -10,7 +10,7 @@ import {
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
   Archive, FlaskConical, Clock, Maximize2, Minimize2, Sparkles, ChevronLeft, MoreHorizontal,
-  Eye, EyeOff,
+  Eye, EyeOff, Wrench,
 } from 'lucide-react';
 // xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
 // point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
@@ -46,6 +46,7 @@ import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
+import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -2772,7 +2773,12 @@ function getJCPresenterGaps(allResidents, block, ayConf = {}) {
 // Checks the manual, per-block dates a chief is expected to enter before generation: special-day
 // lists relevant to residents on this block, and Journal Club presenters for the Journal Club
 // dates that fall within the block.
-function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {} }) {
+// `mode` ('fill'|'clear'|'unlocked'|'range', see keptCellsForMode in lib/keptCellViolations.js)
+// plus the extra validateAll inputs are optional so any other caller of this function keeps
+// working unchanged — every real call site (below) supplies them. Return shape changed from a
+// flat string[] to { messages, keptViolations } — see the three ReadinessWarningPanel/
+// KeptCellViolationsPanel call sites in ScheduleGrid.
+function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd }) {
   const messages = [];
   for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
     messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
@@ -2780,7 +2786,18 @@ function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {} }) 
   for (const g of getJCPresenterGaps(allResidents, block, ayConf)) {
     messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
   }
-  return messages;
+  // Kept-cell hard-error warning (CLAUDE.md "chief sees red validateAll errors after hand-editing/
+  // locking cells or partial regenerate"): the generator/repair pass never overwrites a
+  // pre-existing non-empty cell, so a cell that already violates a hard rule survives every
+  // Generate/Regenerate untouched. Gated on `mode` (and the validateAll inputs it needs) being
+  // supplied — see keptCellsForMode for what "survives" means per action.
+  let keptViolations = { fixable: [], locked: [] };
+  if (mode) {
+    const issues = validateAll(allResidents, block.schedule || {}, block, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf);
+    const split = violatingCells(issues, block.schedule || {}, block.lockedCells || {});
+    keptViolations = keptCellsForMode(split, mode, rangeStart, rangeEnd);
+  }
+  return { messages, keptViolations };
 }
 
 // Shared list-builder for AY conference date ranges — both getConferencesInBlock (block-range
@@ -12971,7 +12988,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmUnlockAll, setConfirmUnlockAll] = useState(false);
-  const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
+  const [confirmGenerate, setConfirmGenerate] = useState(null); // {messages,keptViolations} | null — readiness warnings
   // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
   // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
   const [rangeStart, setRangeStart] = useState('');
@@ -12983,10 +13000,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // dismissing, a picker closing elsewhere). Shared by the Clear & Regenerate confirm modal AND the
   // partial-regenerate confirm modal — same inputs, same warnings either way, so one memo gated on
   // "either confirm modal is open" replaces what used to be two identical memos.
-  const generateReadiness = useMemo(
-    () => (confirmRegen || confirmPartialRegen) ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
-    [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf]
-  );
+  const generateReadiness = useMemo(() => {
+    if (confirmRegen) return checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'clear' });
+    if (confirmPartialRegen) return checkGenerateReadiness({
+      allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory,
+      mode: confirmPartialRegen.kind === 'range' ? 'range' : 'unlocked',
+      rangeStart: confirmPartialRegen.start, rangeEnd: confirmPartialRegen.end,
+    });
+    return { messages: [], keptViolations: { fixable: [], locked: [] } };
+  }, [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory]);
   // What-If Optimization Sweep — see runOptimizationSweep. sweepResult/sweepRunning/sweepOpen are
   // ephemeral (not persisted, not part of the block) — a fresh Generate/Regenerate invalidates any
   // prior sweep result since it no longer describes "vs the current schedule".
@@ -13170,13 +13192,28 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return m;
   }, [allResidents, block.id, block.endDate, blocksHistory]);
 
+  // Single validateAll pass, shared by violMap (grid cell red-ring rendering, below) and
+  // violatingSummary (Fix Violations — see keptCellViolations.js) so the two can never disagree
+  // about what's a hard error.
+  const scheduleIssues = useMemo(
+    () => validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf),
+    [allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf]
+  );
   const violMap = useMemo(()=>{
     const m={};
-    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf)) {
+    for (const issue of scheduleIssues) {
       if (issue.dateStr && issue.residentId) { const k=`${issue.residentId}_${issue.dateStr}`; (m[k]=m[k]||[]).push(issue); }
     }
     return m;
-  },[allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf]);
+  },[scheduleIssues]);
+  // Hard (level:'error'), resident+date-attributable issues on cells that already exist —
+  // generation never overwrites a non-empty cell, so these survive every fill/repair pass
+  // untouched (CLAUDE.md "chief sees red validateAll errors after hand-editing/locking cells or
+  // partial regenerate"). Powers the standalone "Fix Violations" toolbar button below.
+  const violatingSummary = useMemo(
+    () => violatingCells(scheduleIssues, sched, block.lockedCells || {}),
+    [scheduleIssues, sched, block.lockedCells]
+  );
 
   // Solver relaxed-rule cell flagging (see PAYLOAD_SCHEMA.md's `feasibility.violations` shape) —
   // same `${residentId}_${dateStr}` key convention as violMap above, but sourced from the last
@@ -13424,8 +13461,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // Warns before generating if the block's manual per-block dates (special-day lists, JC
   // presenters) haven't been entered — chief can override and generate anyway.
   function requestGenerate() {
-    const issues = checkGenerateReadiness({ allResidents, block, dayRules, ayConf });
-    if (issues.length) setConfirmGenerate(issues);
+    const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill' });
+    if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate(readiness);
     else runGenerate(false);
   }
 
@@ -13473,7 +13510,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return res ? { ...res, engineUsed: 'local', relaxed: false } : null;
   }
 
-  async function runGenerate(clearFirst) {
+  // `overrideSchedule` (fill mode only): lets "Fix Violations"/the readiness modal's "Clear
+  // unlocked violators and generate" commit a just-cleared schedule via updateBlockTracked and
+  // immediately generate off of it in the same handler, without waiting a render for `block` (a
+  // prop) to catch up — reading `block.schedule` here would otherwise still see the pre-clear
+  // cells until the next render.
+  async function runGenerate(clearFirst, overrideSchedule) {
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmRegen(false);
@@ -13483,7 +13525,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       // Clear & Regenerate: buildSolverPayload has no clearFirst of its own (see
       // generateViaSolverOrLocal's header comment) — an emptied schedule here makes its `locked[]`
       // come out empty too, the solver-path equivalent of generateSchedule's clearFirst:true.
-      const genBlock = clearFirst ? { ...block, schedule: {} } : block;
+      const genBlock = clearFirst ? { ...block, schedule: {} } : { ...block, schedule: overrideSchedule || block.schedule };
       const res = await generateViaSolverOrLocal(genBlock, clearFirst);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
@@ -13517,7 +13559,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // get (re)filled; locked/out-of-range cells are never touched. Feeds the solver path exactly the
   // same way (see generateViaSolverOrLocal): workingSchedule's non-empty cells become the payload's
   // `locked[]` naturally, no extra plumbing needed.
-  async function runPartialRegenerate(req) {
+  // `baseSchedule` (default: `sched`, i.e. `block.schedule`): same override-for-freshness reason
+  // as runGenerate's `overrideSchedule` above — the readiness modal's "Clear unlocked violators
+  // and generate" action for Regenerate Range needs this call to see the violator cells it just
+  // cleared, not the stale pre-clear `block` prop.
+  async function runPartialRegenerate(req, baseSchedule = sched) {
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmPartialRegen(null);
@@ -13526,8 +13572,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const locked = block.lockedCells || {};
       const inRange = req.kind === 'range' ? (ds => ds >= req.start && ds <= req.end) : (() => true);
       const workingSchedule = {};
-      for (const resId of Object.keys(sched)) {
-        const row = sched[resId] || {};
+      for (const resId of Object.keys(baseSchedule)) {
+        const row = baseSchedule[resId] || {};
         const newRow = {};
         for (const ds of Object.keys(row)) {
           const cellLocked = !!locked[resId]?.[ds];
@@ -13607,6 +13653,30 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   function requestRegenRange() {
     if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) { showToast('Pick a valid start/end date for the regenerate range first', 'red'); return; }
     setConfirmPartialRegen({ kind: 'range', start: rangeStart, end: rangeEnd });
+  }
+
+  // Clears the given (unlocked, hard-rule-violating) cells via ONE functional updateBlockTracked,
+  // then hands the resulting schedule straight to `followUp` — runGenerate/runPartialRegenerate's
+  // override-schedule params — so the refill sees the just-cleared cells immediately instead of
+  // waiting a render for the `block` prop to catch up. Shared by the standalone "Fix Violations"
+  // button and the readiness modals' "Clear unlocked violators and generate" action.
+  // block.lockedCells is untouched — only `schedule` changes.
+  function clearViolatorsThenGenerate(fixableCells, followUp) {
+    if (!fixableCells.length) return;
+    const cleared = { ...sched };
+    for (const c of fixableCells) {
+      cleared[c.residentId] = { ...(cleared[c.residentId] || {}), [c.dateStr]: null };
+    }
+    updateBlockTracked(b => ({ ...b, schedule: cleared }));
+    followUp(cleared);
+  }
+
+  // Standalone "Fix Violations" toolbar action: clears every unlocked cell that already has a hard
+  // validateAll error, then refills the holes with a plain fill pass (never overwrites an existing
+  // cell — same guarantee "Generate Schedule" gives). Locked violators are left exactly as they
+  // are; they need unlocking first (see the "locked — unlock to fix" note in the toolbar tooltip).
+  function requestFixViolations() {
+    clearViolatorsThenGenerate(violatingSummary.fixable, cleared => runGenerate(false, cleared));
   }
 
   if (!dates.length) return (
@@ -13803,6 +13873,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
             title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
             What-If Sweep
+          </Button>
+          <Button variant="dangerOutline" size="sm" icon={Wrench} onClick={requestFixViolations}
+            disabled={violatingSummary.fixable.length === 0}
+            title={violatingSummary.fixable.length
+              ? `Clears ${violatingSummary.fixable.length} unlocked assignment${violatingSummary.fixable.length !== 1 ? 's' : ''} that already break a hard rule, then refills the holes${violatingSummary.locked.length ? ` (${violatingSummary.locked.length} more are locked — unlock them first)` : ''}.`
+              : violatingSummary.locked.length
+              ? `${violatingSummary.locked.length} locked cell${violatingSummary.locked.length !== 1 ? 's' : ''} break a hard rule — unlock to fix.`
+              : 'No unlocked assignments currently break a hard rule.'}>
+            Fix Violations{violatingSummary.fixable.length > 0 ? ` (${violatingSummary.fixable.length})` : ''}
           </Button>
           <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={()=>setConfirmRegen(true)}>
             Clear &amp; Regenerate
@@ -14038,7 +14117,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               This clears <strong>all current assignments — including ones you entered manually</strong> — and
               regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
             </p>
-            <ReadinessWarningPanel issues={generateReadiness}/>
+            <ReadinessWarningPanel messages={generateReadiness.messages}/>
+            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
@@ -14055,7 +14135,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
                 : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
             </p>
-            <ReadinessWarningPanel issues={generateReadiness}/>
+            <ReadinessWarningPanel messages={generateReadiness.messages}/>
+            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}
+              onFixAndGenerate={() => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
+                cleared => runPartialRegenerate(confirmPartialRegen, cleared))}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
@@ -14065,13 +14148,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       )}
 
       {confirmGenerate && (
-        <Modal title="Missing manual dates" onClose={()=>setConfirmGenerate(null)}>
+        <Modal title="Before You Generate" onClose={()=>setConfirmGenerate(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
-              rules that depend on these dates may not apply correctly.
-            </p>
-            <ReadinessWarningPanel issues={confirmGenerate}/>
+            {confirmGenerate.messages.length > 0 && (
+              <p className="text-sm text-gray-600">
+                Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
+                rules that depend on these dates may not apply correctly.
+              </p>
+            )}
+            <ReadinessWarningPanel messages={confirmGenerate.messages}/>
+            <KeptCellViolationsPanel violations={confirmGenerate.keptViolations}
+              onFixAndGenerate={() => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
+                cleared => runGenerate(false, cleared))}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmGenerate(null)}>Cancel</Button>
               <Button variant="primary" onClick={()=>runGenerate(false)}>Generate Anyway</Button>
@@ -14276,12 +14364,53 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
 // Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
 // red warning-panel style as DragConfirmModal's violation list below.
-function ReadinessWarningPanel({ issues }) {
-  if (!issues.length) return null;
+function ReadinessWarningPanel({ messages }) {
+  if (!messages.length) return null;
   return (
     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
       <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
-      {issues.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
+      {messages.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
+    </div>
+  );
+}
+
+// Kept-cell hard-error warning for the same three readiness modals (see checkGenerateReadiness/
+// keptCellsForMode in lib/keptCellViolations.js): lists exactly the non-empty cells that will
+// SURVIVE the pending Generate/Clear & Regenerate/Regenerate Unlocked/Range action with an
+// existing hard validateAll error — generation never overwrites a non-empty cell (CLAUDE.md
+// "chief sees red validateAll errors after hand-editing/locking cells or partial regenerate"), so
+// without this the chief would only discover the still-red cell AFTER running the action.
+// `onFixAndGenerate` is omitted for Clear & Regenerate — its `keptViolations` is always empty
+// (nothing survives a full wipe), so there'd never be a fixable cell to offer here.
+function KeptCellViolationsPanel({ violations, onFixAndGenerate }) {
+  const { fixable, locked } = violations;
+  if (!fixable.length && !locked.length) return null;
+  const total = fixable.length + locked.length;
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1">
+        <AlertCircle size={13}/> {total} existing assignment{total !== 1 ? 's' : ''} already break a hard rule
+      </div>
+      <p className="text-xs text-red-600 ml-4 mb-1.5">
+        Generation never overwrites an existing cell — these will still be red afterward unless cleared first.
+      </p>
+      <div className="ml-4 space-y-0.5 max-h-32 overflow-auto">
+        {fixable.map((c,i)=>(
+          <p key={`f${i}`} className="text-xs text-red-600">
+            {c.name || c.residentId} · {formatDisplayDate(c.dateStr)} · {c.shiftId} — {c.messages.join('; ')}
+          </p>
+        ))}
+        {locked.map((c,i)=>(
+          <p key={`l${i}`} className="text-xs text-red-600">
+            {c.name || c.residentId} · {formatDisplayDate(c.dateStr)} · {c.shiftId} — {c.messages.join('; ')} (locked — unlock to fix)
+          </p>
+        ))}
+      </div>
+      {onFixAndGenerate && fixable.length > 0 && (
+        <Button variant="dangerOutline" size="sm" className="mt-2 ml-4" onClick={onFixAndGenerate}>
+          Clear unlocked violators and generate
+        </Button>
+      )}
     </div>
   );
 }
