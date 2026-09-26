@@ -33,7 +33,10 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote } from './lib/solverClient.js';
-import { qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS } from './lib/qgenda.js';
+import {
+  qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
+  qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
+} from './lib/qgenda.js';
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
@@ -15628,6 +15631,19 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     });
   }
 
+  // Same sparse-write convention as updQgendaTask, for the CSV column HEADER text
+  // (appSettings.qgendaHeaderOverrides — src/lib/qgenda.js's QGENDA_COLUMN_DEFAULTS/
+  // resolveQgendaHeaders): blank, whitespace-only, or exactly-the-default input deletes the
+  // override key rather than storing a no-op string.
+  function updQgendaHeader(col, raw) {
+    setAppSettings(p => {
+      const o = { ...(p.qgendaHeaderOverrides || {}) };
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed === QGENDA_COLUMN_DEFAULTS[col]) delete o[col]; else o[col] = trimmed;
+      return { ...p, qgendaHeaderOverrides: o };
+    });
+  }
+
   function exportData() {
     if (SUPABASE_ENABLED && demoMode && !dbReady) {
       showToast('Demo data is still loading from the cloud — wait a moment and try again.', 'amber');
@@ -15947,6 +15963,60 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                   </div>
                 </div>
               ))}
+              {/* Jeopardy/call export row — not a SHIFTS entry, so it's rendered separately from
+                  the SHIFT_AREAS.map loop above, but reads/writes the exact same
+                  qgendaTaskOverrides map under QGENDA_JEOPARDY_TASK_ID (src/lib/qgenda.js). Every
+                  resident on jeopardy that date with no clinical shift exports one row under this
+                  task name (buildQGendaCSVRows) — see CLAUDE.md "Jeopardy never collides...". */}
+              <div>
+                <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Jeopardy / Call</div>
+                <div className="space-y-1.5">
+                  {(() => {
+                    const shiftId = QGENDA_JEOPARDY_TASK_ID;
+                    const placeholder = QGENDA_TASKS[shiftId];
+                    const override = (appSettings.qgendaTaskOverrides || {})[shiftId] ?? '';
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs w-28 shrink-0 truncate text-gray-600" title="Jeopardy / call day (no clinical shift)">
+                            Jeopardy / Call
+                          </span>
+                          <input value={override} onChange={e=>updQgendaTask(shiftId, e.target.value)} placeholder={placeholder}
+                            className={`flex-1 min-w-0 text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary ${
+                              override ? 'border-primary bg-primary/10 font-medium' : 'border-gray-200'
+                            }`}/>
+                          {override && (
+                            <button onClick={()=>updQgendaTask(shiftId, '')} title="Reset to default" className="text-gray-300 hover:text-primary shrink-0"><RefreshCw size={10}/></button>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-gray-400 mt-0.5 ml-[7.5rem]">Exported for a jeopardy/call day with no clinical shift that date. No confirmed QGenda timing exists for jeopardy yet, so Start/End/EndDate stay blank in the "With times" export.</p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">CSV column headers</label>
+            <p className="text-xs text-gray-400 mb-3">The printed header text for each export column — fix these if your QGenda import template expects different spellings (e.g. StartDate/TaskName). Blank uses the default shown as placeholder; this never changes which data lands in the column, only its header text.</p>
+            <div className="space-y-1.5">
+              {Object.keys(QGENDA_COLUMN_DEFAULTS).map(col => {
+                const override = (appSettings.qgendaHeaderOverrides || {})[col] ?? '';
+                return (
+                  <div key={col} className="flex items-center gap-2">
+                    <span className="text-xs w-20 shrink-0 truncate text-gray-600" title={col}>{col}</span>
+                    <input value={override} onChange={e=>updQgendaHeader(col, e.target.value)} placeholder={QGENDA_COLUMN_DEFAULTS[col]}
+                      className={`flex-1 min-w-0 text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary ${
+                        override ? 'border-primary bg-primary/10 font-medium' : 'border-gray-200'
+                      }`}/>
+                    {override && (
+                      <button onClick={()=>updQgendaHeader(col, '')} title="Reset to default" className="text-gray-300 hover:text-primary shrink-0"><RefreshCw size={10}/></button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -18178,25 +18248,36 @@ export default function ResidentScheduler({ viewer } = {}) {
     return [header,...rows];
   }
 
-  // QGenda CSV: tidy/long format — one row per assignment, columns driven entirely by
-  // QGENDA_VARIANTS[variant].columns (src/lib/qgenda.js) rather than hardcoded here, since we
-  // cannot verify QGenda's expected header names without admin access to trial an import — a
-  // wrong header is meant to be a one-line data fix in that file, not an edit here.
+  // QGenda CSV: tidy/long format — one row per assignment (plus one per open jeopardy/call day,
+  // see below), columns driven entirely by QGENDA_VARIANTS[variant].columns (src/lib/qgenda.js)
+  // rather than hardcoded here, since we cannot verify QGenda's expected header names without
+  // admin access to trial an import — a wrong header is meant to be a one-line data fix in that
+  // file (or a Settings edit via qgendaHeaderOverrides), not an edit here.
   // Start/EndDate/StartTime/EndTime are derived from SHIFT_TIMING's numeric startH/durationH (the
   // same source rest-period math uses), not a display label string — handles midnight rollover
-  // correctly. Date/EndDate use qgendaDate() (4-digit year) — NEVER prettyDate, which QGenda's
-  // importer rejects (2-digit year).
-  // Returns { rows, unmapped, count }: `rows` includes the header row, ready for downloadCSV.
-  // `unmapped` collects the shift id of every assignment whose QGENDA task fell back to its
-  // on-screen label (qgendaTaskFor's source==='fallback') — one entry per occurrence, so its
-  // length is directly "how many assignments would export with an unconfirmed task name", and the
-  // caller de-dupes for display. `count` is the total number of assignment rows (independent of
-  // unmapped), for any caller that wants a plain "N shifts will export" figure.
+  // correctly (qgendaShiftClock/qgendaEndDate in qgenda.js). Date/EndDate use qgendaDate() (4-digit
+  // year) — NEVER prettyDate, which QGenda's importer rejects (2-digit year).
+  // Jeopardy/call rows: for every EM_HOME/EM_BAMC resident with no clinical shift that date (see
+  // isJeopardyDate's own category guard) who's on jeopardy that date (chief-typed
+  // resident.jeopardyDates OR block.jeopardySchedule track), one row is added with the synthetic
+  // shift id QGENDA_JEOPARDY_TASK_ID, resolved through the SAME qgendaTaskFor override mechanism
+  // (default task name 'Call', chief-editable in Settings). Jeopardy has no confirmed timing
+  // anywhere in this app, so qgendaShiftClock naturally leaves Start/End blank and EndDate
+  // un-rolled for these rows — that's deliberate, not a bug, until QGenda timing is confirmed.
+  // The `if (sid) { ...; continue; }` branch below means a jeopardy row is only ever added for a
+  // cell with NO clinical shift — jeopardy never collides with a clinical shift by rule (see
+  // CLAUDE.md), but this guard keeps a stray/manual collision from ever double-exporting a date.
+  // Returns { rows, unmapped, count }: `rows` includes the header row (resolveQgendaHeaders
+  // applies appSettings.qgendaHeaderOverrides over QGENDA_COLUMN_DEFAULTS), ready for downloadCSV.
+  // `unmapped` collects the shift id of every row whose QGENDA task fell back to its on-screen
+  // label (qgendaTaskFor's source==='fallback') — one entry per occurrence, so its length is
+  // directly "how many rows would export with an unconfirmed task name", and the caller de-dupes
+  // for display. `count` is the total number of rows (independent of unmapped), for any caller
+  // that wants a plain "N rows will export" figure.
   function buildQGendaCSVRows(variant) {
     const v = QGENDA_VARIANTS[variant] ? variant : 'minimal';
     const columns = QGENDA_VARIANTS[v].columns;
     const dates=getBlockDates(block.startDate,block.endDate);
-    const fmtHM = h => { const hh=Math.floor(h)%24, mm=Math.round((h-Math.floor(h))*60); return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`; };
     const nameFormat = appSettings.qgendaNameFormat ?? 'lastFirstInitial';
     const overrides = appSettings.qgendaTaskOverrides ?? {};
     const unmapped=[];
@@ -18204,28 +18285,21 @@ export default function ResidentScheduler({ viewer } = {}) {
     for (const r of allResidents) {
       for (const d of dates) {
         const sid=block.schedule?.[r.id]?.[d];
-        if (!sid) continue;
-        const t=SHIFT_TIMING[sid];
-        const startH=t?.startH;
-        const durationH=t?.durationH;
-        const rollsOver = startH!=null && durationH!=null && (startH + durationH) >= 24;
-        const startStr = startH!=null ? fmtHM(startH) : '';
-        const endStr = (startH!=null && durationH!=null) ? fmtHM(startH + durationH) : '';
-        const endDate = rollsOver ? toDateStr(addDays(parseDate(d), 1)) : d;
-        const { task, source } = qgendaTaskFor(sid, r, overrides);
-        if (source === 'fallback') unmapped.push(sid);
-        const valuesByColumn = {
-          Staff: qgendaName(r, nameFormat),
-          Date: qgendaDate(d),
-          EndDate: qgendaDate(endDate),
-          Task: task,
-          StartTime: startStr,
-          EndTime: endStr,
-        };
-        dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+        if (sid) {
+          const { valuesByColumn, source } = qgendaRowValues(sid, r, d, { overrides, nameFormat });
+          if (source === 'fallback') unmapped.push(sid);
+          dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+          continue;
+        }
+        if (isJeopardyDate(r, d, block.jeopardySchedule)) {
+          const { valuesByColumn, source } = qgendaRowValues(QGENDA_JEOPARDY_TASK_ID, r, d, { overrides, nameFormat });
+          if (source === 'fallback') unmapped.push(QGENDA_JEOPARDY_TASK_ID);
+          dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+        }
       }
     }
-    return { rows: [columns, ...dataRows], unmapped, count: dataRows.length };
+    const header = resolveQgendaHeaders(columns, appSettings.qgendaHeaderOverrides);
+    return { rows: [header, ...dataRows], unmapped, count: dataRows.length };
   }
 
   function downloadICS(filename, contents) {
