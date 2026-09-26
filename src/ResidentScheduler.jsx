@@ -6080,7 +6080,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           if (!elig.has(shift.id)) continue;
           const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
           if (cov.max <= 0) continue; // never a shift with max 0 that date (also excludes 12h-outside-window)
-          if (filledCount(shift.id, ds) < cov.max) continue; // real headroom belongs to Room/Steal/Chain, not this
+          const filled = filledCount(shift.id, ds);
+          if (filled < cov.max) continue; // real headroom belongs to Room/Steal/Chain, not this
+          if (filled > cov.max) continue; // already overstaffed once — cap at max+1, same as the solver's overstaff BoolVar
           const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
           if (!pool.includes(r)) continue;
           assignCell(r.id, shift.id, ds);

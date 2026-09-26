@@ -22,3 +22,6 @@ supabase/.temp/
 
 # Syncthing conflict artifacts
 *.sync-conflict-*
+
+# Python virtualenvs (solver-service/.venv is what solverParity.test.js shells out to)
+.venv/
