@@ -54,6 +54,7 @@ export function findGiveCandidates({
   residentId, dateStr, shiftId, residents, schedule, lockedCells,
   isEligible, hardViolations, softViolations, targetInfo,
 }) {
+  if (lockedCells?.[residentId]?.[dateStr]) return []; // same source-lock guard as swap/assign
   const out = [];
   for (const r of residents || []) {
     if (!r || r.id === residentId) continue;

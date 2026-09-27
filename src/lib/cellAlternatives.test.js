@@ -25,6 +25,16 @@ describe('findGiveCandidates', () => {
     expect(out.map(c => c.residentId).sort()).toEqual(['C', 'D']);
   });
 
+  it('returns nothing when the source cell itself is locked', () => {
+    const schedule = { A: { d1: 'POD-D' }, B: {}, C: {} };
+    const isEligible = makeEligible({ B: new Set(['POD-D']), C: new Set(['POD-D']) });
+    const out = findGiveCandidates({
+      residentId: 'A', dateStr: 'd1', shiftId: 'POD-D', residents: RESIDENTS, schedule, lockedCells: { A: { d1: true } },
+      isEligible, hardViolations: () => [], softViolations: () => [], targetInfo: () => ({ count: 0, target: 20 }),
+    });
+    expect(out).toEqual([]);
+  });
+
   it('excludes locked cells', () => {
     const schedule = { A: { d1: 'POD-D' }, B: {}, C: {} };
     const isEligible = makeEligible({ B: new Set(['POD-D']), C: new Set(['POD-D']) });

@@ -13548,11 +13548,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // Esc clears the cell selection (the inspector's own "Back to review" does the same thing) —
   // global, not gated on focus being inside the grid, since focus is often inside the panel itself.
   useEffect(() => {
-    if (!selectedCell) return;
+    // Not while the shift picker is open: Esc there would silently drop the selection underneath it.
+    if (!selectedCell || picker) return;
     const onKey = e => { if (e.key === 'Escape') setSelectedCell(null); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedCell]);
+  }, [selectedCell, picker]);
 
   // The inspector's three one-click actions — each is ONE functional updateBlockTracked (single
   // undo step, override log stays intact — see CLAUDE.md "every mutation via updateBlockTracked").
