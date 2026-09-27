@@ -49,6 +49,7 @@ import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
+import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -3196,6 +3197,17 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // id is shown, so a user who skips two releases gets both. Keep entries written for the chief
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
+  {
+    id: '2026-09-26-cell-inspector',
+    date: '2026-09-26',
+    title: 'A cell inspector for hand-editing — click a cell to see who could take it instead',
+    items: [
+      'On the Schedule tab, **click any grid cell to select it** and open the review panel\'s new Cell Inspector — the resident, date, current shift (or "Off"), lock state, and any rule issues on that exact cell, in plain language.',
+      'A filled cell now offers **"Give to"** (other residents free that day who could legally take the shift, ranked by who\'s furthest under target) and **"Swap with"** (a resident working a different shift that day you could cleanly trade with) — one click applies it. An empty cell offers **"Assign"** (eligible shifts with coverage room, shifts below their minimum first).',
+      'The shift picker is still one click away via **"Change shift…"** in the inspector, and **double-clicking a cell** opens it directly, same as before. Locked cells show only their lock state — unlock first to edit.',
+      'Press **Enter** on a focused cell to select it, **Esc** to clear the selection and go back to the issue lists.',
+    ],
+  },
   {
     id: '2026-09-26-review-panel',
     date: '2026-09-26',
@@ -13448,6 +13460,138 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     [issues]
   );
 
+  // Cell inspector (P3) — candidate math for the selected cell only (never all cells), so this is
+  // cheap for ~25 residents even though it calls cellViolations per candidate: findGiveCandidates/
+  // findSwapCandidates/findAssignOptions live in lib/cellAlternatives.js (pure; every rule-domain
+  // helper below is injected as a parameter, same trick as scheduleGrouping.js). A locked cell
+  // short-circuits before any of that runs — the inspector shows only its lock state then, no
+  // actions (see CLAUDE.md "locked cells untouchable").
+  const inspectorData = useMemo(() => {
+    if (!selectedCell) return null;
+    const { residentId, dateStr } = selectedCell;
+    const residentById = new Map(allResidents.map(r => [r.id, r]));
+    const resident = residentById.get(residentId);
+    if (!resident) return null;
+    const shiftId = sched[residentId]?.[dateStr] || null;
+    const locked = !!block.lockedCells?.[residentId]?.[dateStr];
+    const cellIssues = violMap[`${residentId}_${dateStr}`] || [];
+    if (locked) return { resident, dateStr, shiftId, locked, cellIssues, give: [], swap: [], assign: [] };
+
+    const isEligible = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return false;
+      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules,
+        { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+      return list.includes(sid);
+    };
+    // Mirrors cellViolations exactly — the SAME hard/soft split ScheduleGrid's own handleDrop
+    // uses for a drag-drop swap (level==='error' vs everything else); scheduleOverride lets the
+    // swap finder validate each side with the OTHER side's cell already cleared, same as
+    // scheduleClearing does for handleDrop.
+    const violationsFor = (rid, ds, sid, scheduleOverride) => {
+      const r = residentById.get(rid);
+      if (!r) return [];
+      return cellViolations(r, ds, sid, { ...block, schedule: scheduleOverride || sched },
+        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap);
+    };
+    const hardViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level === 'error');
+    const softViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level !== 'error');
+    const targetInfo = rid => {
+      const r = residentById.get(rid);
+      const count = Object.values(sched[rid] || {}).filter(Boolean).length;
+      return { count, target: r ? getShiftTarget(r, appSettings) : null };
+    };
+    const lockedCells = block.lockedCells || {};
+    const enrich = list => list.map(c => ({ ...c, resident: residentById.get(c.residentId) }));
+
+    if (shiftId) {
+      const give = enrich(findGiveCandidates({
+        residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
+        isEligible, hardViolations, softViolations, targetInfo,
+      }));
+      const swap = enrich(findSwapCandidates({
+        residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
+        isEligible, hardViolations, softViolations, targetInfo,
+      }));
+      return { resident, dateStr, shiftId, locked, cellIssues, give, swap, assign: [] };
+    }
+    const elig = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules,
+      { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[residentId], jeopardySchedule: block.jeopardySchedule });
+    const coverageFor = sid => coverageByDate[dateStr]?.perShift[sid] || null;
+    const assign = findAssignOptions({
+      residentId, dateStr, candidateShiftIds: elig, schedule: sched, lockedCells,
+      hardViolations, softViolations, coverageFor,
+    });
+    return { resident, dateStr, shiftId: null, locked, cellIssues, give: [], swap: [], assign };
+  }, [selectedCell, sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
+      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
+      coverageByDate, violMap, sd]);
+
+  // Ref on the mobile review-panel drawer (below the grid) — selectCell scrolls it into view on
+  // phone/tablet widths, where there's no desktop sidebar already on screen for the click to land
+  // beside.
+  const reviewPanelMobileRef = useRef(null);
+
+  // Selecting a cell (single click / Enter — see the cell's own handlers below) opens the review
+  // panel if it's closed and, below the lg breakpoint (the same one the desktop-sidebar/mobile-
+  // drawer split below already uses), scrolls the panel into view.
+  function selectCell(residentId, dateStr) {
+    setSelectedCell({ residentId, dateStr });
+    if (!reviewPanelOpen) setReviewPanelOpen(true);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        reviewPanelMobileRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+    }
+  }
+
+  // Esc clears the cell selection (the inspector's own "Back to review" does the same thing) —
+  // global, not gated on focus being inside the grid, since focus is often inside the panel itself.
+  useEffect(() => {
+    if (!selectedCell) return;
+    const onKey = e => { if (e.key === 'Escape') setSelectedCell(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedCell]);
+
+  // The inspector's three one-click actions — each is ONE functional updateBlockTracked (single
+  // undo step, override log stays intact — see CLAUDE.md "every mutation via updateBlockTracked").
+  // selectedCell is left pointing at the same {residentId,dateStr} afterward; the inspector
+  // "refreshes on the new state" simply because `sched`/`inspectorData` are recomputed off it.
+  function applyGive(candidateResidentId) {
+    if (!inspectorData?.shiftId) return;
+    const { resident, dateStr, shiftId } = inspectorData;
+    const cand = allResidents.find(r => r.id === candidateResidentId);
+    updateBlockTracked(b => {
+      const s = { ...b.schedule };
+      s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: null };
+      s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+      return { ...b, schedule: s };
+    });
+    showToast(`Gave ${shiftId} (${formatDisplayDate(dateStr)}) to ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
+  }
+  function applySwap(candidateResidentId) {
+    if (!inspectorData?.shiftId) return;
+    const { resident, dateStr, shiftId } = inspectorData;
+    const cand = allResidents.find(r => r.id === candidateResidentId);
+    const otherShiftId = sched[candidateResidentId]?.[dateStr] || null;
+    updateBlockTracked(b => {
+      const s = { ...b.schedule };
+      s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: otherShiftId };
+      s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+      return { ...b, schedule: s };
+    });
+    showToast(`Swapped ${shiftId} ↔ ${otherShiftId} (${formatDisplayDate(dateStr)}) between ${resident.firstName} ${resident.lastName} and ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
+  }
+  function applyAssign(assignShiftId) {
+    if (!inspectorData || inspectorData.shiftId) return;
+    const { resident, dateStr } = inspectorData;
+    updateBlockTracked(b => ({
+      ...b, schedule: { ...b.schedule, [resident.id]: { ...(b.schedule[resident.id] || {}), [dateStr]: assignShiftId } },
+    }));
+    showToast(`Assigned ${assignShiftId} to ${resident.firstName} ${resident.lastName} (${formatDisplayDate(dateStr)})`, 'green');
+  }
+
   // Jump-to-cell (P2): switches the category filter to All when the target resident is filtered
   // out, forces Grid view (the only view with per-cell refs registered), marks the cell selected,
   // then scrolls it into view. scrollIntoView (not manual scrollLeft/scrollTop math) is deliberate:
@@ -14047,7 +14191,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             <div key={ds}
               ref={el=>{ const k=`${res.id}_${ds}`; if(el) cellRefs.current.set(k, el); else cellRefs.current.delete(k); }}
               style={{width:CELL_W,minWidth:CELL_W,height:36, ...(isSelected?{outline:'3px solid hsl(var(--primary))',outlineOffset:'-3px'}:null)}}
-              onClick={()=>{ if(drag||lockMode) return; if(clickable){ cancelHover(); setPicker({resident:res,dateStr:ds}); } }}
+              tabIndex={lockMode?undefined:0}
+              onClick={()=>{ if(drag||lockMode) return; selectCell(res.id, ds); }}
+              onDoubleClick={()=>{ if(drag||lockMode) return; if(clickable){ cancelHover(); setPicker({resident:res,dateStr:ds}); } }}
+              onKeyDown={e=>{
+                if(lockMode) return;
+                if(e.key==='Enter'){ e.preventDefault(); selectCell(res.id, ds); }
+                else if(e.key==='Escape'){ setSelectedCell(null); }
+              }}
               onMouseDown={()=>{ if(!paintable) return; const target=!isLocked; paintValueRef.current=target; toggleLock(res.id, ds); }}
               onMouseEnter={e=>{ if(!paintable||paintValueRef.current===null||e.buttons!==1) return; if(isLocked!==paintValueRef.current) toggleLock(res.id, ds); }}
               onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
@@ -14630,11 +14781,16 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
-      {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. */}
+      {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. Ref'd
+          by selectCell so a phone/tablet tap scrolls the panel (and its inspector) into view. */}
       {reviewPanelOpen && (
-        <div className="no-print lg:hidden mt-4">
+        <div ref={reviewPanelMobileRef} className="no-print lg:hidden mt-4">
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}/>
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}
+            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
+            onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
         </div>
       )}
       </div>
@@ -14653,7 +14809,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {reviewPanelOpen && (
         <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, height:`calc(100vh - ${fullscreen ? '3rem' : '8rem'})`}}>
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}/>
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}
+            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
+            onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
         </div>
       )}
       </div>
@@ -15888,8 +16048,13 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
 // `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
-function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onJumpToRow, onClose }) {
+function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onJumpToRow, onClose,
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
   const { mustFix, orderedWarns } = panelIssues;
+  // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
+  // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
+  // which case this falls back to the lists rather than showing a blank inspector.
+  const showInspector = !!selectedCell && !!inspectorData;
   // "Should look at" collapses by default once it's long enough that showing it open would push
   // Generation notes off the initial view — Must fix (the thing that blocks export) always stays
   // visible in full.
@@ -15909,7 +16074,14 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
   return (
     <div className="bg-card border border-border rounded-xl shadow-sm flex flex-col h-full overflow-hidden">
       <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
-        <span className="text-sm font-semibold text-foreground">Review</span>
+        {showInspector ? (
+          <button type="button" onClick={onClearSelection}
+            className="flex items-center gap-1 text-sm font-semibold text-foreground hover:text-primary transition-colors">
+            <ChevronLeft size={16}/> Cell inspector
+          </button>
+        ) : (
+          <span className="text-sm font-semibold text-foreground">Review</span>
+        )}
         {onClose && (
           <button type="button" onClick={onClose} title="Collapse review panel"
             className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
@@ -15917,6 +16089,12 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
           </button>
         )}
       </div>
+      {showInspector ? (
+        <div className="overflow-y-auto flex-1 p-3 text-sm">
+          <CellInspector data={inspectorData} onBack={onClearSelection} onChangeShift={onChangeShift}
+            onUnlockCell={onUnlockCell} onGive={onGive} onSwap={onSwap} onAssign={onAssign}/>
+        </div>
+      ) : (
       <div className="overflow-y-auto flex-1 p-3 space-y-4 text-sm">
         <section>
           {/* tabIndex + id: goToErrorsStep (BlockContextBar's rail button) focuses this heading
@@ -15962,7 +16140,152 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
           </section>
         )}
       </div>
+      )}
     </div>
+  );
+}
+
+// P3 (chief-review-loop plan): the Cell inspector — replaces the issue lists inside ReviewPanel
+// while a grid cell is selected. `data` is ScheduleGrid's inspectorData memo: { resident, dateStr,
+// shiftId, locked, cellIssues, give, swap, assign }. A locked cell shows only its lock state (see
+// CLAUDE.md "locked cells untouchable") — no Give/Swap/Assign section at all, matching the plan's
+// "no other actions". `onGive`/`onSwap` take the candidate's residentId; `onAssign` takes a
+// shiftId; all three are ScheduleGrid's applyGive/applySwap/applyAssign, each one functional
+// updateBlockTracked call (one undo step).
+const INSPECTOR_SHOW_MORE_STEP = 5;
+function CellInspector({ data, onBack, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
+  const { resident, dateStr, shiftId, locked, cellIssues, give, swap, assign } = data;
+  const [giveShown, setGiveShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const [swapShown, setSwapShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const [assignShown, setAssignShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const shiftLabel = shiftId ? (SHIFT_MAP[shiftId]?.label || shiftId) : null;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-sm font-semibold text-foreground">{resident.firstName} {resident.lastName}</div>
+        <div className="text-xs text-muted-foreground">{formatDisplayDate(dateStr)}</div>
+        <div className="mt-1 text-sm">
+          {shiftId
+            ? <span className="font-mono font-semibold">{shiftId}</span>
+            : <span className="italic text-muted-foreground">Off</span>}
+          {shiftLabel && shiftLabel !== shiftId && <span className="text-muted-foreground"> — {shiftLabel}</span>}
+        </div>
+      </div>
+
+      {cellIssues.length > 0 && (
+        <ul className="space-y-1">
+          {cellIssues.map(issue => (
+            <li key={issueKey(issue)}
+              className={`text-xs px-2 py-1.5 rounded-lg border ${issue.level === 'error' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-amber-200 bg-amber-50/60 text-amber-700'}`}>
+              {labelForIssue(issue)}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {locked ? (
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 flex items-center justify-between gap-2">
+          <span className="text-xs text-indigo-700 font-medium flex items-center gap-1.5"><Lock size={12}/> Locked — unlock to edit</span>
+          <Button variant="secondary" size="sm" icon={Unlock} onClick={onUnlockCell}>Unlock</Button>
+        </div>
+      ) : (
+        <>
+          {shiftId && (
+            <Button variant="secondary" size="sm" className="w-full" onClick={onChangeShift}>Change shift…</Button>
+          )}
+
+          {shiftId && (
+            <InspectorSection title={`Give to (${give.length})`} count={give.length} empty="No one else can take this shift here.">
+              {give.slice(0, giveShown).map(c => (
+                <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
+                  softViolations={c.softViolations} actionLabel="Give" onApply={() => onGive(c.residentId)}/>
+              ))}
+              {give.length > giveShown && <ShowMoreButton onClick={() => setGiveShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+
+          {shiftId && (
+            <InspectorSection title={`Swap with (${swap.length})`} count={swap.length} empty="No clean swap available today.">
+              {swap.slice(0, swapShown).map(c => (
+                <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
+                  softViolations={c.softViolations} shiftNote={`${c.otherShiftId} ↔ ${shiftId}`}
+                  actionLabel="Swap" onApply={() => onSwap(c.residentId)}/>
+              ))}
+              {swap.length > swapShown && <ShowMoreButton onClick={() => setSwapShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+
+          {!shiftId && (
+            <InspectorSection title={`Assign (${assign.length})`} count={assign.length} empty="No eligible shift has room today.">
+              {assign.slice(0, assignShown).map(a => (
+                <AssignRow key={a.shiftId} shiftId={a.shiftId} min={a.min} max={a.max} count={a.count}
+                  softViolations={a.softViolations} onApply={() => onAssign(a.shiftId)}/>
+              ))}
+              {assign.length > assignShown && <ShowMoreButton onClick={() => setAssignShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+        </>
+      )}
+
+      <Button variant="ghost" size="sm" icon={ChevronLeft} className="w-full" onClick={onBack}>Back to review</Button>
+    </div>
+  );
+}
+
+function InspectorSection({ title, count, empty, children }) {
+  return (
+    <div>
+      <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">{title}</h4>
+      {count > 0 ? <ul className="space-y-1">{children}</ul> : <p className="text-xs text-muted-foreground italic">{empty}</p>}
+    </div>
+  );
+}
+
+function ShowMoreButton({ onClick }) {
+  return (
+    <li>
+      <button type="button" onClick={onClick} className="w-full text-xs text-primary hover:underline py-1">Show more</button>
+    </li>
+  );
+}
+
+// One "Give to"/"Swap with" candidate row — target-count delta ("18→19 of 20") makes the ranking
+// visible, not just implied by list order; a soft violation shows as a small amber note rather
+// than blocking the action (only a HARD violation excludes a candidate at all — see
+// cellAlternatives.js).
+function CandidateRow({ resident, count, target, softViolations, shiftNote, actionLabel, onApply }) {
+  if (!resident) return null;
+  return (
+    <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground truncate">{resident.firstName} {resident.lastName}</div>
+        <div className="text-[11px] text-muted-foreground">
+          {target != null ? `${count}→${count + 1} of ${target}` : `${count} shifts (no target)`}
+          {shiftNote && ` · ${shiftNote}`}
+        </div>
+        {softViolations.length > 0 && (
+          <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
+        )}
+      </div>
+      <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>{actionLabel}</Button>
+    </li>
+  );
+}
+
+// One "Assign" candidate row — coverage shortfall drives ranking (below-minimum shifts first).
+function AssignRow({ shiftId, min, max, count, softViolations, onApply }) {
+  return (
+    <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
+      <div className="min-w-0">
+        <div className="text-xs font-mono font-semibold text-foreground truncate">{shiftId}</div>
+        <div className="text-[11px] text-muted-foreground">{`${count}→${count + 1} of ${min} min (${max} max)`}</div>
+        {softViolations.length > 0 && (
+          <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
+        )}
+      </div>
+      <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>Assign</Button>
+    </li>
   );
 }
 
