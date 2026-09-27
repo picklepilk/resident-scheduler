@@ -88,18 +88,27 @@ function coverageDirection(message) {
   return null;
 }
 
-// Same problem, same fix, for the two SENIOR-COMPOSITION soft-warn messages validateAll pushes with
-// no `rule` id at all (2b-1 EM-count composition and 2b-2 PGY gating — see their push sites'
-// comments): without this, groupKeyForIssue/labelForIssueGroup fall all the way through to
-// normalizeIssueMessage's generic template, which strips every PGY number down to "#" — a chief
-// would read the group title as literally "EM PGY-# on FLEX Day though an EM PGY-# already
-// covered…", a robotic, unreadable leak of the numeral-stripping the fallback exists to hide.
-// Recognized by a fixed substring near the end of each message (never changes per shift/date/PGY)
-// so this stays lib-legal — no import of validateAll's rule vocabulary needed — and grouped/labeled
+// Same problem, same fix, for the two SENIOR-COMPOSITION soft-warn messages validateAll pushes
+// (2b-1 EM-count composition and 2b-2 PGY gating — see their push sites' comments): without this,
+// groupKeyForIssue/labelForIssueGroup fall all the way through to normalizeIssueMessage's generic
+// template, which strips every PGY number down to "#" — a chief would read the group title as
+// literally "EM PGY-# on FLEX Day though an EM PGY-# already covered…", a robotic, unreadable leak
+// of the numeral-stripping the fallback exists to hide.
+// Both push sites now stamp a stable `rule` id (rulePolicy.js: seniorEmCountComposition/
+// seniorPgyGating) — detect by THAT first. The substring match on the message survives only as a
+// fallback for an issue persisted (e.g. in a saved report) before this rule id existed; a bare
+// string still stays lib-legal (no import of validateAll's rule vocabulary needed). Grouped/labeled
 // by `issue.shiftId`, same one-row-per-actual-shift granularity as the coverage-miss/max groups.
 const EM_COUNT_COMPOSITION_MARKER = 'chief-directed EM-count composition';
 const PGY_GATING_MARKER = 'chief-directed PGY gating';
-function seniorCompositionKind(message) {
+const SENIOR_COMPOSITION_RULE_KINDS = {
+  seniorEmCountComposition: 'emCount',
+  seniorPgyGating: 'pgyGate',
+};
+function seniorCompositionKind(issue) {
+  if (!issue) return null;
+  if (issue.rule && SENIOR_COMPOSITION_RULE_KINDS[issue.rule]) return SENIOR_COMPOSITION_RULE_KINDS[issue.rule];
+  const message = issue.message;
   if (typeof message !== 'string') return null;
   if (message.includes(EM_COUNT_COMPOSITION_MARKER)) return 'emCount';
   if (message.includes(PGY_GATING_MARKER)) return 'pgyGate';
@@ -174,19 +183,21 @@ export function groupPanelIssues(issues, exportBlockingRuleIds = new Set()) {
 
 // The single place a validateAll issue is turned into a group KEY (shared by groupIssuesByKind's
 // grouping pass and, indirectly, by labelForIssueGroup's coverage-message branch below). Precedence:
-// an explicit `rule` id first (most specific — two issues with the same rule are the same kind by
-// construction), then a coverage-miss/max message keyed by its shiftId (see coverageDirection —
-// this is what makes "Trauma Day below minimum" its own group, separate from "POD Day below
-// minimum", instead of every shift collapsing into one generic "Below minimum staffing" template),
-// then the senior-composition EM-count/PGY-gating messages keyed by shiftId the same way (see
-// seniorCompositionKind), then the normalized message template for everything else.
+// a coverage-miss/max message keyed by its shiftId first (see coverageDirection — this is what makes
+// "Trauma Day below minimum" its own group, separate from "POD Day below minimum", instead of every
+// shift collapsing into one generic "Below minimum staffing" template), then the senior-composition
+// EM-count/PGY-gating issues keyed by shiftId the same way (see seniorCompositionKind — checked
+// BEFORE the plain-rule branch below despite now carrying a real `rule` id, because collapsing them
+// to the bare id would merge every shift's warns into one group and lose that granularity), then any
+// other explicit `rule` id (two issues with the same rule are the same kind by construction), then
+// the normalized message template for everything else.
 export function groupKeyForIssue(issue) {
   if (!issue) return '';
-  if (issue.rule) return issue.rule;
   const dir = coverageDirection(issue.message);
   if (dir && issue.shiftId) return `coverage:${dir}:${issue.shiftId}`;
-  const kind = seniorCompositionKind(issue.message);
+  const kind = seniorCompositionKind(issue);
   if (kind && issue.shiftId) return `${kind}:${issue.shiftId}`;
+  if (issue.rule) return issue.rule;
   return normalizeIssueMessage(issue.message);
 }
 
@@ -210,7 +221,7 @@ export function labelForIssueGroup(key, items, shiftLabelsById = {}) {
     const shiftLabel = shiftLabelsById[first.shiftId] || first.shiftId;
     return dir === 'min' ? `${shiftLabel} below minimum` : `${shiftLabel} above maximum`;
   }
-  const kind = seniorCompositionKind(first?.message);
+  const kind = seniorCompositionKind(first);
   if (kind && first?.shiftId) {
     const shiftLabel = shiftLabelsById[first.shiftId] || first.shiftId;
     return kind === 'emCount' ? `${shiftLabel} — not enough EM residents` : `${shiftLabel} — junior PGY covered a slot a senior already filled`;

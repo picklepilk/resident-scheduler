@@ -24,11 +24,16 @@ export const GRID_GROUP_MODE_DEFAULT = 'category';
 // Colours are reused from the set the dark-mode override sheet already remaps (see index.css) and
 // are deliberately distinct from every CATEGORIES hue, so a PGY banner can't be mistaken for a
 // category banner.
+// `shortLabel` mirrors CATEGORIES' own field (see lib/parse.js) — ScheduleGrid's phone banner
+// (`narrowNameCol ? (cat.shortLabel || cat.label) : cat.label`) reads it for every group kind, not
+// just 'category' mode, so a group with none renders its full label under `whitespace-nowrap` at
+// NAME_W=108px and can bleed past the column. All four already fit comfortably at that width, but
+// the field exists so the banner's short-label branch never silently falls back to the long one.
 export const PGY_GROUPS = [
-  { id: 'PGY_1',     pgy: 1,    label: 'PGY-1',       badge: 'bg-slate-700 text-white', rowBg: 'bg-slate-50' },
-  { id: 'PGY_2',     pgy: 2,    label: 'PGY-2',       badge: 'bg-slate-600 text-white', rowBg: 'bg-slate-50' },
-  { id: 'PGY_3',     pgy: 3,    label: 'PGY-3',       badge: 'bg-slate-500 text-white', rowBg: 'bg-slate-50' },
-  { id: 'PGY_OTHER', pgy: null, label: 'PGY — other', badge: 'bg-gray-500 text-white',  rowBg: 'bg-gray-50'  },
+  { id: 'PGY_1',     pgy: 1,    label: 'PGY-1',       shortLabel: 'PGY-1', badge: 'bg-slate-700 text-white', rowBg: 'bg-slate-50' },
+  { id: 'PGY_2',     pgy: 2,    label: 'PGY-2',       shortLabel: 'PGY-2', badge: 'bg-slate-600 text-white', rowBg: 'bg-slate-50' },
+  { id: 'PGY_3',     pgy: 3,    label: 'PGY-3',       shortLabel: 'PGY-3', badge: 'bg-slate-500 text-white', rowBg: 'bg-slate-50' },
+  { id: 'PGY_OTHER', pgy: null, label: 'PGY — other', shortLabel: 'Other', badge: 'bg-gray-500 text-white',  rowBg: 'bg-gray-50'  },
 ];
 
 // One shared style for every EM-rotation group rather than ~20 hand-picked hues. Rotation groups
@@ -36,6 +41,19 @@ export const PGY_GROUPS = [
 // add maintenance for no information. Off-service residents are NOT styled from here — in rotation
 // mode their category IS their rotation, so they reuse their own CATEGORIES entry verbatim.
 export const ROTATION_EM_STYLE = { badge: 'bg-indigo-600 text-white', rowBg: 'bg-blue-50' };
+
+// BLOCK_TYPES_EM (ResidentScheduler.jsx) carries only `label` — no separate abbreviation field to
+// borrow the way CATEGORIES' own `shortLabel` does — so a rotation group's short form is derived
+// mechanically here instead of hand-picked per id (a growing rotation list would otherwise need a
+// second table kept in lockstep). Most labels already fit the 108px narrow banner as-is ('EM',
+// 'EM/TOX', 'Metro', …); anything long enough to risk it gets a plain ellipsis truncation. The
+// banner span's own `truncate` class (see ResidentScheduler.jsx) is the real backstop against
+// overflow — this only keeps the common case from needlessly relying on it.
+const ROTATION_SHORT_LABEL_MAX = 9;
+function shortRotationLabel(label) {
+  if (!label) return label;
+  return label.length > ROTATION_SHORT_LABEL_MAX ? `${label.slice(0, ROTATION_SHORT_LABEL_MAX - 1)}…` : label;
+}
 
 // Groups whose `members` is empty are dropped, never rendered as an empty banner — same rule the
 // category-only version applied (`if (m.length) g.push(...)`).
@@ -76,7 +94,7 @@ export function groupResidents(residents, mode, { categories, blockTypes, isEm }
     // rosters that never went through that memo.
     for (const bt of blockTypes) {
       const members = list.filter(r => isEm(r) && (r.blockType || 'EM') === bt.id);
-      pushNonEmpty(out, { id: `ROT_${bt.id}`, label: bt.label, ...ROTATION_EM_STYLE }, members);
+      pushNonEmpty(out, { id: `ROT_${bt.id}`, label: bt.label, shortLabel: shortRotationLabel(bt.label), ...ROTATION_EM_STYLE }, members);
     }
     // Then off-service residents, whose category IS their rotation — reuse the category entry so
     // their banner keeps the exact colour they already have everywhere else in the app.
@@ -87,7 +105,7 @@ export function groupResidents(residents, mode, { categories, blockTypes, isEm }
     // An EM resident carrying a blockType absent from BLOCK_TYPES_EM would fall through both loops
     // above and vanish. Catch them rather than lose a row (same reasoning as PGY_OTHER).
     const placed = new Set(out.flatMap(g => g.members.map(r => r.id)));
-    pushNonEmpty(out, { id: 'ROT_OTHER', label: 'Other rotation', ...ROTATION_EM_STYLE },
+    pushNonEmpty(out, { id: 'ROT_OTHER', label: 'Other rotation', shortLabel: 'Other', ...ROTATION_EM_STYLE },
       list.filter(r => !placed.has(r.id)));
     return out;
   }

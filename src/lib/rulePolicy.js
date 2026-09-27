@@ -66,6 +66,16 @@ export const RULE_POLICY = {
   // to flag that the substitute, not the true primary, covered it. FLEX has no mirror of this: the
   // chief's directive was POD/PGY-3-specific.
   podPgy2Substitute: { tier: 'info', label: 'POD covered by an EM PGY-2 substituting for an unavailable PGY-3' },
+  // validateAll's 2b-1/2b-2 senior-composition soft warns (ResidentScheduler.jsx, "chief-directed
+  // EM-count composition" / "chief-directed PGY gating") were pushed with no `rule` id at all until
+  // this pair was added — reviewPanel.js's grouping/labeling had to detect them by a substring match
+  // on the message instead (fragile: a wording tweak would silently un-group every existing warn).
+  // Tiered 'info' rather than 'override' deliberately: they were always a plain, non-blocking flag
+  // (`level: 'warn'` hardcoded at the push site, never in EXPORT_BLOCKING_RULE_IDS) — 'info' is the
+  // only tier whose severityFor() output matches that on both surfaces, so adding these ids changes
+  // no export-blocking count or generator scoring. See CLAUDE.md's fix-plan note on this pair.
+  seniorEmCountComposition: { tier: 'info', label: 'POD/FLEX shift short of its chief-directed EM headcount' },
+  seniorPgyGating: { tier: 'info', label: 'Junior PGY covered a slot a senior PGY already filled (chief-directed gating)' },
 };
 
 // All rule ids whose tier is 'override' — the exact set a hand-edit surface must show a confirm

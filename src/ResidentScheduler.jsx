@@ -4390,8 +4390,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const emCount = assignedHere.filter(isEmResident).length;
         const required = emCompositionRequired(area, assignedHere.length);
         if (emCount < required) {
-          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
-            message: `${shift.label} (${formatDisplayDate(ds)}) is staffed ${assignedHere.length} with only ${emCount} EM (Home/BAMC) resident${emCount === 1 ? '' : 's'} — ${area === 'POD' ? `POD wants ${required} EM at this headcount` : 'FLEX wants at least 1 EM'} (soft, chief-directed EM-count composition)`, level: 'warn' });
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'seniorEmCountComposition',
+            message: `${shift.label} (${formatDisplayDate(ds)}) is staffed ${assignedHere.length} with only ${emCount} EM (Home/BAMC) resident${emCount === 1 ? '' : 's'} — ${area === 'POD' ? `POD wants ${required} EM at this headcount` : 'FLEX wants at least 1 EM'} (soft, chief-directed EM-count composition)`, level: severityFor('seniorEmCountComposition', 'validator') });
         }
 
         // 2b-2 PGY gating (SOFT, chief-directed, mirrors narrowForPgyGate's generator-side pool
@@ -4407,8 +4407,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const realPrimaryPresent = compSatisfiers.some(r => r.pgy === comp.primary);
         if (realPrimaryPresent) {
           for (const g of assignedHere.filter(r => r.category === 'EM_HOME' && r.pgy === comp.fallback)) {
-            issues.push({ residentId: g.id, name: `${g.firstName} ${g.lastName}`, dateStr: ds, shiftId: shift.id,
-              message: `EM PGY-${comp.fallback} on ${shift.label} (${formatDisplayDate(ds)}) though an EM PGY-${comp.primary} already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-${comp.primary} for extra ${area} slots when one exists)`, level: 'warn' });
+            issues.push({ residentId: g.id, name: `${g.firstName} ${g.lastName}`, dateStr: ds, shiftId: shift.id, rule: 'seniorPgyGating',
+              message: `EM PGY-${comp.fallback} on ${shift.label} (${formatDisplayDate(ds)}) though an EM PGY-${comp.primary} already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-${comp.primary} for extra ${area} slots when one exists)`, level: severityFor('seniorPgyGating', 'validator') });
           }
         }
       }
@@ -15527,10 +15527,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 <div className={`flex border-b border-gray-100 ${cat.rowBg}`}>
                   <div className="grid-sticky px-3 py-1.5 border-r border-gray-200 flex items-center gap-1.5 min-w-0" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
                     {/* Mobile fix: at NAME_W=108px this span used to wrap "EM – Home" onto two
-                        lines (no nowrap, no shrink source). `whitespace-nowrap` stops the wrap, and
-                        narrow width swaps in the short badge label (already used everywhere else at
-                        this width, e.g. the catFilter pills) so it fits without truncating. */}
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded whitespace-nowrap ${cat.badge}`}>{narrowNameCol ? (cat.shortLabel || cat.label) : cat.label}</span>
+                        lines (no nowrap, no shrink source). Narrow width swaps in the short badge
+                        label (already used everywhere else at this width, e.g. the catFilter pills)
+                        so it fits without truncating in the common case. `truncate` (Tailwind's
+                        overflow:hidden + ellipsis + nowrap) plus `min-w-0` (required for a flex
+                        child to actually shrink below its content width) is the belt-and-braces
+                        backstop for any group whose shortLabel is missing or still too long for the
+                        column — every grouping mode (category/pgy/rotation) shares this one span. */}
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded truncate min-w-0 ${cat.badge}`}>{narrowNameCol ? (cat.shortLabel || cat.label) : cat.label}</span>
                     <span className="text-xs text-gray-400 tabular-nums shrink-0">{members.length}</span>
                   </div>
                   <div style={{flex:1}}/>
