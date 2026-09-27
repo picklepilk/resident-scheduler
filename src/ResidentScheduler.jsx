@@ -14854,8 +14854,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               // Last,-First + badges layout — full name still available via the row's own `title`
               // just above (offSummary) and the hover/tap-visible lock button; this line exists so
               // ≥4 date columns fit alongside it at ~400px width.
-              <div className="text-xs font-medium text-gray-800 truncate" title={`${res.lastName}, ${res.firstName}`}>
-                {res.firstName} {res.lastName.charAt(0)}.<span className="text-gray-400 font-normal"> · PGY-{res.pgy}</span>
+              <div className="flex items-baseline gap-1 min-w-0" title={`${res.lastName}, ${res.firstName}`}>
+                {/* Name truncates first — PGY must never be the thing ellipsis eats (P4 mobile
+                    fix): these used to share one `truncate` div, so a longer first name pushed
+                    "PGY-N" past the ellipsis and off-screen entirely. `shrink-0` pins PGY at its
+                    natural width; only the name span (`min-w-0 truncate`) gives up space. */}
+                <span className="text-xs font-medium text-gray-800 truncate min-w-0">{res.firstName} {res.lastName.charAt(0)}.</span>
+                <span className="text-xs text-gray-400 font-normal shrink-0 whitespace-nowrap">· PGY-{res.pgy}</span>
               </div>
             ) : (
               <>
@@ -15466,9 +15471,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             {grouped.map(({cat,members})=>(
               <div key={cat.id}>
                 <div className={`flex border-b border-gray-100 ${cat.rowBg}`}>
-                  <div className="grid-sticky px-3 py-1.5 border-r border-gray-200" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${cat.badge}`}>{cat.label}</span>
-                    <span className="text-xs text-gray-400 ml-1.5 tabular-nums">{members.length}</span>
+                  <div className="grid-sticky px-3 py-1.5 border-r border-gray-200 flex items-center gap-1.5 min-w-0" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
+                    {/* Mobile fix: at NAME_W=108px this span used to wrap "EM – Home" onto two
+                        lines (no nowrap, no shrink source). `whitespace-nowrap` stops the wrap, and
+                        narrow width swaps in the short badge label (already used everywhere else at
+                        this width, e.g. the catFilter pills) so it fits without truncating. */}
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded whitespace-nowrap ${cat.badge}`}>{narrowNameCol ? (cat.shortLabel || cat.label) : cat.label}</span>
+                    <span className="text-xs text-gray-400 tabular-nums shrink-0">{members.length}</span>
                   </div>
                   <div style={{flex:1}}/>
                 </div>
