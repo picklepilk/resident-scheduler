@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupPanelIssues, labelForIssue, isJumpableIssue, ISSUE_RULE_LABELS,
-  normalizeIssueMessage, groupIssuesByKind, labelForIssueGroup, GROUP_MESSAGE_LABELS,
+  normalizeIssueMessage, groupIssuesByKind, labelForIssueGroup, groupKeyForIssue, GROUP_MESSAGE_LABELS,
   issueJumpTarget, issueKey, classifyCellIssues,
 } from './reviewPanel.js';
 
@@ -136,8 +136,57 @@ describe('labelForIssueGroup', () => {
     expect(labelForIssueGroup(key, [warn({ message: 'Isolated night stint of 3 (Wed 1/5–Fri 1/7) — aim for 5-6 in a row' })])).toBe('Isolated night stints');
   });
 
-  it('falls back to the first item\'s own message when the key is unmapped', () => {
+  it('falls back to the normalized template when the key is unmapped, not the raw first message', () => {
     expect(labelForIssueGroup('nope', [warn({ message: 'Some other warning' })])).toBe('Some other warning');
+  });
+
+  it('never leaks a specific date or count into the fallback label — every item speaks for the group', () => {
+    // A raw-message fallback would render this AS-IS, including "3" and the date — which reads as
+    // if every item in the group happened on that one date with that one count.
+    const issue = warn({ message: 'Trauma shifts: 3 (Wed 1/5) — cap is 2/block' });
+    const label = labelForIssueGroup('nope', [issue]);
+    expect(label).not.toContain('3');
+    expect(label).not.toContain('1/5');
+    expect(label).toBe(normalizeIssueMessage(issue.message));
+  });
+
+  it('builds a shift-specific label for a coverage-miss group from the shiftLabelsById param, with no date or count', () => {
+    const issues = [
+      warn({ residentId: null, shiftId: 'TRAUMA-D', message: 'Below minimum staffing: 0/1 on Trauma Day (Tue 7/7)' }),
+      warn({ residentId: null, shiftId: 'TRAUMA-D', message: 'Below minimum staffing: 0/1 on Trauma Day (Wed 7/8)' }),
+    ];
+    const key = groupKeyForIssue(issues[0]);
+    const label = labelForIssueGroup(key, issues, { 'TRAUMA-D': 'Trauma Day' });
+    expect(label).toBe('Trauma Day below minimum');
+    expect(label).not.toMatch(/\d/);
+  });
+
+  it('builds a coverage-max label distinctly from a coverage-min one, and falls back to the bare shiftId with no map', () => {
+    const issue = warn({ residentId: null, shiftId: 'POD-N', message: 'Above maximum staffing: 3/2 on POD Night (Sat 7/11)' });
+    const key = groupKeyForIssue(issue);
+    expect(labelForIssueGroup(key, [issue])).toBe('POD-N above maximum');
+    expect(labelForIssueGroup(key, [issue], { 'POD-N': 'POD Night' })).toBe('POD Night above maximum');
+  });
+});
+
+describe('groupKeyForIssue', () => {
+  it('prefers rule, then a coverage shiftId key, then the normalized message', () => {
+    expect(groupKeyForIssue(warn({ rule: 'postNightRest', shiftId: 'POD-D' }))).toBe('postNightRest');
+    const coverage = warn({ residentId: null, shiftId: 'TRAUMA-D', message: 'Below minimum staffing: 0/1 on Trauma Day (Tue 7/7)' });
+    expect(groupKeyForIssue(coverage)).toBe('coverage:min:TRAUMA-D');
+    expect(groupKeyForIssue(warn({ rule: undefined, message: 'plain text' }))).toBe(normalizeIssueMessage('plain text'));
+  });
+
+  it('two coverage-miss issues for the SAME shift on different dates share a key; different shifts do not', () => {
+    const podMon = warn({ residentId: null, shiftId: 'POD-D', message: 'Below minimum staffing: 0/2 on POD Day (Mon 7/6)' });
+    const podTue = warn({ residentId: null, shiftId: 'POD-D', message: 'Below minimum staffing: 0/2 on POD Day (Tue 7/7)' });
+    const trauma = warn({ residentId: null, shiftId: 'TRAUMA-D', message: 'Below minimum staffing: 0/1 on Trauma Day (Mon 7/6)' });
+    expect(groupKeyForIssue(podMon)).toBe(groupKeyForIssue(podTue));
+    expect(groupKeyForIssue(podMon)).not.toBe(groupKeyForIssue(trauma));
+  });
+
+  it('tolerates a null issue', () => {
+    expect(groupKeyForIssue(null)).toBe('');
   });
 });
 
@@ -170,6 +219,21 @@ describe('groupIssuesByKind', () => {
 
   it('tolerates a non-array input and returns no groups', () => {
     expect(groupIssuesByKind(undefined)).toEqual([]);
+  });
+
+  it('groups coverage-miss issues by shift, not into one bucket, and labels each with no date/count', () => {
+    const dates = ['2026-07-06', '2026-07-07', '2026-07-08'];
+    const issues = [
+      ...dates.map(d => warn({ residentId: null, shiftId: 'TRAUMA-D', dateStr: d, message: `Below minimum staffing: 0/1 on Trauma Day (Tue 7/7)` })),
+      warn({ residentId: null, shiftId: 'POD-D', dateStr: dates[0], message: 'Below minimum staffing: 0/2 on POD Day (Mon 7/6)' }),
+    ];
+    const groups = groupIssuesByKind(issues, new Set(), { 'TRAUMA-D': 'Trauma Day', 'POD-D': 'POD Day' });
+    expect(groups).toHaveLength(2);
+    const trauma = groups.find(g => g.count === 3);
+    const pod = groups.find(g => g.count === 1);
+    expect(trauma.label).toBe('Trauma Day below minimum');
+    expect(pod.label).toBe('POD Day below minimum');
+    for (const g of groups) expect(g.label).not.toMatch(/\d/);
   });
 });
 

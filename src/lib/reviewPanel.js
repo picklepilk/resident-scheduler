@@ -51,14 +51,36 @@ export function normalizeIssueMessage(message) {
 // Keyed by the NORMALIZED template, not the raw message. Built from the exact literal message
 // shapes validateAll pushes (via normalizeIssueMessage itself) rather than a hand-copied template
 // string, so this can't silently drift out of sync with a wording change over there. Anything not
-// listed here falls through to the group's own first issue's message (see labelForIssueGroup) —
-// same "never a bare/robotic string" posture as ISSUE_RULE_LABELS.
+// listed here falls through to the normalized template itself (see labelForIssueGroup) — same
+// "never a bare/robotic string" posture as ISSUE_RULE_LABELS, and, just as importantly, "never a
+// specific date or per-item count" — a collapsed group row speaks for every item in it, so its
+// label can't carry ONE item's own date/numbers (a real bug: the raw-first-message fallback this
+// replaced could render "Below minimum staffing: 0/1 on Trauma Day (Tue 7/7) · 16", which reads
+// like all 16 happened on Tue 7/7).
 export const GROUP_MESSAGE_LABELS = {
   [normalizeIssueMessage('Isolated night stint of 3 (Wed 1/5–Fri 1/7) — aim for 5-6 in a row')]: 'Isolated night stints',
   [normalizeIssueMessage('No full weekend (Sat+Sun) off this block')]: 'No full weekend off',
   [normalizeIssueMessage('2 separate night stints this block — acceptable only if necessary, prefer clustering into one run')]: 'Multiple night stints',
   [normalizeIssueMessage('3 separate night stints this block — nights should cluster into a single run')]: 'Night stints not clustered',
 };
+
+// Coverage-miss/coverage-max messages (validateAll's block-level "one issue per date+shift" scan)
+// carry no `rule` id, so without special handling they'd fall through to the generic normalized
+// template ("Below minimum staffing: # on Trauma Day") for EVERY shift, which drops the "TRAUMA-D
+// vs TRAUMA-N vs POD-D" distinction (the message's *human* shift LABEL, e.g. "Trauma Day", is left
+// untouched by normalizeIssueMessage, but the group should read as "Trauma Day below minimum", not
+// paste the sentence fragment verbatim). Recognized purely by message prefix — a plain string check
+// keeps this lib-legal (no import of validateAll's rule vocabulary needed) — and grouped/labeled by
+// `issue.shiftId` (already on every one of these pushes) so residents-facing groups stay one row
+// per actual shift, matching every other group's granularity.
+const COVERAGE_MIN_PREFIX = 'Below minimum staffing:';
+const COVERAGE_MAX_PREFIX = 'Above maximum staffing:';
+function coverageDirection(message) {
+  if (typeof message !== 'string') return null;
+  if (message.startsWith(COVERAGE_MIN_PREFIX)) return 'min';
+  if (message.startsWith(COVERAGE_MAX_PREFIX)) return 'max';
+  return null;
+}
 
 // The single place anything renders "what rule is this" text for a validateAll issue. Prefers the
 // rule label when the id is known, otherwise the issue's own message (already plain language for
@@ -126,37 +148,63 @@ export function groupPanelIssues(issues, exportBlockingRuleIds = new Set()) {
   return { mustFix, warns, blockingWarns, otherWarns, orderedWarns: [...blockingWarns, ...otherWarns] };
 }
 
-// The label shown on a collapsed group row: an explicit plain-language map first (either the
-// rule-keyed ISSUE_RULE_LABELS or the message-template-keyed GROUP_MESSAGE_LABELS above), falling
-// back to the group's own first issue's message — never the internal grouping key itself, which for
-// a message-keyed group is a `#`-mangled template never meant for display.
-export function labelForIssueGroup(key, items) {
-  if (GROUP_MESSAGE_LABELS[key]) return GROUP_MESSAGE_LABELS[key];
-  const first = items && items[0];
-  if (first?.rule && ISSUE_RULE_LABELS[first.rule]) return ISSUE_RULE_LABELS[first.rule];
-  return (first?.message || 'Issue').trim();
+// The single place a validateAll issue is turned into a group KEY (shared by groupIssuesByKind's
+// grouping pass and, indirectly, by labelForIssueGroup's coverage-message branch below). Precedence:
+// an explicit `rule` id first (most specific — two issues with the same rule are the same kind by
+// construction), then a coverage-miss/max message keyed by its shiftId (see coverageDirection —
+// this is what makes "Trauma Day below minimum" its own group, separate from "POD Day below
+// minimum", instead of every shift collapsing into one generic "Below minimum staffing" template),
+// then the normalized message template for everything else.
+export function groupKeyForIssue(issue) {
+  if (!issue) return '';
+  if (issue.rule) return issue.rule;
+  const dir = coverageDirection(issue.message);
+  if (dir && issue.shiftId) return `coverage:${dir}:${issue.shiftId}`;
+  return normalizeIssueMessage(issue.message);
 }
 
-// Groups a flat issue list "by kind" for the panel-flood fix: key is the issue's `rule` when it has
-// one, else its normalized message template (normalizeIssueMessage) — so 43 differently-worded
+// The label shown on a collapsed group row. A label here represents EVERY item in the group, so it
+// must never carry any ONE item's own specifics (a date, a run length, a staffing count) — those
+// belong on the individual IssueRow once expanded. Precedence: an explicit plain-language map first
+// (ISSUE_RULE_LABELS for a rule-keyed group, GROUP_MESSAGE_LABELS for a message-template-keyed one),
+// then a bespoke "{shift label} below minimum/above maximum" for a coverage-miss/max group (built
+// from `shiftLabelsById`, e.g. {POD-D: 'POD Day'} — passed in as a param, never imported, to stay
+// lib-legal; falls back to the bare shiftId if the caller doesn't supply one), and only as a last
+// resort the normalized message template itself (never the group's raw first-item message, which
+// is what used to leak a date/count — see GROUP_MESSAGE_LABELS' own comment).
+export function labelForIssueGroup(key, items, shiftLabelsById = {}) {
+  if (GROUP_MESSAGE_LABELS[key]) return GROUP_MESSAGE_LABELS[key];
+  const first = items && items[0];
+  const dir = coverageDirection(first?.message);
+  if (dir && first?.shiftId) {
+    const shiftLabel = shiftLabelsById[first.shiftId] || first.shiftId;
+    return dir === 'min' ? `${shiftLabel} below minimum` : `${shiftLabel} above maximum`;
+  }
+  if (first?.rule && ISSUE_RULE_LABELS[first.rule]) return ISSUE_RULE_LABELS[first.rule];
+  return normalizeIssueMessage(first?.message) || 'Issue';
+}
+
+// Groups a flat issue list "by kind" for the panel-flood fix: key is groupKeyForIssue(issue) (a
+// `rule` id, a coverage shiftId, or a normalized message template) — so 43 differently-worded
 // "Isolated night stint of N (...)" warnings collapse into one collapsible group instead of 43 rows.
 // Group order: export-blocking groups first (any group containing at least one blocking issue),
 // then by count descending — matches "Should look at"'s existing blocking-first issue order, just
 // applied at the group level. Insertion order (first-seen key) is the stable tiebreak for equal
-// counts within the same blocking tier, since Array.prototype.sort is stable.
-export function groupIssuesByKind(list, exportBlockingRuleIds = new Set()) {
+// counts within the same blocking tier, since Array.prototype.sort is stable. `shiftLabelsById` is
+// passed straight through to labelForIssueGroup — see its own comment.
+export function groupIssuesByKind(list, exportBlockingRuleIds = new Set(), shiftLabelsById = {}) {
   const arr = Array.isArray(list) ? list : [];
   const order = [];
   const byKey = new Map();
   for (const issue of arr) {
-    const key = issue.rule || normalizeIssueMessage(issue.message);
+    const key = groupKeyForIssue(issue);
     if (!byKey.has(key)) { byKey.set(key, []); order.push(key); }
     byKey.get(key).push(issue);
   }
   const groups = order.map(key => {
     const items = byKey.get(key);
     const blocking = items.some(i => exportBlockingRuleIds.has(i.rule));
-    return { key, label: labelForIssueGroup(key, items), count: items.length, blocking, items };
+    return { key, label: labelForIssueGroup(key, items, shiftLabelsById), count: items.length, blocking, items };
   });
   groups.sort((a, b) => {
     if (a.blocking !== b.blocking) return a.blocking ? -1 : 1;

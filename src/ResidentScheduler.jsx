@@ -22,7 +22,7 @@ import {
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
-import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
+import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -63,6 +63,11 @@ import { useWalkthroughContext } from './walkthrough/Walkthrough';
 // catalog order" spot (ScheduleCalendarView, MonthCalendarView) so a resident list doesn't
 // re-scan the whole SHIFTS array with findIndex (twice per comparison) on every render.
 const SHIFT_ORDER_INDEX = new Map(SHIFTS.map((s, i) => [s.id, i]));
+
+// shiftId -> human label, passed into lib/reviewPanel.js's groupIssuesByKind/labelForIssueGroup so a
+// grouped "Below minimum staffing" coverage-miss row can read "Trauma Day below minimum" instead of
+// a generic template — a plain param rather than an import, since lib/* may never import this file.
+const SHIFT_LABEL_BY_ID = Object.fromEntries(SHIFTS.map(s => [s.id, s.label]));
 
 // Display labels for QGENDA_NAME_FORMATS, module-level (not local to one component) because both
 // the QGenda export picker modal and SettingsTab's "QGenda Task Names" card render the same
@@ -14069,7 +14074,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                   onMouseLeave={cancelHover}
                   onFocus={e=>scheduleHover(res.id, ds, sid, e)}
                   onBlur={cancelHover}
-                  className={`absolute inset-1 flex items-center justify-center rounded text-[9px] tracking-tighter font-bold whitespace-nowrap overflow-hidden ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                  className={`absolute inset-1 flex items-center justify-center rounded font-bold whitespace-nowrap overflow-hidden ${isLongShiftId(sid)?'text-[9px] tracking-tighter':'text-xs'} ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
                   {sid}
                 </div>
               )}
@@ -15894,10 +15899,10 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
   // stint…"/"No full weekend off"/"…separate night stints". Must-fix stays UNGROUPED (one row per
   // error, unchanged) until it grows past the point grouping actually helps — a short error list is
   // usually faster to scan directly than through an extra collapse/expand click.
-  const warnGroups = useMemo(() => groupIssuesByKind(orderedWarns, EXPORT_BLOCKING_RULE_IDS), [orderedWarns]);
+  const warnGroups = useMemo(() => groupIssuesByKind(orderedWarns, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID), [orderedWarns]);
   const groupMustFix = mustFix.length > 10;
   const mustFixGroups = useMemo(
-    () => (groupMustFix ? groupIssuesByKind(mustFix, EXPORT_BLOCKING_RULE_IDS) : null),
+    () => (groupMustFix ? groupIssuesByKind(mustFix, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID) : null),
     [groupMustFix, mustFix]
   );
 
