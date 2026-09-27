@@ -145,13 +145,33 @@ export function findSwapCandidates({
 // C. "Assign" — shifts residentId could take on this (currently empty) date, under coverage
 // max, ranked by coverage shortfall (below-minimum shifts first, biggest gap first; then by
 // remaining headroom, most room first).
+//   candidateShiftIds — the resident's OUTRIGHT-eligible shifts (getEligibleShifts membership).
+//   allShiftIds/eligibilityReason (optional, same contract as findGiveCandidates/findSwapCandidates'
+//     eligibilityReason) — when both are given, every catalog shift NOT already in candidateShiftIds
+//     is also checked: if eligibilityReason says its ONLY ineligibility is override-tier (approved
+//     day off, Wellness Wednesday, academic-chief Tue eve/night, final-Sunday, Peds night/swing
+//     owner guard — see rulePolicy.js), it's still offered, listed after every outright-eligible
+//     shift and tagged needsOverride, matching Give/Swap's existing posture instead of silently
+//     dropping it. An acgme/program-tier ineligibility (vacation, rotation eligibility, jeopardy,
+//     a real work restriction, …) is never added this way — omitting either param preserves the old
+//     behavior exactly (only candidateShiftIds is ever considered).
 export function findAssignOptions({
-  residentId, dateStr, candidateShiftIds, schedule, lockedCells,
-  hardViolations, softViolations, coverageFor,
+  residentId, dateStr, candidateShiftIds, allShiftIds, schedule, lockedCells,
+  eligibilityReason, hardViolations, softViolations, coverageFor,
 }) {
   if (lockedCells?.[residentId]?.[dateStr]) return [];
+  const eligibleIds = candidateShiftIds || [];
+  const eligibleSet = new Set(eligibleIds);
+  const overridableIds = [];
+  if (allShiftIds && eligibilityReason) {
+    for (const sid of allShiftIds) {
+      if (eligibleSet.has(sid)) continue;
+      const reason = eligibilityReason(residentId, dateStr, sid);
+      if (reason?.tier === 'override') overridableIds.push(sid);
+    }
+  }
   const out = [];
-  for (const sid of candidateShiftIds || []) {
+  for (const sid of [...eligibleIds, ...overridableIds]) {
     const cov = coverageFor(sid) || { count: 0, min: 0, max: Infinity };
     if (cov.count >= cov.max) continue; // no headroom
     const hard = hardViolations(residentId, dateStr, sid, schedule) || [];
@@ -160,6 +180,9 @@ export function findAssignOptions({
     out.push({
       shiftId: sid, count: cov.count, min: cov.min, max: cov.max,
       shortfall: cov.min - cov.count, softViolations: soft, softCount: soft.length,
+      // hasOverrideTierViolation already catches this: cellViolations grades an override-tier
+      // ineligibility as a WARN carrying that same rule id (see rulePolicy.js/severityFor), so it
+      // lands in `soft` on its own — no separate "was this an overridableIds addition" flag needed.
       needsOverride: hasOverrideTierViolation(soft),
     });
   }

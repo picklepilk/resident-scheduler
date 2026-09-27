@@ -245,3 +245,34 @@ describe('eligibilityBlockReasons', () => {
     expect(reason).toMatchObject({ rule: 'academicChiefTueEveNight', tier: 'override' });
   });
 });
+
+// 2026-09-27 fix: validateAll/cellViolations used to pick the eligibility MESSAGE independently
+// (checking WW before a work restriction) while grading SEVERITY off eligibilityBlockReasons
+// (which checks the restriction first) — a cell with both could show an override-tier WW message
+// while being graded as a hard-blocking restriction with no override path. Both surfaces now derive
+// the message from eligibilityBlockReasons' own result, so message and severity always agree.
+describe('eligibility message/severity consistency (2026-09-27 fix)', () => {
+  const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3, blockType: 'EM' });
+  const POD_WW = '2026-07-22'; // POD's own (3rd) Wellness Wednesday inside `block`'s window (see
+                               // seniorityTargets.test.js/emCompositionAndPgyGating.test.js).
+
+  it('a custom restriction that actually bars the shift wins over WW: error, restriction message, no override path', () => {
+    const restricted = { ...pgy3, workRestrictions: [{ label: 'No Days', blockedTypes: ['day'] }] };
+    const b = { ...block, schedule: { p3: {} } };
+    const vs = cellViolations(restricted, POD_WW, 'POD-D', b, {}, {}, {}, {});
+    const v = vs.find(x => /Work restriction/.test(x.message));
+    expect(v).toBeTruthy();
+    expect(v.level).toBe('error');
+    expect(v.message).toBe('Work restriction "No Days" blocks this shift on this date');
+    expect(v.message).not.toMatch(/Wellness Wednesday/);
+  });
+
+  it('WW alone (no restriction) stays override-tier: warn with the WW message', () => {
+    const b = { ...block, schedule: { p3: {} } };
+    const vs = cellViolations(pgy3, POD_WW, 'POD-D', b, {}, {}, {}, {});
+    const v = vs.find(x => x.rule === 'wellnessWednesday');
+    expect(v).toBeTruthy();
+    expect(v.level).toBe('warn');
+    expect(v.message).toMatch(/Wellness Wednesday/);
+  });
+});

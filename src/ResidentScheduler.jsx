@@ -3752,6 +3752,41 @@ export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
   return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
 }
 
+// Builds the human-readable eligibility message for a `reason` returned by eligibilityBlockReasons
+// — the SINGLE source both validateAll and cellViolations read from (see rulePolicy.js's fix note,
+// 2026-09-27). Before this, both call sites independently re-checked "is this WW / academic-chief /
+// final-Sunday" to pick a message, in a different order than eligibilityBlockReasons uses to pick a
+// severity (restriction-first) — so a cell with BOTH a custom work restriction AND a WW/academic-
+// chief/final-Sunday reason could show an override-tier message (e.g. "Wellness Wednesday...") while
+// being graded as a hard-blocking restriction with no override path. Deriving the message from the
+// SAME `reason` object that severityFor() grades removes that possibility by construction — the
+// switch below follows eligibilityBlockReasons' own precedence (restriction beats everything else).
+function eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appSettings) {
+  if (!reason) return 'Shift not eligible for this resident on this day';
+  if (reason.rule === null) return `${reason.label} blocks this shift on this date`; // custom work restriction — always wins
+  const dow = parseDate(dateStr).getDay();
+  switch (reason.rule) {
+    case 'wellnessWednesday': {
+      const wwOrdinal = (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules || {}).computedDayRules || [])
+        .find(c => c.type === 'wellnessWednesday')?.ordinal;
+      return resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
+        ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
+        : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
+    }
+    case 'academicChiefTueEveNight':
+      return 'Academic Chief — no Tuesday evening/night shifts';
+    case 'finalSundayOvernight':
+      return 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward';
+    case 'rotationEligibility':
+      if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day')
+        return 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
+      if (!SHIFT_MAP[sid]) return 'Unknown shift type';
+      return 'Shift not eligible for this resident on this day';
+    default:
+      return reason.label;
+  }
+}
+
 // Group residents' assignments by (date, shift-id) — considering only residents matching rowFilter
 // and shifts matching shiftFilter — and push one issue per resident wherever more than one lands on
 // the same (date, shift). Shared by the trauma single-resident rule and the no-two-interns rule so
@@ -3847,34 +3882,14 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         }
       }
       const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
-      const finalSundayBlocked = finalSunday && ds === finalSunday && isNightShiftId(sid) && nextRotation.known && !nextRotation.continuingEM;
       if (!elig.includes(sid)) {
-        const dow = parseDate(ds).getDay();
-        let msg = 'Shift not eligible for this resident on this day';
-        // Not gated on dow===3 here — a chief-picked custom wellnessOverride date (see
-        // effectiveWellnessWednesdayDate) can legitimately land on a non-Wednesday.
-        const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
-          ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
-              .find(c => c.type === 'wellnessWednesday')?.ordinal
-          : null;
-        const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, block.startDate, dayRules, appSettings) : null;
-        const blockingRestriction = findBlockingRestriction(resident, ds, sid);
-        if (wwDate && ds === wwDate) {
-          msg = resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
-            ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
-            : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
-        }
-        else if (blockingRestriction) msg = `Work restriction "${blockingRestriction.label}" blocks this shift on this date`;
-        else if (resident.chiefRole === 'academic' && dow === 2 && ['eve', 'night'].includes(SHIFT_MAP[sid]?.type)) msg = 'Academic Chief — no Tuesday evening/night shifts';
-        else if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
-        else if (finalSundayBlocked) msg = 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward';
-        else if (!SHIFT_MAP[sid]) msg = 'Unknown shift type';
         // eligibilityBlockReasons re-derives WHY elig excluded sid (same predicates, re-sequenced —
-        // see its own comment) so this shared "not eligible" branch can grade severity by rule tier
-        // instead of always hard-blocking — an override-tier reason (e.g. approved-day-off/PED-guard/
-        // Wellness-Wednesday/academic-chief/final-Sunday) downgrades to a flagged warn; everything
-        // else (vacation, rotation/PGY eligibility) stays a hard error.
+        // see its own comment) and is now the SINGLE source for both the message (via
+        // eligibilityReasonMessage) and the severity (via severityFor) — a hand-restriction that
+        // actually bars the shift always wins over a WW/academic-chief/final-Sunday reason, in both
+        // what's shown and how it's graded (see eligibilityReasonMessage's comment).
         const reason = eligibilityBlockReasons(resident, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+        const msg = eligibilityReasonMessage(reason, resident, ds, sid, dayRules, appSettings);
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg,
           level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
           ...(reason?.rule ? { rule: reason.rule } : {}) });
@@ -13080,33 +13095,16 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   const eligCtx = { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule, appSettings, dayRules, specialDays: sd, eligOverrides };
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, eligCtx);
   const vs = [];
-  const finalSundayBlocked = finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation?.known && !nextRotation.continuingEM;
   // 1. Eligibility check — eligibilityBlockReasons re-derives WHY (same predicates getEligibleShifts
   // itself calls, re-sequenced) so this can grade severity by rule tier instead of hard-blocking
   // every ineligible placement (see rulePolicy.js and validateAll's identical use of this helper).
   if (!eligible.includes(sid)) {
-    const dow = parseDate(dateStr).getDay();
-    // Not gated on dow===3 here — a chief-picked custom wellnessOverride date can legitimately
-    // land on a non-Wednesday (see effectiveWellnessWednesdayDate).
-    const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
-      ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
-          .find(c => c.type === 'wellnessWednesday')?.ordinal
-      : null;
-    const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, block.startDate, dayRules, appSettings) : null;
-    const isWwHere = wwDate && dateStr === wwDate;
-    const blockingRestriction = !isWwHere ? findBlockingRestriction(resident, dateStr, sid) : null;
+    // reason is now the SINGLE source for both message (eligibilityReasonMessage) and severity
+    // (severityFor) — see validateAll's identical fix and eligibilityReasonMessage's own comment.
+    // A hand-restriction that actually bars the shift always wins over a WW/academic-chief/
+    // final-Sunday reason, in both what's shown here and how it's graded.
     const reason = eligibilityBlockReasons(resident, dateStr, sid, eligCtx);
-    vs.push({ message: isWwHere
-      ? (resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
-          ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
-          : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`)
-      : blockingRestriction
-      ? `Work restriction "${blockingRestriction.label}" blocks this shift on this date`
-      : resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day'
-      ? 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)'
-      : finalSundayBlocked
-      ? 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward'
-      : 'Shift not in eligibility matrix for this resident/day combination',
+    vs.push({ message: eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appSettings),
       level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
       ...(reason?.rule ? { rule: reason.rule } : {}) });
   } else if (finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation && !nextRotation.known) {
@@ -13921,9 +13919,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const elig = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules,
       { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[residentId], jeopardySchedule: block.jeopardySchedule });
     const coverageFor = sid => coverageByDate[dateStr]?.perShift[sid] || null;
+    // allShiftIds/eligibilityReasonFor widen the candidate list to override-tier-ineligible shifts
+    // (approved day off, Wellness Wednesday, academic-chief Tue eve/night, final-Sunday, Peds
+    // night/swing owner guard) tagged needsOverride, same posture as Give/Swap above — see
+    // findAssignOptions' own comment.
     const assign = findAssignOptions({
-      residentId, dateStr, candidateShiftIds: elig, schedule: sched, lockedCells,
-      hardViolations, softViolations, coverageFor,
+      residentId, dateStr, candidateShiftIds: elig, allShiftIds: SHIFTS.map(s => s.id), schedule: sched, lockedCells,
+      eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, coverageFor,
     });
     return { resident, dateStr, shiftId: null, locked, cellIssues, give: [], swap: [], assign };
   }, [selectedCell, sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,

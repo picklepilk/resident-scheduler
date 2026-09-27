@@ -269,3 +269,61 @@ describe('tier-aware ranking (needsOverride) — R6', () => {
     expect(out.find(c => c.shiftId === 'POD-D').needsOverride).toBe(true);
   });
 });
+
+// 2026-09-27 fix: the inspector's "Assign" list used to be built purely off getEligibleShifts'
+// outright-eligible list, unlike Give/Swap (which already tag an override-tier-ineligible candidate
+// needsOverride via eligibilityReason instead of silently dropping it). findAssignOptions now takes
+// the same optional allShiftIds/eligibilityReason pair to widen its own candidate set the same way.
+describe('findAssignOptions — widening with override-tier-ineligible shifts (2026-09-27)', () => {
+  it('offers a shift outside candidateShiftIds when its ONLY ineligibility is override-tier, tagged needsOverride and ranked last', () => {
+    const coverage = {
+      'MT-D': { count: 1, min: 2, max: 2 },   // outright-eligible, below min
+      'POD-D': { count: 0, min: 2, max: 2 },  // NOT in candidateShiftIds — override-tier only (WW)
+    };
+    const eligibilityReason = (_rid, _ds, sid) => (sid === 'POD-D' ? { rule: 'wellnessWednesday', tier: 'override' } : null);
+    const softs = { 'MT-D': [], 'POD-D': [{ level: 'warn', rule: 'wellnessWednesday' }] };
+    const out = findAssignOptions({
+      residentId: 'A', dateStr: 'd1', candidateShiftIds: ['MT-D'], allShiftIds: ['MT-D', 'POD-D'],
+      schedule: {}, lockedCells: {}, eligibilityReason,
+      hardViolations: () => [], softViolations: (_rid, _ds, sid) => softs[sid] || [],
+      coverageFor: (sid) => coverage[sid],
+    });
+    expect(out.map(c => c.shiftId)).toEqual(['MT-D', 'POD-D']);
+    expect(out.find(c => c.shiftId === 'POD-D').needsOverride).toBe(true);
+    expect(out.find(c => c.shiftId === 'MT-D').needsOverride).toBe(false);
+  });
+
+  it('never adds a shift whose ineligibility is acgme/program tier (e.g. vacation, rotation eligibility)', () => {
+    const coverage = { 'MT-D': { count: 1, min: 2, max: 2 }, 'POD-D': { count: 0, min: 2, max: 2 } };
+    const eligibilityReason = (_rid, _ds, sid) => (sid === 'POD-D' ? { rule: 'vacation', tier: 'acgme' } : null);
+    const out = findAssignOptions({
+      residentId: 'A', dateStr: 'd1', candidateShiftIds: ['MT-D'], allShiftIds: ['MT-D', 'POD-D'],
+      schedule: {}, lockedCells: {}, eligibilityReason,
+      hardViolations: () => [], softViolations: () => [],
+      coverageFor: (sid) => coverage[sid],
+    });
+    expect(out.map(c => c.shiftId)).toEqual(['MT-D']);
+  });
+
+  it('a widened override-tier shift is still excluded if it carries a hard violation', () => {
+    const coverage = { 'MT-D': { count: 1, min: 2, max: 2 }, 'POD-D': { count: 0, min: 2, max: 2 } };
+    const eligibilityReason = (_rid, _ds, sid) => (sid === 'POD-D' ? { rule: 'wellnessWednesday', tier: 'override' } : null);
+    const hardViolations = (_rid, _ds, sid) => (sid === 'POD-D' ? [{ level: 'error' }] : []);
+    const out = findAssignOptions({
+      residentId: 'A', dateStr: 'd1', candidateShiftIds: ['MT-D'], allShiftIds: ['MT-D', 'POD-D'],
+      schedule: {}, lockedCells: {}, eligibilityReason,
+      hardViolations, softViolations: () => [],
+      coverageFor: (sid) => coverage[sid],
+    });
+    expect(out.map(c => c.shiftId)).toEqual(['MT-D']);
+  });
+
+  it('omitting allShiftIds/eligibilityReason preserves the old behavior exactly (no widening)', () => {
+    const coverage = { 'MT-D': { count: 1, min: 2, max: 2 } };
+    const out = findAssignOptions({
+      residentId: 'A', dateStr: 'd1', candidateShiftIds: ['MT-D'], schedule: {}, lockedCells: {},
+      hardViolations: () => [], softViolations: () => [], coverageFor: (sid) => coverage[sid],
+    });
+    expect(out.map(c => c.shiftId)).toEqual(['MT-D']);
+  });
+});
