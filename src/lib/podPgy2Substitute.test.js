@@ -89,10 +89,19 @@ function noPgy3WasAvailable(allResidents, schedule, dateStr, shiftId, blockForCt
 }
 
 describe('R5: POD PGY-2 substitute — generator behavior (conferenceBlock fixture, ACEP 07-20..07-23)', () => {
-  it('with ample PGY-3 supply (6 real PGY-3s), any recorded substitute happened only because no PGY-3 was actually available for that exact slot (pool-narrowing, not scoring)', () => {
+  // repair:true (the real generateScheduleBest default) is required here: the true-primary
+  // preference is enforced by repairPass's own dedicated phase, run once on the winning attempt —
+  // NOT inside fillDayPass's own hot loop, which only ever applies compositionSatisfies (allowing
+  // the substitute, never preferring the primary over it) — see that branch's own comment for why
+  // (score()'s `+ rng()` jitter term made in-loop narrowing destabilize which of
+  // generateScheduleBest's 20 attempts wins, regressing the chief-benchmark fixture). A bare
+  // generateSchedule({repair:false}) call is documented throughout this codebase as the raw,
+  // unrepaired view — same posture as Phase 1's unfilled-slot fixes and Phase 2's rest-compromise
+  // fixes, both also repair-only.
+  it('with ample PGY-3 supply (6 real PGY-3s), any recorded substitute happened only because no PGY-3 was actually available for that exact slot', () => {
     for (const baseSeed of [1, 2, 3]) {
       const fx = makeFixture('conferenceBlock');
-      const { schedule, report } = generateSchedule({ ...fx, rng: mulberry32(baseSeed) });
+      const { schedule, report } = generateSchedule({ ...fx, rng: mulberry32(baseSeed), repair: true });
       for (const sub of report.podSubstitutes) {
         expect(
           noPgy3WasAvailable(fx.allResidents, schedule, sub.dateStr, sub.shiftId, fx.block),
@@ -113,7 +122,7 @@ describe('R5: POD PGY-2 substitute — generator behavior (conferenceBlock fixtu
     const seeds = [1, 2, 3, 4, 5];
     let totalSubs = 0;
     for (const seed of seeds) {
-      const { schedule, report } = generateSchedule({ ...fx, allResidents, rng: mulberry32(seed) });
+      const { schedule, report } = generateSchedule({ ...fx, allResidents, rng: mulberry32(seed), repair: true });
       expect(Array.isArray(report.podSubstitutes)).toBe(true);
       totalSubs += report.podSubstitutes.length;
       const issues = validateAll(allResidents, schedule, fx.block, {}, fx.appSettings, {}, {}, [], fx.ayConf);

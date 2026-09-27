@@ -5696,23 +5696,25 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const seniorCompExempt = seniorCompositionExempt(slot.shift, ds);
       if (comp && !seniorFilled && !seniorCompExempt) {
         // R5 (2026-09-27 chief decision): "replaced with a PGY-2" only when no PGY-3 is actually
-        // available — a genuine primary-PGY candidate must always win this slot over a substitute-
-        // eligible fallback PGY when both are present, so this is pool-NARROWING (never scoring:
-        // score() alone could easily rank a fallback candidate above an available primary on an
-        // unrelated preference term). On an ordinary (non-substitute) date this is a no-op — outside
-        // a Wellness/conference date compositionSatisfies never lets the fallback PGY into
-        // `compSatisfies` at all, so truePrimaryPool and the compSatisfies-filtered pool already
-        // agree exactly.
-        const isTruePrimary = r => r.category === 'EM_HOME' && r.pgy === comp.primary;
-        const truePrimaryPool = candidates.filter(isTruePrimary);
-        const primaryPool = truePrimaryPool.length ? truePrimaryPool : candidates.filter(compSatisfies);
+        // available. An EARLIER version of this fix pool-narrowed HERE (inside fillDayPass, i.e.
+        // inside all 20 of generateScheduleBest's independent attempts) — reverted (2026-09-27,
+        // chiefBenchmark tuning pass): score()'s `+ rng()` jitter term means ANY difference in how
+        // many candidates get scored ANYWHERE shifts every later rng() draw, so narrowing here (even
+        // though it only ever fires on the block's own 1-2 Wellness-Wednesday/conference dates)
+        // measurably changed which of the 20 attempts won best-of-N, cascading into a materially
+        // different final schedule (measured on the committed chief fixture: +2 hard errors, +3
+        // isolated night runs). The true-primary preference is enforced ONCE instead, as a single
+        // bounded swap on the WINNING attempt only — see repairPass's own "true-primary preference"
+        // phase, right after Phase 3. This branch goes back to plain scoring-only preference
+        // (comp.fallback still named in isSeniorFor for score()'s own tie-break, per this block's
+        // header comment) — compSatisfies still decides whether the fallback is ALLOWED here at all
+        // (unchanged), just not which of several eligible candidates wins.
+        const primaryPool = candidates.filter(compSatisfies);
         if (primaryPool.length) {
           candidates = primaryPool;
         } else if (phase === 'min') {
           const candidateSet = new Set(candidates);
-          const restViolators = restCompromise ? [] : (restFallback || []).filter(r => !candidateSet.has(r));
-          const truePrimaryRestOnly = restViolators.filter(isTruePrimary);
-          const primaryRestOnly = truePrimaryRestOnly.length ? truePrimaryRestOnly : restViolators.filter(compSatisfies);
+          const primaryRestOnly = restCompromise ? [] : (restFallback || []).filter(r => compSatisfies(r) && !candidateSet.has(r));
           if (primaryRestOnly.length && restRank > covRank) {
             // Same "break the least-important available rule" pattern POD originated — the
             // requirement is hard (no soft fallback-to-junior trade-off left to make), so
@@ -6054,6 +6056,50 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       }
     }
     report.seniorGaps = report.seniorGaps.filter(g => !gapFixed.has(g));
+
+    // Phase 3b — POD/FLEX true-primary preference (R5, 2026-09-27 chief decision): "replaced with a
+    // PGY-2 only when no PGY-3 is actually available." compositionSatisfies already lets the
+    // fallback PGY (POD: PGY-2, FLEX: PGY-3) satisfy the hard requirement on a Wellness-Wednesday/
+    // conference date — this phase is the ONE place that then prefers a genuine primary over that
+    // substitute, by a single bounded unassign/recheck/reassign-or-revert swap, same idiom as Phase
+    // 3's senior-gap fill just above (and Phase 2's rest-compromise swap before that). Deliberately
+    // NOT done inside fillDayPass's own hot loop (see that branch's own comment for why: doing it
+    // there, inside all 20 of generateScheduleBest's independent attempts, destabilized which
+    // attempt wins best-of-N and regressed the chief-benchmark fixture) — this runs exactly ONCE, on
+    // the winning attempt only, so it can only ever change THIS schedule's own substitute cells, not
+    // ripple into which of the 20 attempts got picked in the first place. Scans every (area, shift,
+    // date) rather than a report array (there is no live report array for this — report.podSubstitutes
+    // is built AFTER repair, from whatever this phase leaves behind) — cheap in practice, since
+    // `fallback` only ever matches on the block's own 1-2 substitute-eligible dates (compositionSatisfies
+    // never lets the fallback PGY qualify anywhere else, so the `.find()` below is a fast empty miss
+    // for every other date).
+    for (const area of Object.keys(SENIOR_COMPOSITION)) {
+      const comp = SENIOR_COMPOSITION[area];
+      for (const shift of SHIFTS.filter(s => s.area === area)) {
+        for (const ds of dates) {
+          if (budget <= 0) break;
+          if (seniorCompositionExempt(shift, ds)) continue;
+          const fallback = allResidents.find(r =>
+            schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
+            compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
+          if (!fallback) continue; // no substitute sitting on this shift/date at all
+          // Composition is already satisfied by a DIFFERENT body on this same shift/date (a true
+          // primary elsewhere on it) — nothing to fix; leave this fallback exactly where they are.
+          if (allResidents.some(r => schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) continue;
+          if (!movable(fallback.id, ds)) continue;
+          unassignCell(fallback.id, ds);
+          const { candidates } = poolFor(shift, ds);
+          const truePrimaries = candidates.filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary);
+          if (truePrimaries.length) {
+            const winner = pickBestScore(truePrimaries, shift, ds);
+            assignCell(winner.id, shift.id, ds);
+            report.repairs.push({ type: 'preferTruePrimary', dateStr: ds, shiftId: shift.id, area, replacedResidentId: fallback.id, withResidentId: winner.id });
+          } else {
+            assignCell(fallback.id, shift.id, ds); // revert — no true primary is actually available
+          }
+        }
+      }
+    }
 
     // Phase 4 — bounded ejection chains (depth 2) for whatever min-slots Phase 1 could not fix.
     //
