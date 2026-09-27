@@ -27,11 +27,36 @@ class PayloadError(ValueError):
 @dataclass(frozen=True)
 class Config:
     max_time_seconds: float = 30.0
-    num_workers: int = 8
+    # 0 is a sentinel meaning "use os.cpu_count()" (solve.py's `_num_workers`)
+    # -- R9 (2026-09-27, CP-SAT-as-polisher): the old hardcoded default of 8
+    # either starved a bigger box or thrashed a smaller one. An explicit
+    # positive value here (from `config.numWorkers`) still overrides.
+    num_workers: int = 0
     random_seed: int = 42
     coverage_min_mode: str = "elastic_always"  # or "hard_then_elastic"
     max_verification_resolves: int = 2
     weights: dict = field(default_factory=dict)
+    # R9: staged (lexicographic-tiered) objective vs. the original single
+    # weighted sum -- see solver/model/objective.py's `stage_exprs` and
+    # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
+    # keeps the pre-R9 single-shot solve for comparison/rollback.
+    objective_mode: str = "staged"
+    # Fraction of `max_time_seconds` given to each of the 3 stages (errors ->
+    # blocking-warns -> quality). Must sum to <= 1.0; solve.py renormalizes
+    # defensively if a caller sends something that doesn't. Skewed toward
+    # stage 3 on purpose (was an even-ish 30/20/50): stages 1-2 are usually
+    # ALREADY at their optimum from the warm-start hint alone (targetDeficit/
+    # postNightRest are typically 0 in a good local schedule) and only need
+    # enough time to CONFIRM that via presolve/propagation, not to search;
+    # stage 3 (coverage + every quality term) is the one doing real
+    # combinatorial work and benefits far more from a bigger share -- see
+    # solve.py's `_solve_staged` docstring and PAYLOAD_SCHEMA.md's dated R9
+    # section for the engineHeadToHead measurement that motivated this.
+    stage_split: tuple = (0.15, 0.15, 0.7)
+    # CP-SAT `CpSolverParameters.symmetry_level` override (0-3). None keeps
+    # OR-Tools' own default -- this repo has no hand-written symmetry-
+    # breaking constraints to conflict with it (see solve.py's docstring).
+    symmetry_level: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +165,14 @@ class Payload:
     eligible: dict                     # residentId -> date -> set[shiftId]
     obligations: dict                  # residentId -> set[date]
     locked: list                       # list[LockedCell]
+    # R9 (2026-09-27, CP-SAT-as-polisher): warm-start hint -- SAME shape as
+    # `locked` ({residentId, date, shiftId}), but a soft suggestion consumed
+    # only by solver/model/hint.py's AddHint calls, never a hard pin. A hint
+    # cell that isn't a legal (resident,shift,date) var, or that conflicts
+    # with a hard constraint, is silently dropped by `apply_hint` -- CP-SAT's
+    # own `repair_hint` (solve.py) handles the rest without crashing. Default
+    # empty: a payload with no `hint` field solves byte-identically to today.
+    hint: list                         # list[LockedCell]
     coverage: dict                     # shiftId -> date -> CoverageEntry
     senior_primary: dict               # shiftId -> date -> list[residentId]
     jc_dates: frozenset
@@ -314,13 +347,17 @@ def parse_payload(raw: dict) -> Payload:
             dates=list(block_raw["dates"]),
         )
         config_raw = raw.get("config", {}) or {}
+        stage_split_raw = config_raw.get("stageSplit")
         config = Config(
             max_time_seconds=float(config_raw.get("maxTimeSeconds", 30)),
-            num_workers=int(config_raw.get("numWorkers", 8)),
+            num_workers=int(config_raw.get("numWorkers", 0) or 0),
             random_seed=int(config_raw.get("randomSeed", 42)),
             coverage_min_mode=config_raw.get("coverageMinMode", "elastic_always"),
             max_verification_resolves=int(config_raw.get("maxVerificationResolves", 2)),
             weights=dict(config_raw.get("weights", {}) or {}),
+            objective_mode=config_raw.get("objectiveMode", "staged"),
+            stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else (0.3, 0.2, 0.5),
+            symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
@@ -338,6 +375,7 @@ def parse_payload(raw: dict) -> Payload:
             eligible=_parse_eligible(raw.get("eligible", {})),
             obligations=_parse_obligations(raw.get("obligations", {})),
             locked=_parse_locked(raw.get("locked", [])),
+            hint=_parse_locked(raw.get("hint", [])),
             coverage=_parse_coverage(raw.get("coverage", {})),
             senior_primary=raw.get("seniorPrimary", {}) or {},
             jc_dates=frozenset(raw.get("jcDates", ()) or ()),

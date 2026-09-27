@@ -191,9 +191,60 @@ describe('buildSolverPayload', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: 5 } });
     expect(payload.config.maxTimeSeconds).toBe(5);
-    expect(payload.config.numWorkers).toBe(8);
+    // R9: numWorkers is no longer defaulted client-side (was a hardcoded 8) — the solver itself
+    // defaults to os.cpu_count() when the field is absent (solver-service/solver/solve.py's
+    // `_num_workers`), so an unconfigured payload correctly carries no opinion here.
+    expect(payload.config.numWorkers).toBeUndefined();
     expect(payload.config.randomSeed).toBe(42);
     expect(payload.config.coverageMinMode).toBe('elastic_always');
+  });
+
+  it('numWorkers still overrides via config when explicitly requested', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload({ ...fixture, config: { numWorkers: 2 } });
+    expect(payload.config.numWorkers).toBe(2);
+  });
+
+  // R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): warm-start hint.
+  describe('hint (R9 warm start)', () => {
+    it('omits the hint field entirely when no hint arg is passed — byte-identical to pre-R9', () => {
+      const fixture = makeFixture('standard');
+      const withoutHintArg = buildSolverPayload(fixture);
+      const explicitlyNull = buildSolverPayload({ ...fixture, hint: null });
+      expect(withoutHintArg).not.toHaveProperty('hint');
+      expect(JSON.stringify(explicitlyNull)).toBe(JSON.stringify(withoutHintArg));
+    });
+
+    it('omits the hint field when the hint schedule has zero assigned cells', () => {
+      const fixture = makeFixture('standard');
+      const emptyHintSchedule = Object.fromEntries(fixture.allResidents.map(r => [r.id, {}]));
+      const payload = buildSolverPayload({ ...fixture, hint: emptyHintSchedule });
+      expect(payload).not.toHaveProperty('hint');
+    });
+
+    it('emits one {residentId,date,shiftId} cell per non-empty hint-schedule entry, same shape as locked[]', () => {
+      const fixture = makeFixture('standard');
+      const [r1, r2] = fixture.allResidents;
+      const ds = fixture.block.startDate;
+      const hintSchedule = { [r1.id]: { [ds]: 'POD-D' }, [r2.id]: { [ds]: 'FLEX-D' } };
+      const payload = buildSolverPayload({ ...fixture, hint: hintSchedule });
+      expect(payload.hint).toEqual(
+        expect.arrayContaining([
+          { residentId: r1.id, date: ds, shiftId: 'POD-D' },
+          { residentId: r2.id, date: ds, shiftId: 'FLEX-D' },
+        ])
+      );
+      expect(payload.hint).toHaveLength(2);
+    });
+
+    it('hint is independent of locked[] — a hint cell for an otherwise-empty block.schedule does not appear in locked', () => {
+      const fixture = makeFixture('standard');
+      const r1 = fixture.allResidents[0];
+      const ds = fixture.block.startDate;
+      const payload = buildSolverPayload({ ...fixture, hint: { [r1.id]: { [ds]: 'POD-D' } } });
+      expect(payload.locked).toEqual([]);
+      expect(payload.hint).toEqual([{ residentId: r1.id, date: ds, shiftId: 'POD-D' }]);
+    });
   });
 
   it('shifts catalog carries startH/durationH/type/area for every SHIFT_MAP id', () => {

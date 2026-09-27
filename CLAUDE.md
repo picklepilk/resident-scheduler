@@ -83,6 +83,7 @@ npx vitest run src/lib/qgenda.test.js        # single file
 
 ## CP-SAT solver service (optional second engine)
 `solver-service/` — Python/FastAPI OR-Tools; contract in `solver-service/CLAUDE.md` + `solver-service/docs/PAYLOAD_SCHEMA.md`. Seams: `buildSolverPayload()` / `mapSolverResult()` / `generateViaSolverOrLocal()` (ONLY solver-vs-local decision point).
+- **R9 (2026-09-27) pipeline: local FIRST, always → solver POLISHES (warm-started) → `pickEngineResult` arbitrates.** `generateViaSolverOrLocal` runs `generateScheduleBest` before ever calling the solver, sends that schedule to the solver as `buildSolverPayload`'s optional `hint` (soft `AddHint`, never a hard pin like `locked[]`), and only ships the solver's result if it STRICTLY beats the already-computed local result — a tie or any solver failure keeps local, with no second wasted local run. Solver-side: staged (lexicographic) objective mirroring `betterQuality`'s own (errorCount, blockingWarnCount, qualityVector) ladder is now the default (`config.objectiveMode: 'staged'`); the old single weighted-sum solve is still available (`'weighted'`) for comparison. Full tier-mapping table, gaps, and search-tuning notes: `solver-service/docs/PAYLOAD_SCHEMA.md`'s dated R9 section.
 - **Payload gotcha (recurred once)**: an eligibility carve-out enforced only in the generator's `candidatePool` (not `getEligibleShifts`) must ALSO be filtered in `buildSolverPayload`.
 
 ## Imports & exports

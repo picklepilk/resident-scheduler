@@ -180,6 +180,41 @@ class PostNightRestPenalty:
     var: object
 
 
+# R9 (2026-09-27, CP-SAT-as-polisher): tier names for the staged
+# (lexicographic) solve -- solve.py's `_solve_staged` minimizes these in
+# order, fixing each stage's achieved value as an upper bound before moving
+# to the next, so a later stage can never trade away an earlier one's result.
+# Mapping to the JS engine's own `betterQuality` tuple (errorCount,
+# blockingWarnCount, qualityVector) -- see docs/PAYLOAD_SCHEMA.md's dated R9
+# section for the full table and its documented gaps:
+#   TIER_ERRORS   ~ errorCount      -- only the one JS "error" that isn't
+#                                      already a solver HARD constraint:
+#                                      targetDeficitCore (EM-core resident
+#                                      under shift-count target).
+#   TIER_BLOCKING ~ blockingWarnCount -- postNightRest (blocksExport:true).
+#                                      Override-tier rule violations are the
+#                                      OTHER blockingWarnCount contributor in
+#                                      JS, but those are hard-never-broken in
+#                                      the solver's own strict pass 1 too (see
+#                                      solver/model/count_caps.py et al.), so
+#                                      they contribute nothing here to stage.
+#   TIER_RANK     ~ qualityVector[n0,n1,n2] -- coverageMin slack +
+#                                      overstaffCoverage. seniorComposition
+#                                      is hard (always 0); postNightRest is
+#                                      already pinned by TIER_BLOCKING above.
+#   TIER_QUALITY  ~ qualityVector[fairnessPlusShape] -- everything else:
+#                                      non-core targetDeficit, fairness,
+#                                      isolatedNight, workShape, band8,
+#                                      trauma-run batch 2, em-composition/
+#                                      pgy-fallback/true-primary preferences,
+#                                      dowPreference.
+TIER_ERRORS = "tier1_errors"
+TIER_BLOCKING = "tier2_blockingWarns"
+TIER_RANK = "tier3_qualityRank"
+TIER_QUALITY = "tier4_quality"
+STAGE_ORDER = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_QUALITY)
+
+
 @dataclass
 class ObjectiveInfo:
     total_expr: object
@@ -187,6 +222,13 @@ class ObjectiveInfo:
     post_night_rest_penalties: list
     target_deficit_vars: dict          # residentId -> (target:int, deficitVar)
     weights: dict = field(default_factory=dict)  # final, rule-priority-adjusted weights actually used
+    # R9: tier name -> summed (coef*expr) linear expression for that tier,
+    # each an OrTools linear expr (0 for an empty tier -- see TermGroup.add's
+    # own coef!=0 guard). sum(stage_exprs.values()) == total_expr exactly,
+    # by construction (every _add_*_term call below writes into exactly one
+    # of the 4 groups) -- the staged solve is a re-partitioning of the same
+    # objective, never a different one.
+    stage_exprs: dict = field(default_factory=dict)
 
 
 def _weekend_dates(payload: Payload) -> list:
@@ -257,8 +299,16 @@ def _add_overstaff_term(group: TermGroup, coverage_result: CoverageResult, weigh
 
 
 # ---- rule 33: targetDeficit, core and non-core ----
-
-def _add_target_deficit_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> dict:
+#
+# R9: split across two groups, not one -- an EM-core resident's target
+# shortfall is JS's `underTarget` rule at 'error' level (betterQuality's
+# TIER_ERRORS slot: errorCount), while a non-core resident's shortfall is
+# only ever a 'warn' (JS never blocks export/hard-errors on it), landing in
+# the quality vector's fairnessPlusShape term instead (TIER_QUALITY). Same
+# split the JS engine's own validateAll makes via `isEmResident(resident)`.
+def _add_target_deficit_terms(
+    model, payload: Payload, store: VarStore, core_group: TermGroup, noncore_group: TermGroup, weights: dict
+) -> dict:
     core_coef = int(weights["targetDeficitCore"]["perUnit"])
     noncore_coef = int(weights["targetDeficit"]["perUnit"])
     result = {}
@@ -269,8 +319,10 @@ def _add_target_deficit_terms(model, payload: Payload, store: VarStore, group: T
         deficit = model.new_int_var(0, resident.target, f"deficit[{resident.id}]")
         model.add_max_equality(deficit, [resident.target - assigned_expr, 0])
         result[resident.id] = (resident.target, deficit)
-        coef = core_coef if resident.is_em_core else noncore_coef
-        group.add(coef, deficit)
+        if resident.is_em_core:
+            core_group.add(core_coef, deficit)
+        else:
+            noncore_group.add(noncore_coef, deficit)
     return result
 
 
@@ -587,22 +639,40 @@ def _add_dow_preference_term(payload: Payload, store: VarStore, group: TermGroup
 
 def build_objective(model, payload: Payload, store: VarStore, coverage_result: CoverageResult) -> ObjectiveInfo:
     weights = apply_rule_priority(merged_weights(payload), payload.rule_priority)
-    group = TermGroup("objective")
 
-    _add_coverage_term(payload, group, coverage_result, weights)
-    _add_overstaff_term(group, coverage_result, weights)
-    target_deficit_vars = _add_target_deficit_terms(model, payload, store, group, weights)
-    post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, group, weights)
-    _add_fairness_terms(model, payload, store, group, weights)
-    _add_isolated_night_term(model, payload, store, group, weights)
-    _add_work_shape_term(model, payload, store, group, weights)
-    _add_band8_terms(model, payload, store, group, weights)
-    _add_trauma_run_batch2_terms(model, payload, store, group, weights)
-    _add_em_composition_round2b_terms(model, payload, store, group, weights)
-    _add_true_primary_preference_term(model, payload, store, group, weights)
-    _add_dow_preference_term(payload, store, group, weights)
+    # R9: 4 groups instead of 1 -- see TIER_*/STAGE_ORDER's own docstring just
+    # above for exactly which JS betterQuality slot each corresponds to. Every
+    # _add_*_term call below writes into exactly one of these, so
+    # sum(group.terms for every group) is IDENTICAL to the old single-`group`
+    # sum -- `total_expr` below is unchanged in VALUE from before this
+    # refactor, only re-partitioned, which is what keeps every pre-existing
+    # weighted-objective test (test_weight_tiering.py et al.) green unchanged.
+    tier_errors = TermGroup(TIER_ERRORS)
+    tier_blocking = TermGroup(TIER_BLOCKING)
+    tier_rank = TermGroup(TIER_RANK)
+    tier_quality = TermGroup(TIER_QUALITY)
 
-    total_expr = sum((coef * expr for coef, expr in group.terms), start=0)
+    _add_coverage_term(payload, tier_rank, coverage_result, weights)
+    _add_overstaff_term(tier_rank, coverage_result, weights)
+    target_deficit_vars = _add_target_deficit_terms(model, payload, store, tier_errors, tier_quality, weights)
+    post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, tier_blocking, weights)
+    _add_fairness_terms(model, payload, store, tier_quality, weights)
+    _add_isolated_night_term(model, payload, store, tier_quality, weights)
+    _add_work_shape_term(model, payload, store, tier_quality, weights)
+    _add_band8_terms(model, payload, store, tier_quality, weights)
+    _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)
+    _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)
+    _add_true_primary_preference_term(model, payload, store, tier_quality, weights)
+    _add_dow_preference_term(payload, store, tier_quality, weights)
+
+    groups = {TIER_ERRORS: tier_errors, TIER_BLOCKING: tier_blocking, TIER_RANK: tier_rank, TIER_QUALITY: tier_quality}
+    stage_exprs = {name: sum((coef * expr for coef, expr in g.terms), start=0) for name, g in groups.items()}
+    total_expr = sum((stage_exprs[name] for name in STAGE_ORDER), start=0)
+    # Default/fallback objective -- solve.py's `_solve_staged` overrides this
+    # with its own per-stage `model.minimize()` calls when
+    # `payload.config.objective_mode == "staged"` (the new default); a caller
+    # that still wants the pre-R9 single-shot weighted solve
+    # (`objectiveMode: "weighted"`) gets exactly this, unchanged.
     model.minimize(total_expr)
 
     return ObjectiveInfo(
@@ -611,4 +681,5 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
         post_night_rest_penalties=post_night_rest_penalties,
         target_deficit_vars=target_deficit_vars,
         weights=weights,
+        stage_exprs=stage_exprs,
     )

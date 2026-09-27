@@ -6698,8 +6698,19 @@ const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
 // is represented by its opaque `id` only (this repo is public; see CLAUDE.md's "Data model &
 // conventions"). Same top-level args shape as generateSchedule, plus an optional `config` for
 // per-call solver-config overrides (maxTimeSeconds/numWorkers/randomSeed/coverageMinMode/
-// maxVerificationResolves/weights).
-export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {} }) {
+// maxVerificationResolves/weights/objectiveMode/stageSplit/symmetryLevel).
+//
+// R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): optional `hint` —
+// a schedule shaped exactly like `block.schedule` ({residentId: {dateStr: shiftId}}), normally
+// the LOCAL engine's own `generateScheduleBest(...).schedule` (see `generateViaSolverOrLocal`,
+// which now always runs local FIRST specifically to produce this). Converted to the SAME flat
+// {residentId,date,shiftId} cell shape `locked[]` already uses — the simplest mapping onto the
+// solver's own x[r,s,d] var keys — but emitted as a SEPARATE `hint` field: a hint is a soft
+// warm-start suggestion (CP-SAT `AddHint`), never a hard pin like `locked`. Omitted entirely
+// (not even an empty array) when `hint` isn't passed or resolves to zero cells, so a payload
+// built without it is byte-identical to a pre-R9 payload — see the dedicated test in
+// ResidentScheduler.test.js.
+export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   const sd = block.specialDays || {};
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
@@ -6956,6 +6967,19 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     }
   }
 
+  // ── hint[] (R9, optional) — same loop shape as locked[] just above, over the CALLER-supplied
+  // `hint` schedule instead of `block.schedule`. See this function's own header comment for why
+  // this stays a separate field from `locked` (soft suggestion vs. hard pin).
+  const hintCells = [];
+  if (hint) {
+    for (const r of allResidents) {
+      const rs = hint[r.id] || {};
+      for (const [ds, sid] of Object.entries(rs)) {
+        if (sid) hintCells.push({ residentId: r.id, date: ds, shiftId: sid });
+      }
+    }
+  }
+
   // ── preferences — rule 42, the two tuple kinds this version ships (see the schema's own "Kept
   // terms" note): traumaNightDow and pedNPgy1. Magnitudes are score()'s own SCORE_WEIGHTS entries,
   // so a chief-facing weight tweak in this file automatically reaches the solver too.
@@ -7037,7 +7061,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 
   const resolvedConfig = {
     maxTimeSeconds: 30,
-    numWorkers: 8,
+    // R9: no hardcoded default here any more (was 8) — an explicit `numWorkers` still overrides
+    // via `config`, but leaving it OFF the payload lets the solver's own default (os.cpu_count(),
+    // clamped >= 1 — solver-service/solver/solve.py's `_num_workers`) actually take effect instead
+    // of every request pinning a stale worker count regardless of the box it runs on.
     randomSeed: 42,
     coverageMinMode: 'elastic_always',
     maxVerificationResolves: 2,
@@ -7054,6 +7081,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     eligible,
     obligations,
     locked,
+    ...(hintCells.length ? { hint: hintCells } : {}),
     coverage: coverageOut,
     seniorPrimary,
     truePrimary,
@@ -14586,15 +14614,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     else runGenerate(false);
   }
 
-  // Shared by runGenerate/runPartialRegenerate: tries the external CP-SAT solver first when
-  // configured (SOLVER_ENABLED — see src/lib/solverClient.js), falling back to the built-in JS
-  // generator (generateScheduleBest) on ANY failure — solver not reachable, timeout, a non-200
-  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR never get this
-  // far). A usable solver status (OPTIMAL/FEASIBLE/RELAXED) is NOT committed unjudged: it's scored
-  // against a real local run and arbitrated via pickEngineResult, since a measurement showed the
-  // solver losing to the local engine on most quality axes despite returning a "usable" status.
-  // `genBlock` already carries whatever `schedule` this call should treat as locked/kept (see
-  // PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an emptied schedule for Clear &
+  // Shared by runGenerate/runPartialRegenerate: R9 (2026-09-27, CP-SAT-as-polisher) — runs the
+  // built-in JS generator (generateScheduleBest) FIRST, ALWAYS (not just as a fallback), then —
+  // when the solver is configured — asks CP-SAT to POLISH that same result, warm-started from it
+  // (`buildSolverPayload`'s `hint`, PAYLOAD_SCHEMA.md's dated R9 section) rather than racing it
+  // from scratch. A measurement (engineHeadToHead.test.js) had shown CP-SAT losing to the local
+  // engine on most quality axes and running ~10x slower when solving cold; warm-starting from an
+  // already-good local schedule is what makes the solver a reliable improver instead of a
+  // from-scratch competitor. The solver is still held to the exact same bar either way: its result
+  // is scored against the ALREADY-COMPUTED local result and arbitrated via pickEngineResult, which
+  // keeps local on any tie. On ANY solver failure — not configured, unreachable, timeout, a non-200
+  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR never get this far)
+  // — this returns the local result directly; the local run already happened, so there is no
+  // separate "fallback" generation call any more (was a second, wasted generateScheduleBest run,
+  // pre-R9). `genBlock` already carries whatever `schedule` this call should treat as locked/kept
+  // (see PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an emptied schedule for Clear &
   // Regenerate, runPartialRegenerate passes its own pre-cleared workingSchedule; buildSolverPayload
   // has no separate clearFirst concept of its own, it always just reads whatever's non-empty in
   // `genBlock.schedule`. Returns `{ schedule, report }` (same shape generateScheduleBest returns,
@@ -14604,28 +14638,33 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   async function generateViaSolverOrLocal(genBlock, clearFirst) {
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const hasValidDates = getBlockDates(genBlock.startDate, genBlock.endDate).length > 0;
+    if (!hasValidDates) return null;
+
+    // Local FIRST, always — see this function's own header for why (both the warm-start source
+    // AND, on any solver failure, the final answer itself; generateScheduleBest's own null return
+    // for an invalid date range is already handled by the hasValidDates guard just above).
+    setGenStageLabel(SOLVER_ENABLED ? 'Generating (built-in engine)…' : 'Preparing…');
+    await yieldToPaint();
+    const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
+    if (!localRes) return null;
+
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
     // `!== false` so an old backup/cloud row with no such key keeps the solver ON — the env-var
     // (VITE_SOLVER_URL) stays the deploy-level switch, this one needs no redeploy.
     const solverAllowed = appSettings.useSolverService !== false;
-    setGenStageLabel('Preparing…');
-    if (SOLVER_ENABLED && solverAllowed && hasValidDates) {
+    if (SOLVER_ENABLED && solverAllowed) {
       try {
-        const payload = buildSolverPayload({ ...baseArgs, block: genBlock });
         setGenStageLabel('Optimizing schedule — up to ~30s…');
+        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule });
         const json = await solveRemote(payload);
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
         const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf });
-        // Solver succeeded, but a head-to-head measurement (see engineHeadToHead.test.js) showed
-        // CP-SAT losing to the local engine on most axes and running ~10x slower — so a bare
-        // "solver returned something usable" is no longer enough to ship it. Score it against a
-        // real local run and arbitrate via pickEngineResult before committing to either.
-        setGenStageLabel('Comparing with built-in engine…');
-        await yieldToPaint();
-        const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
+        // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
+        // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
+        // polisher, not a blind trust.
         const scoreArgs = { ...baseArgs, block: genBlock };
         const { result, winner, engineComparison } = pickEngineResult(solverRes, localRes, scoreArgs);
         return {
@@ -14635,17 +14674,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
         };
       } catch (e) {
-        console.warn('Solver unavailable — falling back to the built-in generator:', e);
-        setGenStageLabel('Optimizer unavailable — using built-in generator…');
-        await yieldToPaint(); // let the fallback label actually paint before the sync generator blocks the thread
-        const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
-        return res ? { ...res, engineUsed: 'fallback', relaxed: false } : null;
+        console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
+        return { ...localRes, engineUsed: 'fallback', relaxed: false };
       }
     }
-    setGenStageLabel('Generating (built-in engine)…');
-    await yieldToPaint();
-    const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
-    return res ? { ...res, engineUsed: 'local', relaxed: false } : null;
+    return { ...localRes, engineUsed: 'local', relaxed: false };
   }
 
   // `overrideSchedule` (fill mode only): lets "Fix Violations"/the readiness modal's "Clear

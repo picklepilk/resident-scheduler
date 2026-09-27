@@ -14,6 +14,7 @@ from solver.io.payload import Payload
 from solver.model.circadian import add_circadian_constraints
 from solver.model.count_caps import add_count_cap_constraints
 from solver.model.coverage import add_coverage_constraints
+from solver.model.hint import apply_hint
 from solver.model.hours_cap import add_hours_cap_constraints
 from solver.model.objective import ObjectiveInfo, build_objective
 from solver.model.rest import add_rest_constraints
@@ -34,6 +35,7 @@ class BuildResult:
 def build_model(payload: Payload) -> BuildResult:
     model = cp_model.CpModel()
     store = build_variables(model, payload)
+    apply_hint(model, payload, store)  # R9: warm start, see solver/model/hint.py
 
     coverage_result = add_coverage_constraints(model, payload, store)
     add_rest_constraints(model, payload, store)

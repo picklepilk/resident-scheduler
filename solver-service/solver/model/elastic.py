@@ -79,6 +79,7 @@ from solver.io.payload import Payload
 from solver.model.circadian import add_circadian_constraints
 from solver.model.count_caps import add_count_cap_constraints
 from solver.model.coverage import add_coverage_constraints
+from solver.model.hint import apply_hint
 from solver.model.hours_cap import add_hours_cap_constraints
 from solver.model.objective import ObjectiveInfo, build_objective
 from solver.model.rest import add_rest_constraints
@@ -173,6 +174,7 @@ class ElasticBuildResult:
 def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     model = cp_model.CpModel()
     store = build_variables(model, payload)
+    apply_hint(model, payload, store)  # R9: warm start, see solver/model/hint.py
 
     duty_pool = LitPool(model)
     coverage_pool = LitPool(model)
