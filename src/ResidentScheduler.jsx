@@ -2590,6 +2590,22 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
   return resident.pgy === comp.fallback && seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings, ayConf);
 }
 
+// R5 (2026-09-27 chief decision, memory rule-override-policy): which of the two substitute paths
+// seniorWellnessSubstituteAllowed actually matched on `ds` — used only for labeling a substitute
+// placement after the fact (report.podSubstitutes, validateAll's podPgy2Substitute info warn), never
+// to decide whether one is allowed (compositionSatisfies already owns that). Checks the block's own
+// Wellness Wednesday first: it's the more specific/local fact on the rare date a Wellness Wednesday
+// lands inside a conference window (e.g. AY26/27 Block 4's own POD Wellness Wednesday inside ACEP).
+// Returns null when neither path matched (caller has no business calling this then).
+function substituteReasonFor(area, ds, blockStart, appSettings, ayConf) {
+  const ownWellness = area === 'POD'
+    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings)
+    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings) : false;
+  if (ownWellness) return 'wellness';
+  if (isConferenceAwayFor(area, ds, ayConf)) return 'conference';
+  return null;
+}
+
 // ─── PGY gating pool-restrict (2b-2, chief-directed, SOFT with fallback) ──────────────────────
 // Distinct from SENIOR_COMPOSITION's HARD requirement on a POD/FLEX shift's first qualifying
 // body (that rule never bends, see compositionSatisfies above): this one governs which PGY may
@@ -4318,6 +4334,16 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           // and each says something different: "no senior class present" vs. "no EM at all"). Only
           // the PGY-gating check further down needs a genuine primary already present, and it
           // re-derives that from `compSatisfiers` itself rather than relying on control flow here.
+        } else if (area === 'POD' && !compSatisfiers.some(r => r.pgy === comp.primary)) {
+          // R5 (2026-09-27 chief decision, memory rule-override-policy): the requirement above is
+          // fully SATISFIED here (compSatisfiers is non-empty) via the PGY-2 substitute path, not
+          // unmet — this is purely informational, flagging that it happened, never export-blocking
+          // (rulePolicy.js's podPgy2Substitute is tier 'info': severityFor always returns 'warn' for
+          // it and it is never added to EXPORT_BLOCKING_RULE_IDS). See report.podSubstitutes in
+          // generateSchedule for the generator-side counterpart of this same event.
+          const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf);
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'podPgy2Substitute',
+            message: `${shift.label} (${formatDisplayDate(ds)}) staffed by an EM PGY-2 in place of an unavailable PGY-3${reason ? ` (${reason})` : ''}`, level: severityFor('podPgy2Substitute', 'validator') });
         }
 
         // 2b-1 EM-count composition (SOFT, chief-directed): distinct from the hard PGY-CLASS check
@@ -4928,6 +4954,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // one tracked the HARD requirement, now unreachable — see its own comment); this is a genuine,
     // regularly-firing SOFT fallback log.
     pgyFallbacks: [],
+    // R5 (2026-09-27 chief decision): POD placements where the composition requirement (see
+    // SENIOR_COMPOSITION.POD) was met by an EM PGY-2 substituting for a genuinely-unavailable PGY-3
+    // on a conference-window or the block's own Wellness-Wednesday date. Rebuilt from the final
+    // schedule right after the fill/repair passes (see below), not logged live — repair can still
+    // move who ends up on the shift after fillDayPass first places someone. Always present (even
+    // empty), same convention as overstaffed/pgyFallbacks above.
+    podSubstitutes: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -5662,12 +5695,24 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // it that day — treated as if SENIOR_COMPOSITION had no entry for it at all.
       const seniorCompExempt = seniorCompositionExempt(slot.shift, ds);
       if (comp && !seniorFilled && !seniorCompExempt) {
-        const primaryPool = candidates.filter(compSatisfies);
+        // R5 (2026-09-27 chief decision): "replaced with a PGY-2" only when no PGY-3 is actually
+        // available — a genuine primary-PGY candidate must always win this slot over a substitute-
+        // eligible fallback PGY when both are present, so this is pool-NARROWING (never scoring:
+        // score() alone could easily rank a fallback candidate above an available primary on an
+        // unrelated preference term). On an ordinary (non-substitute) date this is a no-op — outside
+        // a Wellness/conference date compositionSatisfies never lets the fallback PGY into
+        // `compSatisfies` at all, so truePrimaryPool and the compSatisfies-filtered pool already
+        // agree exactly.
+        const isTruePrimary = r => r.category === 'EM_HOME' && r.pgy === comp.primary;
+        const truePrimaryPool = candidates.filter(isTruePrimary);
+        const primaryPool = truePrimaryPool.length ? truePrimaryPool : candidates.filter(compSatisfies);
         if (primaryPool.length) {
           candidates = primaryPool;
         } else if (phase === 'min') {
           const candidateSet = new Set(candidates);
-          const primaryRestOnly = restCompromise ? [] : (restFallback || []).filter(r => compSatisfies(r) && !candidateSet.has(r));
+          const restViolators = restCompromise ? [] : (restFallback || []).filter(r => !candidateSet.has(r));
+          const truePrimaryRestOnly = restViolators.filter(isTruePrimary);
+          const primaryRestOnly = truePrimaryRestOnly.length ? truePrimaryRestOnly : restViolators.filter(compSatisfies);
           if (primaryRestOnly.length && restRank > covRank) {
             // Same "break the least-important available rule" pattern POD originated — the
             // requirement is hard (no soft fallback-to-junior trade-off left to make), so
@@ -6395,6 +6440,27 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   for (const ds of dates) fillDayPass(ds, () => true, 'optional');
   if (repair) repairPass();
 
+  // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
+  // repair, like report.underTarget right below) rather than logging live inside fillDayPass —
+  // repair can still move who ends up on a POD shift after the fill passes first place someone.
+  // `keptCells` scoping matters here specifically: a chief's own pre-existing manual PGY-2-on-POD
+  // entry is that chief's call, not something this generation run did, and must not be reported as
+  // if the generator made the substitution.
+  report.podSubstitutes = [];
+  for (const shift of SHIFTS.filter(s => s.area === 'POD')) {
+    for (const ds of dates) {
+      if (seniorCompositionExempt(shift, ds)) continue;
+      for (const r of allResidents) {
+        if (schedule[r.id][ds] !== shift.id) continue;
+        if (keptCells.has(`${r.id}|${ds}`)) continue;
+        if (r.category !== 'EM_HOME' || r.pgy !== SENIOR_COMPOSITION.POD.fallback) continue;
+        if (!compositionSatisfies('POD', r, ds, block.startDate, appSettings, ayConf)) continue;
+        const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf) || 'conference';
+        report.podSubstitutes.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: shift.id, reason });
+      }
+    }
+  }
+
   report.underTarget = allResidents
     .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
     .map(r => ({
@@ -6916,6 +6982,7 @@ export function mapSolverResult(json, { block, allResidents } = {}) {
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
+      podSubstitutes: [], // always [] — R5's POD PGY-2 substitute is JS-generator-only for now (R7 will teach the solver seniorPrimary[s][d] about it); kept for shape compat
       // Defensive filter, mirroring buildSolverPayload's own `target: null` fix (see that map's
       // comment): a resident who isn't schedulable this block (isSchedulable false — e.g. an
       // EM_HOME/EM_BAMC resident on an atUH:false blockType) already gets `target: null` in the
@@ -16444,6 +16511,19 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
             <ul className="mt-1 space-y-0.5">
               {report.pgyFallbacks.map((f,i)=>(
                 <li key={i} className="text-xs text-gray-700">{formatDisplayDate(f.dateStr)} — {SHIFT_MAP[f.shiftId]?.label || f.shiftId} — {f.name} (EM PGY-{f.pgy}; no EM PGY-{SENIOR_COMPOSITION[f.area]?.primary} was free that day, soft rule)</li>
+              ))}
+            </ul>
+          </div>
+          </ReportSubsection>
+        )}
+
+        {(report.podSubstitutes||[]).length > 0 && (
+          <ReportSubsection compact={compact} title={`PGY-2 covering POD (${report.podSubstitutes.length})`} count={report.podSubstitutes.length}>
+          <div className="border border-blue-200 bg-blue-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-blue-700">R5: PGY-3 unavailable (conference or Wellness Wednesday) — an EM PGY-2 covered POD instead, informational only</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.podSubstitutes.map((s,i)=>(
+                <li key={i} className="text-xs text-gray-700">{formatDisplayDate(s.dateStr)} — {SHIFT_MAP[s.shiftId]?.label || s.shiftId} — {s.name} ({s.reason === 'wellness' ? "POD's own Wellness Wednesday" : 'conference'})</li>
               ))}
             </ul>
           </div>

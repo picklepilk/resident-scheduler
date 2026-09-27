@@ -175,6 +175,30 @@ export function buildDailyContributions(resident, rs, prevRs, grDow, rangeDates)
 // `buildDailyContributions` used. That date's own `ed[candidateIdx]` is always 0 going in
 // (candidatePool only ever calls this for a date the resident doesn't already work), so overriding
 // it with the candidate shift's duration for the sum is safe — never double-counts.
+//
+// A window can extend past the HIGH end of `rangeDates` — it's only padded backward (see
+// weeklyRangeDates' own comment: a 6-day lookback pad before the block start, no matching forward
+// pad past the block end), so a candidate placed in the block's own last ~6 days can need days that
+// were never precomputed. Each such day is 0-filled (`i < 0 || i >= n` below) rather than discarding
+// the whole window. R3's own property test (acgmeHours.test.js) swept every date of a 28-day block,
+// including the last 6, against wouldBreachWeeklyCaps and found the two ALREADY agreed either way —
+// discarding the window and 0-filling it are provably the same answer here, because the 6-day
+// backward pad is exactly WINDOW_DAYS-1: whenever a window's tail runs past the block end, the
+// LARGEST still-fully-in-range window for that same candidate date is a strict superset of its real
+// (in-range) days, and every contribution is non-negative, so that in-range window's own sum is
+// always >= the truncated window's — the truncated window could never have been the one that decided
+// edBreach/totalBreach in the first place. 0-filling is kept anyway as the more transparently-correct
+// form (this equivalence depends on the exact 6-day pad matching WINDOW_DAYS-1; discarding would
+// silently stop being safe if that ever changed, 0-filling wouldn't).
+// Documented residual gap this does NOT close (pre-existing, not introduced or fixed here): a
+// resident's GR/JC obligation is a calendar/weekday fact independent of any block, so
+// wouldBreachWeeklyCaps' unbounded Date arithmetic can legitimately pick up a REAL GR/JC contribution
+// on one of those same not-yet-precomputed days — this function still reads 0 for it, since
+// buildDailyContributions never computed an `other[]` entry that far forward, and 0-filling can't
+// invent a value that was never computed. Closing that would mean forward-padding `rangeDates` past
+// the block end too (a bigger change, not attempted here) — the property test deliberately keeps
+// grDow null and jcPresentDates in-block to test the claim above that IS provably closed, rather than
+// asserting agreement it can't actually deliver.
 export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
   const t = SHIFT_TIMING[shiftId];
   if (!t) return { edBreach: false, totalBreach: false };
@@ -184,9 +208,9 @@ export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
   for (let offset = -(WINDOW_DAYS - 1); offset <= 0; offset++) {
     const startIdx = candidateIdx + offset;
     const endIdx = startIdx + WINDOW_DAYS; // exclusive
-    if (startIdx < 0 || endIdx > n) continue; // window falls outside the precomputed range
     let edSum = 0, totalSum = 0;
     for (let i = startIdx; i < endIdx; i++) {
+      if (i < 0 || i >= n) continue; // not-yet-precomputed day — 0-fill, don't drop the whole window
       const e = i === candidateIdx ? t.durationH : ed[i];
       edSum += e;
       totalSum += e + other[i];

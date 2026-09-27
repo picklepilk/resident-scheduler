@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './rulePolicy.js';
 
-const TIERS = ['acgme', 'program', 'override'];
+const TIERS = ['acgme', 'program', 'override', 'info'];
 
 describe('RULE_POLICY', () => {
   it('every rule has a valid tier and a non-empty plain-language label', () => {
@@ -28,6 +28,7 @@ describe('RULE_POLICY', () => {
     expect(RULE_POLICY.nightsTotalBlock.tier).toBe('override');
     expect(RULE_POLICY.podPgy3Composition.tier).toBe('override');
     expect(RULE_POLICY.approvedDayOff.tier).toBe('override');
+    expect(RULE_POLICY.podPgy2Substitute.tier).toBe('info');
   });
 });
 
@@ -52,11 +53,19 @@ describe('severityFor', () => {
     expect(severityFor(undefined, 'validator')).toBe('error');
   });
 
+  it('tier "info": always a plain warn on every surface, never blocking/confirm', () => {
+    expect(severityFor('podPgy2Substitute', 'validator')).toBe('warn');
+    expect(severityFor('podPgy2Substitute', 'handEdit')).toBe('warn');
+  });
+
   it('full matrix over every declared rule id (no id silently falls through to a wrong default)', () => {
     for (const [id, entry] of Object.entries(RULE_POLICY)) {
       const validatorLevel = severityFor(id, 'validator');
       const handEditLevel = severityFor(id, 'handEdit');
-      if (entry.tier === 'override') {
+      if (entry.tier === 'info') {
+        expect(validatorLevel, id).toBe('warn');
+        expect(handEditLevel, id).toBe('warn');
+      } else if (entry.tier === 'override') {
         expect(validatorLevel, id).toBe('warn');
         expect(handEditLevel, id).toBe('confirm');
       } else {

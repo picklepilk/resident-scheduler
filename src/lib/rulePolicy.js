@@ -14,6 +14,11 @@
 //                validator downgrades it to a flagged warning (and it counts toward export-blocking
 //                warnings — see EXPORT_BLOCKING_RULE_IDS in ResidentScheduler.jsx) and a hand-edit
 //                surface must ask for an explicit confirmation before applying it.
+//   'info'     — not a rule violation at all; the requirement it reports on is already fully
+//                satisfied (by an explicitly-allowed substitute). A plain, non-blocking warn on
+//                every surface (never in EXPORT_BLOCKING_RULE_IDS, no "override" confirm step) —
+//                purely a flag so the chief can see the substitute fired. See R5 (2026-09-27 chief
+//                decision, memory rule-override-policy) / podPgy2Substitute below.
 export const RULE_POLICY = {
   // ─── Tier: acgme ──────────────────────────────────────────────────────────
   sixConsecutiveWorkDays: { tier: 'acgme', label: 'Max 6 consecutive work days, then 24h off' },
@@ -53,6 +58,14 @@ export const RULE_POLICY = {
   approvedDayOff: { tier: 'override', label: 'Shift scheduled on an approved day off' },
   finalSundayOvernight: { tier: 'override', label: 'Final-Sunday overnight leaving the ED for a non-continuing rotation' },
   pedNightSwingOwnerGuard: { tier: 'override', label: "Peds night/swing shift given to a non-owner category" },
+
+  // ─── Tier: info ───────────────────────────────────────────────────────────
+  // R5 (2026-09-27 chief decision): "During those rare instances [PGY-3s at conference or on
+  // Wellness day] they should be replaced with a PGY-2." podPgy3Composition above already treats
+  // this placement as fully satisfying the requirement (compositionSatisfies) — this id exists only
+  // to flag that the substitute, not the true primary, covered it. FLEX has no mirror of this: the
+  // chief's directive was POD/PGY-3-specific.
+  podPgy2Substitute: { tier: 'info', label: 'POD covered by an EM PGY-2 substituting for an unavailable PGY-3' },
 };
 
 // All rule ids whose tier is 'override' — the exact set a hand-edit surface must show a confirm
@@ -73,6 +86,7 @@ export const OVERRIDE_TIER_RULE_IDS = Object.keys(RULE_POLICY).filter(id => RULE
 // table doesn't understand should never accidentally become quietly overridable.
 export function severityFor(ruleId, surface) {
   const tier = RULE_POLICY[ruleId]?.tier;
+  if (tier === 'info') return 'warn'; // always a plain, non-blocking flag — see the tier's own comment
   if (surface === 'validator') {
     if (tier === 'override') return 'warn';
     return 'error'; // acgme, program, or unrecognized

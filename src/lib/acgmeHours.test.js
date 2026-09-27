@@ -5,9 +5,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   worstRollingWeek, wouldBreachWeeklyCaps, effectiveShiftEndMs,
+  buildDailyContributions, weeklyCapBreachAt,
   ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H, JC_DURATION_H,
 } from './acgmeHours.js';
 import { SHIFT_TIMING } from './shifts.js';
+import { getBlockDates, parseDate, addDays, toDateStr } from './dates.js';
+import { mulberry32 } from './rng.js';
 
 function resident(overrides = {}) {
   return { vacationDates: [], approvedDatesOff: [], jcPresentDates: [], ...overrides };
@@ -82,6 +85,68 @@ describe('wouldBreachWeeklyCaps', () => {
 
   it('an unrecognized shift id never breaches (nothing to add)', () => {
     expect(wouldBreachWeeklyCaps(resident(), {}, null, null, '2026-07-06', 'NOT-A-SHIFT')).toEqual({ edBreach: false, totalBreach: false });
+  });
+});
+
+describe('buildDailyContributions/weeklyCapBreachAt agrees with wouldBreachWeeklyCaps (property)', () => {
+  // Generator hot-path parity: candidatePool asks weeklyCapBreachAt (fast, array-index-only) instead
+  // of wouldBreachWeeklyCaps (slow, ~49 `new Date`s per call) for every candidate/slot — see
+  // acgmeHours.js's own header on the pair. This proves they answer identically for every date of a
+  // 28-day block, including the last 6 (the one place `weeklyRangeDates`' backward-only 6-day pad
+  // means a checked window can run past the precomputed range — see weeklyCapBreachAt's own comment).
+  //
+  // grDow is deliberately null here rather than a real weekday: GR/JC are calendar/weekday facts
+  // independent of any block, so wouldBreachWeeklyCaps' unbounded Date arithmetic can legitimately
+  // see a real GR contribution 1-6 days past the block's own end that buildDailyContributions
+  // structurally never computed (it only ever walks the precomputed `rangeDates` array) — a narrower,
+  // pre-existing, documented gap (see weeklyCapBreachAt's comment) that 0-filling the missing ED
+  // hours does not and cannot close. jcPresentDates stays confined to actual block dates for the same
+  // reason. Within that scope (ED hours + in-block JC, matching everything buildDailyContributions
+  // can actually represent) the two must agree exactly, which is what this test proves.
+  const SHIFT_IDS = Object.keys(SHIFT_TIMING);
+  const TWELVE_HOUR_IDS = SHIFT_IDS.filter(id => SHIFT_TIMING[id].durationH === 12);
+
+  function randomRow(rng, dates, pShift) {
+    const row = {};
+    for (const ds of dates) {
+      if (rng() < pShift) row[ds] = SHIFT_IDS[Math.floor(rng() * SHIFT_IDS.length)];
+    }
+    return row;
+  }
+
+  it('fast and slow paths agree for every date of a 28-day block, incl. the last 6, across several deterministic schedules', () => {
+    const blockStart = '2026-07-06';
+    const blockEnd = '2026-08-02';
+    const dates = getBlockDates(blockStart, blockEnd);
+    const weeklyRangeDates = getBlockDates(toDateStr(addDays(parseDate(dates[0]), -6)), dates[dates.length - 1]);
+    const weeklyDateIndex = new Map(weeklyRangeDates.map((ds, i) => [ds, i]));
+    const tailDates = getBlockDates(toDateStr(addDays(parseDate(blockStart), -6)), toDateStr(addDays(parseDate(blockStart), -1)));
+    const grDow = null;
+
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const rng = mulberry32(seed);
+      const prevRs = randomRow(rng, tailDates, 0.5); // prev-block tail, incl. whatever 12h ids randomRow picks
+      const rs = randomRow(rng, dates, 0.5);
+      // Force 12h shifts onto the block's own last 6 days specifically — a real, well-over-cap ED run
+      // sitting right where a checked window's tail can run past the precomputed range (backward-only
+      // lookback pad, see weeklyRangeDates' own comment), exercising exactly the case
+      // weeklyCapBreachAt's own comment proves is still safe.
+      dates.slice(-6).forEach((ds, i) => { rs[ds] = TWELVE_HOUR_IDS[i % TWELVE_HOUR_IDS.length]; });
+      const resident = {
+        vacationDates: [], approvedDatesOff: [],
+        jcPresentDates: [dates[10], dates[dates.length - 6]], // in-block only — see the describe-level note
+      };
+
+      const contrib = buildDailyContributions(resident, rs, prevRs, grDow, weeklyRangeDates);
+      for (const ds of dates) {
+        const idx = weeklyDateIndex.get(ds);
+        for (const shiftId of SHIFT_IDS) {
+          const fast = weeklyCapBreachAt(contrib, idx, shiftId);
+          const slow = wouldBreachWeeklyCaps(resident, rs, prevRs, grDow, ds, shiftId);
+          expect(fast, `seed ${seed} date ${ds} shift ${shiftId}`).toEqual(slow);
+        }
+      }
+    }
   });
 });
 
