@@ -8,7 +8,7 @@
 // report.podSubstitutes[] log. Mirrors emCompositionAndPgyGating.test.js's own hand-built-resident/
 // fixed-block pattern (same file's Wellness-Wednesday date constants) rather than reinventing one.
 import { describe, it, expect } from 'vitest';
-import { validateAll, generateSchedule, getEligibleShifts } from '../ResidentScheduler.jsx';
+import { validateAll, generateSchedule, generateScheduleBest, getEligibleShifts } from '../ResidentScheduler.jsx';
 import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -134,5 +134,107 @@ describe('R5: POD PGY-2 substitute — generator behavior (conferenceBlock fixtu
       }
     }
     expect(totalSubs).toBeGreaterThan(0);
+  });
+});
+
+// R5 gap fix (2026-09-27, this same session): generateScheduleBest keeps a repaired attempt only
+// when betterQuality(repairedScore, best.score) is STRICTLY better (ResidentScheduler.jsx
+// ~generateScheduleBest). Phase 3b's true-primary swap has no slot in that lexicographic comparison
+// (podPgy2Substitute is a plain, non-blocking info warn), so whenever Phases 1-5 don't ALSO improve
+// the score, the whole repaired attempt — Phase 3b's fix included — was silently discarded, and
+// `best` reverted to the never-repaired attempt from the 20-attempt loop, which never ran Phase 3b
+// at all. Fixed by applying Phase 3b as a final, always-attempted step (repair:'truePrimaryOnly')
+// independent of that keep/discard decision.
+//
+// Exhaustive empirical search (2500+ generateSchedule/generateScheduleBest trials across the
+// conferenceBlock and real chief-benchmark fixtures, varying PGY-3 supply from 1 to 6 and
+// engineering resident targetDelta to bias score()'s dominant deficit term) never found a seed
+// where score() picks a fallback PGY-2 over a true PGY-3 who both satisfies composition AND is
+// genuinely free (unassigned + eligible) that exact date — score()'s existing seniorAdj term (+20,
+// see SCORE_WEIGHTS) for an unfilled composition requirement is strong enough that this precondition
+// for Phase 3b to have any real work to do essentially never arises on realistic data. That's a
+// separate, positive finding about score()'s existing robustness — it does NOT mean the
+// keep/discard gap is unreal: betterQuality's lexicographic ladder genuinely has no slot for this
+// rule, so a fix landing on a day where the schedule already can't be scored higher any other way
+// remains a live risk this covers defensively.
+//
+// The tests below verify the actual FIX mechanism deterministically (no seed search needed) by
+// constructing a schedule where a fallback PGY-2 covers a composition-critical POD slot for a
+// legitimate reason (the sole PGY-3, "Papa", is temporarily eligibility-excluded from POD entirely
+// while that schedule is built — a real generateSchedule output, not hand-authored) and then
+// restoring Papa's normal POD eligibility to confirm generateSchedule's own repair machinery
+// recognizes and fixes the now-fixable substitute.
+describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s keep/discard gate', () => {
+  const TEST_DATE = '2026-07-21'; // single-day "conference" window, configured below
+  const REMOVED_FROM_EM_HOME_3 = [
+    'PED-D','PED-E','PED-N','PED-S','FLEX-D','FLEX-E','FLEX-N','MT-D','MT-E','MT-N','TRAUMA-N',
+    'POD-N','POD-E','POD-N12','PED-D12','PED-N12','FLEX-D12','FLEX-N12','MT-D12','MT-N12',
+  ];
+  // Isolates the ambiguity to exactly one composition-critical (shift, date) pair — POD-D12 on
+  // TEST_DATE — so the outcome can only ever be "Papa" (the sole remaining PGY-3, restricted to
+  // POD-D/POD-D12 only so nothing else can pull him away that day) or a PGY-2 fallback, never a
+  // supply/demand artifact from multiple simultaneous composition slots (a real risk with the
+  // fixture's own multi-day/multi-shift ACEP window — see this file's other describe block).
+  // `excludePapaFromPod`, when true, additionally removes POD-D/POD-D12 themselves, so Papa cannot
+  // cover the slot at all — used only to construct the "fallback legitimately in place" starting
+  // schedule below, never to assert anything about a real substitute.
+  function buildIsolatedFixture({ excludePapaFromPod }) {
+    const fx0 = makeFixture('conferenceBlock');
+    const allResidents = fx0.allResidents.map(r =>
+      (r.category === 'EM_HOME' && r.pgy === 3 && r.id !== 'syn_papa')
+        ? { ...r, category: 'ANES', pgy: null, blockType: null }
+        : r
+    );
+    // Pre-existing (kept/manual) shifts on OTHER dates only — gives Papa a real, moderate, positive
+    // shift-target deficit on TEST_DATE (not zero/negative, which would exclude him from
+    // candidatePool as already-at-target) without ever touching TEST_DATE itself.
+    const papaPrefill = ['2026-07-06','2026-07-08','2026-07-10','2026-07-13','2026-07-15','2026-07-17','2026-07-24','2026-07-27','2026-07-29','2026-07-31'];
+    const schedule = { syn_papa: Object.fromEntries(papaPrefill.map(ds => [ds, 'POD-D'])) };
+    const block = { ...fx0.block, schedule };
+    const removed = excludePapaFromPod ? [...REMOVED_FROM_EM_HOME_3, 'POD-D', 'POD-D12'] : REMOVED_FROM_EM_HOME_3;
+    const eligOverrides = { EM_HOME_3: { added: [], removed } };
+    const ayConf = { acepStart: TEST_DATE, acepEnd: TEST_DATE }; // single-day ACEP window
+    const coverage = { 'POD-N12': { min: 0, max: 0 } }; // suppress POD's OTHER 12h composition slot
+    return { ...fx0, allResidents, block, eligOverrides, ayConf, coverage };
+  }
+
+  it('repair:"truePrimaryOnly" (preferTruePrimaryPass) swaps a fallback out for the true primary when one is genuinely available — the exact mechanism generateScheduleBest\'s gap fix relies on', () => {
+    // Construct the "fallback legitimately in place" schedule: a REAL generateSchedule output
+    // (not hand-authored) built with Papa excluded from POD entirely.
+    const excludedFx = buildIsolatedFixture({ excludePapaFromPod: true });
+    const preState = generateSchedule({ ...excludedFx, rng: mulberry32(1), repair: true });
+    const fallback = excludedFx.allResidents.find(r => preState.schedule[r.id]?.[TEST_DATE] === 'POD-D12');
+    expect(fallback, 'setup sanity: some fallback must cover POD-D12 while Papa is excluded from POD').toBeTruthy();
+    expect(fallback.category).toBe('EM_HOME');
+    expect(fallback.pgy).toBe(2);
+
+    // Restore Papa's normal POD eligibility and replay ONLY Phase 3b on top of that exact schedule.
+    // `keptCellsOverride: new Set()` marks every cell as generator-owned rather than a chief's
+    // manual entry — see generateSchedule's own header comment on truePrimaryOnlyMode for why that
+    // override exists (without it, the fallback's cell would read as "kept" purely because it came
+    // in via `block.schedule`, and Phase 3b would correctly refuse to touch it).
+    const normalFx = buildIsolatedFixture({ excludePapaFromPod: false });
+    const fixed = generateSchedule({
+      ...normalFx,
+      block: { ...normalFx.block, schedule: preState.schedule },
+      rng: mulberry32(1),
+      repair: 'truePrimaryOnly',
+      keptCellsOverride: new Set(),
+    });
+    const tpFix = fixed.report.repairs.find(r => r.type === 'preferTruePrimary' && r.dateStr === TEST_DATE);
+    expect(tpFix, 'Phase 3b should have swapped the fallback out for Papa').toBeTruthy();
+    expect(tpFix.withResidentId).toBe('syn_papa');
+    expect(tpFix.replacedResidentId).toBe(fallback.id);
+    expect(fixed.schedule.syn_papa[TEST_DATE]).toBe('POD-D12');
+    expect(fixed.schedule[fallback.id][TEST_DATE]).toBeFalsy();
+  });
+
+  it('generateScheduleBest end-to-end: a free true primary reliably covers POD over a fallback (20 seeds)', () => {
+    const fx = buildIsolatedFixture({ excludePapaFromPod: false });
+    for (let baseSeed = 1; baseSeed <= 20; baseSeed++) {
+      const res = generateScheduleBest(fx, { attempts: 1, baseSeed });
+      expect(res.schedule.syn_papa[TEST_DATE], `seed ${baseSeed}`).toBe('POD-D12');
+      expect(res.report.podSubstitutes.filter(s => s.dateStr === TEST_DATE), `seed ${baseSeed}`).toEqual([]);
+    }
   });
 });

@@ -4658,7 +4658,17 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // precomputed buildStaticGenContext(...) result — see that function's own header — that
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
-export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false }) {
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null }) {
+  // repair: 'truePrimaryOnly' (R5, 2026-09-27 chief decision) is a fourth mode besides
+  // true/false/undefined — see the fill-pass call site and the `preferTruePrimaryPass` definition
+  // below for what it actually does and why it exists (generateScheduleBest's own post-selection
+  // gap fix). `keptCellsOverride` exists ONLY for that mode: the caller is replaying a schedule
+  // that's ENTIRELY the generator's own prior output (via `block.schedule`), not a chief's manual
+  // entries, so the normal "every non-empty incoming cell is kept" rule would wrongly protect every
+  // cell from Phase 3b's own swap — the override lets the caller supply the schedule's TRUE
+  // kept-cell set (computed from the ORIGINAL block.schedule, before that prior generation ran)
+  // instead.
+  const truePrimaryOnlyMode = repair === 'truePrimaryOnly';
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
@@ -4928,10 +4938,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // buildStaticGenContext — it reads the just-built per-attempt `schedule` copy above, even
   // though that copy's CONTENTS are themselves attempt-invariant; it's also cheap, O(kept cells),
   // so there's no perf reason to bother.)
-  const keptCells = new Set();
-  for (const r of allResidents) {
-    for (const ds of Object.keys(schedule[r.id])) {
-      if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
+  // `keptCellsOverride` (truePrimaryOnlyMode) replaces the usual "everything non-empty is kept"
+  // derivation — see this function's own header comment on why.
+  const keptCells = keptCellsOverride || new Set();
+  if (!keptCellsOverride) {
+    for (const r of allResidents) {
+      for (const ds of Object.keys(schedule[r.id])) {
+        if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
+      }
     }
   }
 
@@ -5801,6 +5815,125 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
   }
 
+  // Shared by repairPass AND preferTruePrimaryPass (promoted out of repairPass so
+  // generateScheduleBest's truePrimaryOnlyMode gap-fix — see this function's own header comment on
+  // that mode — can call preferTruePrimaryPass standalone, without running any of repairPass's other
+  // phases). Cap on poolFor calls, so a stubborn block can't spin the repair pass indefinitely.
+  // Phases 1-3 (+3b) keep their original 300; Phase 4 (ejection chains) then gets a further +200 of
+  // its own (see its header) — a single shared 500 would let Phase 1's per-slot donor scan swallow
+  // the whole allowance on a hard block and starve Phase 4 down to a no-op, and would also perturb
+  // Phases 1-3's existing behaviour, which is deliberately left bit-for-bit unchanged here. Worst
+  // case across the whole repair pass is therefore 500 calls, up from 300. In truePrimaryOnlyMode
+  // only Phase 3b ever runs, so this budget is effectively unused (that phase only spends it on the
+  // block's own 1-2 substitute-eligible dates).
+  let budget = 300;
+  function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
+
+  // Exact inverse of fillDayPass's commit block (L2894 area) — every counter it increments,
+  // this decrements, term for term (including jcCount/traumaNightYearly, easy to miss).
+  function unassignCell(rid, ds) {
+    const sid = schedule[rid][ds];
+    if (!sid) return null;
+    delete schedule[rid][ds];
+    bumpScheduleVersion(rid);
+    assigned[rid]--;
+    const sh = SHIFT_MAP[sid];
+    if (sh) typeCount[rid][sh.type]--;
+    if (sh?.area === 'TRAUMA') traumaCount[rid]--;
+    if (sh?.area === 'PED') pedsCount[rid]--;
+    if (sid === 'PED-N') pedNCount[rid]--;
+    if (sh?.type === 'night') nightCount[rid]--;
+    if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
+    if (sh?.area) areaCount[rid][sh.area]--;
+    const r = residentById.get(rid);
+    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
+    if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
+    if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
+    if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
+    return sid;
+  }
+  function assignCell(rid, sid, ds) {
+    schedule[rid][ds] = sid;
+    bumpScheduleVersion(rid);
+    assigned[rid]++;
+    const sh = SHIFT_MAP[sid];
+    if (sh) typeCount[rid][sh.type]++;
+    if (sh?.area === 'TRAUMA') traumaCount[rid]++;
+    if (sh?.area === 'PED') pedsCount[rid]++;
+    if (sid === 'PED-N') pedNCount[rid]++;
+    if (sh?.type === 'night') nightCount[rid]++;
+    if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
+    if (sh?.area) areaCount[rid][sh.area]++;
+    const r = residentById.get(rid);
+    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
+    if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
+    if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
+    if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
+  }
+  // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
+  // resets it first, since repair jumps between arbitrary dates, not one day at a time.
+  function poolFor(shift, ds) {
+    streakCache = {};
+    budget--;
+    return candidatePool(shift, ds);
+  }
+  function pickBestScore(pool, shift, ds) {
+    const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
+    const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
+    let best = pool[0], bestScore = -Infinity;
+    for (const r of pool) {
+      const s = score(r, shift, ds, seniorFilled, assignedHereForSlot);
+      if (s > bestScore) { bestScore = s; best = r; }
+    }
+    return best;
+  }
+
+  // Phase 3b — POD/FLEX true-primary preference (R5, 2026-09-27 chief decision): "replaced with a
+  // PGY-2 only when no PGY-3 is actually available." compositionSatisfies already lets the fallback
+  // PGY (POD: PGY-2, FLEX: PGY-3) satisfy the hard requirement on a Wellness-Wednesday/conference
+  // date — this phase is the ONE place that then prefers a genuine primary over that substitute, by
+  // a single bounded unassign/recheck/reassign-or-revert swap, same idiom as Phase 2/3's swaps.
+  // Standalone (not nested inside repairPass) specifically so generateScheduleBest's gap-fix path
+  // (truePrimaryOnlyMode) can call it alone, without running fillDayPass or any other repair phase —
+  // see this function's own top-of-file header comment for why that path exists (a fix applied only
+  // when Phases 1-5 didn't ALSO strictly improve the score would otherwise get silently discarded,
+  // since this rule has no slot in betterQuality's lexicographic comparison). Called from repairPass
+  // itself too (as its own "Phase 3b", in sequence with every other phase) when repair:true runs the
+  // full pass. Scans every (area, shift, date) rather than a report array (there is no live report
+  // array for this — report.podSubstitutes is built AFTER repair, from whatever this phase leaves
+  // behind) — cheap in practice, since `fallback` only ever matches on the block's own 1-2
+  // substitute-eligible dates (compositionSatisfies never lets the fallback PGY qualify anywhere
+  // else, so the `.find()` below is a fast empty miss for every other date).
+  function preferTruePrimaryPass() {
+    for (const area of Object.keys(SENIOR_COMPOSITION)) {
+      const comp = SENIOR_COMPOSITION[area];
+      for (const shift of SHIFTS.filter(s => s.area === area)) {
+        for (const ds of dates) {
+          if (budget <= 0) break;
+          if (seniorCompositionExempt(shift, ds)) continue;
+          const fallback = allResidents.find(r =>
+            schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
+            compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
+          if (!fallback) continue; // no substitute sitting on this shift/date at all
+          // Composition is already satisfied by a DIFFERENT body on this same shift/date (a true
+          // primary elsewhere on it) — nothing to fix; leave this fallback exactly where they are.
+          if (allResidents.some(r => schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) continue;
+          if (!movable(fallback.id, ds)) continue;
+          unassignCell(fallback.id, ds);
+          const { candidates } = poolFor(shift, ds);
+          const truePrimaries = candidates.filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary);
+          if (truePrimaries.length) {
+            const winner = pickBestScore(truePrimaries, shift, ds);
+            assignCell(winner.id, shift.id, ds);
+            report.repairs.push({ type: 'preferTruePrimary', dateStr: ds, shiftId: shift.id, area, replacedResidentId: fallback.id, withResidentId: winner.id });
+          } else {
+            assignCell(fallback.id, shift.id, ds); // revert — no true primary is actually available
+          }
+        }
+      }
+    }
+  }
+
   // Bounded post-fill repair pass (only runs when `repair:true` is passed — generateScheduleBest
   // calls this once, on the winning seed, after best-of-N selection). Every move goes through the
   // SAME candidatePool the fill passes used (zero parallel rule implementation, zero rule drift)
@@ -5810,14 +5943,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
   // never-overwrite invariant.
   function repairPass() {
-    // Cap on poolFor calls, so a stubborn block can't spin the repair pass indefinitely. Phases
-    // 1-3 keep their original 300; Phase 4 (ejection chains) then gets a further +200 of its own
-    // (see its header) — a single shared 500 would let Phase 1's per-slot donor scan swallow the
-    // whole allowance on a hard block and starve Phase 4 down to a no-op, and would also perturb
-    // Phases 1-3's existing behaviour, which is deliberately left bit-for-bit unchanged here.
-    // Worst case across the whole repair pass is therefore 500 calls, up from 300.
-    let budget = 300;
-
     function filledCount(sid, ds) {
       let n = 0;
       for (const r of allResidents) if (schedule[r.id][ds] === sid) n++;
@@ -5826,66 +5951,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     function minFor(sid, ds) {
       const dow = parseDate(ds).getDay();
       return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
-    }
-    function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
-
-    // Exact inverse of fillDayPass's commit block (L2894 area) — every counter it increments,
-    // this decrements, term for term (including jcCount/traumaNightYearly, easy to miss).
-    function unassignCell(rid, ds) {
-      const sid = schedule[rid][ds];
-      if (!sid) return null;
-      delete schedule[rid][ds];
-      bumpScheduleVersion(rid);
-      assigned[rid]--;
-      const sh = SHIFT_MAP[sid];
-      if (sh) typeCount[rid][sh.type]--;
-      if (sh?.area === 'TRAUMA') traumaCount[rid]--;
-      if (sh?.area === 'PED') pedsCount[rid]--;
-      if (sid === 'PED-N') pedNCount[rid]--;
-      if (sh?.type === 'night') nightCount[rid]--;
-      if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
-      if (sh?.area) areaCount[rid][sh.area]--;
-      const r = residentById.get(rid);
-      if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
-      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
-      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
-      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
-      return sid;
-    }
-    function assignCell(rid, sid, ds) {
-      schedule[rid][ds] = sid;
-      bumpScheduleVersion(rid);
-      assigned[rid]++;
-      const sh = SHIFT_MAP[sid];
-      if (sh) typeCount[rid][sh.type]++;
-      if (sh?.area === 'TRAUMA') traumaCount[rid]++;
-      if (sh?.area === 'PED') pedsCount[rid]++;
-      if (sid === 'PED-N') pedNCount[rid]++;
-      if (sh?.type === 'night') nightCount[rid]++;
-      if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
-      if (sh?.area) areaCount[rid][sh.area]++;
-      const r = residentById.get(rid);
-      if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
-      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
-      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
-      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
-    }
-    // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
-    // resets it first, since repair jumps between arbitrary dates, not one day at a time.
-    function poolFor(shift, ds) {
-      streakCache = {};
-      budget--;
-      return candidatePool(shift, ds);
-    }
-    function pickBestScore(pool, shift, ds) {
-      const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
-      const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
-      let best = pool[0], bestScore = -Infinity;
-      for (const r of pool) {
-        const s = score(r, shift, ds, seniorFilled, assignedHereForSlot);
-        if (s > bestScore) { bestScore = s; best = r; }
-      }
-      return best;
     }
     // Narrows a clean candidate pool by the same hard seniority-composition requirement
     // fillDayPass enforces for BOTH FLEX and POD (AY26/27 chief-directed, both hard now — see
@@ -6057,49 +6122,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     report.seniorGaps = report.seniorGaps.filter(g => !gapFixed.has(g));
 
-    // Phase 3b — POD/FLEX true-primary preference (R5, 2026-09-27 chief decision): "replaced with a
-    // PGY-2 only when no PGY-3 is actually available." compositionSatisfies already lets the
-    // fallback PGY (POD: PGY-2, FLEX: PGY-3) satisfy the hard requirement on a Wellness-Wednesday/
-    // conference date — this phase is the ONE place that then prefers a genuine primary over that
-    // substitute, by a single bounded unassign/recheck/reassign-or-revert swap, same idiom as Phase
-    // 3's senior-gap fill just above (and Phase 2's rest-compromise swap before that). Deliberately
-    // NOT done inside fillDayPass's own hot loop (see that branch's own comment for why: doing it
-    // there, inside all 20 of generateScheduleBest's independent attempts, destabilized which
-    // attempt wins best-of-N and regressed the chief-benchmark fixture) — this runs exactly ONCE, on
-    // the winning attempt only, so it can only ever change THIS schedule's own substitute cells, not
-    // ripple into which of the 20 attempts got picked in the first place. Scans every (area, shift,
-    // date) rather than a report array (there is no live report array for this — report.podSubstitutes
-    // is built AFTER repair, from whatever this phase leaves behind) — cheap in practice, since
-    // `fallback` only ever matches on the block's own 1-2 substitute-eligible dates (compositionSatisfies
-    // never lets the fallback PGY qualify anywhere else, so the `.find()` below is a fast empty miss
-    // for every other date).
-    for (const area of Object.keys(SENIOR_COMPOSITION)) {
-      const comp = SENIOR_COMPOSITION[area];
-      for (const shift of SHIFTS.filter(s => s.area === area)) {
-        for (const ds of dates) {
-          if (budget <= 0) break;
-          if (seniorCompositionExempt(shift, ds)) continue;
-          const fallback = allResidents.find(r =>
-            schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
-            compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
-          if (!fallback) continue; // no substitute sitting on this shift/date at all
-          // Composition is already satisfied by a DIFFERENT body on this same shift/date (a true
-          // primary elsewhere on it) — nothing to fix; leave this fallback exactly where they are.
-          if (allResidents.some(r => schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) continue;
-          if (!movable(fallback.id, ds)) continue;
-          unassignCell(fallback.id, ds);
-          const { candidates } = poolFor(shift, ds);
-          const truePrimaries = candidates.filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary);
-          if (truePrimaries.length) {
-            const winner = pickBestScore(truePrimaries, shift, ds);
-            assignCell(winner.id, shift.id, ds);
-            report.repairs.push({ type: 'preferTruePrimary', dateStr: ds, shiftId: shift.id, area, replacedResidentId: fallback.id, withResidentId: winner.id });
-          } else {
-            assignCell(fallback.id, shift.id, ds); // revert — no true primary is actually available
-          }
-        }
-      }
-    }
+    // Phase 3b — POD/FLEX true-primary preference. See preferTruePrimaryPass's own header (defined
+    // just above repairPass) — full repair runs it here, in sequence with every other phase;
+    // generateScheduleBest's own gap-fix path (truePrimaryOnlyMode) calls it standalone instead.
+    preferTruePrimaryPass();
 
     // Phase 4 — bounded ejection chains (depth 2) for whatever min-slots Phase 1 could not fix.
     //
@@ -6481,10 +6507,18 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // schedule"), then every shift's optional headroom up to its maximum. Minimums across the
   // whole block are satisfied before any optional slot can consume a resident's target headroom.
   // The first two passes partition SHIFTS disjointly, so report.totalSlots sums correctly.
-  for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
-  for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
-  for (const ds of dates) fillDayPass(ds, () => true, 'optional');
-  if (repair) repairPass();
+  // truePrimaryOnlyMode skips all three fill passes entirely — `schedule` already arrived fully
+  // populated (via `block.schedule`, see generateScheduleBest's own gap-fix call site), and running
+  // fillDayPass's OPTIONAL phase over it would try to top up any shift not already at its own
+  // coverage MAX using a freshly-restarted rng stream, silently adding placements this replay has no
+  // business making. This mode exists to run Phase 3b and nothing else.
+  if (!truePrimaryOnlyMode) {
+    for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
+    for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
+    for (const ds of dates) fillDayPass(ds, () => true, 'optional');
+  }
+  if (repair === true) repairPass();
+  else if (truePrimaryOnlyMode) preferTruePrimaryPass();
 
   // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
   // repair, like report.underTarget right below) rather than logging live inside fillDayPass —
@@ -7194,6 +7228,66 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
     const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(best.seed), repair: true });
     const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
+  }
+
+  // R5 (2026-09-27 chief decision) gap fix, memory rule-override-policy: the true-primary
+  // preference (preferTruePrimaryPass, generateSchedule's "Phase 3b") is a RULE, not a quality
+  // preference — betterQuality's lexicographic ladder has no slot for it (podPgy2Substitute is a
+  // plain, non-blocking info warn, not counted in errorCount/blockingWarnCount — see rulePolicy.js),
+  // so the `repaired` attempt just above gets discarded whenever Phases 1-5 didn't ALSO strictly
+  // improve the score, even on the run where fixing exactly this substitute was Phase 3b's ONLY
+  // change. Left alone, `best` then reverts to the never-repaired attempt from the loop above, which
+  // never ran Phase 3b at all — silently losing the "a free PGY-3 always covers POD/FLEX over a
+  // substitute" guarantee whenever the rest of repair wasn't ALSO an improvement.
+  //
+  // Fix: apply Phase 3b as its own final, always-attempted step, independent of the keep/discard
+  // decision above. `repair:'truePrimaryOnly'` (see generateSchedule's own header on that mode) runs
+  // ONLY that one bounded swap on top of whatever `best.result.schedule` currently is — fillDayPass
+  // and every other repair phase are skipped entirely, so this can't reopen or re-decide anything
+  // else `best` already settled, and it can't perturb the 20-attempt race above (it only ever runs
+  // once, after that race and its own keep/discard decision are both already final).
+  // `keptCellsOverride` is computed from the CALLER's own original `args.block.schedule` — NOT
+  // `best.result.schedule`, which is mostly the generator's own fill — so a genuine chief hand-edit
+  // stays exactly as protected from this pass as it would be from a normal repair run.
+  if (repair) {
+    const trueKeptCells = new Set();
+    for (const r of args.allResidents) {
+      for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
+        if (sid) trueKeptCells.add(`${r.id}|${ds}`);
+      }
+    }
+    const fixAttempt = generateSchedule({
+      ...deferredArgs,
+      block: { ...args.block, schedule: best.result.schedule },
+      rng: mulberry32(best.seed),
+      repair: 'truePrimaryOnly',
+      keptCellsOverride: trueKeptCells,
+    });
+    if (fixAttempt.report.repairs.length) { // Phase 3b actually found and fixed something
+      const fixedResult = {
+        schedule: fixAttempt.schedule,
+        report: {
+          ...best.result.report,
+          podSubstitutes: fixAttempt.report.podSubstitutes,
+          underTarget: fixAttempt.report.underTarget,
+          // Threaded from fixAttempt, not best.result — the deferred closure captures its OWN
+          // report.underTarget array by reference; taking best.result's own closure here would
+          // silently compute openSlots/blockedBy onto the wrong (now-orphaned) array below.
+          computeUnderTargetDiagnostics: fixAttempt.report.computeUnderTargetDiagnostics,
+          repairs: [...best.result.report.repairs, ...fixAttempt.report.repairs],
+          truePrimaryFixApplied: true,
+        },
+      };
+      const fixedScore = scoreGenerationResult(fixedResult, args, rulePriority);
+      // Non-worse hard-error backstop, not a re-run of betterQuality's full lexicographic ladder —
+      // this is a rule fix, not a quality preference, so it applies whenever it doesn't make the one
+      // thing that actually matters (hard errors) worse. Phase 3b's own revert-if-no-true-primary
+      // path already guarantees it can't introduce a new error on its own; this stays a hard
+      // backstop rather than relying on that alone.
+      if (fixedScore.errorCount <= best.score.errorCount) {
+        best = { seed: best.seed, result: fixedResult, score: fixedScore };
+      }
+    }
   }
 
   // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
