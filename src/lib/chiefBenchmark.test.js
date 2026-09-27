@@ -322,8 +322,10 @@ describe('chief benchmark — (b) generator vs benchmark', () => {
   // generateScheduleBest is deterministic under a fixed baseSeed (verified above/below by the
   // determinism harness tests) — no seed-to-seed noise to buffer against here, unlike the averaged
   // quality-baseline vectors elsewhere in this repo.
+  // +1 (2026-09-26): ACGME 60h/rest/jeopardy-window hard rules cost one isolated night on this
+  // fixture; chief approved.
   const CHIEF_ISOLATED_RUNS = 15;
-  const ISOLATED_RUN_SLACK = 8;
+  const ISOLATED_RUN_SLACK = 9;
 
   it(`isolated single-night runs stay within chief benchmark + ${ISOLATED_RUN_SLACK} slack`, () => {
     const isolated = genRuns.filter(r => r.len === 1).length;
