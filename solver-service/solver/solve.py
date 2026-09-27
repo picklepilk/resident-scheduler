@@ -202,6 +202,15 @@ def _solve_staged(payload: Payload, build_result: BuildResult):
     last_status_name = None
     have_solution = False
     solver = None
+    # The solver instance from the LAST stage that actually produced a
+    # solvable status. A later stage's own solver is reassigned every
+    # iteration (including on failure) -- returning that failed solver's
+    # (invalid) values instead of this one was a real bug: on `break`, the
+    # bare `solver` variable held the FAILED stage's CpSolver, whose
+    # `.value(...)`/schedule extraction is meaningless (no accepted
+    # solution). `last_good_solver` is the one thing this function may ever
+    # hand back to a caller.
+    last_good_solver = None
 
     for i, ((name, expr), budget) in enumerate(zip(stage_defs, budgets)):
         if _is_empty_stage(expr):
@@ -232,6 +241,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult):
 
         have_solution = True
         last_status_name = status_name
+        last_good_solver = solver
         if not is_last:
             model.add(expr <= round(solver.value(expr)))
             _carry_hint(model, store, solver)
@@ -250,8 +260,9 @@ def _solve_staged(payload: Payload, build_result: BuildResult):
         status = solver.solve(model)
         total_time_ms += int((time.time() - t0) * 1000)
         last_status_name = solver.status_name(status)
+        last_good_solver = solver
 
-    return last_status_name, solver, total_time_ms
+    return last_status_name, last_good_solver, total_time_ms
 
 
 @dataclass

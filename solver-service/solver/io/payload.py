@@ -356,7 +356,7 @@ def parse_payload(raw: dict) -> Payload:
             max_verification_resolves=int(config_raw.get("maxVerificationResolves", 2)),
             weights=dict(config_raw.get("weights", {}) or {}),
             objective_mode=config_raw.get("objectiveMode", "staged"),
-            stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else (0.3, 0.2, 0.5),
+            stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}

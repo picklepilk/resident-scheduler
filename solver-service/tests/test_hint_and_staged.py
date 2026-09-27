@@ -9,11 +9,12 @@ import os
 
 from ortools.sat.python import cp_model
 
+import solver.solve as solve_module
 from solver.build import build_model
 from solver.io.payload import parse_payload
 from solver.model.hint import apply_hint
 from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK
-from solver.solve import _num_workers, _stage_time_budgets, solve
+from solver.solve import _extract_schedule, _num_workers, _stage_time_budgets, solve
 from tests.helpers import load_fixture, make_payload
 
 
@@ -183,6 +184,55 @@ def test_stage_time_budgets_sum_within_total_and_respect_split():
     assert budgets[2] > budgets[0] > budgets[1]
 
 
+def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch):
+    """Reviewer-caught bug: each stage's `solver = _configure_solver(...)`
+    reassignment meant that on a mid-ladder failure (`break`), the bare
+    `solver` local held the FAILED stage's CpSolver -- one with no accepted
+    solution -- not the last stage that actually succeeded. Extracting a
+    schedule from that failed solver either raises (no solution to read) or,
+    worse, silently returns garbage. This forces the SECOND stage solve ever
+    attempted (whichever tier that is -- some payloads skip an empty
+    TIER_ERRORS) to fail outright after an earlier stage already succeeded,
+    and asserts the solve still returns that earlier stage's own valid
+    solution with a solvable status, never a crash or a bogus schedule.
+    """
+    raw = load_fixture("small_feasible.json")
+    payload = parse_payload(raw)
+
+    # `_carry_hint` runs exactly once per non-final stage that just
+    # succeeded, right before moving on to the next stage -- capturing its
+    # solver's schedule there gives us the ground truth "last good stage"
+    # solution to compare the final result against, using the SAME solve
+    # (no separate/nondeterministic replay under multi-worker search).
+    captured = {}
+    original_carry_hint = solve_module._carry_hint
+
+    def spy_carry_hint(model, store, solver):
+        captured["schedule"] = _extract_schedule(solver, store)
+        original_carry_hint(model, store, solver)
+
+    monkeypatch.setattr(solve_module, "_carry_hint", spy_carry_hint)
+
+    original_cpsolver_solve = cp_model.CpSolver.solve
+    call_count = {"n": 0}
+
+    def fake_solve(self, model):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            return cp_model.INFEASIBLE
+        return original_cpsolver_solve(self, model)
+
+    monkeypatch.setattr(cp_model.CpSolver, "solve", fake_solve)
+
+    result = solve_module.solve(payload)
+
+    assert call_count["n"] >= 2, "test setup never reached a second stage solve"
+    assert "schedule" in captured, "no earlier stage ever succeeded to carry a hint from"
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert result.validation["passed"] is True
+    assert result.schedule == captured["schedule"]
+
+
 def test_stage_time_budgets_falls_back_to_default_split_when_misconfigured():
     payload = parse_payload(load_fixture("small_feasible.json"))
     object.__setattr__(payload.config, "stage_split", (0.0, 0.0, 0.0))
@@ -191,6 +241,23 @@ def test_stage_time_budgets_falls_back_to_default_split_when_misconfigured():
     # Default split is 15/15/70 (see payload.py's Config.stage_split) --
     # stages 1-2 tied, stage 3 by far the largest.
     assert budgets[2] > budgets[0] == budgets[1]
+
+
+def test_parse_payload_without_stage_split_uses_configs_own_default():
+    """Reviewer-caught bug: `parse_payload`'s fallback for an absent
+    `config.stageSplit` was a second, stale hardcoded literal `(0.3, 0.2,
+    0.5)` that disagreed with `Config.stage_split`'s own default of
+    `(0.15, 0.15, 0.7)` (payload.py L55) -- and with docs/PAYLOAD_SCHEMA.md,
+    which documents 15/15/70. Every request that omitted `stageSplit`
+    therefore silently ran the OLD, worse-measured 30/20/50 split even after
+    R9 shipped 15/15/70 as the intended default. Fixed to reference
+    `Config.stage_split` directly so there is exactly one place this number
+    lives.
+    """
+    raw = load_fixture("small_feasible.json")
+    assert "stageSplit" not in raw.get("config", {})
+    payload = parse_payload(raw)
+    assert payload.config.stage_split == (0.15, 0.15, 0.7)
 
 
 # ---------------------------------------------------------------------------

@@ -316,26 +316,45 @@ file plus stdout) is the regression gate; everything else in that file remains m
   block touches a conference", so a 1-shift EM-core shortfall during a conference block is still
   charged at full `TIER_ERRORS` weight instead of downgrading to blocking-warn severity like the JS
   side does. Would need a new payload field (e.g. `blockTouchesConference: bool`) to close.
-- **Staged solve's margin over the warm-start hint is NOISY (not guaranteed-win) on one
-  resident-scarce fixture** (`engineHeadToHead.test.js`'s R9 proof, `SOLVER_PARITY=1`): on the
-  `vacationHeavy` baseline fixture (many residents on vacation, so many x-vars simply don't exist),
-  `errorCount`/`blockingWarnCount` tie EXACTLY between local and solver — unlike the other 3 baseline
-  fixtures, where an unrelated `errorCount` difference already decides the outcome in the solver's
-  favor before coverage is ever compared — so this is the one fixture where the actual
-  coverage-optimization quality is on trial. Across 3 runs while tuning `stageSplit`, this fixture's
-  `coverageMiss` came back 142 (loss, -3 vs. local's 139), 142 again (loss, same tuning change
-  re-verified), then 138 (WIN, +1 vs. local's 139) on a rerun with THE SAME tuning as the second run
-  — confirming this is genuine multi-worker CP-SAT search variance (`CpSolverParameters.num_workers
-  > 1` is documented as non-deterministic run-to-run even at a fixed `random_seed` — see "search
-  tuning" above), not a deterministic bug, on a fixture where tier-1/2 have many equally-cheap
-  solutions for the tiebreak to choose among and the margin either way is small (a few slots out of
-  ~139). The tiebreak (`_TIEBREAK_MULTIPLIER * this_stage_expr + later_sum`) and the 15/15/70 time
-  skew both measurably helped (the very first, un-tuned staged solve lost this fixture by a wider,
-  more one-sided margin) but don't fully eliminate the variance. A more surgical fix (pin stage 1/2
-  fully to the hint via a temporary cloned/pinned sub-model, so NO tier-1/2 search freedom is spent
-  before stage 3, which then gets 100% of the real search budget deterministically) was identified
-  but not implemented here — real additional work, tracked rather than rushed.
-  `engineHeadToHead.test.js`'s hard "never worse" gate excludes only this one fixture
-  (`KNOWN_GAP_VARIANTS`) specifically because a flaky multi-worker margin shouldn't intermittently
-  fail CI; the run still prints its outcome every time, and still fails the suite if any OTHER
-  fixture regresses.
+- **`stageSplit`-default bug invalidated the ORIGINAL characterization below (fixed 2026-09-27)**:
+  `solver/io/payload.py`'s `parse_payload` had a second, stale hardcoded fallback of `(0.3, 0.2,
+  0.5)` for an absent `config.stageSplit`, disagreeing with `Config.stage_split`'s own default of
+  `(0.15, 0.15, 0.7)` used everywhere else in this doc. `buildSolverPayload` (JS) never sends
+  `stageSplit` explicitly, so **every production solve and every `engineHeadToHead.test.js` run ever
+  measured before this fix actually ran the stale 30/20/50 split**, not the tuned 15/15/70 one this
+  doc describes. Fixed by having the fallback reference `Config.stage_split` directly (one source of
+  truth). The 3-run re-measurement below is the first data taken under the SPLIT ACTUALLY DESCRIBED
+  IN THIS DOC.
+- **Staged solve's margin over the warm-start hint is NOISY (not guaranteed-win) on multiple
+  fixtures under the now-corrected 15/15/70 default** (`engineHeadToHead.test.js`'s R9 proof,
+  `SOLVER_PARITY=1`, 3 sequential full runs, one at a time, immediately after the `stageSplit` fix
+  above):
+
+  | run | standard | understaffed | vacationHeavy | conferenceBlock |
+  |---|---|---|---|---|
+  | 1 | loss (126→127 coverageMiss) | win (207→205) | loss (139→142) | win (114→120, wins on blockingWarnCount 2→1 despite worse coverage) |
+  | 2 | win (126→127, wins on blockingWarnCount despite worse coverage) | win (207→205) | loss (139→142) | loss (114→115) |
+  | 3 | win (126→128, wins on blockingWarnCount despite worse coverage) | win (207→205) | loss (139→143) | win (114→114 tie, wins on blockingWarnCount) |
+
+  `vacationHeavy` LOST all 3/3 runs this time (local coverageMiss 139 vs. solver 142, 142, 143 — every
+  run strictly worse, no win observed in this batch, unlike the earlier under-the-bug
+  characterization's one win-out-of-three). `errorCount`/`blockingWarnCount` still tie exactly on this
+  fixture in every run, same root cause as before: many residents on vacation means few x-vars exist,
+  tier-1/2 have many equally-cheap solutions for the tiebreak to choose among, and coverage
+  optimization (the one thing actually on trial) has genuine multi-worker CP-SAT search variance
+  (`CpSolverParameters.num_workers > 1` is documented as non-deterministic run-to-run even at a fixed
+  `random_seed` — see "search tuning" above). **Decision: `vacationHeavy` stays in
+  `KNOWN_GAP_VARIANTS`** — if anything the corrected split's measured margin is worse (consistently
+  -3/-3/-4) than the mixed result under the old stale split, so removing the exclusion would make the
+  hard gate fail routinely, not just flakily. The previously-identified surgical fix (pin stage 1/2
+  fully to the hint via a temporary cloned/pinned sub-model, so stage 3 gets 100% of the real search
+  budget deterministically) was **not implemented** — same call as before, real additional work,
+  tracked rather than rushed.
+  - **New finding, not previously flagged**: `standard` and `conferenceBlock` — both assumed solid,
+    un-flaky winners under the old (buggy, stale-split) measurements this doc used to cite — each
+    flipped to a `loss` in exactly 1 of these 3 runs under the CORRECTED default split.
+    `engineHeadToHead.test.js`'s hard gate (`KNOWN_GAP_VARIANTS`) still excludes only `vacationHeavy`
+    (unchanged by this investigation, since only `vacationHeavy` was in scope to re-examine) — this
+    means the gate is now flaky-fails on `standard`/`conferenceBlock` too, not just noisy-passes.
+    Whether to widen `KNOWN_GAP_VARIANTS` to cover them, revisit the 15/15/70 split's tuning, or
+    accept the flakiness is a real open decision left for a future round.
