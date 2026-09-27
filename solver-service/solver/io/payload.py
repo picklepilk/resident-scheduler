@@ -73,6 +73,15 @@ class Resident:
     cohort: Optional[str]
     target: Optional[int]
     is_em_core: bool
+    # R7 gap fix (2026-09-27): whether this resident is on the schedulable EM rotation THIS BLOCK
+    # (JS's own `isSchedulable(r)`) -- independent of `target`, which is null both for a
+    # non-schedulable resident (this flag false) AND for a schedulable resident whose target was
+    # bought down to <=0 (getShiftTarget returns None, never 0, per CLAUDE.md -- this flag stays
+    # true). `target is not None` was previously (mis)used as the schedulability proxy in
+    # weekly_hours.py/validate.py's ACGME rolling-hours scope, silently leaving a bought-down-target
+    # EM resident uncapped despite still being eligible for shifts. Optional, defaults to True for
+    # back-compat with an older JS build that doesn't send it (no narrower than before).
+    schedulable: bool
     is_intern: bool
     night_exempt: bool
     caps: ResidentCaps
@@ -248,6 +257,7 @@ def _parse_residents(raw: list) -> list:
                 cohort=r.get("cohort"),
                 target=r.get("target"),
                 is_em_core=bool(r.get("isEmCore", False)),
+                schedulable=bool(r.get("schedulable", True)),
                 is_intern=bool(r.get("isIntern", False)),
                 night_exempt=bool(r.get("nightExempt", False)),
                 caps=caps,

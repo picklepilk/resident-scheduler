@@ -41,6 +41,16 @@ class CoverageResult:
     overstaff: dict = field(default_factory=dict)  # (shiftId, date) -> BoolVar, only where max>0, non-TRAUMA, not a Peds night
 
 
+def no_overstaff_shift(shift) -> bool:
+    """True when `shift` may NEVER use the +1 last-resort overstaff allowance (see module
+    docstring): TRAUMA, or any Peds night (PED-N/PED-N-FM/PED-N12) -- chief call 2026-09-26, mirrors
+    repairPass Phase 5's overstaffFor guard in ResidentScheduler.jsx. Shared with
+    `solver/validate.py`'s independent `_check_coverage_max` re-check so the two can't drift on which
+    shifts are exempt from the allowance (pre-existing gap fixed 2026-09-27: validate.py used to fail
+    on ANY overstaff, including the allowed +1)."""
+    return shift.area == "TRAUMA" or (shift.area == "PED" and shift.type == "night")
+
+
 def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enforcement=None) -> CoverageResult:
     """`min_enforcement`, when given, is `(shift_id, date_str) -> BoolVar` --
     used ONLY on the "hard_then_elastic" strict branch below, where pass 2
@@ -67,10 +77,7 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
 
     for shift_id, by_date in payload.coverage.items():
         shift = payload.shifts[shift_id]
-        # Never overstaffed: TRAUMA (see module docstring) and any Peds night
-        # (PED-N/PED-N-FM/PED-N12) -- chief call 2026-09-26, mirrors repairPass
-        # Phase 5's overstaffFor guard in ResidentScheduler.jsx.
-        no_overstaff = shift.area == "TRAUMA" or (shift.area == "PED" and shift.type == "night")
+        no_overstaff = no_overstaff_shift(shift)
         for date_str, entry in by_date.items():
             assigned = store.x_sum_for_shift_date(shift_id, date_str)
 

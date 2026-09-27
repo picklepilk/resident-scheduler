@@ -77,14 +77,46 @@ def test_off_service_resident_not_subject_to_weekly_caps():
     assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
 
 
-def test_self_cover_resident_not_subject_to_weekly_caps():
-    # isEmCore=True but target=None (not schedulable this block, e.g. an atUH:false rotation) --
-    # mirrors candidatePool's isEmResident(r) && isSchedulable(r) gate exactly.
+def test_off_rotation_resident_not_subject_to_weekly_caps():
+    # isEmCore=True, schedulable=False (not on the EM rotation this block, e.g. an atUH:false
+    # rotation) -- mirrors candidatePool's isEmResident(r) && isSchedulable(r) gate exactly. target
+    # is also None here (as buildSolverPayload always sends for a non-schedulable resident), but
+    # `schedulable` -- not `target` -- is what actually puts them out of scope (gap fix 2026-09-27,
+    # see next test for the case target is None for an UNRELATED reason).
     shifts = {"D12": {"startH": 7, "durationH": 12, "type": "day", "area": "POD"}}
-    residents = [make_resident("r1", isEmCore=True, target=None)]
+    residents = [make_resident("r1", isEmCore=True, target=None, schedulable=False)]
     eligible = {"r1": {d: ["D12"] for d in _SEVEN_DATES}}
     coverage = {"D12": {d: {"min": 0, "max": 1} for d in _SEVEN_DATES}}
     model, store = _build(residents, shifts, _SEVEN_DATES, eligible, coverage)
     _force_all(model, store, "r1", "D12", _SEVEN_DATES)
     solver = cp_model.CpSolver()
     assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
+
+
+def test_schedulable_resident_with_bought_down_target_still_capped():
+    # Gap fix (2026-09-27, review of 4d1b7ba): isEmCore=True, schedulable=True (default, still on
+    # the EM rotation this block, still fully eligible for shifts), but target=None because their
+    # target was bought down to <=0 (getShiftTarget returns None, never 0 -- CLAUDE.md). The old
+    # scope predicate (`target is not None`) wrongly treated this exactly like the off-rotation case
+    # above and left them uncapped; `is_em_core and schedulable` must still catch them.
+    shifts = {"D12": {"startH": 7, "durationH": 12, "type": "day", "area": "POD"}}
+    residents = [make_resident("r1", isEmCore=True, target=None, schedulable=True)]
+    eligible = {"r1": {d: ["D12"] for d in _SEVEN_DATES}}
+    coverage = {"D12": {d: {"min": 0, "max": 1} for d in _SEVEN_DATES}}
+    model, store = _build(residents, shifts, _SEVEN_DATES, eligible, coverage)
+    _force_all(model, store, "r1", "D12", _SEVEN_DATES)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+
+
+def test_schedulable_defaults_true_for_back_compat():
+    # An older JS build that never sends `schedulable` at all must still get capped when is_em_core
+    # and eligible for >60h/week -- default True, same as before this field existed.
+    shifts = {"D12": {"startH": 7, "durationH": 12, "type": "day", "area": "POD"}}
+    residents = [make_resident("r1", isEmCore=True, target=10)]  # no `schedulable` key at all
+    eligible = {"r1": {d: ["D12"] for d in _SEVEN_DATES}}
+    coverage = {"D12": {d: {"min": 0, "max": 1} for d in _SEVEN_DATES}}
+    model, store = _build(residents, shifts, _SEVEN_DATES, eligible, coverage)
+    _force_all(model, store, "r1", "D12", _SEVEN_DATES)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"

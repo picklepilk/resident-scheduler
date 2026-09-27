@@ -1,11 +1,17 @@
 """R7 (2026-09-27, chief policy 2026-09-26, memory acgme-em-work-hours): ACGME EM Program
 Requirements 6.17.a.3 -- no more than 60 SCHEDULED ED hours, and no more than 72 TOTAL hours (ED +
 Grand Rounds + Journal Club), in ANY rolling 7-day window. Applies only to EM residents (EM_HOME/
-EM_BAMC) on a schedulable EM rotation -- exactly `resident.is_em_core and resident.target is not
-None`, mirroring candidatePool's own `isEmResident(r) && isSchedulable(r)` gate in
-ResidentScheduler.jsx (a non-schedulable resident already gets `target: null` there for unrelated
-reasons -- see buildSolverPayload's own comment on that field). Off-service residents keep only the
-80h/4wk rule (solver/model/hours_cap.py).
+EM_BAMC) on a schedulable EM rotation -- `resident.is_em_core and resident.schedulable`, mirroring
+candidatePool's own `isEmResident(r) && isSchedulable(r)` gate in ResidentScheduler.jsx via the
+payload's own `schedulable` field (`isSchedulable(r)`, sent independently of `target`).
+
+Gap fix (2026-09-27, review of 4d1b7ba): this used to gate on `resident.target is not None`
+instead. `target` is null for TWO different reasons -- a non-schedulable resident (correct to
+exclude) AND a schedulable resident whose target was bought down to <=0 (`getShiftTarget` returns
+None, never 0, so 0 != null keeps them out of fairness spread -- see CLAUDE.md). The old gate
+silently left a bought-down-target EM resident unscoped, i.e. uncapped, while still fully eligible
+for shifts (candidatePool's own gate never looked at target either). `schedulable` disambiguates
+the two. Off-service residents keep only the 80h/4wk rule (solver/model/hours_cap.py).
 
 ALWAYS HARD, never wrapped by pass-2 relaxation (solver/model/elastic.py) -- called identically from
 build.py and elastic.py with no `enforcement` parameter, exactly like senior_composition.py and
@@ -45,7 +51,7 @@ def _ed_term_for_position(payload: Payload, store: VarStore, resident, idx: int)
 
 
 def _in_scope(resident) -> bool:
-    return resident.is_em_core and resident.target is not None
+    return resident.is_em_core and resident.schedulable
 
 
 def add_weekly_hours_cap_constraints(model, payload: Payload, store: VarStore) -> None:

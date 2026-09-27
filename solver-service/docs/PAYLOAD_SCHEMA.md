@@ -86,6 +86,15 @@ only solves.**
 
 ### New/changed request fields
 
+- `residents[].schedulable: bool` — gap fix (2026-09-27, reviewer finding on 4d1b7ba): the app's own
+  `isSchedulable(r)`, sent independently of `target`. `target` is null for TWO different reasons — a
+  resident off-rotation this block (this flag `false`) AND a schedulable resident whose target was
+  bought down to <=0 (`getShiftTarget` returns `null`, never `0` — CLAUDE.md; this flag stays `true`).
+  `edWeekly60`/`totalWeekly72` (below) and `solver/validate.py`'s matching re-check now scope on
+  `is_em_core and schedulable`, not `target is not None`, which used to leave a bought-down-target EM
+  resident silently uncapped. Optional, defaults to `True` for back-compat with an older JS build
+  that doesn't send it (matches that build's own — buggy — `target is not None` behavior exactly, so
+  nothing gets narrower for a payload that predates this field).
 - `residents[].obligationHours: {date: hours}` — per-resident Grand Rounds (4h) + Journal Club (3h)
   contribution, ALREADY resolved (vacation/off-filtered) by `src/lib/acgmeHours.js`'s exported
   `grHoursOn`/`jcHoursOn`. Covers BOTH the 14-day prior-tail window and the block's own dates (same
@@ -114,9 +123,11 @@ only solves.**
 ### New rule: `edWeekly60` / `totalWeekly72` (ACGME EM 6.17.a.3, tier `acgme`)
 
 `solver/model/weekly_hours.py` — for every EM resident (`is_em_core`) on a schedulable EM rotation
-(`target is not None`, mirroring `candidatePool`'s `isEmResident(r) && isSchedulable(r)` gate) and
-every rolling 7-day window touching the block (tail-only windows are pure history and skipped, same
-convention as every other sliding-window family in this codebase):
+(`schedulable`, mirroring `candidatePool`'s `isEmResident(r) && isSchedulable(r)` gate — see
+`residents[].schedulable` above; fixed 2026-09-27, was `target is not None`, which wrongly excluded a
+schedulable resident whose target was bought down to <=0) and every rolling 7-day window touching the
+block (tail-only windows are pure history and skipped, same convention as every other sliding-window
+family in this codebase):
 
 - scheduled ED hours (shift durations only) in the window `<= 60`
 - ED hours + `obligationHours` in the window `<= 72`
@@ -138,10 +149,10 @@ rest is measured FROM moves later, which can only make the constraint stricter, 
 `src/lib/acgmeHours.js`'s `effectiveShiftEndMs` exactly (EM FAQ: "rest counts from end of conference
 when attended").
 
-### New soft term: `podTruePrimary`
+### New soft term: `seniorTruePrimary`
 
 `solver/model/senior_composition.py`'s `add_true_primary_preference_terms`, wired into
-`solver/model/objective.py`, weight `config/default_weights.json`'s `podTruePrimary.perUnit = 600`
+`solver/model/objective.py`, weight `config/default_weights.json`'s `seniorTruePrimary.perUnit = 600`
 (same order of magnitude as `podEmComposition`/`flexEmComposition`; included in
 `tests/test_weight_tiering.py`'s `_anti_fill_sum`/`_generous_soft_objective_max`/
 `test_overstaff_coverage_dominates_ordinary_soft_rules` accounting). Charges the weight exactly when a
@@ -156,6 +167,6 @@ from the solver's own final schedule (previously hardcoded `[]`), the same scan
 
 Unchanged. `report.podSubstitutes` was already part of `mapSolverResult`'s OUTPUT shape (JS-side
 superset); the solver's own `/solve` response never carried it and still doesn't — `weekly_hours.py`/
-`podTruePrimary` are both enforced/costed purely inside the model, with no new response field needed
+`seniorTruePrimary` are both enforced/costed purely inside the model, with no new response field needed
 (a rolling-hours violation would only ever appear as a genuine `INFEASIBLE`/`RELAXED` outcome, already
 covered by the existing status/feasibility shape).

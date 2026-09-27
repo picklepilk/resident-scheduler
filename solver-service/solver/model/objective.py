@@ -571,7 +571,7 @@ def _add_em_composition_round2b_terms(model, payload: Payload, store: VarStore, 
 # ---- R7 (2026-09-27, gap 3): prefer a true primary PGY over an available substitute ----
 
 def _add_true_primary_preference_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    add_true_primary_preference_terms(model, payload, store, group, int(weights["podTruePrimary"]["perUnit"]))
+    add_true_primary_preference_terms(model, payload, store, group, int(weights["seniorTruePrimary"]["perUnit"]))
 
 
 # ---- rule 42: dowPreference ----

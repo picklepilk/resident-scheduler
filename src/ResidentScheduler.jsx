@@ -6846,7 +6846,13 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // this ("self-cover: no target ceiling, excluded from deficit/fairness terms" — see
     // PAYLOAD_SCHEMA.md) and is what the JS local generator's own `report.underTarget` (~line 5661)
     // and validateAll already achieve by gating on isSchedulable before ever computing a deficit.
-    const target = isSchedulable(r) ? getShiftTarget(r, appSettings) : null;
+    // `schedulable` ships separately from `target` (R7 gap fix, reviewer finding on 4d1b7ba):
+    // target is null both when this resident is off-rotation AND when a schedulable resident's
+    // target was bought down to <=0 (getShiftTarget returns null, never 0 — CLAUDE.md). The solver's
+    // weekly_hours.py/validate.py ACGME scope needs to tell those two apart, so it reads this field
+    // instead of inferring schedulability from `target is not None`.
+    const schedulable = isSchedulable(r);
+    const target = schedulable ? getShiftTarget(r, appSettings) : null;
     const isEmCore = isEmResident(r);
     const traumaCapSubject = isTraumaCapSubject(r);
     const splitResident = isTraumaPedsSplitResident(r, traumaBlocks);
@@ -6895,6 +6901,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       id: r.id,
       cohort: eligKey(r),
       target,
+      schedulable,
       isEmCore,
       isIntern: isEmIntern(r),
       nightExempt: isNightOnlyResident(r, eligOverrides),

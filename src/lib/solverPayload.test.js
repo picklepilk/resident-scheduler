@@ -134,6 +134,24 @@ describe('buildSolverPayload', () => {
     expect(payload.eligible.syn_golf).toBeUndefined();
   });
 
+  it('residents[] carries a schedulable boolean mirroring isSchedulable, independent of target', () => {
+    // Gap fix (2026-09-27, reviewer finding on 4d1b7ba): target is null for TWO different reasons —
+    // a non-schedulable resident AND a schedulable resident whose target was bought down to <=0
+    // (getShiftTarget returns null, never 0 — CLAUDE.md). The solver's weekly-hours ACGME scope
+    // needs to tell those apart, so `schedulable` is sent independently of `target`.
+    const fixture = makeFixture('standard');
+    const allResidents = fixture.allResidents.map(r =>
+      r.id === 'syn_golf' ? { ...r, blockType: 'MICU' } : r
+    );
+    const payload = buildSolverPayload({ ...fixture, allResidents });
+    const byId = Object.fromEntries(payload.residents.map(r => [r.id, r]));
+    expect(byId.syn_golf.schedulable).toBe(false);
+    expect(byId.syn_golf.target).toBeNull();
+    // An ordinary schedulable resident: schedulable true, target matches getShiftTarget.
+    expect(byId.syn_mike.schedulable).toBe(true);
+    expect(byId.syn_mike.target).not.toBeNull();
+  });
+
   it('caps are null for residents the cap does not apply to, and set for ones it does', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);

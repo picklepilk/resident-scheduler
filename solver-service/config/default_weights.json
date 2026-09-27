@@ -20,6 +20,6 @@
   "flexEmComposition": { "perUnit": 600 },
   "podPgy2Fallback": { "perUnit": 250 },
   "flexPgy3Fallback": { "perUnit": 250 },
-  "podTruePrimary": { "perUnit": 600 },
+  "seniorTruePrimary": { "perUnit": 600 },
   "dowPreference": { "scale": 1 }
 }

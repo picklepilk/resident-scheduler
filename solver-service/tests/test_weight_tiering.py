@@ -104,14 +104,14 @@ def _anti_fill_sum(weights: dict) -> int:
     flex_em_comp = weights["flexEmComposition"]["perUnit"]
     pod_pgy2_fallback = weights["podPgy2Fallback"]["perUnit"]
     flex_pgy3_fallback = weights["flexPgy3Fallback"]["perUnit"]
-    # R7 (2026-09-27, gap 3): podTruePrimary -- one penalty var per (shift,date), same x1 stacking
+    # R7 (2026-09-27, gap 3): seniorTruePrimary -- one penalty var per (shift,date), same x1 stacking
     # as podPgy2Fallback/flexPgy3Fallback (a single (shift,date) pair is only ever charged once).
-    pod_true_primary = weights["podTruePrimary"]["perUnit"]
+    senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
     return (
         isolated_night + work + fairness + weekend_off + intern_pair + dow
         + trauma_second + trauma_mid + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
-        + pod_true_primary
+        + senior_true_primary
     )
 
 
@@ -147,7 +147,7 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["flexPgy3Fallback"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         # R7 (2026-09-27, gap 3): one penalty var per (POD|FLEX shift, date), same scale as
         # podEmComposition/flexEmComposition.
-        + weights["podTruePrimary"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
+        + weights["seniorTruePrimary"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
     )
 
 
@@ -184,7 +184,7 @@ def test_overstaff_coverage_dominates_ordinary_soft_rules():
         weights["podEmComposition"]["perUnit"], weights["flexEmComposition"]["perUnit"],
         weights["podPgy2Fallback"]["perUnit"], weights["flexPgy3Fallback"]["perUnit"],
         weights["pedsInternNightDeficit"]["perUnit"],
-        weights["podTruePrimary"]["perUnit"],
+        weights["seniorTruePrimary"]["perUnit"],
     )
     assert weights["overstaffCoverage"]["perUnit"] > ordinary_soft_max
 

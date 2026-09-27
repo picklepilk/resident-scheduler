@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from solver.io.payload import Payload
 from solver.model import timing
+from solver.model.coverage import no_overstaff_shift
 
 MAX_CONSECUTIVE_WORK_DAYS = 6
 NIGHT_RUN_MAX = 6
@@ -148,15 +149,23 @@ def _check_eligibility_and_locked(payload: Payload, schedule: dict) -> list:
 
 
 def _check_coverage_max(payload: Payload, schedule: dict) -> list:
+    """Mirrors `solver/model/coverage.py`'s own hard cap EXACTLY: a non-TRAUMA, non-Peds-night
+    (shift, date) with max>0 gets a +1 last-resort overstaff allowance (the app's own
+    under-target-lift policy), so this independent re-check must allow it too -- fixed 2026-09-27,
+    was previously failing on that allowed +1 (`chiefBenchmark.solver.test.js` caught it live:
+    `coverageMax: '3 assigned, max 2'`)."""
     failures = []
     counts = {}
     for resident_id, by_date in schedule.items():
         for date_str, shift_id in by_date.items():
             counts[(shift_id, date_str)] = counts.get((shift_id, date_str), 0) + 1
     for shift_id, by_date in payload.coverage.items():
+        shift = payload.shifts[shift_id]
+        allowance = 0 if no_overstaff_shift(shift) else 1
         for date_str, entry in by_date.items():
             n = counts.get((shift_id, date_str), 0)
-            if n > entry.max:
+            cap = entry.max + (allowance if entry.max > 0 else 0)
+            if n > cap:
                 failures.append(_fail("coverageMax", [], [date_str], [shift_id], f"{n} assigned, max {entry.max}"))
     return failures
 
@@ -358,13 +367,15 @@ TOTAL_WEEKLY_CAP_H = 72
 def _check_weekly_hours_cap(payload: Payload, schedule: dict) -> list:
     """R7 (2026-09-27): independent re-check of ACGME EM 6.17.a.3's rolling-7-day 60 ED / 72 total
     hour caps (solver/model/weekly_hours.py) -- EM residents on a schedulable EM rotation only, same
-    scope predicate as that module's `_in_scope`."""
+    scope predicate as that module's `_in_scope` (`is_em_core and schedulable` -- NOT `target is not
+    None`, which is also null for a schedulable resident bought down to a 0 target; see
+    weekly_hours.py's module docstring for the full gap-fix rationale)."""
     failures = []
     dates = payload.all_dates
     n = len(dates)
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
-        if not (resident.is_em_core and resident.target is not None):
+        if not (resident.is_em_core and resident.schedulable):
             continue
         ed_by_date = {}
         for d in dates:
@@ -421,6 +432,9 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
         if resident.caps.peds_mix_max is not None and peds_n > resident.caps.peds_mix_max:
             failures.append(_fail("pedsMixMax", [resident.id], [], [], f"{peds_n} peds, cap {resident.caps.peds_mix_max}"))
 
+        # Target-only check, not a schedulability gate (unlike weekly_hours' `_in_scope` above) --
+        # a target ceiling is meaningless when there is no target to exceed, regardless of why
+        # (non-schedulable OR a genuine bought-down-to-0 target); correct as written.
         if resident.target is not None:
             total_n = len(by_date)
             if total_n > resident.target:
