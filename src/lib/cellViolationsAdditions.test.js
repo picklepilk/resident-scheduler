@@ -133,6 +133,93 @@ describe('cellViolations — R2 additions', () => {
   });
 });
 
+describe('cellViolations — R3/R4 additions (2026-09-26 policy, ACGME 6.17.a + jeopardy window)', () => {
+  it('rest >= shift length (restShiftLength): FLEX-E ending 23:00 Tue then POD-D starting 07:00 Wed is only an 8h gap — blocked', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const row = { '2026-07-07': 'FLEX-E' }; // Tue 14:00-23:00
+    const b = { ...block, schedule: { r1: row } };
+    const vs = cellViolations(r1, '2026-07-08', 'POD-D', b, {}, {}, {}, {}); // Wed 07:00
+    const v = vs.find(x => x.rule === 'restShiftLength');
+    expect(v).toBeTruthy();
+    expect(v.level).toBe('error');
+  });
+
+  it('rest >= shift length: the same FLEX-E then PED-S starting 11:00 Wed is a 12h gap — clears the 9h requirement, no violation', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const row = { '2026-07-07': 'FLEX-E' };
+    const b = { ...block, schedule: { r1: row } };
+    const vs = cellViolations(r1, '2026-07-08', 'PED-S', b, {}, {}, {}, {});
+    expect(vs.some(x => x.rule === 'restShiftLength')).toBe(false);
+  });
+
+  it('rest >= shift length, Grand Rounds adjustment: POD-N ending 08:00 Wed (this resident\'s GR day) then PED-N at 19:00 same day clears 08:00+9h but NOT Grand-Rounds-end(12:00)+9h — blocked', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const row = { '2026-07-07': 'POD-N' }; // Tue 23:00 -> Wed 08:00
+    const b = { ...block, schedule: { r1: row } };
+    const vs = cellViolations(r1, '2026-07-08', 'PED-N', b, {}, {}, {}, {}); // Wed 19:00
+    const v = vs.find(x => x.rule === 'restShiftLength');
+    expect(v).toBeTruthy();
+    expect(v.level).toBe('error');
+    expect(v.message).toMatch(/Grand Rounds/);
+  });
+
+  it('ACGME weekly caps (edWeekly60/totalWeekly72): 6 existing 12h Trauma Days + Grand Rounds inside one rolling week breaches both', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const row = {};
+    // 07-06,07,09,10,11,12 (skipping Wed 07-08, this resident's GR day) — 6 * 12h = 72 ED hours;
+    // + Grand Rounds (4h) on the skipped Wednesday = 76 total, inside the 07-06..07-12 window.
+    for (const ds of ['2026-07-06', '2026-07-07', '2026-07-09', '2026-07-10', '2026-07-11']) row[ds] = 'TRAUMA-D';
+    const b = { ...block, schedule: { r1: row } };
+    const vs = cellViolations(r1, '2026-07-12', 'TRAUMA-D', b, {}, {}, {}, {});
+    const ed = vs.find(x => x.rule === 'edWeekly60');
+    const total = vs.find(x => x.rule === 'totalWeekly72');
+    expect(ed).toBeTruthy();
+    expect(ed.level).toBe('error');
+    expect(total).toBeTruthy();
+    expect(total.level).toBe('error');
+  });
+
+  it('ACGME weekly caps: an off-service (non-schedulable) resident is exempt — only the 80h/4wk rule applies to them', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'METRO' }); // METRO = non-schedulable
+    const row = {};
+    for (const ds of ['2026-07-06', '2026-07-07', '2026-07-09', '2026-07-10', '2026-07-11']) row[ds] = 'TRAUMA-D';
+    const b = { ...block, schedule: { r1: row } };
+    const vs = cellViolations(r1, '2026-07-12', 'TRAUMA-D', b, {}, {}, {}, {});
+    expect(vs.some(x => x.rule === 'edWeekly60' || x.rule === 'totalWeekly72')).toBe(false);
+  });
+
+  it('jeopardy window: an overnight (POD-N) starting the day before a jeopardy call, running past 07:00 into it, is blocked', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const b = { ...block, schedule: { r1: {} }, jeopardySchedule: { pgy1: {}, pgy2: { '2026-07-08': 'r1' }, pgy3: {} } };
+    const vs = cellViolations(r1, '2026-07-07', 'POD-N', b, {}, { jeopardyPolicy: 'warn' }, {}, {});
+    const v = vs.find(x => x.rule === 'jeopardyWindow');
+    expect(v).toBeTruthy();
+    expect(v.level).toBe('error');
+  });
+
+  it('jeopardy window: the same overnight-the-day-before as PED-N (clears the 07:00 window) is NOT blocked by the window rule', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const b = { ...block, schedule: { r1: {} }, jeopardySchedule: { pgy1: {}, pgy2: { '2026-07-08': 'r1' }, pgy3: {} } };
+    const vs = cellViolations(r1, '2026-07-07', 'PED-N', b, {}, { jeopardyPolicy: 'warn' }, {}, {});
+    expect(vs.some(x => x.rule === 'jeopardyWindow')).toBe(false);
+  });
+
+  it('jeopardy window: policy "off" is a full escape hatch, same as the existing jeopardyCollision rule', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
+    const b = { ...block, schedule: { r1: {} }, jeopardySchedule: { pgy1: {}, pgy2: { '2026-07-08': 'r1' }, pgy3: {} } };
+    const vs = cellViolations(r1, '2026-07-07', 'POD-N', b, {}, { jeopardyPolicy: 'off' }, {}, {});
+    expect(vs.some(x => x.rule === 'jeopardyWindow')).toBe(false);
+  });
+
+  it('no false positive: an ordinary placement well clear of every R3/R4 cap raises none of the new rule ids', () => {
+    const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 3, blockType: 'EM' });
+    const b = { ...block, schedule: { r1: {} } };
+    const vs = cellViolations(r1, '2026-07-09', 'TRAUMA-D', b, {}, {}, {}, {}, {}, null, {}, [r1], []);
+    const newRuleIds = ['restShiftLength', 'edWeekly60', 'totalWeekly72', 'jeopardyWindow'];
+    expect(ruleIds(vs).filter(r => newRuleIds.includes(r))).toEqual([]);
+  });
+});
+
 describe('eligibilityBlockReasons', () => {
   it('returns null when the shift IS eligible', () => {
     const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 3, blockType: 'EM' });

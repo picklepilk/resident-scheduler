@@ -51,6 +51,8 @@ import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssues
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
+import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
+import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -782,6 +784,13 @@ const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (
 // the next block's rotations are known (saved/imported); Validation warns instead of blocking
 // when the next block hasn't been saved yet, since the app genuinely can't tell.
 const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight transition: an overnight shift on the block\'s own last Sunday is only allowed if the resident continues on a schedulable EM rotation next block (the night run can roll onward) — hard-blocked, both generator and manual picker, once the next block has been saved/imported. Anyone moving to a different service (or a non-schedulable rotation) may not work that final-Sunday overnight. If the next block hasn\'t been saved yet, Validation warns instead of blocking, since continuation can\'t be confirmed.';
+// ED_WEEKLY_CAP_H/TOTAL_WEEKLY_CAP_H/GR_START_H/GR_END_H are IMPORTED from lib/acgmeHours.js (see
+// the top-of-file imports) rather than declared here, so — unlike SEVEN_DAY_RULE_NOTE/
+// CIRCADIAN_RULE_NOTE above, which hardcode NIGHT_RULES/JC_MAX_PER_AY's numbers to dodge the TDZ a
+// same-file later-declared const would hit — this prose can safely reference them directly; an
+// import is hoisted before any of this file's own top-level code runs. 2026-09-26 policy, memory
+// acgme-em-work-hours.
+const ACGME_HOURS_RULE_NOTE = `ACGME EM weekly hour caps (6.17.a.3): while on an EM rotation, no more than ${ED_WEEKLY_CAP_H} scheduled ED hours or ${TOTAL_WEEKLY_CAP_H} total hours (ED + Grand Rounds + Journal Club) in any rolling 7 days — hard, enforced by the generator and Validation. Rest between shifts must be at least the length of the shift just worked (6.17.a.2) — always on, no setting to disable it — measured from the end of Grand Rounds (${GR_START_H}:00-${GR_END_H}:00) instead of the shift's own end when this resident's GR falls on the day the shift ends and the shift ends before GR does. Off-service residents keep only the 80-hour/4-week average rule above.`;
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -790,7 +799,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -800,7 +809,7 @@ const RULE_NOTES = {
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
       { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue instead. Enforced.' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -808,7 +817,7 @@ const RULE_NOTES = {
       { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
       { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
@@ -819,7 +828,7 @@ const RULE_NOTES = {
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
       'Has PED-N eligibility (chief-directed) — all 7 nights, same as EM Home. Coverage stays min 0/max 1 (best-effort, not required).',
-      SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, FINAL_SUNDAY_RULE_NOTE,
+      SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE,
     ],
   },
   // Peds is now PGY-2/PGY-3 only (chief-directed AY26/27 restructure) — PEDS_1 is gone; existing
@@ -1359,15 +1368,22 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
 // shiftStartMs/shiftEndMs now live in lib/shifts.js (imported above).
 
 // Returns violation strings for adding `newShiftId` on `dateStr` for a given resident.
-// Rule: after completing a shift of length H, resident must have ≥ H hours off before the next shift.
-function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
+// Rule (ACGME EM 6.17.a.2, ALWAYS on — memory acgme-em-work-hours): after completing a shift of
+// length H, resident must have >= H hours off before the next shift, counted from the LATER of the
+// shift's own end or Grand Rounds' own end (12:00) when this resident's GR falls on the day the
+// shift ends and the shift ends before GR ends (EM FAQ: "time off counts from the end of
+// conference" when attended) — see effectiveShiftEndMs (lib/acgmeHours.js). `resident` is the full
+// resident object (not just an id) so grWorkDow/vacationDates/approvedDatesOff are available for
+// that GR adjustment.
+function checkRestViolations(resident, dateStr, newShiftId, schedule) {
   const violations = [];
   const nt = SHIFT_TIMING[newShiftId];
   if (!nt) return violations;
 
+  const grDow = grWorkDow(resident);
   const newStart = shiftStartMs(newShiftId, dateStr);
   const newEnd   = newStart + nt.durationH * 3_600_000;
-  const rs       = schedule[residentId] || {};
+  const rs       = schedule[resident.id] || {};
   const refDate  = parseDate(dateStr);
 
   // Check ±2 days (night shifts can cross midnight so we need the day before/after)
@@ -1389,21 +1405,27 @@ function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
     }
 
     if (exEnd <= newStart) {
-      // Existing finishes before new starts → required gap = existing shift's duration
-      const gapH = (newStart - exEnd) / 3_600_000;
+      // Existing finishes before new starts → required gap = existing shift's duration, measured
+      // from GR's own end when this resident attends GR that day and the shift ends before it.
+      const restStartMs = effectiveShiftEndMs(existSid, checkDs, resident, grDow);
+      const gapH = (newStart - restStartMs) / 3_600_000;
       if (gapH < et.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning`
+          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning` +
+          (restStartMs > exEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
         );
       }
     } else if (newEnd <= exStart) {
-      // New finishes before existing starts → required gap = new shift's duration
-      const gapH = (exStart - newEnd) / 3_600_000;
+      // New finishes before existing starts → required gap = new shift's duration, same GR
+      // adjustment applied to the shift just worked (the NEW one, in this direction).
+      const restStartMs = effectiveShiftEndMs(newShiftId, dateStr, resident, grDow);
+      const gapH = (exStart - restStartMs) / 3_600_000;
       if (gapH < nt.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off before ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward`
+          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward` +
+          (restStartMs > newEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
         );
       }
     }
@@ -2906,7 +2928,9 @@ const AY_CONF_DATE_FIELDS = ['acepStart','acepEnd','iteDate','aaemStart','aaemEn
 // App-level settings (persisted in res_app_settings)
 const DEFAULT_APP_SETTINGS = {
   jeopardyPolicy: 'warn',     // 'block' = unschedulable | 'warn' = allowed with warning | 'off' = ignore
-  enforceRest: true,          // rest-period rule (shift length = required hours off)
+  enforceRest: true,          // LEGACY, inert (2026-09-26 policy: rest >= shift length is ACGME-hard
+                              // and always enforced now — this key is only read to stay harmless
+                              // for an old backup, nothing checks it any more; see checkRestViolations)
   emTraumaCap: 2,             // warn when an EM Home PGY-2/3 exceeds this many trauma shifts/block
   defaultBlockLength: 28,     // days — auto-fills end date when start date is set
   maxSavedBlocks: 24,         // history depth on the Dashboard's Block Calendar
@@ -3780,6 +3804,9 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
     const nextRotation = nextRotationFromSnapshot(resident, nextBlockSnap);
+    // Grand Rounds weekday for this resident (null if none) — used by the rest-length rule below
+    // and the ACGME weekly-hour-caps check further down; resolved once per resident, not per date.
+    const grDow = grWorkDow(resident);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
       // Approved day off — overridable-by-hand tier (chief policy 2026-09-26): the generator never
@@ -3807,6 +3834,17 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
             : 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day',
           level: severityFor('jeopardyCollision', 'validator') });
         if (jeopardyPolicy === 'block') continue;
+      }
+      // Jeopardy WINDOW (2026-09-26 policy, rule 'jeopardyWindow'): an overnight shift STARTING ds
+      // that runs past 07:00 into TOMORROW's jeopardy call is blocked too — same-day collisions are
+      // already covered above via isJeopardyDate(ds). See lib/jeopardyWindow.js.
+      if (jeopardyPolicy !== 'off') {
+        const nextDs = toDateStr(addDays(parseDate(ds), 1));
+        if (isJeopardyDate(resident, nextDs, block.jeopardySchedule) && shiftOverlapsJeopardyWindow(sid, ds, nextDs)) {
+          issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'jeopardyWindow',
+            message: `Overnight shift running past 07:00 into ${formatDisplayDate(nextDs)}'s jeopardy call — jeopardy must start the day non-clinical`,
+            level: severityFor('jeopardyWindow', 'validator') });
+        }
       }
       const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
       const finalSundayBlocked = finalSunday && ds === finalSunday && isNightShiftId(sid) && nextRotation.known && !nextRotation.continuingEM;
@@ -4048,10 +4086,12 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       flushRun(walkDates[walkDates.length - 1]);
     }
 
-    // Rest-period check — sort all assignments by start time, then check each consecutive pair.
-    // The pairwise legal-rest-hours check below is the only part gated by enforceRest; the
-    // circadian/GR-rest checks that follow are hard circadian rules (matching how the generator
-    // already enforces them unconditionally) and always run regardless of that toggle.
+    // Rest-period check (ACGME 6.17.a.2, ALWAYS on — no more appSettings.enforceRest gate; memory
+    // acgme-em-work-hours) — sort all assignments by start time, then check each consecutive pair.
+    // Rest must be >= the length of the shift just worked, counted from Grand Rounds' own end
+    // (12:00) instead of the shift's own end when this resident's GR falls on the day the earlier
+    // shift ends and it ends before GR does (effectiveShiftEndMs, lib/acgmeHours.js) — same rule
+    // checkRestViolations enforces going forward in the generator/picker.
     const assignments = Object.entries(rs)
       .filter(([, sid]) => sid && SHIFT_TIMING[sid])
       .map(([ds, sid]) => ({
@@ -4062,25 +4102,24 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       }))
       .sort((a, b) => a.startMs - b.startMs);
 
-    if (appSettings.enforceRest !== false) {
-      for (let i = 0; i < assignments.length - 1; i++) {
-        const a = assignments[i];
-        const b = assignments[i + 1];
+    for (let i = 0; i < assignments.length - 1; i++) {
+      const a = assignments[i];
+      const b = assignments[i + 1];
 
-        if (a.endMs > b.startMs) {
-          // Shifts overlap
-          issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-            message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
-            level: 'error' });
-        } else {
-          const gapH = (b.startMs - a.endMs) / 3_600_000;
-          if (gapH < a.durationH) {
-            const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
-            issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-              message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
-                       `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
-              level: 'error' });
-          }
+      if (a.endMs > b.startMs) {
+        // Shifts overlap
+        issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
+          message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
+          level: 'error' });
+      } else {
+        const restStartMs = effectiveShiftEndMs(a.sid, a.ds, resident, grDow);
+        const gapH = (b.startMs - restStartMs) / 3_600_000;
+        if (gapH < a.durationH) {
+          const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
+          issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid, rule: 'restShiftLength',
+            message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
+                     `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
+            level: severityFor('restShiftLength', 'validator') });
         }
       }
     }
@@ -4113,6 +4152,25 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'rolling80h',
           message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`,
           level: severityFor('rolling80h', 'validator') });
+    }
+
+    // ACGME EM 6.17.a.3 rolling-7-day weekly caps (hard, always on — memory acgme-em-work-hours):
+    // 60 scheduled ED hours and 72 total hours (ED + Grand Rounds + Journal Club) per ANY rolling 7
+    // days, EM Home/BAMC residents on a schedulable EM rotation ONLY — off-service residents keep
+    // just the 80h/4wk rule above (isEmResident/isSchedulable, same scope that check itself gates
+    // on for EM residents).
+    if (isEmResident(resident) && isSchedulable(resident)) {
+      const worst = worstRollingWeek(resident, rs, prevTail[resident.id] || null, grDow);
+      if (worst) {
+        if (worst.edHours > ED_WEEKLY_CAP_H)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'edWeekly60',
+            message: `${Math.round(worst.edHours)} scheduled ED hours in the 7 days starting ${formatDisplayDate(worst.edStartDate)} — ACGME caps this at ${ED_WEEKLY_CAP_H}`,
+            level: severityFor('edWeekly60', 'validator') });
+        if (worst.totalHours > TOTAL_WEEKLY_CAP_H)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'totalWeekly72',
+            message: `${Math.round(worst.totalHours)} total hours (ED + Grand Rounds/Journal Club) in the 7 days starting ${formatDisplayDate(worst.totalStartDate)} — ACGME caps this at ${TOTAL_WEEKLY_CAP_H}`,
+            level: severityFor('totalWeekly72', 'validator') });
+      }
     }
 
     // Circadian night-run check: consecutive night runs should be 5-6 (isolated <5-night stints
@@ -4353,6 +4411,21 @@ export function isJeopardyDate(resident, dateStr, jeopardySchedule) {
   return (resident.jeopardyDates || []).includes(dateStr) || isOnJeopardySchedule(resident.id, dateStr, jeopardySchedule);
 }
 
+// Jeopardy WINDOW (chief-decided policy, 2026-09-26, memory rule-override-policy, rule id
+// 'jeopardyWindow'): a jeopardy call on date D blocks the whole [D 07:00, D+1 07:00) window, not
+// just date D — this extends isJeopardyDate's same-day-only answer with the one other case that
+// matters: an overnight STARTING `dateStr` that runs past 07:00 into `dateStr`+1 when that next day
+// is this resident's jeopardy date. Same-day is still checked here too (rather than assuming every
+// caller already checked isJeopardyDate(dateStr) itself) so this is a complete, single-call answer
+// for "would `shiftId` on `dateStr` collide with resident's jeopardy window." See
+// lib/jeopardyWindow.js for the pure ms-overlap math.
+export function jeopardyWindowConflict(resident, dateStr, shiftId, jeopardySchedule) {
+  if (isJeopardyDate(resident, dateStr, jeopardySchedule) && shiftOverlapsJeopardyWindow(shiftId, dateStr, dateStr)) return true;
+  const nextDs = toDateStr(addDays(parseDate(dateStr), 1));
+  if (isJeopardyDate(resident, nextDs, jeopardySchedule) && shiftOverlapsJeopardyWindow(shiftId, dateStr, nextDs)) return true;
+  return false;
+}
+
 // Stable id order — deterministic tie-break, no Math.random anywhere in this module.
 function jeopardyCandidatesFor(track, allResidents, emBlockAssignments = {}) {
   const pgy = JEOPARDY_TRACK_PGY[track];
@@ -4417,7 +4490,10 @@ export function fillJeopardy(block, allResidents, { emBlockAssignments } = {}) {
         !(c.vacationDates || []).includes(ds) && !(c.approvedDatesOff || []).includes(ds));
       if (offDutyEligible.length === 0) { unfilled.push({ track, date: ds, reason: 'allUnavailable' }); continue; }
 
-      const available = offDutyEligible.filter(c => !block.schedule?.[c.id]?.[ds]);
+      // Jeopardy WINDOW (2026-09-26 policy): don't assign a jeopardy call on `ds` to someone
+      // already mid-overnight into it (a D-1 shift running past 07:00 D), not just someone with a
+      // same-day clinical shift — scheduleHitsJeopardyWindow covers both (see lib/jeopardyWindow.js).
+      const available = offDutyEligible.filter(c => !scheduleHitsJeopardyWindow(block.schedule?.[c.id] || {}, ds));
       if (available.length === 0) { unfilled.push({ track, date: ds, reason: 'allScheduled' }); continue; }
 
       const pick = available.slice().sort((a, b) => {
@@ -4545,13 +4621,19 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
-  const enforceRest = appSettings.enforceRest !== false;
   const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
   const traumaCap   = getTraumaCap(appSettings);
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
   const generalPedsTarget = getGeneralPedsTarget(appSettings);
   const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
   const blockWeekends = getBlockWeekends(dates);
+  // ACGME EM 6.17.a.3 weekly caps (R3): one shared, resident-independent date-string array
+  // covering the whole block PLUS a 6-day lookback pad (so a window straddling the block's own
+  // start date is still fully inside the range) — every resident's buildDailyContributions call
+  // reuses this exact array, and weeklyDateIndex gives O(1) `ds -> index` lookup, so the per-slot
+  // hot path (cachedWeeklyCapsBreach below) never does its own date arithmetic.
+  const weeklyRangeDates = getBlockDates(toDateStr(addDays(parseDate(dates[0]), -6)), dates[dates.length - 1]);
+  const weeklyDateIndex = new Map(weeklyRangeDates.map((ds, i) => [ds, i]));
 
   const genCtx = ctx || buildStaticGenContext({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, dates });
   const {
@@ -4649,15 +4731,44 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const v = scheduleVersion[rid];
     const hit = checkCache[rid];
     if (hit && hit.v === v) return hit;
-    const fresh = { v, rest: new Map(), circ: new Map(), six1: new Map(), six2: new Map(), runLen: new Map() };
+    const fresh = { v, rest: new Map(), circ: new Map(), six1: new Map(), six2: new Map(), runLen: new Map(), weeklyCaps: new Map() };
     checkCache[rid] = fresh;
     return fresh;
   };
-  const cachedRestViolations = (rid, ds, shiftId) => {
-    const c = checkCacheFor(rid);
+  const cachedRestViolations = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
     const key = ds + '|' + shiftId;
     let v = c.rest.get(key);
-    if (v === undefined) { v = checkRestViolations(rid, ds, shiftId, schedule); c.rest.set(key, v); }
+    if (v === undefined) { v = checkRestViolations(r, ds, shiftId, schedule); c.rest.set(key, v); }
+    return v;
+  };
+  // ACGME EM 6.17.a.3 rolling-7-day weekly caps (60 ED / 72 total) — EM Home/BAMC residents on a
+  // schedulable EM rotation only (isEmResident + isSchedulable; off-service residents keep only the
+  // 80h/4wk rule above). Two-level cache, same idiom as cachedTimedFor/cachedRestViolations:
+  // cachedDailyContrib does the Date-heavy per-day GR/JC/ED lookup ONCE per resident per
+  // scheduleVersion (buildDailyContributions walks weeklyRangeDates just once), and
+  // cachedWeeklyCapsBreach's own per-(ds,shiftId) cache on top of that makes weeklyCapBreachAt's
+  // already-cheap array sums a one-time cost per slot too. Wiring the SLOW correctness-first
+  // wouldBreachWeeklyCaps (49 `new Date`s per call) straight into this hot loop measurably regressed
+  // generateScheduleBest's own CPU budget — see acgmeHours.js's own header on this pair.
+  const weeklyContribCache = {}; // rid -> { v, contrib: {ed[], other[]} }
+  const cachedDailyContrib = (r) => {
+    const v = scheduleVersion[r.id];
+    const hit = weeklyContribCache[r.id];
+    if (hit && hit.v === v) return hit.contrib;
+    const contrib = buildDailyContributions(r, schedule[r.id], prevTail[r.id] || null, grWorkDow(r), weeklyRangeDates);
+    weeklyContribCache[r.id] = { v, contrib };
+    return contrib;
+  };
+  const cachedWeeklyCapsBreach = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
+    const key = ds + '|' + shiftId;
+    let v = c.weeklyCaps.get(key);
+    if (v === undefined) {
+      const idx = weeklyDateIndex.get(ds);
+      v = idx == null ? { edBreach: false, totalBreach: false } : weeklyCapBreachAt(cachedDailyContrib(r), idx, shiftId);
+      c.weeklyCaps.set(key, v);
+    }
     return v;
   };
   const cachedCircadianViolations = (r, ds, shiftId) => {
@@ -4858,8 +4969,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // CLAUDE.md) — under any policy except 'off' this is now a hard exclusion, not a score()
     // preference (which would let a hard validateAll error slip into generateScheduleBest's
     // error-count ranking). 'off' is a full escape hatch, matching validateAll/cellViolations.
+    // jeopardyWindowConflict extends this beyond same-day: a jeopardy call on D also blocks an
+    // overnight STARTING ds that runs past 07:00 into D when ds+1 is the resident's jeopardy date
+    // (chief-decided 2026-09-26 policy — see lib/jeopardyWindow.js). Same reason id as before
+    // ('jeopardyConflict') — the reason is now just wider, not renamed.
     if (jeoPolicy !== 'off') {
-      pool = pool.filter(r => !isJeopardyDate(r, ds, block.jeopardySchedule));
+      pool = pool.filter(r => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule));
       if (!pool.length) return { candidates: [], reason: 'jeopardyConflict' };
     }
     pool = pool.filter(r => target[r.id] != null);
@@ -4880,6 +4995,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       pool = pool.filter(r => maxRollingWindowHoursFor(cachedTimedFor(r.id), { dateMs: dsMs, durationH: shiftDurationH }) <= ROLLING_WINDOW_CAP_H);
     }
     if (!pool.length) return { candidates: [], reason: 'hoursCapped' };
+    // ACGME EM 6.17.a.3 weekly caps (60 scheduled ED h / 72 total h per rolling 7 days) — EM
+    // Home/BAMC residents on a schedulable EM rotation only, always hard (memory
+    // acgme-em-work-hours). Off-service residents keep only the 80h/4wk rule above, so they're
+    // never excluded by this pair of filters (isEmResident/isSchedulable short-circuits false).
+    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).edBreach));
+    if (!pool.length) return { candidates: [], reason: 'edHoursCapped' };
+    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).totalBreach));
+    if (!pool.length) return { candidates: [], reason: 'totalHoursCapped' };
     if (isJcDay(ds) && shiftOverlapsJC(shift.id)) {
       pool = pool.filter(r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY);
       if (!pool.length) return { candidates: [], reason: 'jcCapped' };
@@ -4916,10 +5039,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       pool = pool.filter(r => !(r.category === 'EM_BAMC' && bamcWedNightCount[r.id] >= 1));
       if (!pool.length) return { candidates: [], reason: 'bamcWedNightCapped' };
     }
-    if (enforceRest) {
-      pool = pool.filter(r => cachedRestViolations(r.id, ds, shift.id).length === 0);
-      if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
-    }
+    // Rest >= shift-length (ACGME 6.17.a.2) is now ALWAYS enforced — no more appSettings.enforceRest
+    // gate (memory acgme-em-work-hours: "rest >= shift length between shifts, always"). The old
+    // toggle key is still read (harmlessly ignored) so an old backup with enforceRest:false doesn't
+    // throw; see DEFAULT_APP_SETTINGS.
+    pool = pool.filter(r => cachedRestViolations(r, ds, shift.id).length === 0);
+    if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
     // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
     // 24h post-night rest preference (rule: 'postNightRest') is a ranked soft rule — violators
     // stay in the pool as `restFallback` rather than being excluded; fillDayPass decides whether
@@ -6433,10 +6558,20 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     const byDate = {};
     for (const ds of dates) {
       if (jeoPolicy !== 'off' && isJeopardyDate(r, ds, block.jeopardySchedule)) continue;
-      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, {
+      let list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, {
         blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds),
         finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule,
       });
+      // Jeopardy WINDOW (2026-09-26 policy) — payload gotcha (CLAUDE.md): candidatePool's own
+      // jeopardyWindowConflict exclusion must be mirrored here too. Per-SHIFT, not per-date, unlike
+      // the same-day skip above: an overnight starting `ds` that runs past 07:00 into TOMORROW's
+      // jeopardy call is blocked, but `ds`'s other shifts are unaffected.
+      if (jeoPolicy !== 'off') {
+        const nextDs = toDateStr(addDays(parseDate(ds), 1));
+        if (isJeopardyDate(r, nextDs, block.jeopardySchedule)) {
+          list = list.filter(sidCandidate => !shiftOverlapsJeopardyWindow(sidCandidate, ds, nextDs));
+        }
+      }
       if (list.length) byDate[ds] = list;
     }
     eligible[r.id] = byDate;
@@ -6690,7 +6825,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     preferences,
     rulePriority: normalizeRulePriority(appSettings.rulePriority),
     settings: {
-      enforceRest: appSettings.enforceRest !== false,
+      // Always true now (2026-09-26 policy: rest >= shift length is ACGME-hard, no more toggle) —
+      // sent as a literal so an older solver build that still reads this flag keeps enforcing rest
+      // rather than reading a stale appSettings.enforceRest:false from an old backup.
+      enforceRest: true,
       enforceWeekendOff: appSettings.enforceWeekendOff !== false,
     },
     traumaNightShiftIds,
@@ -6986,7 +7124,7 @@ export function pickEngineResult(solverRes, localRes, args) {
 // ─── WHAT-IF OPTIMIZATION SWEEP ────────────────────────────────────────────────────────────
 // Decision-support sweep, ported from sibling em-scheduler's `runOptimizationAnalysis`: generates
 // alternate schedule candidates under variant configurations (rulePriority reorderings, extra
-// seed batches, enforceRest toggled off) and scores EVERY one of them — baseline included —
+// seed batches) and scores EVERY one of them — baseline included —
 // under one fixed reference config, the chief's CURRENT appSettings, using the exact same
 // `scoreGenerationResult` generateScheduleBest itself uses for its own best-of-N selection. A
 // variant can never "win" by demoting the rule it violates, because the reference config (and
@@ -7048,11 +7186,10 @@ export async function runOptimizationSweep(args, {
     qualityVector: computeQualityVector(baselineMetrics, referenceRulePriority),
   };
 
-  // Variant list: every non-current rulePriority ordering, a handful of alternative-seed draws
-  // (same rules, different random restart — useful when a tie was broken unluckily), and, when
-  // the chief has the rest-hours soft check enabled, one variant with it off (the one other
-  // chief-configurable knob in this generator's config that trades off against coverage/rest —
-  // see CLAUDE.md "Soft Rule Priority"/`enforceRest`).
+  // Variant list: every non-current rulePriority ordering, plus a handful of alternative-seed
+  // draws (same rules, different random restart — useful when a tie was broken unluckily). The
+  // old "rest-hours soft check disabled" variant is gone — rest >= shift length is now ACGME-hard
+  // and always on (2026-09-26 policy), so there's no longer a legal "off" state to sweep.
   const ruleVariants = buildRulePriorityVariants(referenceRulePriority).map((v, i) => ({
     id: `rule-${i}`, kind: 'rules', rulePriority: v.rulePriority,
     label: `Rule order: ${v.rulePriority.map(id => SOFT_RULES.find(r => r.id === id)?.label || id).join(' → ')}`,
@@ -7066,11 +7203,7 @@ export async function runOptimizationSweep(args, {
       variantArgs: args, seed: (seedBase + (100 + k) * 0x9E3779B9) >>> 0,
     };
   });
-  const restVariants = appSettings?.enforceRest !== false ? [{
-    id: 'rest-off', kind: 'restToggle', label: 'Rest-hours soft check disabled',
-    variantArgs: { ...args, appSettings: { ...appSettings, enforceRest: false } },
-  }] : [];
-  const allVariants = [...ruleVariants, ...seedVariants, ...restVariants];
+  const allVariants = [...ruleVariants, ...seedVariants];
 
   const candidates = [];
   let truncated = false;
@@ -7173,6 +7306,8 @@ const UNDER_TARGET_BLOCK_LABELS = {
   nightCapped:          'night cap for the block',
   nightStintCapped:     'night-run limit',
   hoursCapped:          '80-hour limit',
+  edHoursCapped:        'ACGME 60-hour/week ED limit',
+  totalHoursCapped:     'ACGME 72-hour/week total limit',
   traumaCapped:         'trauma cap',
   traumaRunCapped:      'trauma-nights-per-run cap',
   halfTargetMet:        'trauma/peds split sub-target met',
@@ -7189,7 +7324,7 @@ const KNOWN_UNFILLED_REASONS = new Set([
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
   'nightCapped', 'nightStintCapped', 'jcCapped', 'restProtected', 'seniorProtected',
   'pgy3Required', 'pgy2Required', 'hoursCapped', 'bamcWedNightCapped', 'jeopardyConflict',
-  'traumaRunCapped',
+  'traumaRunCapped', 'edHoursCapped', 'totalHoursCapped',
 ]);
 export function summarizeGenerationReport(report, appSettings = {}, blockStart = null) {
   const byShift = {};
@@ -7281,6 +7416,8 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.pgy3Required) pushRec('pgy3Required', `No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, or during a conference that takes PGY-3s away (ACEP), PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
     if (reasonCounts.pgy2Required) pushRec('pgy2Required', `No EM Home PGY-2 (or, on the block's own PGY-2 Wellness Wednesday, or during a conference that takes PGY-2s away (AAEM), PGY-3 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
     if (reasonCounts.hoursCapped) pushRec('hoursCapped', `Eligible residents were already within reach of the ACGME 80h/4-week rolling average for this block — cover ${label} with a resident further from the cap, or assign manually.`);
+    if (reasonCounts.edHoursCapped) pushRec('edHoursCapped', `Eligible residents were already within reach of the ACGME ${ED_WEEKLY_CAP_H}-scheduled-ED-hour/rolling-7-day cap (6.17.a.3) — cover ${label} with a resident further from the cap, or assign manually.`);
+    if (reasonCounts.totalHoursCapped) pushRec('totalHoursCapped', `Eligible residents were already within reach of the ACGME ${TOTAL_WEEKLY_CAP_H}-total-hour/rolling-7-day cap (ED + Grand Rounds/Journal Club, 6.17.a.3) — cover ${label} with a resident further from the cap, or assign manually.`);
     if (reasonCounts.bamcWedNightCapped) pushRec('bamcWedNightCapped', `Eligible EM BAMC residents had already worked their one Wednesday-night shift this block (BAMC allows at most one — runs into Thursday GR) — cover ${label} with a different resident.`);
     if (reasonCounts.jeopardyConflict) pushRec('jeopardyConflict', `Every eligible resident for ${label} was on jeopardy call that date — a jeopardy call may never double as a clinical shift. Cover ${label} with a resident off jeopardy that day, or reassign the call.`);
     // Generic fallback for a reason string this function doesn't otherwise know about — notably
@@ -12982,8 +13119,17 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   if (policy === 'warn' && isJeopardyDate(resident, dateStr, block.jeopardySchedule)) {
     vs.push({ message: 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day', level: severityFor('jeopardyCollision', 'validator'), rule: 'jeopardyCollision' });
   }
-  // 3. Rest-period check against neighbouring shifts in the schedule (legal rest hours — always hard)
-  vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}).map(message => ({ message, level: 'error' })));
+  // 2b. Jeopardy WINDOW (2026-09-26 policy) — placing an overnight on `dateStr` that runs past
+  // 07:00 into TOMORROW's jeopardy call is blocked too, not just a same-day collision above. See
+  // lib/jeopardyWindow.js / CLAUDE.md.
+  if (policy !== 'off') {
+    const nextDs = toDateStr(addDays(parseDate(dateStr), 1));
+    if (isJeopardyDate(resident, nextDs, block.jeopardySchedule) && shiftOverlapsJeopardyWindow(sid, dateStr, nextDs)) {
+      vs.push({ message: `Overnight shift running past 07:00 into ${formatDisplayDate(nextDs)}'s jeopardy call — jeopardy must start the day non-clinical`, level: severityFor('jeopardyWindow', 'validator'), rule: 'jeopardyWindow' });
+    }
+  }
+  // 3. Rest-period check against neighbouring shifts in the schedule (ACGME 6.17.a.2 — always hard)
+  vs.push(...checkRestViolations(resident, dateStr, sid, block.schedule || {}).map(message => ({ message, level: severityFor('restShiftLength', 'validator'), rule: 'restShiftLength' })));
   // 4. Circadian rules (night-run length, post-night rest before days, eve→day turnaround) — each
   // already carries its own level/rule (postNightRest is 'warn', everything else severityFor'd).
   const nightOnly = isNightOnlyResident(resident, eligOverrides);
@@ -13026,6 +13172,19 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     const { maxWeeklyAvg } = weeklyHourStats(hypRow);
     if (maxWeeklyAvg > 80)
       vs.push({ message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`, level: severityFor('rolling80h', 'validator'), rule: 'rolling80h' });
+  }
+
+  // 7b. ACGME EM 6.17.a.3 weekly caps (60 ED / 72 total per rolling 7 days) — EM Home/BAMC on a
+  // schedulable EM rotation only, same worstRollingWeek core validateAll uses retrospectively.
+  if (isEmResident(resident) && isSchedulable(resident)) {
+    const grDowHere = grWorkDow(resident);
+    const worst = worstRollingWeek(resident, hypRow, prevTail[resident.id] || null, grDowHere);
+    if (worst) {
+      if (worst.edHours > ED_WEEKLY_CAP_H)
+        vs.push({ message: `${Math.round(worst.edHours)} scheduled ED hours in the 7 days starting ${formatDisplayDate(worst.edStartDate)} — ACGME caps this at ${ED_WEEKLY_CAP_H}`, level: severityFor('edWeekly60', 'validator'), rule: 'edWeekly60' });
+      if (worst.totalHours > TOTAL_WEEKLY_CAP_H)
+        vs.push({ message: `${Math.round(worst.totalHours)} total hours (ED + Grand Rounds/Journal Club) in the 7 days starting ${formatDisplayDate(worst.totalStartDate)} — ACGME caps this at ${TOTAL_WEEKLY_CAP_H}`, level: severityFor('totalWeekly72', 'validator'), rule: 'totalWeekly72' });
+    }
   }
 
   if (shift?.type === 'night' && !nightOnly) {
@@ -13155,8 +13314,9 @@ function ShiftOverlapHoverCard({ anchorRect, shiftId, dateStr, overlap }) {
 
 // Tier-aware classification for hand-edit surfaces (picker/drag-drop/inspector) — see rulePolicy.js
 // (chief policy, 2026-09-26). `blocking`: acgme/program-tier violations, or any rule-less hard error
-// (an overlap/legal-rest violation has no rule id yet — R3 — but severityFor's own "unrecognized id
-// defaults to error" already treats it the same way) — no "place/move anyway" path exists for these.
+// (a raw shift overlap has no rule id — severityFor's own "unrecognized id defaults to error"
+// already treats it the same way; the ordinary rest-length violation DOES carry a rule id now,
+// 'restShiftLength', tier acgme — R3) — no "place/move anyway" path exists for any of these.
 // `overridable`: override-tier — the generator never breaks these, but a hand edit may, behind an
 // explicit confirm step that gets stamped into block.overrideLog (see withOverrideEvents/
 // updateBlockTracked). `advisory`: everything else (postNightRest and other untiered soft warnings)
@@ -15284,7 +15444,9 @@ function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onAppl
     const map = {
       rules: ['Rule order', 'bg-blue-100 text-blue-800'],
       seed: ['Random draw', 'bg-purple-100 text-purple-800'],
-      restToggle: ['Rest-hours off', 'bg-amber-100 text-amber-800'],
+      // 'restToggle' variant kind removed (2026-09-26 policy: rest >= shift length is always on now,
+      // no legal "off" state to sweep) — map[kind] falls back to the generic gray chip for any
+      // stray old id, so this stays harmless if ever seen again.
     };
     const [label, cls] = map[kind] || [kind, 'bg-gray-100 text-gray-700'];
     return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${cls}`}>{label}</span>;
@@ -17319,7 +17481,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           {/* Jeopardy policy */}
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Jeopardy Call Handling</label>
-            <p className="text-xs text-gray-400 mb-2">What happens when a resident has a shift on a jeopardy call date</p>
+            <p className="text-xs text-gray-400 mb-2">What happens when a resident has a shift overlapping a jeopardy call's window (07:00 the call date through 07:00 the next day — an overnight into the call date counts too, not just a shift that same day)</p>
             <div className="flex gap-2 flex-wrap">
               {[
                 { v: 'block', l: 'Block',  d: 'Day is unschedulable (like a day off)' },
@@ -17348,15 +17510,14 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </label>
           )}
 
-          {/* Rest rule */}
-          <label className="flex items-start gap-2.5 cursor-pointer select-none">
-            <input type="checkbox" checked={appSettings.enforceRest !== false}
-              onChange={e=>updS('enforceRest', e.target.checked)} className="rounded mt-0.5"/>
+          {/* Rest rule — no longer a toggle (2026-09-26 policy: ACGME 6.17.a.2 is always hard) */}
+          <div className="flex items-start gap-2.5">
+            <Lock size={14} className="text-gray-400 mt-0.5 shrink-0" />
             <span>
-              <span className="block text-xs font-semibold text-gray-700">Enforce rest-period rule</span>
-              <span className="block text-xs text-gray-400">After a shift of H hours, the resident needs ≥ H hours off before the next shift (e.g. 12h Trauma → 12h rest)</span>
+              <span className="block text-xs font-semibold text-gray-700">Rest between shifts is always enforced</span>
+              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured from the end of Grand Rounds instead of the shift's own end when GR is attended that day. No longer a setting — this can't be turned off.</span>
             </span>
-          </label>
+          </div>
 
           {/* Trauma cap */}
           <div className="flex items-center gap-3">

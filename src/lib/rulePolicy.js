@@ -23,6 +23,12 @@ export const RULE_POLICY = {
   rolling80h: { tier: 'acgme', label: '80h/4-week rolling average' },
   vacation: { tier: 'acgme', label: 'Shift scheduled on a vacation date' },
   rotationEligibility: { tier: 'acgme', label: 'Not eligible for this rotation/PGY/day' },
+  // R3 (2026-09-26 policy, memory acgme-em-work-hours): EM Program Requirements 6.17.a — EM
+  // residents (EM_HOME/EM_BAMC) on a schedulable EM rotation only; off-service residents keep
+  // rolling80h only. See src/lib/acgmeHours.js.
+  restShiftLength: { tier: 'acgme', label: 'Rest less than the length of the shift just worked (6.17.a.2)' },
+  edWeekly60: { tier: 'acgme', label: 'More than 60 scheduled ED hours in a rolling 7 days (6.17.a.3)' },
+  totalWeekly72: { tier: 'acgme', label: 'More than 72 total hours in a rolling 7 days (6.17.a.3)' },
 
   // ─── Tier: program ────────────────────────────────────────────────────────
   dayToNextDayEve: { tier: 'program', label: 'Day shift followed by an evening shift the next day' },
@@ -31,6 +37,10 @@ export const RULE_POLICY = {
   jcMaxPerAy: { tier: 'program', label: 'Journal Club worked more than 3x this academic year' },
   grLectureEveNight: { tier: 'program', label: 'Evening/night shift the day before own Grand Rounds lecture' },
   jeopardyCollision: { tier: 'program', label: 'Jeopardy call collides with a clinical shift' },
+  // R4 (2026-09-26 policy): a jeopardy call on date D blocks the whole [D 07:00, D+1 07:00) window,
+  // not just date D — see src/lib/jeopardyWindow.js. Distinct from jeopardyCollision (same-day
+  // clinical shift on D itself, which stays its own rule id/message).
+  jeopardyWindow: { tier: 'program', label: 'Overnight shift running into a jeopardy call window' },
 
   // ─── Tier: override ───────────────────────────────────────────────────────
   nightsTotalBlock: { tier: 'override', label: 'More than 6 night shifts total this block' },
