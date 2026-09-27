@@ -167,6 +167,28 @@ describe('labelForIssueGroup', () => {
     expect(labelForIssueGroup(key, [issue])).toBe('POD-N above maximum');
     expect(labelForIssueGroup(key, [issue], { 'POD-N': 'POD Night' })).toBe('POD Night above maximum');
   });
+
+  // The EM-count and PGY-gating senior-composition warns (validateAll's 2b-1/2b-2 checks, see
+  // ResidentScheduler.jsx) carry no `rule` id, so the fallback template used to leak "EM PGY-#" —
+  // every PGY digit stripped to a bare hash — as the actual group title a chief reads.
+  it('builds a plain-language label for the EM-count composition warn, never the numeral-stripped fallback', () => {
+    const issue = warn({ residentId: null, shiftId: 'POD-D',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    const key = groupKeyForIssue(issue);
+    const label = labelForIssueGroup(key, [issue], { 'POD-D': 'POD Day' });
+    expect(label).toBe('POD Day — not enough EM residents');
+    expect(label).not.toContain('PGY');
+    expect(label).not.toMatch(/#/);
+  });
+
+  it('builds a plain-language label for the PGY-gating warn, never a raw "EM PGY-#" fragment', () => {
+    const issue = warn({ residentId: 'g1', shiftId: 'POD-D',
+      message: "EM PGY-2 on POD Day (Mon 7/6) though an EM PGY-3 already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-3 for extra POD slots when one exists)" });
+    const key = groupKeyForIssue(issue);
+    const label = labelForIssueGroup(key, [issue], { 'POD-D': 'POD Day' });
+    expect(label).toBe('POD Day — junior PGY covered a slot a senior already filled');
+    expect(label).not.toMatch(/PGY-#|PGY-\d/);
+  });
 });
 
 describe('groupKeyForIssue', () => {
@@ -187,6 +209,16 @@ describe('groupKeyForIssue', () => {
 
   it('tolerates a null issue', () => {
     expect(groupKeyForIssue(null)).toBe('');
+  });
+
+  it('keys EM-count and PGY-gating warns by shiftId, same as coverage, distinct from each other', () => {
+    const emCount = warn({ residentId: null, shiftId: 'POD-D',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    const pgyGate = warn({ residentId: 'g1', shiftId: 'POD-D',
+      message: "EM PGY-2 on POD Day (Mon 7/6) though an EM PGY-3 already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-3 for extra POD slots when one exists)" });
+    expect(groupKeyForIssue(emCount)).toBe('emCount:POD-D');
+    expect(groupKeyForIssue(pgyGate)).toBe('pgyGate:POD-D');
+    expect(groupKeyForIssue(emCount)).not.toBe(groupKeyForIssue(pgyGate));
   });
 });
 
