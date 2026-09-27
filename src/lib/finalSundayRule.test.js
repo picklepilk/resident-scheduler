@@ -143,10 +143,15 @@ describe('validateAll — final-Sunday overnight transition', () => {
     return issues.filter(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY);
   }
 
-  it('errors when the resident is known to NOT continue on a schedulable EM rotation', () => {
+  // 2026-09-26 policy: final-Sunday overnight leaving the ED is chief-overridable-by-hand
+  // ('finalSundayOvernight', rulePolicy.js tier 'override') — the generator still never places one
+  // (getEligibleShifts strips night eligibility here — see the eligibility tests above), so a
+  // hand-built/hand-edited schedule gets a flagged warn, not a hard error.
+  it('flags (does not hard-error) when the resident is known to NOT continue on a schedulable EM rotation', () => {
     const { fixture, papa } = papaFixture();
     const issues = runValidate(fixture, papa, { [FINAL_SUNDAY]: 'TRAUMA-N' }, [nextSnapshot('METRO')]);
-    expect(issues.some(i => i.level === 'error' && /Final-Sunday overnight/.test(i.message))).toBe(true);
+    expect(issues.some(i => i.level === 'warn' && i.rule === 'finalSundayOvernight' && /Final-Sunday overnight/.test(i.message))).toBe(true);
+    expect(issues.some(i => i.level === 'error' && /Final-Sunday overnight/.test(i.message))).toBe(false);
   });
 
   it('does NOT error when the resident continues on a schedulable EM rotation next block', () => {

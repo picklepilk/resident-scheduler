@@ -208,3 +208,64 @@ describe('findAssignOptions', () => {
     expect(out).toEqual([]);
   });
 });
+
+// R6 (rule-policy plan, 2026-09-26): a candidate whose only soft violations are override-tier
+// rulePolicy ids is still OFFERED (never hard-excluded — that's what `hardViolations`/level:'error'
+// already does, unaffected by this), but tagged `needsOverride: true` and ranked LAST, behind every
+// clean-or-advisory-only candidate. 'nightsTotalBlock' below is a real rulePolicy.js override-tier
+// id; a rule-less warn (no `rule` field, e.g. postNightRest today) stays purely advisory.
+describe('tier-aware ranking (needsOverride) — R6', () => {
+  it('findGiveCandidates: an override-tier candidate is tagged needsOverride and ranked after a clean one', () => {
+    const schedule = { A: { d1: 'POD-D' }, B: {}, C: {} };
+    const isEligible = makeEligible({ B: new Set(['POD-D']), C: new Set(['POD-D']) });
+    const softs = { B: [{ level: 'warn', rule: 'nightsTotalBlock', message: 'over cap' }], C: [] };
+    const out = findGiveCandidates({
+      residentId: 'A', dateStr: 'd1', shiftId: 'POD-D', residents: RESIDENTS, schedule, lockedCells: {},
+      isEligible, hardViolations: () => [], softViolations: (rid) => softs[rid],
+      targetInfo: () => ({ count: 10, target: 20 }),
+    });
+    expect(out.map(c => c.residentId)).toEqual(['C', 'B']);
+    expect(out.find(c => c.residentId === 'B').needsOverride).toBe(true);
+    expect(out.find(c => c.residentId === 'C').needsOverride).toBe(false);
+  });
+
+  it('findGiveCandidates: an advisory (rule-less) warn does NOT count as needsOverride', () => {
+    const schedule = { A: { d1: 'POD-D' }, B: {} };
+    const isEligible = makeEligible({ B: new Set(['POD-D']) });
+    const out = findGiveCandidates({
+      residentId: 'A', dateStr: 'd1', shiftId: 'POD-D', residents: RESIDENTS, schedule, lockedCells: {},
+      isEligible, hardViolations: () => [], softViolations: () => [{ level: 'warn', message: 'soft rule flagged' }],
+      targetInfo: () => ({ count: 10, target: 20 }),
+    });
+    expect(out[0].needsOverride).toBe(false);
+  });
+
+  it('findSwapCandidates: an override-tier candidate on either side is tagged and ranked last', () => {
+    const schedule = { A: { d1: 'POD-D' }, B: { d1: 'MT-D' }, C: { d1: 'MT-D' } };
+    const isEligible = makeEligible({
+      B: new Set(['POD-D']), C: new Set(['POD-D']), A: new Set(['MT-D']),
+    });
+    const softs = { B: [{ level: 'warn', rule: 'traumaRunCap' }], C: [] };
+    const out = findSwapCandidates({
+      residentId: 'A', dateStr: 'd1', shiftId: 'POD-D', residents: RESIDENTS, schedule, lockedCells: {},
+      isEligible, hardViolations: () => [], softViolations: (rid) => softs[rid] || [],
+      targetInfo: () => ({ count: 10, target: 20 }),
+    });
+    expect(out.map(c => c.residentId)).toEqual(['C', 'B']);
+    expect(out.find(c => c.residentId === 'B').needsOverride).toBe(true);
+  });
+
+  it('findAssignOptions: an override-tier shift is tagged and ranked after every non-override option, even one with a bigger shortfall', () => {
+    const coverage = {
+      'POD-D': { count: 0, min: 2, max: 2 },  // biggest shortfall, but override-tier
+      'MT-D': { count: 1, min: 2, max: 2 },   // smaller shortfall, clean
+    };
+    const softs = { 'POD-D': [{ level: 'warn', rule: 'podPgy3Composition' }], 'MT-D': [] };
+    const out = findAssignOptions({
+      residentId: 'A', dateStr: 'd1', candidateShiftIds: ['POD-D', 'MT-D'], schedule: {}, lockedCells: {},
+      hardViolations: () => [], softViolations: (_rid, _ds, sid) => softs[sid] || [], coverageFor: (sid) => coverage[sid],
+    });
+    expect(out.map(c => c.shiftId)).toEqual(['MT-D', 'POD-D']);
+    expect(out.find(c => c.shiftId === 'POD-D').needsOverride).toBe(true);
+  });
+});

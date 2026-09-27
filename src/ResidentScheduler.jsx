@@ -50,6 +50,7 @@ import { deriveBlockSteps } from './lib/blockStatus.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
+import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -1869,7 +1870,13 @@ const SOFT_RULES = [
   { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day or evening shift following a night shift.', blocksExport: true },
 ];
 export const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
-const EXPORT_BLOCKING_RULE_IDS = new Set(SOFT_RULES.filter(r => r.blocksExport).map(r => r.id));
+// Every override-tier rulePolicy id is, by chief policy, "flagged" — it must gate export exactly
+// like the pre-existing postNightRest soft rule already does, so a chief confirms it before
+// finalizing rather than discovering it only after export. See rulePolicy.js/RULE_POLICY.
+const EXPORT_BLOCKING_RULE_IDS = new Set([
+  ...SOFT_RULES.filter(r => r.blocksExport).map(r => r.id),
+  ...OVERRIDE_TIER_RULE_IDS,
+]);
 // Accepts an untrusted persisted value (old backup, hand-edited storage) and returns a valid,
 // complete ordering: unknown ids dropped, missing ids appended in default order.
 export function normalizeRulePriority(arr) {
@@ -1954,11 +1961,11 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     const runAfter = nightRunAfter(rs, dateStr);
     const totalRun = runBefore + 1 + runAfter;
     if (totalRun > NIGHT_RULES.maxRun)
-      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: 'error' });
+      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax' });
     if (!nightOnly) {
       const totalNights = countNightsInSchedule(rs) + 1;
       if (totalNights > NIGHT_RULES.maxPerBlock)
-        violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
+        violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator'), rule: 'nightsTotalBlock' });
     }
     // Mirror of the 'day' branch below, but looking forward — a fill pass can place this night
     // shift AFTER a day shift already sits on dateStr+1/+2 (e.g. the generator's optional pass
@@ -2001,12 +2008,12 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
   if (newType === 'eve') {
     const nextSid = rs[toDateStr(addDays(parseDate(dateStr), 1))];
     if (SHIFT_MAP[nextSid]?.type === 'day')
-      violations.push({ message: 'Evening shift immediately followed by a day shift the next day', level: 'error' });
+      violations.push({ message: 'Evening shift immediately followed by a day shift the next day', level: severityFor('eveToNextDayDay', 'validator'), rule: 'eveToNextDayDay' });
   }
   if (newType === 'day') {
     const prevSid = rs[toDateStr(addDays(parseDate(dateStr), -1))];
     if (SHIFT_MAP[prevSid]?.type === 'eve')
-      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: 'error' });
+      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: severityFor('dayToNextDayEve', 'validator'), rule: 'dayToNextDayEve' });
   }
 
   return violations;
@@ -2209,7 +2216,8 @@ export function sixDayRunRestViolation(rs, resident, dateStr, sid, prevRs = null
   if (gapH >= NIGHT_RULES.postNightDayRestH) return null;
   return {
     message: `Only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after a ${runLen}-day consecutive work run (last worked ${formatDisplayDate(lastWorkedDs)}) — requires ${NIGHT_RULES.postNightDayRestH}h before the next shift`,
-    level: 'error',
+    level: severityFor('sixDayRunRest', 'validator'),
+    rule: 'sixDayRunRest',
     // gapH/runLen exposed (in addition to message/level) so sixDayRunRestViolationAhead below can
     // build its own forward-facing message instead of parsing this one's prose.
     gapH, runLen,
@@ -2256,7 +2264,8 @@ export function sixDayRunRestViolationAhead(rs, resident, dateStr, sid, prevRs =
   if (sixDayRunRestViolation(rs, resident, laterDs, laterSid, prevRs, bounds, anchorFn)) return null;
   return {
     message: `Would leave the already-scheduled ${laterSid} on ${formatDisplayDate(laterDs)} with only ${withPlacement.gapH % 1 === 0 ? withPlacement.gapH : withPlacement.gapH.toFixed(1)}h rest after the ${withPlacement.runLen}-day consecutive work run this placement creates — requires ${NIGHT_RULES.postNightDayRestH}h`,
-    level: 'error',
+    level: severityFor('sixDayRunRest', 'validator'),
+    rule: 'sixDayRunRest',
   };
 }
 // The {min,max} bounds a streak walk for this block should respect (see isStreakWorkDay) — max is
@@ -3670,6 +3679,55 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   return eligible;
 }
 
+// Explains WHY getEligibleShifts excludes `shiftId` for `resident` on `dateStr`, tagged with a
+// rulePolicy id/tier so callers can grade severity instead of treating every ineligibility as an
+// unconditional hard block (see rulePolicy.js — a hand-edit surface must still BLOCK an acgme/
+// program-tier reason but may offer an override-tier one behind a confirm step). Reuses the same
+// shared predicates getEligibleShifts itself calls (isAvailableOnDate, isSchedulable,
+// shiftBlockedByRestrictions, effectiveWellnessWednesdayDate, stripPedGuardedShifts) — this is a
+// re-sequencing of those checks for diagnosis, not a second implementation of any of them.
+// Returns null when the shift IS eligible; otherwise { rule, tier, label } for the single most
+// specific reason (checked in roughly the same precedence order getEligibleShifts applies its own
+// filters, so the first true reason here is the one that actually explains the exclusion). Every
+// gate this function doesn't have a named policy id for (day-type restrictions, special-day lists,
+// shift gates, the Peds/Trauma half split, the 12h window swap, JC-presenter stripping) falls
+// through to the generic 'rotationEligibility' (acgme tier, always hard) — the same safe default
+// vacation/rotation eligibility already use, per chief policy ("Vacation and rotation eligibility
+// stay error").
+export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
+  if (getEligibleShifts(resident, dateStr, ctx.specialDays || {}, ctx.eligOverrides || {}, ctx.appSettings || {}, ctx.dayRules || {}, ctx).includes(shiftId)) return null;
+
+  const dow = parseDate(dateStr).getDay();
+  const type = SHIFT_MAP[shiftId]?.type;
+  const appSettings = ctx.appSettings || {};
+
+  if (!isSchedulable(resident)) return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+  if ((resident.vacationDates || []).includes(dateStr)) return { rule: 'vacation', tier: 'acgme', label: RULE_POLICY.vacation.label };
+  if ((resident.approvedDatesOff || []).includes(dateStr)) return { rule: 'approvedDayOff', tier: 'override', label: RULE_POLICY.approvedDayOff.label };
+  if (!isAvailableOnDate(resident, dateStr)) return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+  if ((appSettings.jeopardyPolicy ?? 'warn') === 'block' && isJeopardyDate(resident, dateStr, ctx.jeopardySchedule))
+    return { rule: 'jeopardyCollision', tier: 'program', label: RULE_POLICY.jeopardyCollision.label };
+  if (shiftBlockedByRestrictions(resident, dateStr, shiftId)) {
+    const r = findBlockingRestriction(resident, dateStr, shiftId);
+    return { rule: null, tier: null, label: r ? `Work restriction "${r.label}"` : 'Work restriction' };
+  }
+  if (resident.chiefRole === 'academic' && dow === 2 && ['eve', 'night'].includes(type))
+    return { rule: 'academicChiefTueEveNight', tier: 'override', label: RULE_POLICY.academicChiefTueEveNight.label };
+  const key = `${resident.category}_${resident.pgy}`;
+  if (!stripPedGuardedShifts([shiftId], key).includes(shiftId))
+    return { rule: 'pedNightSwingOwnerGuard', tier: 'override', label: RULE_POLICY.pedNightSwingOwnerGuard.label };
+  const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(type)
+    ? (getEffectiveDayRules(key, ctx.dayRules || {}).computedDayRules || []).find(c => c.type === 'wellnessWednesday')?.ordinal
+    : null;
+  const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, ctx.blockStart, ctx.dayRules, appSettings) : null;
+  if (wwDate && dateStr === wwDate) return { rule: 'wellnessWednesday', tier: 'override', label: RULE_POLICY.wellnessWednesday.label };
+  if ((resident.grLectureDates || []).includes(toDateStr(addDays(parseDate(dateStr), 1))) && ['eve', 'night'].includes(type))
+    return { rule: 'grLectureEveNight', tier: 'program', label: RULE_POLICY.grLectureEveNight.label };
+  if (ctx.finalSunday && dateStr === ctx.finalSunday && isNightShiftId(shiftId) && ctx.nextRotation?.known && !ctx.nextRotation.continuingEM)
+    return { rule: 'finalSundayOvernight', tier: 'override', label: RULE_POLICY.finalSundayOvernight.label };
+  return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+}
+
 // Group residents' assignments by (date, shift-id) — considering only residents matching rowFilter
 // and shifts matching shiftFilter — and push one issue per resident wherever more than one lands on
 // the same (date, shift). Shared by the trauma single-resident rule and the no-two-interns rule so
@@ -3724,16 +3782,17 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     const nextRotation = nextRotationFromSnapshot(resident, nextBlockSnap);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
-      // Approved day off — highest-priority violation
+      // Approved day off — overridable-by-hand tier (chief policy 2026-09-26): the generator never
+      // places here, but a hand edit may, behind a confirm — see rulePolicy.js.
       if ((resident.approvedDatesOff || []).includes(ds)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
-          message: 'Shift scheduled on an approved day off', level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'approvedDayOff',
+          message: 'Shift scheduled on an approved day off', level: severityFor('approvedDayOff', 'validator') });
         continue;
       }
-      // Vacation — same severity as approved day off, distinct wording
+      // Vacation — ACGME/legal tier, always hard, distinct wording from approved day off above.
       if ((resident.vacationDates || []).includes(ds)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
-          message: 'Shift scheduled while resident is on vacation this date', level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'vacation',
+          message: 'Shift scheduled while resident is on vacation this date', level: severityFor('vacation', 'validator') });
         continue;
       }
       // Jeopardy call date — union of resident.jeopardyDates and block.jeopardySchedule (see
@@ -3742,11 +3801,11 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       // 'block' additionally `continue`s past further eligibility checks for that cell, 'warn'
       // does not. Policy 'off' deliberately remains a full escape hatch — completely silent.
       if (jeopardyPolicy !== 'off' && isJeopardyDate(resident, ds, block.jeopardySchedule)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'jeopardyCollision',
           message: jeopardyPolicy === 'block'
             ? 'Shift scheduled on a jeopardy call date (blocked by Settings)'
             : 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day',
-          level: 'error' });
+          level: severityFor('jeopardyCollision', 'validator') });
         if (jeopardyPolicy === 'block') continue;
       }
       const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
@@ -3772,7 +3831,15 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         else if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
         else if (finalSundayBlocked) msg = 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward';
         else if (!SHIFT_MAP[sid]) msg = 'Unknown shift type';
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg, level: 'error' });
+        // eligibilityBlockReasons re-derives WHY elig excluded sid (same predicates, re-sequenced —
+        // see its own comment) so this shared "not eligible" branch can grade severity by rule tier
+        // instead of always hard-blocking — an override-tier reason (e.g. approved-day-off/PED-guard/
+        // Wellness-Wednesday/academic-chief/final-Sunday) downgrades to a flagged warn; everything
+        // else (vacation, rotation/PGY eligibility) stays a hard error.
+        const reason = eligibilityBlockReasons(resident, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg,
+          level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
+          ...(reason?.rule ? { rule: reason.rule } : {}) });
       } else if (finalSunday && ds === finalSunday && isNightShiftId(sid) && !nextRotation.known) {
         // Next block hasn't been saved/imported yet — can't confirm the resident continues on EM,
         // so this is advisory rather than a hard block (see nextBlockRotationFor).
@@ -3855,8 +3922,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const wedNightCount = Object.entries(rs)
         .filter(([ds, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(ds).getDay() === 3).length;
       if (wedNightCount > 1)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
+          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator') });
     }
 
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
@@ -3895,11 +3962,11 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const traumaHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
       const pedsHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
+          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator') });
       if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
+          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator') });
     }
 
     // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
@@ -3907,8 +3974,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     if (resident.category === 'EM_HOME') {
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator') });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -3946,8 +4013,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const priorDs = toDateStr(addDays(parseDate(grDate), -1));
       const priorSid = rs[priorDs];
       if (priorSid && ['eve', 'night'].includes(SHIFT_MAP[priorSid]?.type))
-        issues.push({ residentId: resident.id, name, dateStr: priorDs, shiftId: priorSid,
-          message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: priorDs, shiftId: priorSid, rule: 'grLectureEveNight',
+          message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: severityFor('grLectureEveNight', 'validator') });
     }
 
     // 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as a
@@ -3963,9 +4030,9 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (runStart == null) return;
         const len = blockDayIndex(runStart, runEnd) + 1;
         if (len > MAX_CONSECUTIVE_WORK_DAYS && runHasShift && runEnd >= block.startDate)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'sixConsecutiveWorkDays',
             message: `${len} consecutive work days (${formatDisplayDate(runStart)}–${formatDisplayDate(runEnd)}) — max ${MAX_CONSECUTIVE_WORK_DAYS}`,
-            level: 'error' });
+            level: severityFor('sixConsecutiveWorkDays', 'validator') });
         runStart = null; runHasShift = false;
       };
       let prevDs = null;
@@ -4035,7 +4102,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // run specifically); this is keyed off the 6-day work streak and applies to any shift type.
     for (const a of assignments) {
       const v = sixDayRunRestViolation(rs, resident, a.ds, a.sid, prevTail[resident.id] || null, streakWalkBounds);
-      if (v) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level });
+      if (v) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level, rule: v.rule });
     }
 
     // ACGME 80-hour rolling 4-week average (advisory — a block shorter than 4 weeks has
@@ -4043,9 +4110,9 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     if (isSchedulable(resident)) {
       const { maxWeeklyAvg } = weeklyHourStats(rs);
       if (maxWeeklyAvg > 80)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'rolling80h',
           message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`,
-          level: 'warn' });
+          level: severityFor('rolling80h', 'validator') });
     }
 
     // Circadian night-run check: consecutive night runs should be 5-6 (isolated <5-night stints
@@ -4060,8 +4127,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (runStart == null) return;
         const touchesEdge = runStart === blockDates[0] || blockDates[runEndIdx] === blockDates[blockDates.length - 1];
         if (runLen > NIGHT_RULES.maxRun)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightRunMax',
+            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator') });
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
           // anchorDate (not dateStr): the run's first date, so a review-panel row can jump straight
           // to it — see reviewPanel.js's issueJumpTarget. Deliberately a SEPARATE field from dateStr:
@@ -4080,8 +4147,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         // 'traumaRunCapped') and the soft traumaSecondInRun/traumaMidRun score() tie-breaks.
         const traumaRunCount = runShiftIds.filter(sid => sid === 'TRAUMA-N').length;
         if (traumaRunCount > 2)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${traumaRunCount} Trauma Night shifts in one consecutive night run (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max 2 per run`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaRunCap',
+            message: `${traumaRunCount} Trauma Night shifts in one consecutive night run (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max 2 per run`, level: severityFor('traumaRunCap', 'validator') });
         const runHasNonTrauma = runShiftIds.some(sid => sid !== 'TRAUMA-N');
         if (traumaRunCount > 0 && runHasNonTrauma) {
           runShiftIds.forEach((sid, idx) => {
@@ -4107,18 +4174,19 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       if (!nOnly) {
         const totalNights = countNightsInSchedule(rs);
         if (totalNights > NIGHT_RULES.maxPerBlock)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightsTotalBlock',
+            message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator') });
         // Nights should land in one clean run per block. A 2nd separate stint is tolerated only
         // when necessary — warned, not blocked. A 3rd+ means nights are genuinely fragmented
-        // across the block instead of clustered, which is now a hard error (chief-directed).
+        // across the block instead of clustered — chief-overridable-by-hand tier (nightStintCount),
+        // not a hard block: the generator still never produces one on its own.
         const runCount = nightRunSegments(rs).length;
         if (runCount === 2)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `2 separate night stints this block — acceptable only if necessary, prefer clustering into one run`, level: 'warn' });
         else if (runCount > 2)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightStintCount',
+            message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: severityFor('nightStintCount', 'validator') });
       }
     }
   }
@@ -4164,8 +4232,14 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (seniorCompositionExempt(shift, ds)) continue; // Grand Rounds Wednesday — see seniorCompositionExempt
         const compSatisfiers = assignedHere.filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
         if (!compSatisfiers.length) {
-          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
-            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: 'error' });
+          // Chief-overridable-by-hand tier (2026-09-26 policy): the generator still never places a
+          // staffed POD/FLEX shift without its primary PGY when a real one is available (see
+          // narrowForSeniority/podWellnessSubstituteAllowed), so this stays a flagged, export-
+          // blocking warn rather than a hard error — see rulePolicy.js podPgy3Composition/
+          // flexSeniorComposition.
+          const compRule = area === 'POD' ? 'podPgy3Composition' : 'flexSeniorComposition';
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: compRule,
+            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: severityFor(compRule, 'validator') });
           // No `continue` here — the EM-count check right below is INDEPENDENT of whether the hard
           // PGY-class requirement passed (a shift staffed entirely off-service fails both at once,
           // and each says something different: "no senior class present" vs. "no EM at all"). Only
@@ -12858,14 +12932,21 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // legal rest hours, max-run/eve-day-turnaround circadian checks) from the ranked postNightRest soft
 // rule ('warn'), so the picker and drag-and-drop UIs can visually tell apart a genuine hard block
 // from a chief-configurable preference, both surfaced the same "Assign/Swap/Move Anyway" way.
-function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}) {
+// allResidents/blocksHistory are OPTIONAL (default []) — every check that needs them (POD/FLEX
+// composition, JC cap) degrades to "skip that one check" rather than throwing when a caller can't
+// supply them yet, matching this file's usual "untrusted/partial shape" posture. Every caller that
+// CAN reach them (ShiftPickerModal, ScheduleGrid's handleDrop/inspectorData) does.
+export function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}, allResidents = [], blocksHistory = []) {
   if (!sid) return [];
   const sd = block.specialDays || {};
   const nextRotation = nextRotationMap[resident.id] || null;
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+  const eligCtx = { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule, appSettings, dayRules, specialDays: sd, eligOverrides };
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, eligCtx);
   const vs = [];
   const finalSundayBlocked = finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation?.known && !nextRotation.continuingEM;
-  // 1. Eligibility check
+  // 1. Eligibility check — eligibilityBlockReasons re-derives WHY (same predicates getEligibleShifts
+  // itself calls, re-sequenced) so this can grade severity by rule tier instead of hard-blocking
+  // every ineligible placement (see rulePolicy.js and validateAll's identical use of this helper).
   if (!eligible.includes(sid)) {
     const dow = parseDate(dateStr).getDay();
     // Not gated on dow===3 here — a chief-picked custom wellnessOverride date can legitimately
@@ -12877,6 +12958,7 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
     const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, block.startDate, dayRules, appSettings) : null;
     const isWwHere = wwDate && dateStr === wwDate;
     const blockingRestriction = !isWwHere ? findBlockingRestriction(resident, dateStr, sid) : null;
+    const reason = eligibilityBlockReasons(resident, dateStr, sid, eligCtx);
     vs.push({ message: isWwHere
       ? (resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
           ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
@@ -12887,7 +12969,9 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
       ? 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)'
       : finalSundayBlocked
       ? 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward'
-      : 'Shift not in eligibility matrix for this resident/day combination', level: 'error' });
+      : 'Shift not in eligibility matrix for this resident/day combination',
+      level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
+      ...(reason?.rule ? { rule: reason.rule } : {}) });
   } else if (finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation && !nextRotation.known) {
     vs.push({ message: 'Final-Sunday overnight — next block not imported — confirm resident continues in the ED before working the final-Sunday overnight', level: 'warn' });
   }
@@ -12896,12 +12980,12 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // exactly as it does for any other error, this just stops the two surfaces from disagreeing.
   const policy = (appSettings || {}).jeopardyPolicy ?? 'warn';
   if (policy === 'warn' && isJeopardyDate(resident, dateStr, block.jeopardySchedule)) {
-    vs.push({ message: 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day', level: 'error' });
+    vs.push({ message: 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day', level: severityFor('jeopardyCollision', 'validator'), rule: 'jeopardyCollision' });
   }
   // 3. Rest-period check against neighbouring shifts in the schedule (legal rest hours — always hard)
   vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}).map(message => ({ message, level: 'error' })));
   // 4. Circadian rules (night-run length, post-night rest before days, eve→day turnaround) — each
-  // already carries its own level/rule (postNightRest is 'warn', everything else 'error').
+  // already carries its own level/rule (postNightRest is 'warn', everything else severityFor'd).
   const nightOnly = isNightOnlyResident(resident, eligOverrides);
   vs.push(...checkCircadianViolations(resident, dateStr, sid, (block.schedule || {})[resident.id] || {}, { nightOnly })
     .map(v => ({ message: v.message, level: v.level, rule: v.rule })));
@@ -12911,21 +12995,105 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   const row = (block.schedule || {})[resident.id] || {};
   const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null, streakBounds(block, prevTail));
   if (len > MAX_CONSECUTIVE_WORK_DAYS) {
-    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: 'error' });
+    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: severityFor('sixConsecutiveWorkDays', 'validator'), rule: 'sixConsecutiveWorkDays' });
   }
   // 6. 24h rest after a maxed 6-consecutive-work-day run (ACGME, hard) — see
   // sixDayRunRestViolation; distinct from the postNightRest soft rule already covered by the
   // circadian checks above.
   const sixDayRunBounds = streakBounds(block, prevTail);
   const sixDayRunV = sixDayRunRestViolation(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
-  if (sixDayRunV) vs.push({ message: sixDayRunV.message, level: sixDayRunV.level });
+  if (sixDayRunV) vs.push({ message: sixDayRunV.message, level: sixDayRunV.level, rule: sixDayRunV.rule });
   // 6b. Forward mirror of the above — this placement can complete a maxed 6-day run that an
   // already-scheduled LATER shift then follows too closely behind (see
   // sixDayRunRestViolationAhead); sixDayRunRestViolation itself only looks backward from dateStr,
   // so without this the picker would let a chief create this violation and only find out later
   // from validateAll.
   const sixDayRunAheadV = sixDayRunRestViolationAhead(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
-  if (sixDayRunAheadV) vs.push({ message: sixDayRunAheadV.message, level: sixDayRunAheadV.level });
+  if (sixDayRunAheadV) vs.push({ message: sixDayRunAheadV.message, level: sixDayRunAheadV.level, rule: sixDayRunAheadV.rule });
+
+  // ─── R2 additions (2026-09-26 policy): the picker/drag-drop/inspector used to be silent on every
+  // one of these — a chief could hand-place a 7th night, a 3rd trauma night in a run, or a POD shift
+  // with no PGY-3, and only find out from validateAll afterward. Every check below simulates `sid`
+  // landing on `dateStr` (hypRow) and reuses the EXACT SAME primitives validateAll's own retrospective
+  // walk already uses for the same rule, so the two surfaces can't disagree.
+  const shift = SHIFT_MAP[sid];
+  const hypRow = { ...row, [dateStr]: sid };
+  const dow = parseDate(dateStr).getDay();
+
+  // 7. ACGME 80h/4-week rolling average — same weeklyHourStats/ROLLING_WINDOW_CAP_H core the
+  // generator's candidatePool hard-excludes on and validateAll reports retrospectively.
+  if (isSchedulable(resident)) {
+    const { maxWeeklyAvg } = weeklyHourStats(hypRow);
+    if (maxWeeklyAvg > 80)
+      vs.push({ message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`, level: severityFor('rolling80h', 'validator'), rule: 'rolling80h' });
+  }
+
+  if (shift?.type === 'night' && !nightOnly) {
+    // 8. Total nights this block (chief-overridable-by-hand — see rulePolicy.js).
+    const totalNights = countNightsInSchedule(hypRow);
+    if (totalNights > NIGHT_RULES.maxPerBlock)
+      vs.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator'), rule: 'nightsTotalBlock' });
+    // 9. Night stint count — a 3rd+ separate run (chief-overridable-by-hand).
+    const runCount = nightRunSegments(hypRow).length;
+    if (runCount > 2)
+      vs.push({ message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: severityFor('nightStintCount', 'validator'), rule: 'nightStintCount' });
+  }
+
+  // 10. Trauma nights per contiguous run — >2 TRAUMA-N in one run (chief-overridable-by-hand).
+  if (sid === 'TRAUMA-N') {
+    const traumaRunCount = traumaNightRunCount(row, dateStr, -1) + 1 + traumaNightRunCount(row, dateStr, 1);
+    if (traumaRunCount > 2)
+      vs.push({ message: `${traumaRunCount} Trauma Night shifts in one consecutive night run — max 2 per run`, level: severityFor('traumaRunCap', 'validator'), rule: 'traumaRunCap' });
+  }
+
+  // 11. POD PGY-3 / FLEX senior composition for THIS date+shift — reuses compositionSatisfies/
+  // seniorCompositionExempt exactly as validateAll's own FLEX/POD composition block (never forked).
+  // allResidents is optional (default []) — skipped (not silently wrong) when a caller can't supply
+  // the roster yet.
+  if (shift && SENIOR_COMPOSITION[shift.area] && !seniorCompositionExempt(shift, dateStr) && allResidents.length) {
+    const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
+    const assignedHere = allResidents.filter(r => (scheduleWithPlacement[r.id] || {})[dateStr] === sid);
+    const satisfied = assignedHere.some(r => compositionSatisfies(shift.area, r, dateStr, block.startDate, appSettings, ayConf));
+    if (!satisfied) {
+      const comp = SENIOR_COMPOSITION[shift.area];
+      const compRule = shift.area === 'POD' ? 'podPgy3Composition' : 'flexSeniorComposition';
+      vs.push({ message: `${shift.label} requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: severityFor(compRule, 'validator'), rule: compRule });
+    }
+  }
+
+  // 12. BAMC: at most one Wednesday-night shift per block (program tier — always hard).
+  if (resident.category === 'EM_BAMC' && shift?.type === 'night' && dow === 3) {
+    const wedNightCount = Object.entries(hypRow).filter(([d, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(d).getDay() === 3).length;
+    if (wedNightCount > 1)
+      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight' });
+  }
+
+  // 13. Trauma/Peds split sub-caps (program tier — always hard).
+  {
+    const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+    if (shift && isTraumaPedsSplitResident(resident, traumaBlocks)) {
+      if (shift.area === 'TRAUMA') {
+        const traumaHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
+        if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
+          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+      } else if (shift.area === 'PED') {
+        const pedsHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
+        if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
+          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+      }
+    }
+  }
+
+  // 14. Journal Club cap — max 3 worked/AY (program tier — always hard). blocksHistory is optional
+  // (default []); an empty history under-counts published-block JCs rather than throwing, same
+  // graceful-degradation posture as allResidents above.
+  if (resident.category === 'EM_HOME' && shiftOverlapsJC(sid)) {
+    const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
+    const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
+    if (jcTotal > JC_MAX_PER_AY)
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy' });
+  }
+
   return vs;
 }
 
@@ -12985,15 +13153,66 @@ function ShiftOverlapHoverCard({ anchorRect, shiftId, dateStr, overlap }) {
   );
 }
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf, prevTail, finalSunday, nextRotationMap, allResidents }) {
+// Tier-aware classification for hand-edit surfaces (picker/drag-drop/inspector) — see rulePolicy.js
+// (chief policy, 2026-09-26). `blocking`: acgme/program-tier violations, or any rule-less hard error
+// (an overlap/legal-rest violation has no rule id yet — R3 — but severityFor's own "unrecognized id
+// defaults to error" already treats it the same way) — no "place/move anyway" path exists for these.
+// `overridable`: override-tier — the generator never breaks these, but a hand edit may, behind an
+// explicit confirm step that gets stamped into block.overrideLog (see withOverrideEvents/
+// updateBlockTracked). `advisory`: everything else (postNightRest and other untiered soft warnings)
+// — informational only, exactly like today's plain "Assign/Swap/Move Anyway".
+function classifyForHandEdit(violations) {
+  const blocking = violations.filter(v => v.level === 'error');
+  const overridable = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier === 'override');
+  const advisory = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier !== 'override');
+  return { blocking, overridable, advisory };
+}
+
+// Red "cannot proceed" panel for acgme/program-tier violations — no button anywhere offers to place/
+// move/swap through this; the chief must pick something else or clear the conflicting shift first.
+function BlockingReasonsPanel({ blocking }) {
+  if (!blocking.length) return null;
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Blocked — hard rule</div>
+      {blocking.map((w, i) => <p key={i} className="text-xs text-red-600 ml-4">{w.message}</p>)}
+      <p className="text-xs text-red-500 ml-4 mt-1 italic">This rule never bends — for a hand edit or the generator.</p>
+    </div>
+  );
+}
+
+// Amber "Override program rule" confirm panel for override-tier violations — chief policy requires
+// an explicit affirmative step (not just a colored "Anyway" button) plus an optional note, both of
+// which get stamped into block.overrideLog via updateBlockTracked's overrideMeta param.
+function OverrideConfirmPanel({ overridable, note, onNoteChange }) {
+  return (
+    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-amber-800 font-medium text-sm mb-1"><AlertTriangle size={13}/> Override program rule</div>
+      {overridable.map((w, i) => <p key={i} className="text-xs text-amber-700 ml-4">{w.message}</p>)}
+      <label className="block text-xs text-amber-700 mt-2 ml-4">
+        Note (optional)
+        <textarea value={note} onChange={e => onNoteChange(e.target.value)} rows={2}
+          className="mt-1 w-full text-xs border border-amber-300 rounded px-2 py-1 bg-white"
+          placeholder="Why is this override needed?"/>
+      </label>
+    </div>
+  );
+}
+
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory }) {
   const [pending, setPending] = useState(null);
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [overrideNote, setOverrideNote] = useState('');
+  // A different candidate shift invalidates whatever override confirmation was in progress for the
+  // previous one — never carry a stale note/confirm state onto a newly-picked shift.
+  useEffect(() => { setConfirmingOverride(false); setOverrideNote(''); }, [pending]);
   const sd = block.specialDays || {};
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap?.[resident.id] || null, jeopardySchedule: block.jeopardySchedule });
   const display = formatDisplayDate(dateStr);
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = isJeopardyDate(resident, dateStr, block.jeopardySchedule);
 
-  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap);
+  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
   // Same helper/renderer as the grid's hover card (see CLAUDE.md Phase 8.2) — shown for the
   // currently-selected/highlighted shift so touch users (who never get a hover event) still see it.
   const overlapInfo = useMemo(
@@ -13010,8 +13229,11 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
     return row;
   }, [block.schedule, resident.id, dateStr]);
 
+  const { blocking, overridable } = classifyForHandEdit(v);
+
   function confirm() {
-    onSelect(pending);
+    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null;
+    onSelect(pending, overrideMeta);
     showToast(`Assigned ${pending} to ${name} on ${display}`, v.length>0?'amber':'green');
     onClose();
   }
@@ -13070,7 +13292,11 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         </div>
       )}
 
-      {pending && <ViolationPanel violations={v}/>}
+      {pending && blocking.length > 0 && <BlockingReasonsPanel blocking={blocking}/>}
+      {pending && blocking.length === 0 && overridable.length > 0 && confirmingOverride && (
+        <OverrideConfirmPanel overridable={overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+      )}
+      {pending && blocking.length === 0 && !(overridable.length > 0 && confirmingOverride) && <ViolationPanel violations={v}/>}
       {pending && v.length === 0 && (
         <div className="flex items-center gap-1.5 text-green-600 text-xs mb-3"><CheckCircle size={13}/> No violations</div>
       )}
@@ -13079,9 +13305,17 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         {currentShift && <button onClick={()=>{onSelect(null);showToast(`Cleared ${name} on ${display}`,'amber');onClose();}} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg border border-red-200 font-medium">Clear</button>}
         <div className="flex-1"/>
         <button onClick={onClose} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-        {pending && <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-primary hover:bg-primary/90'}`}>
-          {v.length>0?'Assign Anyway':'Assign Shift'}
-        </button>}
+        {/* Tier acgme/program: no confirm path at all — see BlockingReasonsPanel above. */}
+        {pending && blocking.length === 0 && overridable.length > 0 && !confirmingOverride && (
+          <button onClick={()=>setConfirmingOverride(true)} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            Override Program Rule
+          </button>
+        )}
+        {pending && blocking.length === 0 && (overridable.length === 0 || confirmingOverride) && (
+          <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-primary hover:bg-primary/90'}`}>
+            {overridable.length > 0 ? 'Confirm Override' : (v.length>0?'Assign Anyway':'Assign Shift')}
+          </button>
+        )}
       </div>
     </Modal>
   );
@@ -13484,6 +13718,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
       return list.includes(sid);
     };
+    // R6: when isEligible says no, this explains WHY (see eligibilityBlockReasons) so
+    // findGiveCandidates/findSwapCandidates can still offer an override-tier-ineligible candidate
+    // (approvedDayOff, wellnessWednesday, academicChiefTueEveNight, finalSundayOvernight,
+    // pedNightSwingOwnerGuard) tagged needsOverride, instead of silently dropping it.
+    const eligibilityReasonFor = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return null;
+      return eligibilityBlockReasons(r, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+    };
     // Mirrors cellViolations exactly — the SAME hard/soft split ScheduleGrid's own handleDrop
     // uses for a drag-drop swap (level==='error' vs everything else); scheduleOverride lets the
     // swap finder validate each side with the OTHER side's cell already cleared, same as
@@ -13492,7 +13735,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const r = residentById.get(rid);
       if (!r) return [];
       return cellViolations(r, ds, sid, { ...block, schedule: scheduleOverride || sched },
-        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap);
+        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
     };
     const hardViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level === 'error');
     const softViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level !== 'error');
@@ -13507,11 +13750,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     if (shiftId) {
       const give = enrich(findGiveCandidates({
         residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
-        isEligible, hardViolations, softViolations, targetInfo,
+        isEligible, eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, targetInfo,
       }));
       const swap = enrich(findSwapCandidates({
         residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
-        isEligible, hardViolations, softViolations, targetInfo,
+        isEligible, eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, targetInfo,
       }));
       return { resident, dateStr, shiftId, locked, cellIssues, give, swap, assign: [] };
     }
@@ -13525,7 +13768,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return { resident, dateStr, shiftId: null, locked, cellIssues, give: [], swap: [], assign };
   }, [selectedCell, sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
       allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
-      coverageByDate, violMap, sd]);
+      coverageByDate, violMap, sd, blocksHistory]);
 
   // Ref on the mobile review-panel drawer (below the grid) — selectCell scrolls it into view on
   // phone/tablet widths, where there's no desktop sidebar already on screen for the click to land
@@ -13559,38 +13802,71 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // undo step, override log stays intact — see CLAUDE.md "every mutation via updateBlockTracked").
   // selectedCell is left pointing at the same {residentId,dateStr} afterward; the inspector
   // "refreshes on the new state" simply because `sched`/`inspectorData` are recomputed off it.
-  function applyGive(candidateResidentId) {
+  // R6: any inspector action (give/swap/assign) whose chosen candidate is tagged `needsOverride`
+  // (see cellAlternatives.js) routes through this same confirm-with-note step instead of applying
+  // one-click — never a bare apply for an override-tier violation. `run(overrideMeta)` is the actual
+  // mutation, deferred until the chief confirms; a clean/advisory-only candidate calls it immediately
+  // with `null`, exactly matching pre-R6 behavior.
+  const [pendingInspectorOverride, setPendingInspectorOverride] = useState(null); // {overridable, run} | null
+  const [inspectorOverrideNote, setInspectorOverrideNote] = useState('');
+  function runOrConfirmOverride(candidate, run) {
+    if (candidate?.needsOverride) {
+      const overridable = (candidate.softViolations || []).filter(v => RULE_POLICY[v.rule]?.tier === 'override');
+      setPendingInspectorOverride({ overridable, run });
+      return;
+    }
+    run(null);
+  }
+  function confirmInspectorOverride() {
+    if (!pendingInspectorOverride) return;
+    const ruleIds = [...new Set(pendingInspectorOverride.overridable.map(w => w.rule).filter(Boolean))];
+    pendingInspectorOverride.run({ ruleIds, note: inspectorOverrideNote.trim() || null });
+    setPendingInspectorOverride(null);
+    setInspectorOverrideNote('');
+  }
+  function cancelInspectorOverride() {
+    setPendingInspectorOverride(null);
+    setInspectorOverrideNote('');
+  }
+
+  function applyGive(candidateResidentId, candidate) {
     if (!inspectorData?.shiftId) return;
     const { resident, dateStr, shiftId } = inspectorData;
     const cand = allResidents.find(r => r.id === candidateResidentId);
-    updateBlockTracked(b => {
-      const s = { ...b.schedule };
-      s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: null };
-      s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
-      return { ...b, schedule: s };
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: null };
+        s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Gave ${shiftId} (${formatDisplayDate(dateStr)}) to ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
     });
-    showToast(`Gave ${shiftId} (${formatDisplayDate(dateStr)}) to ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
   }
-  function applySwap(candidateResidentId) {
+  function applySwap(candidateResidentId, candidate) {
     if (!inspectorData?.shiftId) return;
     const { resident, dateStr, shiftId } = inspectorData;
     const cand = allResidents.find(r => r.id === candidateResidentId);
     const otherShiftId = sched[candidateResidentId]?.[dateStr] || null;
-    updateBlockTracked(b => {
-      const s = { ...b.schedule };
-      s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: otherShiftId };
-      s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
-      return { ...b, schedule: s };
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: otherShiftId };
+        s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Swapped ${shiftId} ↔ ${otherShiftId} (${formatDisplayDate(dateStr)}) between ${resident.firstName} ${resident.lastName} and ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
     });
-    showToast(`Swapped ${shiftId} ↔ ${otherShiftId} (${formatDisplayDate(dateStr)}) between ${resident.firstName} ${resident.lastName} and ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
   }
-  function applyAssign(assignShiftId) {
+  function applyAssign(assignShiftId, candidate) {
     if (!inspectorData || inspectorData.shiftId) return;
     const { resident, dateStr } = inspectorData;
-    updateBlockTracked(b => ({
-      ...b, schedule: { ...b.schedule, [resident.id]: { ...(b.schedule[resident.id] || {}), [dateStr]: assignShiftId } },
-    }));
-    showToast(`Assigned ${assignShiftId} to ${resident.firstName} ${resident.lastName} (${formatDisplayDate(dateStr)})`, 'green');
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => ({
+        ...b, schedule: { ...b.schedule, [resident.id]: { ...(b.schedule[resident.id] || {}), [dateStr]: assignShiftId } },
+      }), overrideMeta);
+      showToast(`Assigned ${assignShiftId} to ${resident.firstName} ${resident.lastName} (${formatDisplayDate(dateStr)})`, 'green');
+    });
   }
 
   // Jump-to-cell (P2): switches the category filter to All when the target resident is filtered
@@ -13631,8 +13907,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     window.setTimeout(() => setHighlightedRow(r => (r === residentId ? null : r)), 1800);
   }
 
-  function assign(resId,ds,sid) {
-    updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
+  function assign(resId,ds,sid,overrideMeta) {
+    updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}), overrideMeta);
   }
 
   // Cell locks: `block.lockedCells[residentId][dateStr] = true` — nested inside `block`, so it
@@ -13769,13 +14045,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
-      eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap
+      eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
     ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
-          eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap
+          eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
         ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
       : [];
 
@@ -13786,7 +14062,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     else setDropConfirm({ src: srcInfo, tgt: tgtInfo, kind, violations });
   }
 
-  function commitDrop(src, tgt, kind, wasOverridden) {
+  function commitDrop(src, tgt, kind, wasOverridden, overrideMeta) {
     updateBlockTracked(b => {
       const s = { ...b.schedule };
       if (src.resId === tgt.resId) {
@@ -13796,7 +14072,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         s[tgt.resId] = { ...(s[tgt.resId]||{}), [tgt.ds]: src.sid };
       }
       return { ...b, schedule: s };
-    });
+    }, overrideMeta);
     const verb = kind === 'swap' ? 'Swapped' : 'Moved';
     showToast(`${verb} ${src.sid} (${formatDisplayDate(src.ds)}) for ${tgt.res.lastName}${kind==='swap'?` ↔ ${tgt.sid} for ${src.res.lastName}`:''}`,
       wasOverridden ? 'amber' : 'green');
@@ -14822,15 +15098,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {dropConfirm && (
         <DragConfirmModal dropConfirm={dropConfirm}
           onCancel={()=>setDropConfirm(null)}
-          onConfirm={()=>commitDrop(dropConfirm.src, dropConfirm.tgt, dropConfirm.kind, true)}/>
+          onConfirm={(overrideMeta)=>commitDrop(dropConfirm.src, dropConfirm.tgt, dropConfirm.kind, true, overrideMeta)}/>
+      )}
+
+      {pendingInspectorOverride && (
+        <Modal title="Override Program Rule" onClose={cancelInspectorOverride}>
+          <OverrideConfirmPanel overridable={pendingInspectorOverride.overridable} note={inspectorOverrideNote} onNoteChange={setInspectorOverrideNote}/>
+          <div className="flex justify-end gap-2">
+            <button onClick={cancelInspectorOverride} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
+            <button onClick={confirmInspectorOverride} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">Confirm Override</button>
+          </div>
+        </Modal>
       )}
 
       {picker && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
           block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
-          allResidents={allResidents}
-          onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
+          allResidents={allResidents} blocksHistory={blocksHistory}
+          onSelect={(sid,overrideMeta)=>assign(picker.resident.id,picker.dateStr,sid,overrideMeta)}
           onClose={()=>setPicker(null)} showToast={showToast} ayConf={ayConf} prevTail={prevTail}
           finalSunday={finalSunday} nextRotationMap={nextRotationMap}/>
       )}
@@ -14918,10 +15204,23 @@ function ViolationPanel({ violations }) {
   );
 }
 
+// onConfirm(overrideMeta) — overrideMeta is null for an advisory-only drop (soft warnings, e.g.
+// postNightRest — same "just proceed" UX as before) or {ruleIds, note} once the chief has confirmed
+// an override-tier violation. Tier acgme/program violations get NO confirm path at all — see
+// BlockingReasonsPanel.
 function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const { src, tgt, kind, violations } = dropConfirm;
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [overrideNote, setOverrideNote] = useState('');
   const srcShift = SHIFT_MAP[src.sid];
   const tgtShift = tgt.sid ? SHIFT_MAP[tgt.sid] : null;
+  const { blocking, overridable } = classifyForHandEdit(violations);
+  const verb = kind === 'swap' ? 'Swap' : 'Move';
+
+  function confirm() {
+    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null);
+  }
+
   return (
     <Modal title={kind === 'swap' ? 'Confirm Swap' : 'Confirm Move'} onClose={onCancel}>
       <div className="flex items-center gap-3 mb-3 text-sm">
@@ -14939,12 +15238,24 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
           </>
         )}
       </div>
-      <ViolationPanel violations={violations}/>
+      {blocking.length > 0 && <BlockingReasonsPanel blocking={blocking}/>}
+      {blocking.length === 0 && overridable.length > 0 && confirmingOverride && (
+        <OverrideConfirmPanel overridable={overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+      )}
+      {blocking.length === 0 && !(overridable.length > 0 && confirmingOverride) && <ViolationPanel violations={violations}/>}
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-        <button onClick={onConfirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
-          {kind === 'swap' ? 'Swap Anyway' : 'Move Anyway'}
-        </button>
+        {/* Tier acgme/program: no confirm path — see BlockingReasonsPanel above. */}
+        {blocking.length === 0 && overridable.length > 0 && !confirmingOverride && (
+          <button onClick={()=>setConfirmingOverride(true)} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            Override Program Rule
+          </button>
+        )}
+        {blocking.length === 0 && (overridable.length === 0 || confirmingOverride) && (
+          <button onClick={confirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            {overridable.length > 0 ? 'Confirm Override' : `${verb} Anyway`}
+          </button>
+        )}
       </div>
     </Modal>
   );
@@ -16200,7 +16511,7 @@ function CellInspector({ data, onBack, onChangeShift, onUnlockCell, onGive, onSw
             <InspectorSection title={`Give to (${give.length})`} count={give.length} empty="No one else can take this shift here.">
               {give.slice(0, giveShown).map(c => (
                 <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
-                  softViolations={c.softViolations} actionLabel="Give" onApply={() => onGive(c.residentId)}/>
+                  softViolations={c.softViolations} needsOverride={c.needsOverride} actionLabel="Give" onApply={() => onGive(c.residentId, c)}/>
               ))}
               {give.length > giveShown && <ShowMoreButton onClick={() => setGiveShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
             </InspectorSection>
@@ -16210,8 +16521,8 @@ function CellInspector({ data, onBack, onChangeShift, onUnlockCell, onGive, onSw
             <InspectorSection title={`Swap with (${swap.length})`} count={swap.length} empty="No clean swap available today.">
               {swap.slice(0, swapShown).map(c => (
                 <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
-                  softViolations={c.softViolations} shiftNote={`${c.otherShiftId} ↔ ${shiftId}`}
-                  actionLabel="Swap" onApply={() => onSwap(c.residentId)}/>
+                  softViolations={c.softViolations} needsOverride={c.needsOverride} shiftNote={`${c.otherShiftId} ↔ ${shiftId}`}
+                  actionLabel="Swap" onApply={() => onSwap(c.residentId, c)}/>
               ))}
               {swap.length > swapShown && <ShowMoreButton onClick={() => setSwapShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
             </InspectorSection>
@@ -16221,7 +16532,7 @@ function CellInspector({ data, onBack, onChangeShift, onUnlockCell, onGive, onSw
             <InspectorSection title={`Assign (${assign.length})`} count={assign.length} empty="No eligible shift has room today.">
               {assign.slice(0, assignShown).map(a => (
                 <AssignRow key={a.shiftId} shiftId={a.shiftId} min={a.min} max={a.max} count={a.count}
-                  softViolations={a.softViolations} onApply={() => onAssign(a.shiftId)}/>
+                  softViolations={a.softViolations} needsOverride={a.needsOverride} onApply={() => onAssign(a.shiftId, a)}/>
               ))}
               {assign.length > assignShown && <ShowMoreButton onClick={() => setAssignShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
             </InspectorSection>
@@ -16255,12 +16566,19 @@ function ShowMoreButton({ onClick }) {
 // visible, not just implied by list order; a soft violation shows as a small amber note rather
 // than blocking the action (only a HARD violation excludes a candidate at all — see
 // cellAlternatives.js).
-function CandidateRow({ resident, count, target, softViolations, shiftNote, actionLabel, onApply }) {
+// "Needs override" tag (R6): a candidate whose only soft violations are override-tier rulePolicy
+// ids (see cellAlternatives.js's needsOverride/hasOverrideTierViolation) — applying it routes
+// through the same confirm-with-note step the picker/drag-drop use, never a bare one-click apply.
+function NeedsOverrideTag() {
+  return <span className="inline-block text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ml-1.5">Needs override</span>;
+}
+
+function CandidateRow({ resident, count, target, softViolations, needsOverride, shiftNote, actionLabel, onApply }) {
   if (!resident) return null;
   return (
     <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-foreground truncate">{resident.firstName} {resident.lastName}</div>
+        <div className="text-xs font-medium text-foreground truncate flex items-center">{resident.firstName} {resident.lastName}{needsOverride && <NeedsOverrideTag/>}</div>
         <div className="text-[11px] text-muted-foreground">
           {target != null ? `${count}→${count + 1} of ${target}` : `${count} shifts (no target)`}
           {shiftNote && ` · ${shiftNote}`}
@@ -16275,11 +16593,11 @@ function CandidateRow({ resident, count, target, softViolations, shiftNote, acti
 }
 
 // One "Assign" candidate row — coverage shortfall drives ranking (below-minimum shifts first).
-function AssignRow({ shiftId, min, max, count, softViolations, onApply }) {
+function AssignRow({ shiftId, min, max, count, softViolations, needsOverride, onApply }) {
   return (
     <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
       <div className="min-w-0">
-        <div className="text-xs font-mono font-semibold text-foreground truncate">{shiftId}</div>
+        <div className="text-xs font-mono font-semibold text-foreground truncate flex items-center">{shiftId}{needsOverride && <NeedsOverrideTag/>}</div>
         <div className="text-[11px] text-muted-foreground">{`${count}→${count + 1} of ${min} min (${max} max)`}</div>
         {softViolations.length > 0 && (
           <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
@@ -19392,7 +19710,13 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Every schedule-mutating call site (assign, drag-drop, generate/regenerate, cell lock toggle)
   // calls this instead of the bare updateBlock above, so the action becomes undoable. Non-schedule
   // updateBlock calls (block name/dates, etc.) stay on the untracked one.
-  function updateBlockTracked(fn) {
+  // overrideMeta ({ruleIds, note} | null/undefined) — set by a hand-edit surface (picker/drag-drop/
+  // inspector) after the chief explicitly confirmed an "Override Program Rule" step (see
+  // classifyForHandEdit/OverrideConfirmPanel). When present, the diffed cells are logged into
+  // block.overrideLog UNCONDITIONALLY (unlike withOverrideEvents' generic capture below, which only
+  // fires against a schedule that came from a generation) — a confirmed rule override is worth
+  // recording regardless of whether the schedule under it was generated or hand-built.
+  function updateBlockTracked(fn, overrideMeta) {
     setUndoStack(s => {
       const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
@@ -19404,6 +19728,15 @@ export default function ResidentScheduler({ viewer } = {}) {
     // the updater — not the `block` closure — so it always sees the authoritative previous state.
     setBlock(prev => {
       const next = typeof fn === 'function' ? fn(prev) : { ...prev, ...fn };
+      if (overrideMeta) {
+        const events = diffScheduleCells(prev.schedule, next.schedule);
+        if (events.length) {
+          const at = new Date().toISOString();
+          const stamped = events.map(e => ({ ...e, at, ruleIds: overrideMeta.ruleIds || [], note: overrideMeta.note || null, generatedAt: prev.generationReport?.generatedAt || null }));
+          const merged = [...(prev.overrideLog || []), ...stamped].slice(-OVERRIDE_LOG_CAP);
+          return { ...next, overrideLog: merged };
+        }
+      }
       return withOverrideEvents(prev, next);
     });
   }

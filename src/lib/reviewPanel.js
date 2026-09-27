@@ -4,15 +4,21 @@
 // come from the root issues memo, never a new validateAll call"). Kept lib-legal (lib/* may never
 // import ResidentScheduler.jsx) by taking `exportBlockingRuleIds` as a parameter instead of
 // importing EXPORT_BLOCKING_RULE_IDS — same trick lib/scheduleGrouping.js uses for CATEGORIES/
-// BLOCK_TYPES_EM/isEmResident.
+// BLOCK_TYPES_EM/isEmResident. rulePolicy.js IS a lib module too (pure, no ResidentScheduler.jsx
+// import), so importing its plain-language labels directly is lib-legal, unlike importing anything
+// off ResidentScheduler.jsx itself.
+import { RULE_POLICY } from './rulePolicy.js';
 
 // Plain-language names for the validateAll issue `rule` ids that would otherwise show up as a bare
 // programmer id somewhere in the panel (e.g. a future group-by-rule header). Most validateAll
 // issues already carry a fully-formed human `message` and no `rule` id at all — this map only
-// covers the couple of rules that DO stamp one (postNightRest, underTarget; see validateAll).
-// Anything absent or unknown falls through to the issue's own `message` in labelForIssue below,
-// never a raw id — same posture as UNDER_TARGET_BLOCK_LABELS' own fallback.
+// covers the rules that DO stamp one: every RULE_POLICY id (see rulePolicy.js — 2026-09-26 severity
+// policy), plus the two rules deliberately outside that tiered table (postNightRest, underTarget;
+// see validateAll's own comments on why they're soft/untiered). Anything absent or unknown falls
+// through to the issue's own `message` in labelForIssue below, never a raw id — same posture as
+// UNDER_TARGET_BLOCK_LABELS' own fallback.
 export const ISSUE_RULE_LABELS = {
+  ...Object.fromEntries(Object.entries(RULE_POLICY).map(([id, entry]) => [id, entry.label])),
   postNightRest: 'Rest after a night shift',
   underTarget: 'Under shift target',
 };

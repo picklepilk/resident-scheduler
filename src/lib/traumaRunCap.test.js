@@ -46,11 +46,12 @@ describe('trauma-run cap — generator never produces >2 TRAUMA-N in one contigu
           expect(traumaCount, `${r.id}'s run [${run.join(',')}] has too many TRAUMA-N`).toBeLessThanOrEqual(2);
         }
       }
-      // Cross-check against validateAll's own hard error — it should never fire for this rule
-      // on generator output, matching the BAMC Wednesday-night hard-cap test's own convention.
+      // Cross-check against validateAll's own flagged rule ('traumaRunCap', chief-overridable-by-
+      // hand tier — see rulePolicy.js) — it should never fire for this rule on generator output,
+      // matching the BAMC Wednesday-night hard-cap test's own convention.
       const issues = validateAll(fixture.allResidents, schedule, fixture.block, fixture.eligOverrides, fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf);
-      const traumaRunErrors = issues.filter(i => i.level === 'error' && i.message.includes('Trauma Night shifts in one consecutive night run'));
-      expect(traumaRunErrors).toEqual([]);
+      const traumaRunIssues = issues.filter(i => i.rule === 'traumaRunCap');
+      expect(traumaRunIssues).toEqual([]);
     });
   }
 });
@@ -60,20 +61,24 @@ describe('validateAll — trauma-run rules on a hand-built schedule', () => {
   const block = { id: 'blk', startDate: '2026-07-03', endDate: '2026-07-05', academicYear: 'AY26/27' };
   const appSettings = {};
 
-  it('hard error: 3 TRAUMA-N in one contiguous run', () => {
+  // 2026-09-26 policy: this is chief-overridable-by-hand ('traumaRunCap', tier 'override') — the
+  // generator never produces it, but a hand-built/hand-edited schedule gets a flagged (export-
+  // blocking) warn, not a hard error.
+  it('flagged warn: 3 TRAUMA-N in one contiguous run', () => {
     // 2026-07-03/04/05 are Fri/Sat/Sun — all inside TRAUMA-N's own SHIFT_DOW window.
     const schedule = { r1: { '2026-07-03': 'TRAUMA-N', '2026-07-04': 'TRAUMA-N', '2026-07-05': 'TRAUMA-N' } };
     const issues = validateAll(residents, schedule, block, {}, appSettings, {}, {}, [], {});
-    const errors = issues.filter(i => i.level === 'error' && i.message.includes('Trauma Night shifts in one consecutive night run'));
-    expect(errors.length).toBeGreaterThan(0);
-    expect(errors[0].message).toContain('max 2 per run');
+    const flagged = issues.filter(i => i.rule === 'traumaRunCap');
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged[0].level).toBe('warn');
+    expect(flagged[0].message).toContain('max 2 per run');
   });
 
-  it('no error for exactly 2 TRAUMA-N in a run (the tolerated case)', () => {
+  it('no issue for exactly 2 TRAUMA-N in a run (the tolerated case)', () => {
     const schedule = { r1: { '2026-07-03': 'TRAUMA-N', '2026-07-04': 'TRAUMA-N' } };
     const issues = validateAll(residents, schedule, block, {}, appSettings, {}, {}, [], {});
-    const errors = issues.filter(i => i.level === 'error' && i.message.includes('Trauma Night shifts in one consecutive night run'));
-    expect(errors).toEqual([]);
+    const flagged = issues.filter(i => i.rule === 'traumaRunCap');
+    expect(flagged).toEqual([]);
   });
 
   it('warning: TRAUMA-N sits mid-run of a mixed run (not first/last)', () => {

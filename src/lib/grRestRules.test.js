@@ -221,10 +221,14 @@ describe('validateAll — night stint count thresholds (1.7)', () => {
     expect(issues.some(i => i.level === 'error' && /separate night stints/.test(i.message))).toBe(false);
   });
 
-  it('three separate 5-night stints is a hard error', () => {
+  // 2026-09-26 policy: >2 night stints/block is chief-overridable-by-hand ('nightStintCount',
+  // rulePolicy.js tier 'override') — the generator still never produces this, so it's a flagged
+  // warn (export-blocking), not a hard error, on a hand-built/hand-edited schedule.
+  it('three separate 5-night stints is a flagged (export-blocking) warning, not a hard error', () => {
     const { fixture, papa } = papaFixture();
     const rs = { ...nightRun('2026-07-06', 5), ...nightRun('2026-07-13', 5), ...nightRun('2026-07-20', 5) };
     const issues = runValidate(fixture, papa, rs);
-    expect(issues.some(i => i.level === 'error' && /3 separate night stints/.test(i.message))).toBe(true);
+    expect(issues.some(i => i.level === 'warn' && i.rule === 'nightStintCount' && /3 separate night stints/.test(i.message))).toBe(true);
+    expect(issues.some(i => i.level === 'error' && /separate night stints/.test(i.message))).toBe(false);
   });
 });
