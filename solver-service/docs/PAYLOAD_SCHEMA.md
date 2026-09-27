@@ -276,6 +276,80 @@ one), while the added tail sum breaks ties toward whatever's cheapest downstream
 what keeps an already-good warm-started schedule from being needlessly disturbed. The BOUND fixed
 before advancing to the next stage is still on the stage's own raw (un-tiebroken) expr.
 
+### Pinning the polisher to its own hint (2026-09-27 follow-up, "pin to hint")
+
+Even with the tiebreak above, stage 3 still minimizes `TIER_RANK + TIER_QUALITY` as ONE combined
+expression — nothing stopped CP-SAT from trading coverage slack (TIER_RANK) for a cheaper quality
+move (TIER_QUALITY) inside that single solve, or from simply not reconverging on the hint's own
+coverage value within the time budget (multi-worker search is non-deterministic, see "New config
+fields" above). Chief-approved goal: make the polisher provably unable to give up ground on
+anything the JS `betterQuality` ladder can measure — it can only improve.
+
+**Design** (`solver/model/hint_pin.py`, wired in by `solve.py`'s `_apply_hint_pinning`, staged mode
+only — `objectiveMode: 'weighted'` gets none of this, unchanged rollback path):
+
+1. `evaluate_hint(payload, build_result)`: clones the already-built pass-1 model
+   (`build_result.model.clone()` — never the model the real solve will use, and never solved twice;
+   see "Native-crash finding" below for why), fixes EVERY `x` var to the hint's own value (1 if
+   `(residentId, date) -> shiftId` matches the hint, 0 otherwise — identical matching logic to
+   `apply_hint`), and solves that fully-pinned clone ONCE (single worker, deterministic) to read
+   back the RAW (unweighted) achieved value of each pinned component. `feasible=False` (no
+   components) means fixing the hint's own schedule breaks one of this payload's OWN hard
+   constraints — the hint is simply inapplicable here, and `_apply_hint_pinning` falls back to the
+   pre-existing, un-pinned staged solve exactly as before this feature existed, recording
+   `hintFeasible: false` (see below).
+2. If feasible: `apply_hint_pins` adds `expr <= achieved` as a HARD constraint on the REAL model for
+   3 components — `targetDeficitCore` (all of TIER_ERRORS), `postNightRest` (all of TIER_BLOCKING),
+   and `coverageMin` (the raw coverage-slack sum, i.e. exactly JS's `coverageMiss` metric). A hard
+   constraint holds for every solution the solver can ever return, at any time budget or worker
+   count — so the polisher can only match or beat the hint on each of these three, never trade one
+   for another or drift worse under search noise. `TIER_QUALITY` (fairness/workShape/...) is
+   deliberately left unpinned — that's the one thing this feature still lets the solver freely
+   improve.
+3. The staged solve (`_solve_staged`) then runs completely unchanged — the pins are just 3 more
+   hard constraints baked into `build_result.model` before stage 1 ever starts.
+
+**Diagnosed-and-fixed mapping gap**: the first version of this feature ALSO pinned
+`overstaffCoverage` (the solver's last-resort +1-over-max allowance) as a 4th independent
+component, mirroring `TIER_RANK`'s two internal terms 1:1. Measured result: `engineHeadToHead`
+went from the pre-existing single `vacationHeavy` gap to **3 of 4 fixtures losing**
+(standard/vacationHeavy/conferenceBlock), strictly worse than doing nothing. Diagnosis: JS's
+`report.overstaffed` (the JS-side equivalent) is purely informational — it never appears in
+`errorCount`, `blockingWarnCount`, or `qualityVector` (this doc's own tier-mapping table already
+noted "`overstaffCoverage` has no `betterQuality` slot of its own in JS either"). Pinning it anyway
+handcuffed the solver's own designed relief valve: using one more +1-over-max placement to close a
+coverage gap is a mechanism the app itself uses (`ResidentScheduler.jsx`'s `overstaffFor`/repair
+Phase 5) and pays no JS-side scoring penalty for, so forbidding the solver from using MORE of it
+than the hint happened to use could only ever make `coverageMin` (the metric that actually matters)
+worse, never better. Fixed by pinning only the 3 components JS's ladder can actually see.
+
+**Bigger, NOT-fixed-here finding: the hint is judged infeasible on every one of the 4
+`engineHeadToHead` fixtures**, so pinning never actually engages on any of them (`evaluate_hint`
+returns `feasible=False` for standard/understaffed/vacationHeavy/conferenceBlock alike — verified by
+dumping each fixture's real `buildSolverPayload` output and running `evaluate_hint` on it directly).
+Root cause, confirmed by bisecting hard-constraint families one at a time against the fixed hint:
+every fixture's warm-start schedule (the JS engine's own `generateScheduleBest` output) contains
+multiple resident/date pairs where a **day shift is immediately followed by an evening shift the
+next calendar day** (12-24 occurrences per fixture, e.g. `FLEX-D` on day N then `FLEX-E` on day
+N+1) — `solver/model/circadian.py`'s `_add_eve_day_pairs` treats BOTH `eve-then-day` and
+`day-then-eve` as hard-forbidden (per this doc's own tier-mapping table and this repo's
+`CLAUDE.md`: "eve→day next day (and reverse) hard"), but `ResidentScheduler.jsx`'s
+`checkCircadianViolations` only actually implements the `eve-then-day` direction — its `newType ===
+'day'` branch checks the PREVIOUS day for an eve shift (catching the SAME `eve→day` transition from
+the day-shift's own placement order, for a generator that fills passes in either direction), not the
+NEXT day, so `day→eve` is never checked at all despite the function's own comment claiming "(and the
+reverse)". This is a real, pre-existing bug in the JS engine's own rule enforcement — the SOLVER
+faithfully implements the documented policy; the JS generator does not — but it is a hard,
+never-relaxed rule (`rulePolicy.js` tiers `acgme`/`program`, both always-blocking) whose enforcement
+sits inside the ~8,300-line generator/repair/validator core, exercised by every quality-baseline
+ratchet test and `chiefBenchmark`. Fixing it changes what the GENERATOR is allowed to place, which
+can shift quality-baseline numbers and needs its own dedicated, reviewed task (see this repo's
+`rule-override-policy` memory note on how deliberately hard-rule changes are handled here) — **not
+fixed in this task**. Until it is, `evaluate_hint` will keep (correctly) rejecting most real hints,
+and pinning will mostly sit inert, falling back to the pre-existing staged behavior. The fallback
+itself is safe and exercised by `tests/test_hint_pin.py`; this is a missed-opportunity gap, not a
+correctness bug in the pinning feature.
+
 ### Search tuning
 
 - `num_workers`/`symmetry_level`: see "New config fields" above.
@@ -358,3 +432,41 @@ file plus stdout) is the regression gate; everything else in that file remains m
     means the gate is now flaky-fails on `standard`/`conferenceBlock` too, not just noisy-passes.
     Whether to widen `KNOWN_GAP_VARIANTS` to cover them, revisit the 15/15/70 split's tuning, or
     accept the flakiness is a real open decision left for a future round.
+- **"Pin to hint" re-measurement (2026-09-27, 3 sequential full `engineHeadToHead.test.js` runs, one
+  at a time, after the pinning fix above)** — see "Pinning the polisher to its own hint" for the
+  design and the diagnosed-and-fixed `overstaffCoverage` mapping gap:
+
+  | run | standard | understaffed | vacationHeavy | conferenceBlock |
+  |---|---|---|---|---|
+  | 1 | loss | win (207→205) | loss | win |
+  | 2 | loss (126→129 coverageMiss) | win (207→205) | loss (139→145) | win (114→115, wins on blockingWarnCount 2→1) |
+  | 3 | win (errorCount 3→2, 126→127) | win (207→205) | loss (139→141, errorCount 7→8) | loss (errorCount 1→2 — the pre-existing, documented `conferenceTolerated` gap, see the tier-mapping table) |
+
+  **`understaffed` wins all 3/3.** `vacationHeavy` still LOSES all 3/3 — but for a DIFFERENT reason
+  than before: `evaluate_hint` reports this fixture's hint (and every other fixture's hint) as
+  **infeasible** (see "Pinning the polisher to its own hint"'s big caveat above), so pinning never
+  actually engages here — these 3 losses are the SAME pre-existing, un-pinned staged-solve
+  flakiness this doc already documented before this task, not a new regression and not something
+  pinning could have fixed given the hint is rejected outright. `standard` (2/3 losses) and
+  `conferenceBlock` (1/3 losses, the known `conferenceTolerated` gap) are likewise unaffected by
+  pinning for the same reason and consistent with the flakiness already flagged above. **Decision:
+  `KNOWN_GAP_VARIANTS` is left unchanged (`vacationHeavy` only)** — this task did not observe or
+  produce a regression, and did not close the loop needed to actually fix `vacationHeavy` (that
+  requires the separate circadian-rule fix below first, so a REAL hint can get pinned on this
+  fixture and be measured). The pinning mechanism itself is verified correct and safe in isolation
+  by `tests/test_hint_pin.py` (6 tests: feasible hints get pinned at their own achieved values,
+  infeasible hints fall back cleanly with `hintFeasible: false`, only EM-core residents count toward
+  `targetDeficitCore`, and the pins are real hard constraints on the model CP-SAT actually solves).
+- **Blocking discovery: `evaluate_hint` reports EVERY ONE of the 4 `engineHeadToHead` fixtures'
+  hints as infeasible**, so the pinning feature above never actually engages on any of them —
+  see "Pinning the polisher to its own hint"'s big caveat for the full diagnosis (a real,
+  pre-existing bug in `ResidentScheduler.jsx`'s `checkCircadianViolations`: it only enforces the
+  `eve`-immediately-followed-by-`day` direction of the hard eve/day adjacency rule, never the
+  `day`-immediately-followed-by-`eve` direction its own comment and `CLAUDE.md` both claim is also
+  hard). **Not fixed here** — deliberately out of scope: it's a correction to a hard,
+  never-relaxed rule's enforcement inside the ~8,300-line generator/repair/validator core, exercised
+  by every quality-baseline ratchet test and `chiefBenchmark`, and this repo's own
+  `rule-override-policy` memory note treats changes to hard-rule enforcement as needing dedicated,
+  reviewed work rather than a drive-by fix inside an unrelated solver task. Until it's fixed, `pin to
+  hint` will keep gracefully falling back to the pre-existing (un-pinned) staged solve on most real
+  hints instead of providing its intended protection.

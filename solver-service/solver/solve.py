@@ -16,6 +16,7 @@ from ortools.sat.python import cp_model
 from solver.build import BuildResult, build_model
 from solver.io.payload import Payload
 from solver.model.elastic import build_elastic_model
+from solver.model.hint_pin import apply_hint_pins, evaluate_hint
 from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK
 from solver.report.builder import HARD_RELAXABLE_RULES, build_feasibility_report
 from solver.validate import validate_schedule
@@ -285,10 +286,32 @@ def solve(payload: Payload) -> SolveResult:
     return run_pass2(payload)
 
 
+def _apply_hint_pinning(payload: Payload, build_result: BuildResult) -> dict:
+    """R9 follow-up ("pin to hint", see solver/model/hint_pin.py): only in
+    staged mode, and only when a hint was actually supplied -- weighted mode
+    is the deliberate pre-R9 rollback path and gets none of this. Mutates
+    `build_result.model` in place (adds hard `<=` constraints) when the hint
+    is feasible; returns a small diagnostics dict that rides along in every
+    SolveResult's `report["hintPinning"]` regardless of outcome, per the
+    "record hintFeasible:false" spec.
+    """
+    if payload.config.objective_mode != "staged" or not payload.hint:
+        return {"applied": False, "hintFeasible": None, "pinned": {}}
+
+    hint_eval = evaluate_hint(payload, build_result)
+    if not hint_eval.feasible:
+        return {"applied": False, "hintFeasible": False, "pinned": {}}
+
+    apply_hint_pins(build_result.model, payload, build_result.objective, hint_eval)
+    return {"applied": True, "hintFeasible": True, "pinned": hint_eval.components}
+
+
 def _solve_pass1(payload: Payload) -> SolveResult:
     build_result = build_model(payload)
     store = build_result.store
     objective = build_result.objective
+
+    hint_diag = _apply_hint_pinning(payload, build_result)
 
     # R9: staged is the new default (payload.py's Config.objective_mode) --
     # `"weighted"` keeps the pre-R9 single-shot solve on `objective.total_expr`
@@ -313,13 +336,13 @@ def _solve_pass1(payload: Payload) -> SolveResult:
             objective_value=0,
             solve_time_ms=solve_time_ms,
             seed=payload.config.random_seed,
-            report=_empty_report(),
+            report=_empty_report(hint_diag),
             validation={"passed": True, "failures": []},
             feasibility=None,
         )
 
     schedule = _extract_schedule(solver, store)
-    report = _build_report(solver, objective)
+    report = _build_report(solver, objective, hint_diag)
 
     failures = validate_schedule(payload, schedule)
     if failures:
@@ -479,7 +502,11 @@ def _extract_schedule(solver: cp_model.CpSolver, store) -> dict:
     return schedule
 
 
-def _build_report(solver: cp_model.CpSolver, objective) -> dict:
+def _default_hint_diag() -> dict:
+    return {"applied": False, "hintFeasible": None, "pinned": {}}
+
+
+def _build_report(solver: cp_model.CpSolver, objective, hint_diag: dict = None) -> dict:
     unfilled = []
     for (shift_id, date_str), slack in objective.coverage_slacks.items():
         short = solver.value(slack)
@@ -511,6 +538,13 @@ def _build_report(solver: cp_model.CpSolver, objective) -> dict:
         "restCompromises": rest_compromises,
         "underTarget": under_target,
         "seniorGaps": [],
+        # R9 follow-up ("pin to hint", solver/model/hint_pin.py): diagnostics
+        # for whether the warm-start hint was feasible under this model's own
+        # hard constraints and, if so, what got pinned. Additive-only key --
+        # `api/schemas.py`'s SolveResponse.report is a plain `dict`, and
+        # `mapSolverResult` (ResidentScheduler.jsx) never inspects unknown
+        # report keys, so this can never break either contract.
+        "hintPinning": hint_diag if hint_diag is not None else _default_hint_diag(),
     }
 
 
@@ -538,5 +572,11 @@ def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpS
     return report
 
 
-def _empty_report() -> dict:
-    return {"unfilled": [], "restCompromises": [], "underTarget": [], "seniorGaps": []}
+def _empty_report(hint_diag: dict = None) -> dict:
+    return {
+        "unfilled": [],
+        "restCompromises": [],
+        "underTarget": [],
+        "seniorGaps": [],
+        "hintPinning": hint_diag if hint_diag is not None else _default_hint_diag(),
+    }
