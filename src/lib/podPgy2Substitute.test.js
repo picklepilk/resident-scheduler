@@ -237,4 +237,64 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
       expect(res.report.podSubstitutes.filter(s => s.dateStr === TEST_DATE), `seed ${baseSeed}`).toEqual([]);
     }
   });
+
+  // Reviewer finding (this session): generateScheduleBest's header comment (and CLAUDE.md's
+  // Generator bullet) claimed a winner is always reproducible via a single
+  // `generateSchedule({...args, rng: mulberry32(report.seed)})` replay — false whenever Phase 3b's
+  // true-primary fix (report.truePrimaryFixApplied) was applied AFTER the full-repair attempt lost
+  // the keep/discard gate, since the persisted seed then only replays the PRE-fix schedule. Fixed by
+  // recording the exact replay recipe on `report.replay` and updating both comments.
+  //
+  // This fixture is the file's own known reproduction of preferTruePrimaryPass having real work to
+  // do (see the describe block's header above), so it's used here rather than the plain synthetic
+  // fixture. It does NOT reliably drive generateScheduleBest's OUTER keep/discard gate into
+  // rejecting full repair, though — an empirical scan of 260 seeds across both this fixture (attempts
+  // 1 and 20) found `truePrimaryFixApplied` false every time: whenever repairPass is adopted at all,
+  // its own embedded Phase 3b call already performs the exact same swap, leaving nothing for the
+  // final standalone pass to find. This mirrors 0e19a7f's own finding that the keep/discard gap is a
+  // real, provable code path (see the `repair:"truePrimaryOnly"` test right above, which exercises
+  // that exact swap directly) but not one seed search reliably reaches — hence asserting the field's
+  // presence/shape and that replay reproduces the schedule for whichever branch this run actually
+  // took, rather than requiring the true-primary-only branch specifically.
+  it("report.replay records the correct replay recipe, and following it reproduces the winning schedule bit-for-bit", () => {
+    const fx = buildIsolatedFixture({ excludePapaFromPod: false });
+    let sawTruePrimaryOnly = false;
+    for (let baseSeed = 1; baseSeed <= 20; baseSeed++) {
+      const res = generateScheduleBest(fx, { attempts: 1, baseSeed });
+      expect(res.report.replay, `seed ${baseSeed}`).toBeTruthy();
+      expect(res.report.replay.seed).toBe(res.report.seed);
+      expect(typeof res.report.replay.truePrimaryOnly).toBe('boolean');
+      expect(res.report.replay.truePrimaryOnly).toBe(!!res.report.truePrimaryFixApplied);
+
+      let replaySchedule;
+      if (!res.report.replay.truePrimaryOnly) {
+        // Single-step replay contract: unchanged from before this fix.
+        replaySchedule = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: true }).schedule;
+      } else {
+        sawTruePrimaryOnly = true;
+        // Two-step replay contract (the fix under test): step 1 reproduces the pre-fix winner...
+        const base = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: false });
+        const trueKeptCells = new Set();
+        for (const r of fx.allResidents) {
+          for (const [ds, sid] of Object.entries(fx.block.schedule?.[r.id] || {})) {
+            if (sid) trueKeptCells.add(`${r.id}|${ds}`);
+          }
+        }
+        // ...step 2 replays Phase 3b alone on top of it, exactly as generateScheduleBest's own
+        // gap-fix block does.
+        replaySchedule = generateSchedule({
+          ...fx,
+          block: { ...fx.block, schedule: base.schedule },
+          rng: mulberry32(res.report.replay.seed),
+          repair: 'truePrimaryOnly',
+          keptCellsOverride: trueKeptCells,
+        }).schedule;
+      }
+      expect(replaySchedule, `seed ${baseSeed}`).toEqual(res.schedule);
+    }
+    // Not asserted true (see this test's header comment) — logged for visibility if a future
+    // fixture/seed change happens to hit the two-step path, without making the test flaky either way.
+    // eslint-disable-next-line no-console
+    if (sawTruePrimaryOnly) console.log('[replay recipe] two-step branch exercised at least once');
+  });
 });

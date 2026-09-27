@@ -2671,6 +2671,42 @@ function seniorCompositionExempt(shift, ds) {
   return shift.type === 'day' && parseDate(ds).getDay() === 3;
 }
 
+// Whether resident `r`'s placement on `shift`/`ds` is a fallback-PGY composition substitute worth
+// fixing: the fallback PGY (SENIOR_COMPOSITION[area].fallback) sits on the shift, compositionSatisfies
+// allows it (i.e. it's a genuine Wellness-Wednesday/conference substitute, not an ordinary hard
+// error), AND no true primary already covers the same shift/date (if one does, there's nothing to
+// swap — see the caller in preferTruePrimaryPass for why that case is a no-op). Shared by
+// preferTruePrimaryPass below (generateSchedule's Phase 3b, which performs the swap) and
+// hasFallbackComposition right below it (generateScheduleBest's own gate on whether Phase 3b's
+// replay pass is even worth running) so the two can never drift on what counts as "a fallback
+// placement". Returns the fallback resident, or undefined when this shift/date has none.
+function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf) {
+  const comp = SENIOR_COMPOSITION[area];
+  const fallback = allResidents.find(r =>
+    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
+    compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
+  if (!fallback) return undefined;
+  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) return undefined;
+  return fallback;
+}
+// Scans the whole block for any fallbackCompositionAt hit across both SENIOR_COMPOSITION areas
+// (POD, FLEX) — used by generateScheduleBest to decide whether its extra truePrimaryOnly replay
+// pass (see that function's own comment) has any work to do at all before paying for a whole second
+// generateSchedule call on every single generation. Cheap: short-circuits on the first hit, and
+// fallbackCompositionAt's own `.find()` is a fast empty miss on every date the block's own 1-2
+// substitute-eligible dates aren't (same reasoning as preferTruePrimaryPass's header comment).
+function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
+  for (const area of Object.keys(SENIOR_COMPOSITION)) {
+    for (const shift of SHIFTS.filter(s => s.area === area)) {
+      for (const ds of getBlockDates(block.startDate, block.endDate)) {
+        if (seniorCompositionExempt(shift, ds)) continue;
+        if (fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ─── Journal Club ───────────────────────────────────────────────────────────
 // Journal Club runs 18:00-21:00. Its DATES used to be derived-only (first Tuesday of each calendar
 // month); they are now chief-overridable per academic year via ayData[AY].jcDates, resolved through
@@ -5902,8 +5938,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // full pass. Scans every (area, shift, date) rather than a report array (there is no live report
   // array for this — report.podSubstitutes is built AFTER repair, from whatever this phase leaves
   // behind) — cheap in practice, since `fallback` only ever matches on the block's own 1-2
-  // substitute-eligible dates (compositionSatisfies never lets the fallback PGY qualify anywhere
-  // else, so the `.find()` below is a fast empty miss for every other date).
+  // substitute-eligible dates (fallbackCompositionAt's compositionSatisfies check never lets the
+  // fallback PGY qualify anywhere else, so the `.find()` inside it is a fast empty miss for every
+  // other date). "Is this shift/date a fallback placement worth fixing" is fallbackCompositionAt's
+  // own question (module scope, shared with generateScheduleBest's hasFallbackComposition gate) —
+  // this loop only decides what to DO once it has one.
   function preferTruePrimaryPass() {
     for (const area of Object.keys(SENIOR_COMPOSITION)) {
       const comp = SENIOR_COMPOSITION[area];
@@ -5911,13 +5950,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         for (const ds of dates) {
           if (budget <= 0) break;
           if (seniorCompositionExempt(shift, ds)) continue;
-          const fallback = allResidents.find(r =>
-            schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
-            compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
-          if (!fallback) continue; // no substitute sitting on this shift/date at all
-          // Composition is already satisfied by a DIFFERENT body on this same shift/date (a true
-          // primary elsewhere on it) — nothing to fix; leave this fallback exactly where they are.
-          if (allResidents.some(r => schedule[r.id][ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) continue;
+          const fallback = fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf);
+          if (!fallback) continue; // no substitute sitting on this shift/date (or already covered by a true primary elsewhere on it)
           if (!movable(fallback.id, ds)) continue;
           unassignCell(fallback.id, ds);
           const { candidates } = poolFor(shift, ds);
@@ -7244,14 +7278,24 @@ function scoreGenerationResult(res, args, rulePriority) {
 // nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
 // different schedules), scores each with scoreGenerationResult, and keeps the strictly best
 // result per betterQuality. One explicit baseSeed is generated per call (or accepted via opts)
-// and persisted on the winning report alongside the winning seed + attempt index, so any result
-// is replayable: `generateSchedule({...args, rng: mulberry32(report.seed)})` reproduces it.
+// and persisted on the winning report alongside the winning seed + attempt index.
 //
 // Repair runs once, AFTER selection: the winning seed is re-run with repair enabled (deterministic
 // rng reproduces the exact same pre-repair schedule, then repair mutates from there) and the
 // repaired result is adopted only on STRICT betterQuality improvement — a tie (or worse) keeps the
 // unrepaired winner, since repair could otherwise trade away something the quality vector doesn't
 // score for zero measured benefit.
+//
+// REPLAY (report.replay, see the true-primary gap-fix block below): when `report.replay.
+// truePrimaryOnly` is false, a plain `generateSchedule({...args, rng: mulberry32(report.replay.seed),
+// repair: true})` reproduces `best` exactly. When it's true, that single call only reproduces the
+// PRE-fix schedule — the actual winner needs the same second step this function itself ran:
+//   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: false });
+//   const winner = generateSchedule({ ...args, rng: mulberry32(report.replay.seed),
+//     repair: 'truePrimaryOnly', block: { ...args.block, schedule: base.schedule },
+//     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
+//     args.block.schedule> }).
+// See CLAUDE.md's Generator section for the one-line version of this contract.
 export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = true } = {}) {
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
@@ -7315,7 +7359,15 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   // `keptCellsOverride` is computed from the CALLER's own original `args.block.schedule` — NOT
   // `best.result.schedule`, which is mostly the generator's own fill — so a genuine chief hand-edit
   // stays exactly as protected from this pass as it would be from a normal repair run.
-  if (repair) {
+  //
+  // Gated on hasFallbackComposition (perf): the extra generateSchedule call below is real work (a
+  // full attempt's worth of setup, thrown away when it finds nothing), and on a normal schedule
+  // there is no fallback-PGY composition placement anywhere for Phase 3b to fix — that's the fast,
+  // fully-expected case per this fix's own header (score()'s seniorAdj term already makes a fallback
+  // over a genuinely free true primary essentially never happen). Uses the SAME predicate
+  // preferTruePrimaryPass itself uses (fallbackCompositionAt, via this scan) so the gate can never
+  // skip a case the pass below would actually have fixed.
+  if (repair && hasFallbackComposition(best.result.schedule, args.allResidents, args.block, args.appSettings, args.ayConf)) {
     const trueKeptCells = new Set();
     for (const r of args.allResidents) {
       for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
@@ -7369,6 +7421,11 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   best.result.report.baseSeed = resolvedBaseSeed;
   best.result.report.seed = best.seed;
   best.result.report.qualityVector = best.score.qualityVector;
+  // Replay recipe (see this function's own header). `truePrimaryOnly` reflects whether the gap-fix
+  // block above actually replaced `best` (mirrors report.truePrimaryFixApplied, when present) —
+  // false means a single seed replay with repair:true is exact; true means the two-step recipe is
+  // required to reproduce this exact schedule.
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied };
   return best.result;
 }
 
