@@ -10,7 +10,7 @@ import {
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
   Archive, FlaskConical, Clock, Maximize2, Minimize2, Sparkles, ChevronLeft, MoreHorizontal,
-  Eye, EyeOff, Wrench,
+  Eye, EyeOff, Wrench, Bell,
 } from 'lucide-react';
 // xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
 // point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
@@ -53,6 +53,7 @@ import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
+import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -8363,6 +8364,40 @@ function Toast({ toast, onClose }) {
     <div className={`no-print fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border ${s[toast.tone] || s.amber}`}>
       <span>{toast.msg}</span>
       <button onClick={onClose} className="ml-1 opacity-50 hover:opacity-100"><X size={14}/></button>
+    </div>
+  );
+}
+
+// Bell dropdown for the header (P4 UI polish) — lists the session's last toasts (see
+// toastHistory.js) so one that already auto-dismissed can still be read. Tokens (bg-popover/
+// text-popover-foreground/border-border/bg-accent) are the same semantic set the Export menu right
+// next to this in the header already uses, so it repaints correctly under the `.dark` override
+// sheet with no extra work here (CLAUDE.md: dark mode is that one sheet, never Tailwind `dark:`).
+// A left dot repeats the toast's tone (amber/red/green) so the list reads at a glance without
+// re-reading every message.
+const TOAST_DOT = { amber: 'bg-amber-500', red: 'bg-red-500', green: 'bg-green-500' };
+function ToastHistoryPanel({ history, onClear }) {
+  return (
+    <div role="menu" className="absolute right-0 top-full mt-1 w-72 max-w-[85vw] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg z-50">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notifications</span>
+        {history.length > 0 && (
+          <button onClick={onClear} className="text-xs text-primary hover:underline">Clear</button>
+        )}
+      </div>
+      <div className="max-h-80 overflow-y-auto">
+        {history.length === 0 ? (
+          <p className="px-3 py-4 text-xs text-muted-foreground text-center">No notifications yet this session.</p>
+        ) : (
+          history.map((h, i) => (
+            <div key={i} className="flex items-start gap-2 px-3 py-2 border-b border-border last:border-b-0">
+              <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${TOAST_DOT[h.tone] || TOAST_DOT.amber}`}/>
+              <span className="text-xs text-foreground flex-1 min-w-0 break-words">{h.msg}</span>
+              <span className="text-[10px] text-muted-foreground shrink-0 whitespace-nowrap">{formatToastAge(h.at)}</span>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -19645,6 +19680,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   useEffect(() => { if (tab === 'home') setTab('dashboard'); }, [tab]);
   const [navOpen, setNavOpen] = useState(false); // below-md sidebar drawer; ignored at md+
   const [toast, setToast] = useState(null);
+  // Toast history (P4 UI polish): a toast auto-dismisses after 5s with no way to re-read it — this
+  // is a session-only in-memory list (last TOAST_HISTORY_LIMIT), deliberately NOT a `res_*` key (see
+  // toastHistory.js's own header comment). `toastHistoryOpen` is the bell dropdown's own open/closed
+  // state, independent of whether a toast is currently showing.
+  const [toastHistory, setToastHistory] = useState([]);
+  const [toastHistoryOpen, setToastHistoryOpen] = useState(false);
   const [switchPending, setSwitchPending] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
@@ -20173,7 +20214,11 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Convenience: conference data for the current block's AY
   const currentAyConf = ayData[block.academicYear] || { ...DEFAULT_AY_CONF };
 
-  function showToast(msg, tone='amber') { setToast({msg,tone}); setTimeout(()=>setToast(null),5000); }
+  function showToast(msg, tone='amber') {
+    setToast({msg,tone});
+    setToastHistory(h => addToastEntry(h, {msg, tone}));
+    setTimeout(()=>setToast(null),5000);
+  }
 
   const allResidents = useMemo(()=>{
     const em = emRoster.map(r=>({
@@ -20668,6 +20713,23 @@ export default function ResidentScheduler({ viewer } = {}) {
                 <FlaskConical size={16}/>
               </button>
             )}
+            {/* Toast history bell (P4 UI polish): a toast auto-dismisses after 5s with no way to
+                re-read it. Same dropdown convention as the Export menu just below in the JSX
+                (fixed-inset-0 click-catcher + absolute panel) — see ToastHistoryPanel. */}
+            <div className="relative">
+              <button onClick={()=>setToastHistoryOpen(o=>!o)} title="Notification history"
+                aria-label="Notification history" aria-haspopup="menu" aria-expanded={toastHistoryOpen}
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                <Bell size={16}/>
+              </button>
+              {toastHistoryOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={()=>setToastHistoryOpen(false)}/>
+                  <ToastHistoryPanel history={toastHistory}
+                    onClear={()=>setToastHistory(clearToastHistory())}/>
+                </>
+              )}
+            </div>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
