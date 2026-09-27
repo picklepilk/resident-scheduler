@@ -15039,6 +15039,62 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     );
   }
 
+  // The three pre-generate confirmation modals (Generate/"Before You Generate", Clear & Regenerate,
+  // Regenerate Unlocked/Range — see KeptCellViolationsPanel's own "same three readiness modals"
+  // comment below) all show the same two content sections, a readiness-warning panel and a
+  // kept-cell-violations panel, around an action-specific intro paragraph and a Cancel/primary pair.
+  // They used to be three separately-rendered <Modal> blocks that had quietly drifted (only the
+  // fill-mode one auto-skips when there's nothing to report — see requestGenerate; only Clear &
+  // Regenerate omits the "fix violators" button, since a full wipe leaves nothing to fix — see
+  // KeptCellViolationsPanel). Collapsed to one spec object + one render: whichever confirm* state is
+  // set (at most one ever is, since each is only set by its own button/requestX function) decides
+  // the spec, so a future readiness check only needs adding to the shared render once. Every
+  // existing title/copy/button-label/handler is preserved verbatim per kind — only the JSX plumbing
+  // is shared now, not the choices or their downstream behavior.
+  const genConfirmSpec = confirmGenerate
+    ? {
+        title: 'Before You Generate',
+        note: confirmGenerate.messages.length > 0
+          ? "Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but rules that depend on these dates may not apply correctly."
+          : null,
+        messages: confirmGenerate.messages,
+        keptViolations: confirmGenerate.keptViolations,
+        onFixAndGenerate: () => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
+          cleared => runGenerate(false, cleared)),
+        onCancel: () => setConfirmGenerate(null),
+        primaryLabel: 'Generate Anyway',
+        primaryVariant: 'primary',
+        onPrimary: () => runGenerate(false),
+      }
+    : confirmRegen
+    ? {
+        title: 'Clear & Regenerate?',
+        note: 'This clears all current assignments — including ones you entered manually — and regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.',
+        messages: generateReadiness.messages,
+        keptViolations: generateReadiness.keptViolations,
+        onFixAndGenerate: null, // always empty under a full clear — see KeptCellViolationsPanel's comment
+        onCancel: () => setConfirmRegen(false),
+        primaryLabel: 'Clear & Regenerate',
+        primaryVariant: 'danger',
+        onPrimary: () => runGenerate(true),
+      }
+    : confirmPartialRegen
+    ? {
+        title: confirmPartialRegen.kind === 'range' ? 'Regenerate Date Range?' : 'Regenerate Unlocked Cells?',
+        note: confirmPartialRegen.kind === 'range'
+          ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
+          : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>,
+        messages: generateReadiness.messages,
+        keptViolations: generateReadiness.keptViolations,
+        onFixAndGenerate: () => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
+          cleared => runPartialRegenerate(confirmPartialRegen, cleared)),
+        onCancel: () => setConfirmPartialRegen(null),
+        primaryLabel: 'Regenerate',
+        primaryVariant: 'danger',
+        onPrimary: () => runPartialRegenerate(confirmPartialRegen),
+      }
+    : null;
+
   return (
     <div ref={gridWrapRef} className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
       {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
@@ -15328,59 +15384,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         </ConfirmDialog>
       )}
 
-      {confirmRegen && (
-        <Modal title="Clear & Regenerate?" onClose={()=>setConfirmRegen(false)}>
+      {/* Single shared modal for all three pre-generate confirmations — see genConfirmSpec's own
+          comment above (right before this component's `return`) for why these three collapsed into
+          one render. At most one of confirmGenerate/confirmRegen/confirmPartialRegen is ever set,
+          since each is only opened by its own button/requestX function, so this never has to choose
+          between two specs at once. */}
+      {genConfirmSpec && (
+        <Modal title={genConfirmSpec.title} onClose={genConfirmSpec.onCancel}>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              This clears <strong>all current assignments — including ones you entered manually</strong> — and
-              regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
-            </p>
-            <ReadinessWarningPanel messages={generateReadiness.messages}/>
-            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}/>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
-              <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {confirmPartialRegen && (
-        <Modal title={confirmPartialRegen.kind==='range' ? 'Regenerate Date Range?' : 'Regenerate Unlocked Cells?'} onClose={()=>setConfirmPartialRegen(null)}>
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              {confirmPartialRegen.kind==='range'
-                ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
-                : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
-            </p>
-            <ReadinessWarningPanel messages={generateReadiness.messages}/>
-            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}
-              onFixAndGenerate={() => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
-                cleared => runPartialRegenerate(confirmPartialRegen, cleared))}/>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
-              <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {confirmGenerate && (
-        <Modal title="Before You Generate" onClose={()=>setConfirmGenerate(null)}>
-          <div className="space-y-4">
-            {confirmGenerate.messages.length > 0 && (
-              <p className="text-sm text-gray-600">
-                Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
-                rules that depend on these dates may not apply correctly.
-              </p>
+            {genConfirmSpec.note && (
+              <p className="text-sm text-gray-600">{genConfirmSpec.note}</p>
             )}
-            <ReadinessWarningPanel messages={confirmGenerate.messages}/>
-            <KeptCellViolationsPanel violations={confirmGenerate.keptViolations}
-              onFixAndGenerate={() => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
-                cleared => runGenerate(false, cleared))}/>
+            <ReadinessWarningPanel messages={genConfirmSpec.messages}/>
+            <KeptCellViolationsPanel violations={genConfirmSpec.keptViolations} onFixAndGenerate={genConfirmSpec.onFixAndGenerate}/>
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmGenerate(null)}>Cancel</Button>
-              <Button variant="primary" onClick={()=>runGenerate(false)}>Generate Anyway</Button>
+              <Button variant="ghost" onClick={genConfirmSpec.onCancel}>Cancel</Button>
+              <Button variant={genConfirmSpec.primaryVariant} onClick={genConfirmSpec.onPrimary}>{genConfirmSpec.primaryLabel}</Button>
             </div>
           </div>
         </Modal>
