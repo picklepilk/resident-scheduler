@@ -48,13 +48,17 @@ function isOffDate(resident, ds) {
 // GR hours on `ds` if it's this resident's GR weekday and they're not vacation/approved-off that
 // specific date — same exemption isStreakWorkDay/the 1-in-7 rule already apply to a GR obligation
 // day with no actual schedule evidence.
-function grHoursOn(resident, ds, grDow) {
+// Exported (R7, solver parity): buildSolverPayload needs the exact same GR/JC-hours-on-a-date
+// resolution to compute the `obligationHours`/`grDates` payload fields the solver's
+// weekly_hours.py rolling-7-day cap and rest.py's GR-end rest adjustment consume — one source of
+// truth for both engines, per CLAUDE.md's "payload gotcha".
+export function grHoursOn(resident, ds, grDow) {
   if (grDow == null) return 0;
   if (parseDate(ds).getDay() !== grDow) return 0;
   return isOffDate(resident, ds) ? 0 : GR_DURATION_H;
 }
 
-function jcHoursOn(resident, ds) {
+export function jcHoursOn(resident, ds) {
   return (resident?.jcPresentDates || []).includes(ds) ? JC_DURATION_H : 0;
 }
 

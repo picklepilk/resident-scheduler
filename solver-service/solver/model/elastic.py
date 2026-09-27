@@ -33,9 +33,12 @@ Never touches (rebuilt via the EXACT SAME functions build.py uses for pass
 1, so there is only one encoding of every never-relax rule): eligibility /
 variable existence / at-most-one / locked cells (`build_variables`),
 coverage MAX (`coverage.py`, always hard), trauma solo / senior composition
-(`senior_composition.py`, always hard), and the batch-2 <=2-trauma-nights-
+(`senior_composition.py`, always hard), the batch-2 <=2-trauma-nights-
 per-run cap (`trauma_runs.add_trauma_run_hard_cap`, always hard -- the chief
-never wants this one negotiable, same posture as senior composition).
+never wants this one negotiable, same posture as senior composition), and
+R7's ACGME 6.17.a.3 rolling-7-day 60/72h caps (`weekly_hours.py`, always
+hard -- an accreditation requirement, stricter than the ordinary duty-hour
+families this module DOES relax).
 
 Objective: pass-2's objective = pass-1's soft objective (unchanged, built by
 `objective.build_objective` with its own fixed, moderate per-term weights --
@@ -82,6 +85,7 @@ from solver.model.rest import add_rest_constraints
 from solver.model.senior_composition import add_senior_composition_constraints
 from solver.model.trauma_runs import add_trauma_run_hard_cap
 from solver.model.variables import VarStore, build_variables
+from solver.model.weekly_hours import add_weekly_hours_cap_constraints
 from solver.model.workday_limits import add_workday_limit_constraints
 
 # One literal per (resident, family) gates EVERY instance of that family for
@@ -191,6 +195,7 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     add_count_cap_constraints(model, payload, store, enforcement=cap_enforcement)
     add_senior_composition_constraints(model, payload, store)  # always hard, unchanged
     add_trauma_run_hard_cap(model, payload, store)  # always hard, unchanged -- batch 2
+    add_weekly_hours_cap_constraints(model, payload, store)  # always hard, unchanged -- R7
 
     # build_objective() sets model.minimize(objective.total_expr) as a side
     # effect -- harmless, since the combined pass-2 objective computed below

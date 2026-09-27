@@ -20,6 +20,7 @@ from solver.model.rest import add_rest_constraints
 from solver.model.senior_composition import add_senior_composition_constraints
 from solver.model.trauma_runs import add_trauma_run_hard_cap
 from solver.model.variables import VarStore, build_variables
+from solver.model.weekly_hours import add_weekly_hours_cap_constraints
 from solver.model.workday_limits import add_workday_limit_constraints
 
 
@@ -42,6 +43,7 @@ def build_model(payload: Payload) -> BuildResult:
     add_count_cap_constraints(model, payload, store)
     add_senior_composition_constraints(model, payload, store)
     add_trauma_run_hard_cap(model, payload, store)  # batch 2: never relaxable, like senior composition
+    add_weekly_hours_cap_constraints(model, payload, store)  # R7: ACGME 6.17.a.3, never relaxable
 
     objective = build_objective(model, payload, store, coverage_result)
 

@@ -76,3 +76,86 @@ without the explicit "these residents got a +1-over-max shift" surfacing the
 JS engine's own `report.overstaffed` provides). Left out of this change to
 keep it minimal; would need a report-shape addition on both sides plus a
 `docs/PAYLOAD_SCHEMA.md` response-shape update if picked up later.
+
+## R7 (2026-09-27): rule-severity policy + ACGME EM work-hour rules — solver parity
+
+Plan: `~/.claude/plans/resume-scheduling-discussion-mellow-petal.md`. Policy source: memory
+`acgme-em-work-hours`/`rule-override-policy`, `src/lib/rulePolicy.js` (tiers `acgme`/`program`/
+`override`/`info`). Principle unchanged: **the app resolves ALL policy into the payload; the solver
+only solves.**
+
+### New/changed request fields
+
+- `residents[].obligationHours: {date: hours}` — per-resident Grand Rounds (4h) + Journal Club (3h)
+  contribution, ALREADY resolved (vacation/off-filtered) by `src/lib/acgmeHours.js`'s exported
+  `grHoursOn`/`jcHoursOn`. Covers BOTH the 14-day prior-tail window and the block's own dates (same
+  range `priorTail`/`priorTailObligations` already span). Calendar facts, independent of the solve —
+  never entangled with any `x` var. Consumed only by `solver/model/weekly_hours.py`. Optional,
+  defaults to `{}` (no-op).
+- `residents[].grDates: [date]` — the subset of those same dates (tail or block) that are this
+  resident's OWN Grand Rounds obligation day (weekday match, not vacation/off). Consumed only by
+  `solver/model/rest.py`'s GR-end adjustment. Optional, defaults to `[]` (no-op — rest is measured
+  from the shift's own end only, today's behavior).
+- `grEndH: int` — Grand Rounds' own end hour (`GR_END_H`, today always 12). Same "altitude fix"
+  convention as `jcWindowStartH`/`jcWindowEndH`/`postNightDayRestH`. Optional, defaults to 12.
+- `truePrimary[shiftId][date]: [residentId]` — SAME shape/keys as `seniorPrimary`, but restricted to
+  residents who satisfy the area's hard composition as the TRUE primary PGY (never a
+  Wellness-Wednesday/conference-away substitute). Built for every `SENIOR_COMPOSITION` area (POD and
+  FLEX), mirroring `ResidentScheduler.jsx`'s `preferTruePrimaryPass` scope exactly. An empty array is
+  meaningful ("no true primary available today — the substitute is the fully accepted outcome, no
+  preference penalty"), same posture as `seniorPrimary`'s own empty-array convention. Consumed only
+  by `solver/model/senior_composition.py`'s `add_true_primary_preference_terms`. Optional, defaults
+  to `{}` (no-op).
+- `settings.enforceRest` no longer has any effect on `solver/model/rest.py`'s rule 17 (rest >= the
+  earlier shift's own length) — it is unconditionally on now, matching the chief's 2026-09-26 policy
+  that this is ACGME-hard with no toggle. (Rules 18–23 already ignored this setting; this closes the
+  one remaining gap. `enforceWeekendOff` is unaffected.)
+
+### New rule: `edWeekly60` / `totalWeekly72` (ACGME EM 6.17.a.3, tier `acgme`)
+
+`solver/model/weekly_hours.py` — for every EM resident (`is_em_core`) on a schedulable EM rotation
+(`target is not None`, mirroring `candidatePool`'s `isEmResident(r) && isSchedulable(r)` gate) and
+every rolling 7-day window touching the block (tail-only windows are pure history and skipped, same
+convention as every other sliding-window family in this codebase):
+
+- scheduled ED hours (shift durations only) in the window `<= 60`
+- ED hours + `obligationHours` in the window `<= 72`
+
+**Always hard, never wrapped by pass-2 relaxation** — called unconditionally from both `build.py` and
+`elastic.py` with no `enforcement` parameter, exactly like `senior_composition.py` and
+`trauma_runs.add_trauma_run_hard_cap`. This is an accreditation requirement, stricter than the
+ordinary duty-hour families (`hours_cap.py`/`rest.py`/`circadian.py`/`workday_limits.py`) the chief
+has accepted as pass-2-relaxable last resorts. `solver/validate.py`'s independent re-check
+(`_check_weekly_hours_cap`) mirrors the same scope/skip logic.
+
+### Changed rule: `restGap` (rule 17) — GR-end adjustment
+
+`solver/model/rest.py`'s `_effective_earlier_end_min` (and `solver/validate.py`'s independent
+re-implementation of the same): when the earlier shift's own end falls on that resident's own GR date
+(`gr_dates`) and before GR's own end (`gr_end_h`), rest is measured from GR's end instead of the
+shift's end. The REQUIRED gap (still the earlier shift's own duration) is unchanged — only the point
+rest is measured FROM moves later, which can only make the constraint stricter, never looser. Mirrors
+`src/lib/acgmeHours.js`'s `effectiveShiftEndMs` exactly (EM FAQ: "rest counts from end of conference
+when attended").
+
+### New soft term: `podTruePrimary`
+
+`solver/model/senior_composition.py`'s `add_true_primary_preference_terms`, wired into
+`solver/model/objective.py`, weight `config/default_weights.json`'s `podTruePrimary.perUnit = 600`
+(same order of magnitude as `podEmComposition`/`flexEmComposition`; included in
+`tests/test_weight_tiering.py`'s `_anti_fill_sum`/`_generous_soft_objective_max`/
+`test_overstaff_coverage_dominates_ordinary_soft_rules` accounting). Charges the weight exactly when a
+(shift, date) with a true primary AVAILABLE ends up staffed only by a fallback/substitute — never when
+unstaffed, and never on a date with no true primary to prefer (the substitute is the fully accepted
+outcome there). `mapSolverResult` (`ResidentScheduler.jsx`) now also rebuilds `report.podSubstitutes`
+from the solver's own final schedule (previously hardcoded `[]`), the same scan
+`generateSchedule` runs post-repair, excluding any cell already present in the request's
+`block.schedule` (a locked/manual entry, not the solver's own decision).
+
+### Response shape
+
+Unchanged. `report.podSubstitutes` was already part of `mapSolverResult`'s OUTPUT shape (JS-side
+superset); the solver's own `/solve` response never carried it and still doesn't — `weekly_hours.py`/
+`podTruePrimary` are both enforced/costed purely inside the model, with no new response field needed
+(a rolling-hours violation would only ever appear as a genuine `INFEASIBLE`/`RELAXED` outcome, already
+covered by the existing status/feasibility shape).

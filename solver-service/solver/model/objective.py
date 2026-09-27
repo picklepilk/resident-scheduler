@@ -77,6 +77,7 @@ from solver.model import timing
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
 from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
+from solver.model.senior_composition import add_true_primary_preference_terms
 from solver.model.sequence_constraints import add_soft_sequence_constraint
 from solver.model.trauma_runs import (
     add_night_duration_alternation_terms,
@@ -567,6 +568,12 @@ def _add_em_composition_round2b_terms(model, payload: Payload, store: VarStore, 
     add_pgy_fallback_terms(model, payload, store, group, weights)
 
 
+# ---- R7 (2026-09-27, gap 3): prefer a true primary PGY over an available substitute ----
+
+def _add_true_primary_preference_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_true_primary_preference_terms(model, payload, store, group, int(weights["podTruePrimary"]["perUnit"]))
+
+
 # ---- rule 42: dowPreference ----
 
 def _add_dow_preference_term(payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
@@ -592,6 +599,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_band8_terms(model, payload, store, group, weights)
     _add_trauma_run_batch2_terms(model, payload, store, group, weights)
     _add_em_composition_round2b_terms(model, payload, store, group, weights)
+    _add_true_primary_preference_term(model, payload, store, group, weights)
     _add_dow_preference_term(payload, store, group, weights)
 
     total_expr = sum((coef * expr for coef, expr in group.terms), start=0)

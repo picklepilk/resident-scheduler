@@ -81,6 +81,15 @@ class Resident:
     prior_tail_obligations: frozenset  # dates
     prior_tail_hours: int
     ay_prior: AyPrior
+    # R7 (2026-09-27, ACGME EM 6.17.a.3 rolling-7-day 60/72h caps + rest.py's GR-end adjustment):
+    # `obligation_hours` covers BOTH tail and block dates -- GR/Journal-Club hours are calendar
+    # facts independent of the solve (src/lib/acgmeHours.js's grHoursOn/jcHoursOn), never entangled
+    # with any x-var. `gr_dates` is the subset of dates (tail or block) this resident's own Grand
+    # Rounds obligation lands on (already vacation/off-filtered by the JS side). Both OPTIONAL,
+    # additive, default empty -- a payload that doesn't send them makes solver/model/weekly_hours.py
+    # count zero obligation hours and rest.py's GR-end adjustment a no-op, matching pre-R7 behavior.
+    obligation_hours: dict = field(default_factory=dict)      # date -> hours (int)
+    gr_dates: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -157,6 +166,18 @@ class Payload:
     jc_window_start_h: int = 18
     jc_window_end_h: int = 21
     post_night_day_rest_h: int = 24
+    # ---- R7 (2026-09-27, solver parity gaps 2/3) ----
+    # `gr_end_h`: same "altitude fix" convention as the three fields directly above (Grand Rounds'
+    # own end hour, src/lib/acgmeHours.js's GR_END_H) -- rest.py's rule 17 needs it for the GR-end
+    # rest adjustment. OPTIONAL, defaults to 12 (today's only real value) so an older JS build that
+    # doesn't send it keeps today's behavior unchanged.
+    gr_end_h: int = 12
+    # `true_primary[shiftId][date]` -- SAME shape/keys as `senior_primary`, restricted to residents
+    # who satisfy the area's composition as the TRUE primary PGY (never a Wellness-Wednesday/
+    # conference-away substitute). OPTIONAL, additive, defaults to {} (a documented no-op for
+    # solver/model/senior_composition.py's add_true_primary_preference_terms -- see that function's
+    # own docstring).
+    true_primary: dict = field(default_factory=dict)
 
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
@@ -235,6 +256,8 @@ def _parse_residents(raw: list) -> list:
                 prior_tail_obligations=frozenset(r.get("priorTailObligations", ()) or ()),
                 prior_tail_hours=int(r.get("priorTailHours", 0) or 0),
                 ay_prior=ay,
+                obligation_hours={d: int(h) for d, h in (r.get("obligationHours", {}) or {}).items()},
+                gr_dates=frozenset(r.get("grDates", ()) or ()),
             )
         )
     return out
@@ -323,6 +346,8 @@ def parse_payload(raw: dict) -> Payload:
             jc_window_start_h=int(raw.get("jcWindowStartH", 18) or 18),
             jc_window_end_h=int(raw.get("jcWindowEndH", 21) or 21),
             post_night_day_rest_h=int(raw.get("postNightDayRestH", 24) or 24),
+            gr_end_h=int(raw.get("grEndH", 12) or 12),
+            true_primary=raw.get("truePrimary", {}) or {},
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

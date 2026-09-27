@@ -235,6 +235,39 @@ describe('buildSolverPayload', () => {
     expect(payload.emPgy3ResidentIds).not.toContain('syn_sierra');
   });
 
+  // ── R7 (2026-09-27): ACGME EM 6.17.a.3 weekly caps + GR-end rest adjustment + PGY-3-first ──
+  it('residents[] carries obligationHours/grDates for the weekly-hour caps and GR-end rest adjustment', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    const mike = payload.residents.find(p => p.id === 'syn_mike'); // EM_HOME chief PGY-3
+    expect(mike).toBeTruthy();
+    expect(Array.isArray(mike.grDates)).toBe(true);
+    expect(mike.grDates).toContain('2026-07-15'); // EM_HOME's GR weekday is Wednesday
+    expect(mike.grDates.every(ds => new Date(ds + 'T00:00:00').getDay() === 3)).toBe(true);
+    expect(typeof mike.obligationHours).toBe('object');
+    expect(mike.obligationHours['2026-07-15']).toBe(4); // GR_DURATION_H
+  });
+
+  it('grEndH is sent (altitude fix, defaults to 12 — Grand Rounds\' own end hour)', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.grEndH).toBe(12);
+  });
+
+  it('truePrimary shares seniorPrimary\'s exact (shift,date) keys and is always a subset per date', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(Object.keys(payload.truePrimary).sort()).toEqual(Object.keys(payload.seniorPrimary).sort());
+    for (const shiftId of Object.keys(payload.seniorPrimary)) {
+      expect(Object.keys(payload.truePrimary[shiftId]).sort()).toEqual(Object.keys(payload.seniorPrimary[shiftId]).sort());
+      for (const ds of Object.keys(payload.truePrimary[shiftId])) {
+        for (const rid of payload.truePrimary[shiftId][ds]) {
+          expect(payload.seniorPrimary[shiftId][ds]).toContain(rid);
+        }
+      }
+    }
+  });
+
   it('alternationExemptDates is empty with no 12h windows configured (no-op guarantee)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
@@ -412,5 +445,65 @@ describe('mapSolverResult', () => {
     expect(report.unfilled).toEqual([]);
     expect(report.seniorGaps).toEqual([]);
     expect(report.mode).toBe('strict');
+  });
+
+  // R7 (2026-09-27, gap 3): report.podSubstitutes rebuilt from the solver's own final schedule, the
+  // same scan generateSchedule itself runs post-repair (mirrors podPgy2Substitute.test.js's
+  // hand-built-resident/fixed-block pattern).
+  describe('podSubstitutes', () => {
+    const ppBlock = { id: 'blk_test', startDate: '2026-07-06', endDate: '2026-08-02', academicYear: 'AY26/27', specialDays: {}, schedule: {} };
+    const POD_WW = '2026-07-22'; // POD's own Wellness Wednesday (3rd Wed on/after block start)
+    function res(overrides) {
+      return {
+        id: overrides.id, firstName: 'Test', lastName: 'Resident',
+        category: overrides.category, pgy: overrides.pgy,
+        approvedDatesOff: [], vacationDates: [], jeopardyDates: [], jcPresentDates: [], grLectureDates: [],
+      };
+    }
+
+    it('flags an EM PGY-2 covering POD on its own Wellness Wednesday, reason "wellness"', () => {
+      const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy2] });
+      expect(report.podSubstitutes).toHaveLength(1);
+      expect(report.podSubstitutes[0]).toMatchObject({ residentId: 'p2', dateStr: POD_WW, shiftId: 'POD-N', reason: 'wellness' });
+    });
+
+    it('does not flag a cell already present (locked/manual) in the request block.schedule', () => {
+      const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+      const seededBlock = { ...ppBlock, schedule: { p2: { [POD_WW]: 'POD-N' } } };
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: seededBlock, allResidents: [pgy2] });
+      expect(report.podSubstitutes).toEqual([]);
+    });
+
+    it('does not flag a true PGY-3 on POD (no substitution happened)', () => {
+      const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p3: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy3] });
+      expect(report.podSubstitutes).toEqual([]);
+    });
+
+    it('is empty when allResidents is omitted (backward compatible)', () => {
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock });
+      expect(report.podSubstitutes).toEqual([]);
+    });
   });
 });

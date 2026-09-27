@@ -51,7 +51,7 @@ import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssues
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
-import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
+import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -6762,20 +6762,35 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // even when the qualifying id list comes out EMPTY (no PGY-3/substitute available at all that
   // day) — an empty array is meaningful ("if staffed, nobody currently qualifies", i.e. structurally
   // unfillable that day), not "no constraint"; omitting it would silently mean the opposite.
+  // truePrimary[s][d] — R7 gap 3: the SAME (shift,date) keys as seniorPrimary, but restricted to
+  // residents who satisfy the area's composition as the TRUE primary PGY (comp.primary), never a
+  // Wellness-Wednesday/conference-away substitute. An empty array is meaningful here too — "no true
+  // primary is actually available today, so a substitute is the accepted stand-in, no preference
+  // penalty" — exactly mirroring preferTruePrimaryPass's own "no true primary available -> revert"
+  // branch. Lets the solver add a soft cost for staffing a substitute-eligible (shift,date) with only
+  // a fallback PGY when a true primary was in fact eligible, matching preferTruePrimaryPass for BOTH
+  // POD and FLEX (SENIOR_COMPOSITION's full key set — see that function's own scope).
   const seniorPrimary = {};
+  const truePrimary = {};
   for (const area of Object.keys(SENIOR_COMPOSITION)) {
+    const comp = SENIOR_COMPOSITION[area];
     for (const shift of SHIFTS.filter(s => s.area === area)) {
       const byDate = {};
+      const trueByDate = {};
       for (const ds of dates) {
         const dow = parseDate(ds).getDay();
         if (!shiftActiveOnDow(shift.id, dow)) continue;
         if (seniorCompositionExempt(shift, ds)) continue; // exempt (s,d) => no entry at all
-        byDate[ds] = schedulableResidents
-          .filter(r => (eligible[r.id][ds] || []).includes(shift.id))
+        const eligHere = schedulableResidents.filter(r => (eligible[r.id][ds] || []).includes(shift.id));
+        byDate[ds] = eligHere
           .filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf))
+          .map(r => r.id);
+        trueByDate[ds] = eligHere
+          .filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary)
           .map(r => r.id);
       }
       if (Object.keys(byDate).length) seniorPrimary[shift.id] = byDate;
+      if (Object.keys(trueByDate).length) truePrimary[shift.id] = trueByDate;
     }
   }
 
@@ -6823,6 +6838,25 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 
     const ayPrior = ayPriorAll[r.id] || { nights: 0, weekendDates: 0, holidays: 0 };
 
+    // R7 (solver parity, gap 1/2): rolling-7-day ED/total-hour caps (6.17.a.3) need per-date
+    // GR/Journal-Club "obligation hours" — calendar facts independent of the solve, resolved here
+    // exactly like acgmeHours.js's own buildDailyContributions (grHoursOn/jcHoursOn), covering the
+    // SAME tail-window-to-block-end range that field's other tail constants already span (matches
+    // TAIL_WINDOW_DAYS on the Python side). `grDates` is the subset of dates where this resident's
+    // OWN Grand Rounds obligation lands (already vacation/off-filtered) — rest.py's rule 17 needs it
+    // to know when to measure rest from GR's own end (12:00) instead of the earlier shift's end.
+    const grDowR = grWorkDow(r);
+    const obligationHours = {};
+    const grDates = [];
+    for (let d = parseDate(tailWindowStart); d <= parseDate(block.endDate); d = addDays(d, 1)) {
+      const ds = toDateStr(d);
+      const gr = grHoursOn(r, ds, grDowR);
+      const jc = jcHoursOn(r, ds);
+      if (gr > 0) grDates.push(ds);
+      const h = gr + jc;
+      if (h > 0) obligationHours[ds] = h;
+    }
+
     return {
       id: r.id,
       cohort: eligKey(r),
@@ -6850,6 +6884,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       priorTail: rPrevTail,
       priorTailObligations,
       priorTailHours,
+      obligationHours,
+      grDates,
       ayPrior: { nights: ayPrior.nights || 0, weekends: ayPrior.weekendDates || 0, holidays: ayPrior.holidays || 0 },
     };
   });
@@ -6979,6 +7015,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     locked,
     coverage: coverageOut,
     seniorPrimary,
+    truePrimary,
     jcDates: jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate }),
     holidays: Object.fromEntries(
       holidaysInRange(block.startDate, block.endDate, ayConf).flatMap(h => h.dates.map(ds => [ds, h.name]))
@@ -7008,6 +7045,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     jcWindowStartH: JC_WINDOW_START_H,
     jcWindowEndH: JC_WINDOW_END_H,
     postNightDayRestH: NIGHT_RULES.postNightDayRestH,
+    // Grand Rounds end hour (rest.py's rule 17 GR-end adjustment, R7 gap 2) — same "altitude fix"
+    // convention as the three fields directly above: an OPTIONAL field an older solver build simply
+    // ignores, falling back to its own hardcoded 12.
+    grEndH: GR_END_H,
   };
 }
 
@@ -7017,7 +7058,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // through the same updateBlockTracked call. Only receives `{ block }` (not the full args
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
-export function mapSolverResult(json, { block, allResidents } = {}) {
+export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {} } = {}) {
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -7027,6 +7068,31 @@ export function mapSolverResult(json, { block, allResidents } = {}) {
   const schedule = {};
   for (const rid of Object.keys(block?.schedule || {})) schedule[rid] = {};
   for (const [rid, row] of Object.entries(json?.schedule || {})) schedule[rid] = { ...(schedule[rid] || {}), ...row };
+
+  // R7 (2026-09-27, gap 3): rebuild report.podSubstitutes from the FINAL merged schedule — the exact
+  // same scan generateSchedule itself runs post-repair (see that function's own header right above
+  // its own `report.podSubstitutes = []` loop), so the Generation notes surface the solver's own POD
+  // PGY-2 substitutions identically to the local engine's. Excludes any (resident,date) cell that was
+  // already non-empty in the REQUEST's block.schedule (a locked/manual entry, not the solver's own
+  // decision) — the solver-path equivalent of the local engine's `keptCells` guard. Only runs when
+  // `allResidents` is supplied (optional, backward-compatible, same posture as the `underTarget`
+  // filter below).
+  const podSubstitutes = [];
+  if (Array.isArray(allResidents)) {
+    for (const shift of SHIFTS.filter(s => s.area === 'POD')) {
+      for (const ds of getBlockDates(block?.startDate, block?.endDate)) {
+        if (seniorCompositionExempt(shift, ds)) continue;
+        for (const r of allResidents) {
+          if (schedule[r.id]?.[ds] !== shift.id) continue;
+          if (block?.schedule?.[r.id]?.[ds]) continue; // pre-existing locked/manual cell, not the solver's own decision
+          if (r.category !== 'EM_HOME' || r.pgy !== SENIOR_COMPOSITION.POD.fallback) continue;
+          if (!compositionSatisfies('POD', r, ds, block.startDate, appSettings, ayConf)) continue;
+          const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf) || 'conference';
+          podSubstitutes.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: shift.id, reason });
+        }
+      }
+    }
+  }
 
   // Response `unfilled` entries carry a `shortBy` count (may be >1 for a shift/date short several
   // bodies); this app's own report shape is one entry per SLOT (dateStr/shiftId/slotIndex/reason —
@@ -7062,7 +7128,7 @@ export function mapSolverResult(json, { block, allResidents } = {}) {
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
-      podSubstitutes: [], // always [] — R5's POD PGY-2 substitute is JS-generator-only for now (R7 will teach the solver seniorPrimary[s][d] about it); kept for shape compat
+      podSubstitutes,
       // Defensive filter, mirroring buildSolverPayload's own `target: null` fix (see that map's
       // comment): a resident who isn't schedulable this block (isSchedulable false — e.g. an
       // EM_HOME/EM_BAMC resident on an atUH:false blockType) already gets `target: null` in the
@@ -14488,7 +14554,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
-        const solverRes = mapSolverResult(json, { block: genBlock, allResidents });
+        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf });
         // Solver succeeded, but a head-to-head measurement (see engineHeadToHead.test.js) showed
         // CP-SAT losing to the local engine on most axes and running ~10x slower — so a bare
         // "solver returned something usable" is no longer enough to ship it. Score it against a

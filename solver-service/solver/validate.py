@@ -117,14 +117,16 @@ def validate_schedule(payload: Payload, schedule: dict) -> list:
     failures += _check_eligibility_and_locked(payload, schedule)
     failures += _check_coverage_max(payload, schedule)
     failures += _check_senior_composition(payload, schedule)
-    if payload.settings.enforce_rest:
-        failures += _check_rest_gap(payload, schedule)
+    # R7 (2026-09-27): rest >= shift length is ACGME-hard and always on now -- no longer gated by
+    # settings.enforce_rest (see rest.py's own docstring for the same change on the build side).
+    failures += _check_rest_gap(payload, schedule)
     failures += _check_circadian_pairs(payload, schedule)
     failures += _check_night_run_and_cap_and_segments(payload, schedule)
     failures += _check_trauma_run_cap(payload, schedule)
     failures += _check_consecutive_work(payload, schedule)
     failures += _check_post_run6_rest(payload, schedule)
     failures += _check_hours_cap(payload, schedule)
+    failures += _check_weekly_hours_cap(payload, schedule)
     failures += _check_count_caps(payload, schedule)
     return failures
 
@@ -177,6 +179,19 @@ def _check_senior_composition(payload: Payload, schedule: dict) -> list:
     return failures
 
 
+def _effective_earlier_end_min(payload: Payload, date1: str, shift1, resident) -> int:
+    """Independent re-implementation of rest.py's own `_effective_earlier_end_min` -- see that
+    module's docstring for the GR-end adjustment's rationale (R7, 2026-09-27)."""
+    end_min = timing.shift_end_min(date1, shift1)
+    if not resident.gr_dates:
+        return end_min
+    end_date = timing.shift_end_date(date1, shift1)
+    if end_date not in resident.gr_dates:
+        return end_min
+    gr_end_min = timing.hour_mark_min(end_date, payload.gr_end_h)
+    return max(end_min, gr_end_min)
+
+
 def _check_rest_gap(payload: Payload, schedule: dict) -> list:
     failures = []
     for resident in payload.residents:
@@ -186,13 +201,14 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
                 continue
             shift1 = payload.shifts[shift_id1]
             required = timing.required_rest_gap_min(shift1)
+            earlier_end = _effective_earlier_end_min(payload, date1, shift1, resident)
             for delta in (1, 2):
                 date2 = timing.add_days(date1, delta)
                 shift_id2 = _shift_on(payload, resident, date2, schedule)
                 if not shift_id2:
                     continue
                 shift2 = payload.shifts[shift_id2]
-                gap = timing.gap_between(date1, shift1, date2, shift2)
+                gap = timing.shift_start_min(date2, shift2) - earlier_end
                 if gap < required:
                     failures.append(
                         _fail(
@@ -331,6 +347,47 @@ def _check_hours_cap(payload: Payload, schedule: dict) -> list:
                 total += shift.duration_h
         if total > 320:
             failures.append(_fail("hours320", [resident.id], [], [], f"{total}h in rolling window"))
+    return failures
+
+
+WEEKLY_WINDOW_DAYS = 7
+ED_WEEKLY_CAP_H = 60
+TOTAL_WEEKLY_CAP_H = 72
+
+
+def _check_weekly_hours_cap(payload: Payload, schedule: dict) -> list:
+    """R7 (2026-09-27): independent re-check of ACGME EM 6.17.a.3's rolling-7-day 60 ED / 72 total
+    hour caps (solver/model/weekly_hours.py) -- EM residents on a schedulable EM rotation only, same
+    scope predicate as that module's `_in_scope`."""
+    failures = []
+    dates = payload.all_dates
+    n = len(dates)
+    tail_len = len(payload.tail_dates)
+    for resident in payload.residents:
+        if not (resident.is_em_core and resident.target is not None):
+            continue
+        ed_by_date = {}
+        for d in dates:
+            sid = _shift_on(payload, resident, d, schedule)
+            ed_by_date[d] = payload.shifts[sid].duration_h if sid else 0
+        for start in range(0, n - WEEKLY_WINDOW_DAYS + 1):
+            end = start + WEEKLY_WINDOW_DAYS
+            if end <= tail_len:
+                continue  # window entirely inside the tail -- pure history, not this solve's doing
+            window = dates[start:end]
+            ed_sum = sum(ed_by_date[d] for d in window)
+            obl_sum = sum(resident.obligation_hours.get(d, 0) for d in window)
+            if ed_sum > ED_WEEKLY_CAP_H:
+                failures.append(
+                    _fail("edWeekly60", [resident.id], [window[0], window[-1]], [], f"{ed_sum}h ED in 7 days")
+                )
+            if ed_sum + obl_sum > TOTAL_WEEKLY_CAP_H:
+                failures.append(
+                    _fail(
+                        "totalWeekly72", [resident.id], [window[0], window[-1]], [],
+                        f"{ed_sum + obl_sum}h total in 7 days",
+                    )
+                )
     return failures
 
 
