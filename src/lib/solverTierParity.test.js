@@ -51,12 +51,7 @@ describe('elastic.py relaxable families agree with rulePolicy.js tiers', () => {
     ...readTuple(src, 'RELAXABLE_POLICY_CAP_FAMILIES'),
   ];
 
-  it('every solver family has a recorded JS mapping', () => {
-    for (const fam of [...alwaysHard, ...relaxable]) {
-      expect(Object.prototype.hasOwnProperty.call(FAMILY_TO_RULE, fam), `${fam} missing from FAMILY_TO_RULE`).toBe(true);
-    }
-  });
-
+  // A family missing from FAMILY_TO_RULE reads as undefined and fails both checks below.
   it('always-hard families map to acgme/program-tier rules', () => {
     for (const fam of alwaysHard) {
       const ruleId = FAMILY_TO_RULE[fam];
