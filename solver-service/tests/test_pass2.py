@@ -247,3 +247,106 @@ def test_double_locked_max_collision_on_trauma_still_infeasible():
 
     assert result.status == "INFEASIBLE"
     assert result.schedule == {}
+
+
+def _bamc_wed_night_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 night shifts on 2 different Wednesdays while
+    `caps.bamcWedNights == 1` -- `bamcWedNight` is tier `program` in
+    `src/lib/rulePolicy.js` ("BAMC more than one Wednesday-night shift per
+    block", blocks everywhere exactly like `acgme`), so it now belongs in
+    `elastic.py`'s `ALWAYS_HARD_POLICY_CAP_FAMILIES`, not the relaxable set.
+    2026-01-07 and 2026-01-14 are both Wednesdays, 7 days apart -- no rest/
+    circadian/run-length rule is anywhere near triggered by two isolated
+    night shifts a week apart, so `bamcWedNight` is the ONLY thing pass 2
+    could possibly be relaxing here."""
+    dates = ["2026-01-07", "2026-01-14"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"bamcWedNights": 1})],
+        dates=dates,
+        eligible={"r1": {d: ["N"] for d in dates}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-07", "shiftId": "N"},
+            {"residentId": "r1", "date": "2026-01-14", "shiftId": "N"},
+        ],
+    )
+
+
+def test_infeasible_bamc_wed_night_locked_cells_stays_infeasible_never_relaxed():
+    """`bamcWedNight` fix (2026-09-28): same class of bug as R7's duty-hour
+    split, one level down in `solver/model/count_caps.py`'s policy-cap
+    families -- see `_bamc_wed_night_relaxation_payload`'s own docstring."""
+    payload = parse_payload(_bamc_wed_night_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"  # pass 2 was reached and also failed
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+
+
+def _jc_cap_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 evening shifts (15:00-23:00, overlapping the default
+    18:00-21:00 JC window) on 2 different `jcDates` while
+    `caps.jcRemaining == 1` -- `jcCap` (`rulePolicy.js`'s `jcMaxPerAy`) is
+    also tier `program`, so it belongs in `ALWAYS_HARD_POLICY_CAP_FAMILIES`
+    too. The two dates are adjacent day-then-day-evening -- no eve/day
+    circadian rule is anywhere near triggered by two lone evening shifts, so
+    `jcCap` is the ONLY thing pass 2 could possibly be relaxing here."""
+    dates = ["2026-01-05", "2026-01-06"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"jcRemaining": 1})],
+        dates=dates,
+        eligible={"r1": {d: ["E"] for d in dates}},
+        jcDates=dates,
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "E"},
+            {"residentId": "r1", "date": "2026-01-06", "shiftId": "E"},
+        ],
+    )
+
+
+def test_infeasible_jc_cap_locked_cells_stays_infeasible_never_relaxed():
+    """`jcCap` fix (2026-09-28) -- see `_jc_cap_relaxation_payload`'s own
+    docstring."""
+    payload = parse_payload(_jc_cap_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+
+
+def _trauma_cap_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 TRAUMA-area day shifts on 2 different dates while
+    `caps.trauma == 1` -- unlike `bamcWedNight`/`jcCap`/`traumaPedsSplit`,
+    `traumaCap` has no entry in `src/lib/rulePolicy.js` at all (the JS side
+    only ever reports it as a plain, non-blocking warn), so it stays in
+    `RELAXABLE_POLICY_CAP_FAMILIES` -- this confirms the R9-follow-up split
+    didn't over-correct and make every policy cap always-hard."""
+    shifts = {"TRAUMA-D": {"startH": 7, "durationH": 9, "type": "day", "area": "TRAUMA"}}
+    dates = ["2026-01-05", "2026-01-06"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"trauma": 1})],
+        shifts=shifts,
+        dates=dates,
+        eligible={"r1": {d: ["TRAUMA-D"] for d in dates}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "TRAUMA-D"},
+            {"residentId": "r1", "date": "2026-01-06", "shiftId": "TRAUMA-D"},
+        ],
+    )
+
+
+def test_trauma_cap_is_still_a_genuinely_relaxable_last_resort():
+    payload = parse_payload(_trauma_cap_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "RELAXED"
+    assert result.mode == "relaxed"
+    assert result.schedule == {"r1": {"2026-01-05": "TRAUMA-D", "2026-01-06": "TRAUMA-D"}}
+
+    violations = result.feasibility["violations"]
+    assert len(violations) == 1
+    assert violations[0]["rule"] == "traumaCap"
+    assert violations[0]["residentIds"] == ["r1"]

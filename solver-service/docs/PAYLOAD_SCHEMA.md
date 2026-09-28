@@ -154,6 +154,24 @@ load-bearing" convention. Root cause of `chiefBenchmark.solver.test.js` intermit
 went INFEASIBLE (made measurably more likely by R9's staged solve / hint pinning / GR-obligation
 reification), pass 2 was free to relax an ACGME-hard family instead of a merely override-tier one.
 
+**Correction (2026-09-28, POLICY_CAP_FAMILIES tier fix):** the same class of bug survived one level
+down, in `solver/model/count_caps.py`'s policy-cap families. `bamcWedNight`, `jcCap` (`rulePolicy.js`'s
+`jcMaxPerAy`) and `traumaPedsSplit` are all tier `program` in `src/lib/rulePolicy.js` — "chief-decided
+hard policy, blocks everywhere exactly like 'acgme'" — yet `solver/model/elastic.py`'s
+`cap_enforcement` wrapped all six `POLICY_CAP_FAMILIES` members in one freely-relaxable
+`ok[resident, capFamily]` literal, identical to the pre-R7 duty-hour bug above. `traumaCap`,
+`pedsMixMax` and `targetCeiling` have no entry in `RULE_POLICY` at all — the JS side only ever reports
+these as a plain, non-blocking warn — so those three are the only genuinely pass-2-relaxable cap
+families. `solver/model/elastic.py`'s `ALWAYS_HARD_POLICY_CAP_FAMILIES` vs
+`RELAXABLE_POLICY_CAP_FAMILIES` now encodes this split (`cap_enforcement` returns `None` for every
+family in the first set); a schedule reachable only by breaking `bamcWedNight`/`jcCap`/
+`traumaPedsSplit` now correctly comes back RELAXED-mode INFEASIBLE (or plain pass-1 INFEASIBLE)
+instead of shipping a program-policy violation. `solver/report/builder.py`'s `HARD_RELAXABLE_RULES`
+was also built from the full (not relaxable-only) family tuples — a stale holdover from before R7 that
+happened to be harmless there since an always-hard family can never appear in `feasibility.violations`
+in the first place — corrected to build from `RELAXABLE_DUTY_HOUR_FAMILIES`/
+`RELAXABLE_POLICY_CAP_FAMILIES` only.
+
 ### Changed rule: `restGap` (rule 17) — GR-end adjustment
 
 `solver/model/rest.py`'s `_effective_earlier_end_min` (and `solver/validate.py`'s independent

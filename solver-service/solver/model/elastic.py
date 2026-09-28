@@ -137,14 +137,36 @@ DUTY_HOUR_FAMILIES = ALWAYS_HARD_DUTY_HOUR_FAMILIES + RELAXABLE_DUTY_HOUR_FAMILI
 
 # One literal per (resident, capFamily) -- see count_caps.py's SPEC_TO_RULE
 # and FAMILY_TRAUMA_PEDS_SPLIT for the source of truth on these names.
-POLICY_CAP_FAMILIES = (
-    "traumaCap",
+#
+# R9 follow-up (2026-09-28, chief policy 2026-09-26 memory `rule-override-
+# policy` / `src/lib/rulePolicy.js`), same class of bug as R7's duty-hour
+# split above: `bamcWedNight`, `jcCap` (rulePolicy.js's `jcMaxPerAy`) and
+# `traumaPedsSplit` are ALL tier `program` on the JS side -- "chief-decided
+# hard policy, blocks everywhere exactly like 'acgme'" (rulePolicy.js's own
+# comment: the two tiers differ in WHY they're hard, not in how hard they
+# are). `traumaCap`, `pedsMixMax` and `targetCeiling` have no entry in
+# `RULE_POLICY` at all -- the JS side only ever reports these as a plain,
+# non-blocking warn, never a hard error -- so those three stay genuinely
+# pass-2-relaxable last resorts, same posture as `nightCap`/`nightSegments`
+# above. Before this fix all 6 families shared one `cap_enforcement`
+# callback and were equally relaxable, contradicting the chief's own written
+# policy for half of them exactly the way the pre-R7 `duty_enforcement` did.
+# `ALWAYS_HARD_POLICY_CAP_FAMILIES` is never wrapped by a literal at all --
+# see `cap_enforcement` below -- so it can never show up in
+# `feasibility.violations`; a schedule reachable only by breaking one of
+# these now correctly comes back RELAXED-mode INFEASIBLE (or plain pass-1
+# INFEASIBLE) instead of silently shipping a program-policy violation.
+ALWAYS_HARD_POLICY_CAP_FAMILIES = (
     "bamcWedNight",
     "jcCap",
-    "pedsMixMax",
     "traumaPedsSplit",
+)
+RELAXABLE_POLICY_CAP_FAMILIES = (
+    "traumaCap",
+    "pedsMixMax",
     "targetCeiling",
 )
+POLICY_CAP_FAMILIES = ALWAYS_HARD_POLICY_CAP_FAMILIES + RELAXABLE_POLICY_CAP_FAMILIES
 
 TIER_DUTY_HOUR = "relaxDutyHour"
 TIER_COVERAGE_MIN = "relaxCoverageMin"
@@ -228,6 +250,11 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
         return coverage_pool.get("coverageMin", shift_id, date_str)
 
     def cap_enforcement(resident_id: str, family: str):
+        # program-tier families (ALWAYS_HARD_POLICY_CAP_FAMILIES, see that
+        # tuple's own comment) return None here -- mirrors duty_enforcement's
+        # own None-means-unconditionally-hard convention above.
+        if family not in RELAXABLE_POLICY_CAP_FAMILIES:
+            return None
         return cap_pool.get(family, resident_id)
 
     coverage_result = add_coverage_constraints(model, payload, store, min_enforcement=coverage_enforcement)

@@ -24,7 +24,12 @@ import dataclasses
 
 from solver.io.payload import Payload, PayloadError, Resident, parse_payload
 from solver.model import timing
-from solver.model.elastic import DUTY_HOUR_FAMILIES, POLICY_CAP_FAMILIES, ElasticBuildResult
+from solver.model.elastic import (
+    DUTY_HOUR_FAMILIES,
+    RELAXABLE_DUTY_HOUR_FAMILIES,
+    RELAXABLE_POLICY_CAP_FAMILIES,
+    ElasticBuildResult,
+)
 from solver.report import templates
 
 MAX_VERIFY_TIME_SECONDS = 10.0
@@ -409,4 +414,13 @@ def _resident_to_raw(r: Resident) -> dict:
 # which validate.py failures MUST correspond 1:1 to a feasibility violation
 # (coverageMin is deliberately excluded: validate.py never checks it, since
 # it's the pre-existing soft/elastic rule 24, not a hard rule).
-HARD_RELAXABLE_RULES = frozenset({*DUTY_HOUR_FAMILIES, *POLICY_CAP_FAMILIES})
+#
+# Fixed 2026-09-28: this used to be built from the FULL family tuples
+# (DUTY_HOUR_FAMILIES / POLICY_CAP_FAMILIES), which also include the
+# never-relaxed acgme/program-tier members (restGap, circadianPair, ...,
+# bamcWedNight, jcCap, traumaPedsSplit). Only the RELAXABLE_* subsets can
+# ever actually appear in feasibility.violations (elastic.py's
+# duty_enforcement/cap_enforcement return None -- no ok[...] literal at all
+# -- for every always-hard family), so those were the only names this set
+# ever needed.
+HARD_RELAXABLE_RULES = frozenset({*RELAXABLE_DUTY_HOUR_FAMILIES, *RELAXABLE_POLICY_CAP_FAMILIES})
