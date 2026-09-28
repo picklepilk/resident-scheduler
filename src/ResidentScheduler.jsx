@@ -8378,7 +8378,9 @@ function Toast({ toast, onClose }) {
 const TOAST_DOT = { amber: 'bg-amber-500', red: 'bg-red-500', green: 'bg-green-500' };
 function ToastHistoryPanel({ history, onClear }) {
   return (
-    <div role="menu" className="absolute right-0 top-full mt-1 w-72 max-w-[85vw] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg z-50">
+    // Phone: pinned to the viewport under the header (the bell sits mid-header, so a right-anchored
+    // w-72 panel ran off the left edge). sm+: the usual dropdown under the bell.
+    <div role="menu" className="fixed left-4 right-4 top-[60px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-1 sm:w-72 bg-popover text-popover-foreground border border-border rounded-lg shadow-lg z-50">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notifications</span>
         {history.length > 0 && (
