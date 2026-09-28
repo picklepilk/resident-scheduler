@@ -139,6 +139,20 @@ describe('mode table', () => {
     expect(GRID_GROUP_MODES).toContain(GRID_GROUP_MODE_DEFAULT);
   });
 
+  // ScheduleGrid's phone banner reads `cat.shortLabel || cat.label` (ResidentScheduler.jsx
+  // ~narrowNameCol) for every grouping mode, not just 'category' — a group whose cat has no
+  // shortLabel silently falls back to the full label under whitespace-nowrap and can overflow the
+  // 108px narrow column. Every group produced by every mode must carry a non-empty one.
+  it('every group produced in every mode has a non-empty shortLabel', () => {
+    for (const mode of GRID_GROUP_MODES) {
+      const out = groupResidents(ROSTER, mode, tables);
+      for (const { cat } of out) {
+        expect(typeof cat.shortLabel, `${mode}:${cat.id}`).toBe('string');
+        expect(cat.shortLabel.length, `${mode}:${cat.id}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
   it('PGY_GROUPS covers exactly the levels CATEGORIES can produce, plus a catch-all', () => {
     const declared = new Set(CATEGORIES.flatMap(c => c.pgyOptions));
     const covered = new Set(PGY_GROUPS.map(g => g.pgy).filter(p => p !== null));

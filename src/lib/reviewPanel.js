@@ -88,6 +88,33 @@ function coverageDirection(message) {
   return null;
 }
 
+// Same problem, same fix, for the two SENIOR-COMPOSITION soft-warn messages validateAll pushes
+// (2b-1 EM-count composition and 2b-2 PGY gating — see their push sites' comments): without this,
+// groupKeyForIssue/labelForIssueGroup fall all the way through to normalizeIssueMessage's generic
+// template, which strips every PGY number down to "#" — a chief would read the group title as
+// literally "EM PGY-# on FLEX Day though an EM PGY-# already covered…", a robotic, unreadable leak
+// of the numeral-stripping the fallback exists to hide.
+// Both push sites now stamp a stable `rule` id (rulePolicy.js: seniorEmCountComposition/
+// seniorPgyGating) — detect by THAT first. The substring match on the message survives only as a
+// fallback for an issue persisted (e.g. in a saved report) before this rule id existed; a bare
+// string still stays lib-legal (no import of validateAll's rule vocabulary needed). Grouped/labeled
+// by `issue.shiftId`, same one-row-per-actual-shift granularity as the coverage-miss/max groups.
+const EM_COUNT_COMPOSITION_MARKER = 'chief-directed EM-count composition';
+const PGY_GATING_MARKER = 'chief-directed PGY gating';
+const SENIOR_COMPOSITION_RULE_KINDS = {
+  seniorEmCountComposition: 'emCount',
+  seniorPgyGating: 'pgyGate',
+};
+function seniorCompositionKind(issue) {
+  if (!issue) return null;
+  if (issue.rule && SENIOR_COMPOSITION_RULE_KINDS[issue.rule]) return SENIOR_COMPOSITION_RULE_KINDS[issue.rule];
+  const message = issue.message;
+  if (typeof message !== 'string') return null;
+  if (message.includes(EM_COUNT_COMPOSITION_MARKER)) return 'emCount';
+  if (message.includes(PGY_GATING_MARKER)) return 'pgyGate';
+  return null;
+}
+
 // The single place anything renders "what rule is this" text for a validateAll issue. Prefers the
 // rule label when the id is known, otherwise the issue's own message (already plain language for
 // every validateAll push site), and only as a last resort the raw rule id or a generic fallback —
@@ -156,16 +183,21 @@ export function groupPanelIssues(issues, exportBlockingRuleIds = new Set()) {
 
 // The single place a validateAll issue is turned into a group KEY (shared by groupIssuesByKind's
 // grouping pass and, indirectly, by labelForIssueGroup's coverage-message branch below). Precedence:
-// an explicit `rule` id first (most specific — two issues with the same rule are the same kind by
-// construction), then a coverage-miss/max message keyed by its shiftId (see coverageDirection —
-// this is what makes "Trauma Day below minimum" its own group, separate from "POD Day below
-// minimum", instead of every shift collapsing into one generic "Below minimum staffing" template),
-// then the normalized message template for everything else.
+// a coverage-miss/max message keyed by its shiftId first (see coverageDirection — this is what makes
+// "Trauma Day below minimum" its own group, separate from "POD Day below minimum", instead of every
+// shift collapsing into one generic "Below minimum staffing" template), then the senior-composition
+// EM-count/PGY-gating issues keyed by shiftId the same way (see seniorCompositionKind — checked
+// BEFORE the plain-rule branch below despite now carrying a real `rule` id, because collapsing them
+// to the bare id would merge every shift's warns into one group and lose that granularity), then any
+// other explicit `rule` id (two issues with the same rule are the same kind by construction), then
+// the normalized message template for everything else.
 export function groupKeyForIssue(issue) {
   if (!issue) return '';
-  if (issue.rule) return issue.rule;
   const dir = coverageDirection(issue.message);
   if (dir && issue.shiftId) return `coverage:${dir}:${issue.shiftId}`;
+  const kind = seniorCompositionKind(issue);
+  if (kind && issue.shiftId) return `${kind}:${issue.shiftId}`;
+  if (issue.rule) return issue.rule;
   return normalizeIssueMessage(issue.message);
 }
 
@@ -175,9 +207,12 @@ export function groupKeyForIssue(issue) {
 // (ISSUE_RULE_LABELS for a rule-keyed group, GROUP_MESSAGE_LABELS for a message-template-keyed one),
 // then a bespoke "{shift label} below minimum/above maximum" for a coverage-miss/max group (built
 // from `shiftLabelsById`, e.g. {POD-D: 'POD Day'} — passed in as a param, never imported, to stay
-// lib-legal; falls back to the bare shiftId if the caller doesn't supply one), and only as a last
-// resort the normalized message template itself (never the group's raw first-item message, which
-// is what used to leak a date/count — see GROUP_MESSAGE_LABELS' own comment).
+// lib-legal; falls back to the bare shiftId if the caller doesn't supply one), then an equivalent
+// bespoke label for the senior-composition EM-count/PGY-gating groups (same shiftLabelsById, same
+// fallback — this is the fix for the "EM PGY-#" leak: without it these fell through to the
+// normalized-template fallback below, which reads as a raw, numeral-stripped fragment), and only as
+// a last resort the normalized message template itself (never the group's raw first-item message,
+// which is what used to leak a date/count — see GROUP_MESSAGE_LABELS' own comment).
 export function labelForIssueGroup(key, items, shiftLabelsById = {}) {
   if (GROUP_MESSAGE_LABELS[key]) return GROUP_MESSAGE_LABELS[key];
   const first = items && items[0];
@@ -185,6 +220,11 @@ export function labelForIssueGroup(key, items, shiftLabelsById = {}) {
   if (dir && first?.shiftId) {
     const shiftLabel = shiftLabelsById[first.shiftId] || first.shiftId;
     return dir === 'min' ? `${shiftLabel} below minimum` : `${shiftLabel} above maximum`;
+  }
+  const kind = seniorCompositionKind(first);
+  if (kind && first?.shiftId) {
+    const shiftLabel = shiftLabelsById[first.shiftId] || first.shiftId;
+    return kind === 'emCount' ? `${shiftLabel} — not enough EM residents` : `${shiftLabel} — junior PGY covered a slot a senior already filled`;
   }
   if (first?.rule && ISSUE_RULE_LABELS[first.rule]) return ISSUE_RULE_LABELS[first.rule];
   return normalizeIssueMessage(first?.message) || 'Issue';

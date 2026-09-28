@@ -10,7 +10,7 @@ import {
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
   Archive, FlaskConical, Clock, Maximize2, Minimize2, Sparkles, ChevronLeft, MoreHorizontal,
-  Eye, EyeOff, Wrench,
+  Eye, EyeOff, Wrench, Bell,
 } from 'lucide-react';
 // xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
 // point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
@@ -53,6 +53,7 @@ import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
+import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -4410,8 +4411,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const emCount = assignedHere.filter(isEmResident).length;
         const required = emCompositionRequired(area, assignedHere.length);
         if (emCount < required) {
-          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
-            message: `${shift.label} (${formatDisplayDate(ds)}) is staffed ${assignedHere.length} with only ${emCount} EM (Home/BAMC) resident${emCount === 1 ? '' : 's'} — ${area === 'POD' ? `POD wants ${required} EM at this headcount` : 'FLEX wants at least 1 EM'} (soft, chief-directed EM-count composition)`, level: 'warn' });
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'seniorEmCountComposition',
+            message: `${shift.label} (${formatDisplayDate(ds)}) is staffed ${assignedHere.length} with only ${emCount} EM (Home/BAMC) resident${emCount === 1 ? '' : 's'} — ${area === 'POD' ? `POD wants ${required} EM at this headcount` : 'FLEX wants at least 1 EM'} (soft, chief-directed EM-count composition)`, level: severityFor('seniorEmCountComposition', 'validator') });
         }
 
         // 2b-2 PGY gating (SOFT, chief-directed, mirrors narrowForPgyGate's generator-side pool
@@ -4427,8 +4428,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const realPrimaryPresent = compSatisfiers.some(r => r.pgy === comp.primary);
         if (realPrimaryPresent) {
           for (const g of assignedHere.filter(r => r.category === 'EM_HOME' && r.pgy === comp.fallback)) {
-            issues.push({ residentId: g.id, name: `${g.firstName} ${g.lastName}`, dateStr: ds, shiftId: shift.id,
-              message: `EM PGY-${comp.fallback} on ${shift.label} (${formatDisplayDate(ds)}) though an EM PGY-${comp.primary} already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-${comp.primary} for extra ${area} slots when one exists)`, level: 'warn' });
+            issues.push({ residentId: g.id, name: `${g.firstName} ${g.lastName}`, dateStr: ds, shiftId: shift.id, rule: 'seniorPgyGating',
+              message: `EM PGY-${comp.fallback} on ${shift.label} (${formatDisplayDate(ds)}) though an EM PGY-${comp.primary} already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-${comp.primary} for extra ${area} slots when one exists)`, level: severityFor('seniorPgyGating', 'validator') });
           }
         }
       }
@@ -8440,6 +8441,42 @@ function Toast({ toast, onClose }) {
     <div className={`no-print fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium border ${s[toast.tone] || s.amber}`}>
       <span>{toast.msg}</span>
       <button onClick={onClose} className="ml-1 opacity-50 hover:opacity-100"><X size={14}/></button>
+    </div>
+  );
+}
+
+// Bell dropdown for the header (P4 UI polish) — lists the session's last toasts (see
+// toastHistory.js) so one that already auto-dismissed can still be read. Tokens (bg-popover/
+// text-popover-foreground/border-border/bg-accent) are the same semantic set the Export menu right
+// next to this in the header already uses, so it repaints correctly under the `.dark` override
+// sheet with no extra work here (CLAUDE.md: dark mode is that one sheet, never Tailwind `dark:`).
+// A left dot repeats the toast's tone (amber/red/green) so the list reads at a glance without
+// re-reading every message.
+const TOAST_DOT = { amber: 'bg-amber-500', red: 'bg-red-500', green: 'bg-green-500' };
+function ToastHistoryPanel({ history, onClear }) {
+  return (
+    // Phone: pinned to the viewport under the header (the bell sits mid-header, so a right-anchored
+    // w-72 panel ran off the left edge). sm+: the usual dropdown under the bell.
+    <div role="menu" className="fixed left-4 right-4 top-[60px] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-1 sm:w-72 bg-popover text-popover-foreground border border-border rounded-lg shadow-lg z-50">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notifications</span>
+        {history.length > 0 && (
+          <button onClick={onClear} className="text-xs text-primary hover:underline">Clear</button>
+        )}
+      </div>
+      <div className="max-h-80 overflow-y-auto">
+        {history.length === 0 ? (
+          <p className="px-3 py-4 text-xs text-muted-foreground text-center">No notifications yet this session.</p>
+        ) : (
+          history.map((h, i) => (
+            <div key={i} className="flex items-start gap-2 px-3 py-2 border-b border-border last:border-b-0">
+              <span className={`mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${TOAST_DOT[h.tone] || TOAST_DOT.amber}`}/>
+              <span className="text-xs text-foreground flex-1 min-w-0 break-words">{h.msg}</span>
+              <span className="text-[10px] text-muted-foreground shrink-0 whitespace-nowrap">{formatToastAge(h.at)}</span>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -14936,8 +14973,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               // Last,-First + badges layout — full name still available via the row's own `title`
               // just above (offSummary) and the hover/tap-visible lock button; this line exists so
               // ≥4 date columns fit alongside it at ~400px width.
-              <div className="text-xs font-medium text-gray-800 truncate" title={`${res.lastName}, ${res.firstName}`}>
-                {res.firstName} {res.lastName.charAt(0)}.<span className="text-gray-400 font-normal"> · PGY-{res.pgy}</span>
+              <div className="flex items-baseline gap-1 min-w-0" title={`${res.lastName}, ${res.firstName}`}>
+                {/* Name truncates first — PGY must never be the thing ellipsis eats (P4 mobile
+                    fix): these used to share one `truncate` div, so a longer first name pushed
+                    "PGY-N" past the ellipsis and off-screen entirely. `shrink-0` pins PGY at its
+                    natural width; only the name span (`min-w-0 truncate`) gives up space. */}
+                <span className="text-xs font-medium text-gray-800 truncate min-w-0">{res.firstName} {res.lastName.charAt(0)}.</span>
+                <span className="text-xs text-gray-400 font-normal shrink-0 whitespace-nowrap">· PGY-{res.pgy}</span>
               </div>
             ) : (
               <>
@@ -15115,6 +15157,62 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       </div>
     );
   }
+
+  // The three pre-generate confirmation modals (Generate/"Before You Generate", Clear & Regenerate,
+  // Regenerate Unlocked/Range — see KeptCellViolationsPanel's own "same three readiness modals"
+  // comment below) all show the same two content sections, a readiness-warning panel and a
+  // kept-cell-violations panel, around an action-specific intro paragraph and a Cancel/primary pair.
+  // They used to be three separately-rendered <Modal> blocks that had quietly drifted (only the
+  // fill-mode one auto-skips when there's nothing to report — see requestGenerate; only Clear &
+  // Regenerate omits the "fix violators" button, since a full wipe leaves nothing to fix — see
+  // KeptCellViolationsPanel). Collapsed to one spec object + one render: whichever confirm* state is
+  // set (at most one ever is, since each is only set by its own button/requestX function) decides
+  // the spec, so a future readiness check only needs adding to the shared render once. Every
+  // existing title/copy/button-label/handler is preserved verbatim per kind — only the JSX plumbing
+  // is shared now, not the choices or their downstream behavior.
+  const genConfirmSpec = confirmGenerate
+    ? {
+        title: 'Before You Generate',
+        note: confirmGenerate.messages.length > 0
+          ? "Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but rules that depend on these dates may not apply correctly."
+          : null,
+        messages: confirmGenerate.messages,
+        keptViolations: confirmGenerate.keptViolations,
+        onFixAndGenerate: () => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
+          cleared => runGenerate(false, cleared)),
+        onCancel: () => setConfirmGenerate(null),
+        primaryLabel: 'Generate Anyway',
+        primaryVariant: 'primary',
+        onPrimary: () => runGenerate(false),
+      }
+    : confirmRegen
+    ? {
+        title: 'Clear & Regenerate?',
+        note: 'This clears all current assignments — including ones you entered manually — and regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.',
+        messages: generateReadiness.messages,
+        keptViolations: generateReadiness.keptViolations,
+        onFixAndGenerate: null, // always empty under a full clear — see KeptCellViolationsPanel's comment
+        onCancel: () => setConfirmRegen(false),
+        primaryLabel: 'Clear & Regenerate',
+        primaryVariant: 'danger',
+        onPrimary: () => runGenerate(true),
+      }
+    : confirmPartialRegen
+    ? {
+        title: confirmPartialRegen.kind === 'range' ? 'Regenerate Date Range?' : 'Regenerate Unlocked Cells?',
+        note: confirmPartialRegen.kind === 'range'
+          ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
+          : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>,
+        messages: generateReadiness.messages,
+        keptViolations: generateReadiness.keptViolations,
+        onFixAndGenerate: () => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
+          cleared => runPartialRegenerate(confirmPartialRegen, cleared)),
+        onCancel: () => setConfirmPartialRegen(null),
+        primaryLabel: 'Regenerate',
+        primaryVariant: 'danger',
+        onPrimary: () => runPartialRegenerate(confirmPartialRegen),
+      }
+    : null;
 
   return (
     <div ref={gridWrapRef} className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
@@ -15405,59 +15503,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         </ConfirmDialog>
       )}
 
-      {confirmRegen && (
-        <Modal title="Clear & Regenerate?" onClose={()=>setConfirmRegen(false)}>
+      {/* Single shared modal for all three pre-generate confirmations — see genConfirmSpec's own
+          comment above (right before this component's `return`) for why these three collapsed into
+          one render. At most one of confirmGenerate/confirmRegen/confirmPartialRegen is ever set,
+          since each is only opened by its own button/requestX function, so this never has to choose
+          between two specs at once. */}
+      {genConfirmSpec && (
+        <Modal title={genConfirmSpec.title} onClose={genConfirmSpec.onCancel}>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              This clears <strong>all current assignments — including ones you entered manually</strong> — and
-              regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
-            </p>
-            <ReadinessWarningPanel messages={generateReadiness.messages}/>
-            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}/>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
-              <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {confirmPartialRegen && (
-        <Modal title={confirmPartialRegen.kind==='range' ? 'Regenerate Date Range?' : 'Regenerate Unlocked Cells?'} onClose={()=>setConfirmPartialRegen(null)}>
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              {confirmPartialRegen.kind==='range'
-                ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
-                : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
-            </p>
-            <ReadinessWarningPanel messages={generateReadiness.messages}/>
-            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}
-              onFixAndGenerate={() => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
-                cleared => runPartialRegenerate(confirmPartialRegen, cleared))}/>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
-              <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {confirmGenerate && (
-        <Modal title="Before You Generate" onClose={()=>setConfirmGenerate(null)}>
-          <div className="space-y-4">
-            {confirmGenerate.messages.length > 0 && (
-              <p className="text-sm text-gray-600">
-                Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
-                rules that depend on these dates may not apply correctly.
-              </p>
+            {genConfirmSpec.note && (
+              <p className="text-sm text-gray-600">{genConfirmSpec.note}</p>
             )}
-            <ReadinessWarningPanel messages={confirmGenerate.messages}/>
-            <KeptCellViolationsPanel violations={confirmGenerate.keptViolations}
-              onFixAndGenerate={() => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
-                cleared => runGenerate(false, cleared))}/>
+            <ReadinessWarningPanel messages={genConfirmSpec.messages}/>
+            <KeptCellViolationsPanel violations={genConfirmSpec.keptViolations} onFixAndGenerate={genConfirmSpec.onFixAndGenerate}/>
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={()=>setConfirmGenerate(null)}>Cancel</Button>
-              <Button variant="primary" onClick={()=>runGenerate(false)}>Generate Anyway</Button>
+              <Button variant="ghost" onClick={genConfirmSpec.onCancel}>Cancel</Button>
+              <Button variant={genConfirmSpec.primaryVariant} onClick={genConfirmSpec.onPrimary}>{genConfirmSpec.primaryLabel}</Button>
             </div>
           </div>
         </Modal>
@@ -15548,9 +15609,17 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             {grouped.map(({cat,members})=>(
               <div key={cat.id}>
                 <div className={`flex border-b border-gray-100 ${cat.rowBg}`}>
-                  <div className="grid-sticky px-3 py-1.5 border-r border-gray-200" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${cat.badge}`}>{cat.label}</span>
-                    <span className="text-xs text-gray-400 ml-1.5 tabular-nums">{members.length}</span>
+                  <div className="grid-sticky px-3 py-1.5 border-r border-gray-200 flex items-center gap-1.5 min-w-0" style={{width:NAME_W,minWidth:NAME_W,background:'inherit'}}>
+                    {/* Mobile fix: at NAME_W=108px this span used to wrap "EM – Home" onto two
+                        lines (no nowrap, no shrink source). Narrow width swaps in the short badge
+                        label (already used everywhere else at this width, e.g. the catFilter pills)
+                        so it fits without truncating in the common case. `truncate` (Tailwind's
+                        overflow:hidden + ellipsis + nowrap) plus `min-w-0` (required for a flex
+                        child to actually shrink below its content width) is the belt-and-braces
+                        backstop for any group whose shortLabel is missing or still too long for the
+                        column — every grouping mode (category/pgy/rotation) shares this one span. */}
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded truncate min-w-0 ${cat.badge}`}>{narrowNameCol ? (cat.shortLabel || cat.label) : cat.label}</span>
+                    <span className="text-xs text-gray-400 tabular-nums shrink-0">{members.length}</span>
                   </div>
                   <div style={{flex:1}}/>
                 </div>
@@ -19699,6 +19768,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   useEffect(() => { if (tab === 'home') setTab('dashboard'); }, [tab]);
   const [navOpen, setNavOpen] = useState(false); // below-md sidebar drawer; ignored at md+
   const [toast, setToast] = useState(null);
+  // Toast history (P4 UI polish): a toast auto-dismisses after 5s with no way to re-read it — this
+  // is a session-only in-memory list (last TOAST_HISTORY_LIMIT), deliberately NOT a `res_*` key (see
+  // toastHistory.js's own header comment). `toastHistoryOpen` is the bell dropdown's own open/closed
+  // state, independent of whether a toast is currently showing.
+  const [toastHistory, setToastHistory] = useState([]);
+  const [toastHistoryOpen, setToastHistoryOpen] = useState(false);
   const [switchPending, setSwitchPending] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
@@ -20227,7 +20302,11 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Convenience: conference data for the current block's AY
   const currentAyConf = ayData[block.academicYear] || { ...DEFAULT_AY_CONF };
 
-  function showToast(msg, tone='amber') { setToast({msg,tone}); setTimeout(()=>setToast(null),5000); }
+  function showToast(msg, tone='amber') {
+    setToast({msg,tone});
+    setToastHistory(h => addToastEntry(h, {msg, tone}));
+    setTimeout(()=>setToast(null),5000);
+  }
 
   const allResidents = useMemo(()=>{
     const em = emRoster.map(r=>({
@@ -20722,6 +20801,23 @@ export default function ResidentScheduler({ viewer } = {}) {
                 <FlaskConical size={16}/>
               </button>
             )}
+            {/* Toast history bell (P4 UI polish): a toast auto-dismisses after 5s with no way to
+                re-read it. Same dropdown convention as the Export menu just below in the JSX
+                (fixed-inset-0 click-catcher + absolute panel) — see ToastHistoryPanel. */}
+            <div className="relative">
+              <button onClick={()=>setToastHistoryOpen(o=>!o)} title="Notification history"
+                aria-label="Notification history" aria-haspopup="menu" aria-expanded={toastHistoryOpen}
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                <Bell size={16}/>
+              </button>
+              {toastHistoryOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={()=>setToastHistoryOpen(false)}/>
+                  <ToastHistoryPanel history={toastHistory}
+                    onClear={()=>setToastHistory(clearToastHistory())}/>
+                </>
+              )}
+            </div>
             <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}

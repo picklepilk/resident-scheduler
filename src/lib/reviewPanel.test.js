@@ -167,6 +167,40 @@ describe('labelForIssueGroup', () => {
     expect(labelForIssueGroup(key, [issue])).toBe('POD-N above maximum');
     expect(labelForIssueGroup(key, [issue], { 'POD-N': 'POD Night' })).toBe('POD Night above maximum');
   });
+
+  // The EM-count and PGY-gating senior-composition warns (validateAll's 2b-1/2b-2 checks, see
+  // ResidentScheduler.jsx) now stamp a stable `rule` id (rulePolicy.js: seniorEmCountComposition/
+  // seniorPgyGating) — detected by that id, not the message substring. Without the bespoke label
+  // below, the fallback template would leak "EM PGY-#" — every PGY digit stripped to a bare hash —
+  // as the actual group title a chief reads.
+  it('builds a plain-language label for the EM-count composition warn, never the numeral-stripped fallback', () => {
+    const issue = warn({ residentId: null, shiftId: 'POD-D', rule: 'seniorEmCountComposition',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    const key = groupKeyForIssue(issue);
+    const label = labelForIssueGroup(key, [issue], { 'POD-D': 'POD Day' });
+    expect(label).toBe('POD Day — not enough EM residents');
+    expect(label).not.toContain('PGY');
+    expect(label).not.toMatch(/#/);
+  });
+
+  it('builds a plain-language label for the PGY-gating warn, never a raw "EM PGY-#" fragment', () => {
+    const issue = warn({ residentId: 'g1', shiftId: 'POD-D', rule: 'seniorPgyGating',
+      message: "EM PGY-2 on POD Day (Mon 7/6) though an EM PGY-3 already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-3 for extra POD slots when one exists)" });
+    const key = groupKeyForIssue(issue);
+    const label = labelForIssueGroup(key, [issue], { 'POD-D': 'POD Day' });
+    expect(label).toBe('POD Day — junior PGY covered a slot a senior already filled');
+    expect(label).not.toMatch(/PGY-#|PGY-\d/);
+  });
+
+  // Legacy fallback: an issue persisted (e.g. in a saved report) before the rule id existed carries
+  // only the message, never a `rule`. The substring match must still recognize it.
+  it('still recognizes a legacy senior-composition warn with no rule id, via the message substring', () => {
+    const issue = warn({ residentId: null, shiftId: 'POD-D',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    const key = groupKeyForIssue(issue);
+    const label = labelForIssueGroup(key, [issue], { 'POD-D': 'POD Day' });
+    expect(label).toBe('POD Day — not enough EM residents');
+  });
 });
 
 describe('groupKeyForIssue', () => {
@@ -187,6 +221,28 @@ describe('groupKeyForIssue', () => {
 
   it('tolerates a null issue', () => {
     expect(groupKeyForIssue(null)).toBe('');
+  });
+
+  it('keys EM-count and PGY-gating warns (by their stable rule id) by shiftId, same as coverage, distinct from each other', () => {
+    const emCount = warn({ residentId: null, shiftId: 'POD-D', rule: 'seniorEmCountComposition',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    const pgyGate = warn({ residentId: 'g1', shiftId: 'POD-D', rule: 'seniorPgyGating',
+      message: "EM PGY-2 on POD Day (Mon 7/6) though an EM PGY-3 already covered this shift's senior requirement (soft, chief-directed PGY gating — prefer an available PGY-3 for extra POD slots when one exists)" });
+    expect(groupKeyForIssue(emCount)).toBe('emCount:POD-D');
+    expect(groupKeyForIssue(pgyGate)).toBe('pgyGate:POD-D');
+    expect(groupKeyForIssue(emCount)).not.toBe(groupKeyForIssue(pgyGate));
+  });
+
+  it('keys a legacy senior-composition warn with no rule id the same way, via the message substring', () => {
+    const emCount = warn({ residentId: null, shiftId: 'POD-D',
+      message: 'POD Day (Mon 7/6) is staffed 3 with only 1 EM (Home/BAMC) resident — POD wants 2 EM at this headcount (soft, chief-directed EM-count composition)' });
+    expect(groupKeyForIssue(emCount)).toBe('emCount:POD-D');
+  });
+
+  it('does not collapse every senior-composition rule id into one bare-rule group — shiftId still distinguishes them', () => {
+    const podD = warn({ residentId: null, shiftId: 'POD-D', rule: 'seniorEmCountComposition', message: 'x (soft, chief-directed EM-count composition)' });
+    const podN = warn({ residentId: null, shiftId: 'POD-N', rule: 'seniorEmCountComposition', message: 'x (soft, chief-directed EM-count composition)' });
+    expect(groupKeyForIssue(podD)).not.toBe(groupKeyForIssue(podN));
   });
 });
 
