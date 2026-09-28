@@ -162,6 +162,20 @@ export function shiftEndMs(shiftId, dateStr) {
 
 export function isNightShiftId(sid) { return SHIFT_MAP[sid]?.type === 'night'; }
 
+// Pure rendering heuristic for the Schedule grid's shift chip (ResidentScheduler.jsx): which shift
+// ids need a smaller/tighter chip label to fit the fixed 52px cell without wrapping to two lines.
+// Empirically verified (not a guess) against every id in SHIFTS at the grid's actual chip box size
+// (inset-1 on a 52x36 cell, text-xs font-bold, whitespace-nowrap) — every id this returns false for
+// already fits with zero pixels to spare, so it must stay false for those (a size regression at
+// EVERY viewport width, not just narrow — CELL_W doesn't shrink on a phone, only NAME_W does).
+// The two things that push an id over: being long outright (PED-N-FM/TRAUMA-D/TRAUMA-N, 8 chars,
+// no digits) or carrying a "12" hour-suffix, whose digits render wider than letters at this weight
+// (MT-D12/MT-N12 overflow at 6 chars where FLEX-D/E/N do not) — hence the digit test, not a bare
+// length cutoff, which would keep MT-D12/MT-N12 wrongly full-size.
+export function isLongShiftId(sid) {
+  return typeof sid === 'string' && (sid.length > 6 || /\d/.test(sid));
+}
+
 // Journal Club window (18:00-21:00). Named so buildSolverPayload (ResidentScheduler.jsx) can thread
 // these through the solver payload as jcWindowStartH/jcWindowEndH rather than the Python side
 // independently re-deriving them as its own hardcoded JC_WINDOW_START_H/END_H (solver-service's

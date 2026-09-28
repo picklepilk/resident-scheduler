@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { SHIFTS, SHIFT_TIMING } from './shifts.js';
 import {
   QGENDA_TASKS, qgendaTaskFor, QGENDA_NAME_FORMATS, qgendaName, QGENDA_VARIANTS,
+  QGENDA_JEOPARDY_TASK_ID, qgendaShiftClock, qgendaEndDate, qgendaRowValues,
+  QGENDA_COLUMN_DEFAULTS, normalizeQgendaHeaderOverrides, resolveQgendaHeaders,
 } from './qgenda.js';
 
 describe('qgendaTaskFor', () => {
@@ -155,6 +157,131 @@ describe('qgendaName', () => {
   it('a blank/whitespace-only qgendaStaffId is ignored, falling back to name formatting', () => {
     const r = { firstName: 'John', lastName: 'Smith', qgendaStaffId: '   ' };
     expect(qgendaName(r, 'lastFirstInitial')).toBe('Smith, J');
+  });
+});
+
+describe('jeopardy/call task resolution', () => {
+  it('QGENDA_JEOPARDY_TASK_ID is the string "JEOPARDY"', () => {
+    expect(QGENDA_JEOPARDY_TASK_ID).toBe('JEOPARDY');
+  });
+
+  it('resolves to the default "Call" task with source:default', () => {
+    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 })).toEqual({ task: 'Call', source: 'default' });
+  });
+
+  it('a chief override wins over the default, same mechanism as any real shift id', () => {
+    const { task, source } = qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 }, { [QGENDA_JEOPARDY_TASK_ID]: 'Jeopardy Call' });
+    expect(task).toBe('Jeopardy Call');
+    expect(source).toBe('override');
+  });
+
+  it('a blank/whitespace-only override falls back to the default', () => {
+    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 }, { [QGENDA_JEOPARDY_TASK_ID]: '   ' }).task).toBe('Call');
+  });
+});
+
+describe('qgendaShiftClock', () => {
+  it('resolves Start/End from SHIFT_TIMING for a day shift with no rollover', () => {
+    expect(qgendaShiftClock('POD-D')).toEqual({ startStr: '07:00', endStr: '16:00', rollsOver: false });
+  });
+
+  it('flags rollsOver true for a shift whose end reaches/passes midnight', () => {
+    expect(qgendaShiftClock('POD-N')).toEqual({ startStr: '23:00', endStr: '08:00', rollsOver: true });
+  });
+
+  it('a shift starting at midnight-adjacent hours still wraps EndTime correctly (TRAUMA-N)', () => {
+    expect(qgendaShiftClock('TRAUMA-N')).toEqual({ startStr: '18:00', endStr: '06:00', rollsOver: true });
+  });
+
+  it('a shift id absent from SHIFT_TIMING (jeopardy/call) gets blank times and no rollover', () => {
+    expect(qgendaShiftClock(QGENDA_JEOPARDY_TASK_ID)).toEqual({ startStr: '', endStr: '', rollsOver: false });
+  });
+
+  it('an entirely unknown shift id also gets blank times and no rollover', () => {
+    expect(qgendaShiftClock('NOT-A-SHIFT')).toEqual({ startStr: '', endStr: '', rollsOver: false });
+  });
+});
+
+describe('qgendaEndDate', () => {
+  it('same-day when rollsOver is false', () => {
+    expect(qgendaEndDate('2026-08-10', false)).toBe('2026-08-10');
+  });
+
+  it('rolls forward one calendar day when rollsOver is true', () => {
+    expect(qgendaEndDate('2026-08-10', true)).toBe('2026-08-11');
+  });
+
+  it('rolls across a month boundary', () => {
+    expect(qgendaEndDate('2026-08-31', true)).toBe('2026-09-01');
+  });
+});
+
+describe('qgendaRowValues', () => {
+  const resident = { firstName: 'John', lastName: 'Smith', pgy: 2 };
+
+  it('builds a full row for a clinical shift, EndDate rolled forward past midnight', () => {
+    const { valuesByColumn, source } = qgendaRowValues('POD-N', resident, '2026-08-10', { nameFormat: 'lastFirst' });
+    expect(valuesByColumn).toEqual({
+      Staff: 'Smith, John',
+      Date: '8/10/2026',
+      EndDate: '8/11/2026',
+      Task: QGENDA_TASKS['POD-N'],
+      StartTime: '23:00',
+      EndTime: '08:00',
+    });
+    expect(source).toBe('default');
+  });
+
+  it('builds a jeopardy/call row with blank times and an un-rolled EndDate', () => {
+    const { valuesByColumn, source } = qgendaRowValues(QGENDA_JEOPARDY_TASK_ID, resident, '2026-08-10', { nameFormat: 'lastFirst' });
+    expect(valuesByColumn).toEqual({
+      Staff: 'Smith, John',
+      Date: '8/10/2026',
+      EndDate: '8/10/2026',
+      Task: 'Call',
+      StartTime: '',
+      EndTime: '',
+    });
+    expect(source).toBe('default');
+  });
+
+  it('a chief task override reaches the jeopardy row exactly like a real shift', () => {
+    const { valuesByColumn } = qgendaRowValues(QGENDA_JEOPARDY_TASK_ID, resident, '2026-08-10', {
+      nameFormat: 'lastFirst', overrides: { [QGENDA_JEOPARDY_TASK_ID]: 'On Call' },
+    });
+    expect(valuesByColumn.Task).toBe('On Call');
+  });
+});
+
+describe('QGenda CSV column header overrides', () => {
+  it('QGENDA_COLUMN_DEFAULTS covers every column any variant uses', () => {
+    const allCols = new Set(Object.values(QGENDA_VARIANTS).flatMap(v => v.columns));
+    for (const col of allCols) expect(QGENDA_COLUMN_DEFAULTS[col]).toBe(col);
+  });
+
+  it('normalizeQgendaHeaderOverrides drops non-string, blank, and exactly-default entries', () => {
+    const out = normalizeQgendaHeaderOverrides({
+      Staff: 'StaffAbbrev', Date: '', Task: '   ', EndDate: 'EndDate', StartTime: 42, Bogus: 'x',
+    });
+    expect(out).toEqual({ Staff: 'StaffAbbrev' });
+  });
+
+  it('normalizeQgendaHeaderOverrides tolerates untrusted (non-object) input', () => {
+    expect(normalizeQgendaHeaderOverrides(null)).toEqual({});
+    expect(normalizeQgendaHeaderOverrides(undefined)).toEqual({});
+    expect(normalizeQgendaHeaderOverrides('nope')).toEqual({});
+  });
+
+  it('resolveQgendaHeaders applies overrides in column order, defaulting the rest', () => {
+    const headers = resolveQgendaHeaders(
+      ['Staff', 'Date', 'EndDate', 'Task', 'StartTime', 'EndTime'],
+      { Staff: 'StaffAbbrev', Date: 'StartDate', Task: 'TaskName' },
+    );
+    expect(headers).toEqual(['StaffAbbrev', 'StartDate', 'EndDate', 'TaskName', 'StartTime', 'EndTime']);
+  });
+
+  it('resolveQgendaHeaders is the plain defaults with no overrides configured', () => {
+    expect(resolveQgendaHeaders(QGENDA_VARIANTS.minimal.columns, undefined)).toEqual(['Staff', 'Date', 'Task']);
   });
 });
 

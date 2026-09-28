@@ -16,11 +16,17 @@ from pydantic import BaseModel, Field
 
 class ConfigModel(BaseModel):
     maxTimeSeconds: float = 30
-    numWorkers: int = 8
+    # 0 = "use os.cpu_count()" -- see solver/io/payload.py's Config.num_workers.
+    numWorkers: int = 0
     randomSeed: int = 42
     coverageMinMode: str = "elastic_always"
     maxVerificationResolves: int = 2
     weights: dict = Field(default_factory=dict)
+    # R9 (2026-09-27, CP-SAT-as-polisher) -- see solver/io/payload.py's Config
+    # and solver/solve.py's `_solve_staged`.
+    objectiveMode: str = "staged"
+    stageSplit: Optional[list[float]] = None
+    symmetryLevel: Optional[int] = None
 
 
 class BlockModel(BaseModel):
@@ -107,6 +113,9 @@ class SolveRequest(BaseModel):
     eligible: dict = Field(default_factory=dict)
     obligations: dict = Field(default_factory=dict)
     locked: list[LockedCellModel] = Field(default_factory=list)
+    # R9 (2026-09-27, CP-SAT-as-polisher): warm-start hint, SAME shape as
+    # `locked` but a soft suggestion -- see solver/io/payload.py's Payload.hint.
+    hint: list[LockedCellModel] = Field(default_factory=list)
     coverage: dict = Field(default_factory=dict)
     seniorPrimary: dict = Field(default_factory=dict)
     jcDates: list = Field(default_factory=list)

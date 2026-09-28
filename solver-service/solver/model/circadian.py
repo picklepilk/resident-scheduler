@@ -58,9 +58,11 @@ def _link_night(model, payload: Payload, store: VarStore) -> None:
 
 def _add_eve_day_pairs(model, payload: Payload, store: VarStore, enforcement=None) -> None:
     """Hard: an eve shift can never be immediately followed by a day shift the
-    next calendar day, and a day shift can never be immediately followed by
-    an eve shift the next calendar day (both directions are separately
-    forbidden per the rule registry, independent of plain rest-hour math).
+    next calendar day (program-tier hard rule, independent of plain
+    rest-hour math). The reverse -- a day shift followed by an eve shift the
+    next calendar day (~23h off, forward rotation) -- is ALLOWED (user
+    decision 2026-09-27; see root CLAUDE.md's circadian rule note). Only
+    eve(D)->day(D+1) is forbidden here.
     """
     for resident in payload.residents:
         by_date = candidates_by_date(payload, store, resident.id)
@@ -72,11 +74,10 @@ def _add_eve_day_pairs(model, payload: Payload, store: VarStore, enforcement=Non
                 continue
             for shift_id1, var1 in by_date[date1]:
                 type1 = payload.shifts[shift_id1].type
-                if type1 not in ("eve", "day"):
+                if type1 != "eve":
                     continue
-                forbidden_type2 = "day" if type1 == "eve" else "eve"
                 for shift_id2, var2 in by_date[date2]:
-                    if payload.shifts[shift_id2].type == forbidden_type2:
+                    if payload.shifts[shift_id2].type == "day":
                         lit = enforcement(resident.id, FAMILY_CIRCADIAN_PAIR) if enforcement else None
                         forbid_pair(model, var1, var2, lit)
 
@@ -125,9 +126,23 @@ def _add_night_run_segments(model, payload: Payload, store: VarStore, enforcemen
     The start-of-run REIFICATION stays hard/unconditional even in pass 2 --
     it's a definitional derived variable, not a policy limit; only the final
     `<= 2` cap is what rule 23 actually relaxes.
+
+    `resident.night_exempt` residents (e.g. FM-3 on PED-N-FM, a shift that
+    structurally recurs Mon/Tue/Wed every week) are skipped entirely (fixed
+    2026-09-27) -- mirrors `_add_night_cap` just above, and matches
+    `ResidentScheduler.jsx`'s own `checkCircadianViolations`, which gates its
+    ENTIRE nightStintCount check (not just nightsTotalBlock) behind `!nOnly`
+    (`isNightOnlyResident`). A night-only rotation's weekly 3-on/4-off pattern
+    always produces several separate stints per block by construction -- that
+    is expected, not a fragmentation problem the generator failed to avoid.
+    Before this fix, the solver hard-forbade what the JS engine's own
+    validator always allowed for these residents, which made a real
+    warm-start hint infeasible whenever one was on the roster.
     """
     tail_len = len(payload.tail_dates)
     for resident in payload.residents:
+        if resident.night_exempt:
+            continue
         starts = []
         for idx in range(tail_len, len(payload.all_dates)):
             date_str = payload.all_dates[idx]

@@ -10,7 +10,7 @@ import {
   CalendarDays, AlertOctagon, HelpCircle, Upload, Wand2, GripVertical, ChevronUp, Sun, Moon,
   MessageSquare, Bug, Zap, Lightbulb, Lock, Unlock, Undo2, Redo2, Inbox, LogOut, Menu, Globe,
   Archive, FlaskConical, Clock, Maximize2, Minimize2, Sparkles, ChevronLeft, MoreHorizontal,
-  Eye, EyeOff,
+  Eye, EyeOff, Wrench,
 } from 'lucide-react';
 // xlsx (SheetJS, ~1MB) and jspdf/jspdf-autotable are loaded via dynamic `await import(...)` at
 // point of use (matrix/vacation import parse handlers, PDF export functions below) rather than
@@ -22,7 +22,7 @@ import {
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
-import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort } from './lib/shifts.js';
+import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -33,16 +33,26 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote } from './lib/solverClient.js';
-import { qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS } from './lib/qgenda.js';
+import {
+  qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
+  qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
+} from './lib/qgenda.js';
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
-import { UiPrefsProvider, useUiPrefsContext } from './uiPrefs.js';
+import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
+import { deriveBlockSteps } from './lib/blockStatus.js';
+import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
+import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
+import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
+import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
+import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
+import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -57,6 +67,11 @@ import { useWalkthroughContext } from './walkthrough/Walkthrough';
 // catalog order" spot (ScheduleCalendarView, MonthCalendarView) so a resident list doesn't
 // re-scan the whole SHIFTS array with findIndex (twice per comparison) on every render.
 const SHIFT_ORDER_INDEX = new Map(SHIFTS.map((s, i) => [s.id, i]));
+
+// shiftId -> human label, passed into lib/reviewPanel.js's groupIssuesByKind/labelForIssueGroup so a
+// grouped "Below minimum staffing" coverage-miss row can read "Trauma Day below minimum" instead of
+// a generic template — a plain param rather than an import, since lib/* may never import this file.
+const SHIFT_LABEL_BY_ID = Object.fromEntries(SHIFTS.map(s => [s.id, s.label]));
 
 // Display labels for QGENDA_NAME_FORMATS, module-level (not local to one component) because both
 // the QGenda export picker modal and SettingsTab's "QGenda Task Names" card render the same
@@ -749,7 +764,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
-const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
+const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 — hard, sole exception the resident\'s own 2nd Wellness Wednesday (PGY-3 may substitute that one day). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation.';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
@@ -769,6 +784,13 @@ const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (
 // the next block's rotations are known (saved/imported); Validation warns instead of blocking
 // when the next block hasn't been saved yet, since the app genuinely can't tell.
 const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight transition: an overnight shift on the block\'s own last Sunday is only allowed if the resident continues on a schedulable EM rotation next block (the night run can roll onward) — hard-blocked, both generator and manual picker, once the next block has been saved/imported. Anyone moving to a different service (or a non-schedulable rotation) may not work that final-Sunday overnight. If the next block hasn\'t been saved yet, Validation warns instead of blocking, since continuation can\'t be confirmed.';
+// ED_WEEKLY_CAP_H/TOTAL_WEEKLY_CAP_H/GR_START_H/GR_END_H are IMPORTED from lib/acgmeHours.js (see
+// the top-of-file imports) rather than declared here, so — unlike SEVEN_DAY_RULE_NOTE/
+// CIRCADIAN_RULE_NOTE above, which hardcode NIGHT_RULES/JC_MAX_PER_AY's numbers to dodge the TDZ a
+// same-file later-declared const would hit — this prose can safely reference them directly; an
+// import is hoisted before any of this file's own top-level code runs. 2026-09-26 policy, memory
+// acgme-em-work-hours.
+const ACGME_HOURS_RULE_NOTE = `ACGME EM weekly hour caps (6.17.a.3): while on an EM rotation, no more than ${ED_WEEKLY_CAP_H} scheduled ED hours or ${TOTAL_WEEKLY_CAP_H} total hours (ED + Grand Rounds + Journal Club) in any rolling 7 days — hard, enforced by the generator and Validation. Rest between shifts must be at least the length of the shift just worked (6.17.a.2) — always on, no setting to disable it — measured from the end of Grand Rounds (${GR_START_H}:00-${GR_END_H}:00) instead of the shift's own end when this resident's GR falls on the day the shift ends and the shift ends before GR does. Off-service residents keep only the 80-hour/4-week average rule above.`;
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -777,7 +799,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -787,7 +809,7 @@ const RULE_NOTES = {
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
       { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue instead. Enforced.' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -795,7 +817,7 @@ const RULE_NOTES = {
       { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
       { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
@@ -806,7 +828,7 @@ const RULE_NOTES = {
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
       'Has PED-N eligibility (chief-directed) — all 7 nights, same as EM Home. Coverage stays min 0/max 1 (best-effort, not required).',
-      SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, FINAL_SUNDAY_RULE_NOTE,
+      SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE,
     ],
   },
   // Peds is now PGY-2/PGY-3 only (chief-directed AY26/27 restructure) — PEDS_1 is gone; existing
@@ -866,11 +888,15 @@ const ORDINAL_WORD = { 1: '1st', 2: '2nd', 3: '3rd' };
 //   dark    — SidebarNav's variant — that sidebar is a solid dark-navy surface, not a themed
 //             light one, and legitimately needs its own treatment: bg-white/15 + a light -300
 //             text shade.
+//   dot     — GR/JC/WW only: a small solid-color dot used ON a dense grid chip instead of the
+//             2-letter `onShift` badge (see ScheduleGrid's cornerDotColor/mobile fix note) — the
+//             52×36 chip is too small for a full badge without covering the shift label's text, so
+//             the dot carries the same color cue and the full name stays available via `title`.
 //   title   — hover text. Several markers previously had no title at all in the sidebar/cards.
 const DAY_MARKERS = {
-  GR:  { label: 'GR',  chip: 'bg-yellow-100 text-yellow-700', onShift: 'bg-white text-yellow-700 ring-1 ring-yellow-500', dark: 'bg-white/15 text-yellow-300', title: 'Grand Rounds day (EM Home Wed / BAMC Thu)' },
-  JC:  { label: 'JC',  chip: 'bg-sky-100 text-sky-700',       onShift: 'bg-white text-sky-700 ring-1 ring-sky-500',        dark: 'bg-white/15 text-sky-300',    title: 'Journal Club presenting' },
-  WW:  { label: 'WW',  chip: 'bg-violet-100 text-violet-700', onShift: 'bg-white text-violet-700 ring-1 ring-violet-500', dark: 'bg-white/15 text-violet-300', title: 'Wellness Wednesday — no day/eve shift' },
+  GR:  { label: 'GR',  chip: 'bg-yellow-100 text-yellow-700', onShift: 'bg-white text-yellow-700 ring-1 ring-yellow-500', dark: 'bg-white/15 text-yellow-300', dot: 'bg-yellow-500', title: 'Grand Rounds day (EM Home Wed / BAMC Thu)' },
+  JC:  { label: 'JC',  chip: 'bg-sky-100 text-sky-700',       onShift: 'bg-white text-sky-700 ring-1 ring-sky-500',        dark: 'bg-white/15 text-sky-300',    dot: 'bg-sky-500',    title: 'Journal Club presenting' },
+  WW:  { label: 'WW',  chip: 'bg-violet-100 text-violet-700', onShift: 'bg-white text-violet-700 ring-1 ring-violet-500', dark: 'bg-white/15 text-violet-300', dot: 'bg-violet-500', title: 'Wellness Wednesday — no day/eve shift' },
   OFF: { label: 'OFF', chip: 'bg-orange-100 text-orange-700', onShift: 'bg-white text-orange-700 ring-1 ring-orange-500', dark: 'bg-white/15 text-orange-300', title: 'Approved day off' },
   VAC: { label: 'VAC', chip: 'bg-teal-100 text-teal-700',     onShift: 'bg-white text-teal-700 ring-1 ring-teal-500',     dark: 'bg-white/15 text-teal-300',   title: 'Vacation' },
   J:   { label: 'J',   chip: 'bg-purple-100 text-purple-700', onShift: 'bg-white text-purple-700 ring-1 ring-purple-500', dark: 'bg-white/15 text-purple-300', title: 'Jeopardy call' },
@@ -968,7 +994,12 @@ const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 // live value from one local const rather than threading a number through fourteen call sites.
 // Other grids (CoverageTab) keep their own separate constants — they are not user-resizable.
 const CELL_W_BASE = 52;
-const NAME_W = 210;
+// Base (desktop/tablet) width of the sticky resident-name column. ScheduleGrid shadows this with a
+// narrower, viewport-reactive local `NAME_W` below `sm` (mobile fix — see its own comment) since
+// this is the only grid in the file dense enough at ~400px width for 210px to eat roughly half the
+// screen; the Coverage tab's own grid (COVERAGE_TAB_NAME_W) is a separate, much shorter column and
+// has no such problem.
+const NAME_W_BASE = 210;
 // Height of the week-band header tier, in px. Declared (not measured) so the DOW/date row beneath
 // it can be `sticky` at exactly this offset — the same trade-off em-scheduler makes with its own
 // ROW1_H. Keep it in sync with the band's rendered height (h-5 = 20px + 1px bottom border).
@@ -1337,15 +1368,22 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
 // shiftStartMs/shiftEndMs now live in lib/shifts.js (imported above).
 
 // Returns violation strings for adding `newShiftId` on `dateStr` for a given resident.
-// Rule: after completing a shift of length H, resident must have ≥ H hours off before the next shift.
-function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
+// Rule (ACGME EM 6.17.a.2, ALWAYS on — memory acgme-em-work-hours): after completing a shift of
+// length H, resident must have >= H hours off before the next shift, counted from the LATER of the
+// shift's own end or Grand Rounds' own end (12:00) when this resident's GR falls on the day the
+// shift ends and the shift ends before GR ends (EM FAQ: "time off counts from the end of
+// conference" when attended) — see effectiveShiftEndMs (lib/acgmeHours.js). `resident` is the full
+// resident object (not just an id) so grWorkDow/vacationDates/approvedDatesOff are available for
+// that GR adjustment.
+function checkRestViolations(resident, dateStr, newShiftId, schedule) {
   const violations = [];
   const nt = SHIFT_TIMING[newShiftId];
   if (!nt) return violations;
 
+  const grDow = grWorkDow(resident);
   const newStart = shiftStartMs(newShiftId, dateStr);
   const newEnd   = newStart + nt.durationH * 3_600_000;
-  const rs       = schedule[residentId] || {};
+  const rs       = schedule[resident.id] || {};
   const refDate  = parseDate(dateStr);
 
   // Check ±2 days (night shifts can cross midnight so we need the day before/after)
@@ -1367,21 +1405,27 @@ function checkRestViolations(residentId, dateStr, newShiftId, schedule) {
     }
 
     if (exEnd <= newStart) {
-      // Existing finishes before new starts → required gap = existing shift's duration
-      const gapH = (newStart - exEnd) / 3_600_000;
+      // Existing finishes before new starts → required gap = existing shift's duration, measured
+      // from GR's own end when this resident attends GR that day and the shift ends before it.
+      const restStartMs = effectiveShiftEndMs(existSid, checkDs, resident, grDow);
+      const gapH = (newStart - restStartMs) / 3_600_000;
       if (gapH < et.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning`
+          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning` +
+          (restStartMs > exEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
         );
       }
     } else if (newEnd <= exStart) {
-      // New finishes before existing starts → required gap = new shift's duration
-      const gapH = (exStart - newEnd) / 3_600_000;
+      // New finishes before existing starts → required gap = new shift's duration, same GR
+      // adjustment applied to the shift just worked (the NEW one, in this direction).
+      const restStartMs = effectiveShiftEndMs(newShiftId, dateStr, resident, grDow);
+      const gapH = (exStart - restStartMs) / 3_600_000;
       if (gapH < nt.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off before ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward`
+          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward` +
+          (restStartMs > newEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
         );
       }
     }
@@ -1848,7 +1892,13 @@ const SOFT_RULES = [
   { id: 'postNightRest', label: '24h off after nights', description: 'Prefer ≥24h off before a day or evening shift following a night shift.', blocksExport: true },
 ];
 export const DEFAULT_RULE_PRIORITY = SOFT_RULES.map(r => r.id);
-const EXPORT_BLOCKING_RULE_IDS = new Set(SOFT_RULES.filter(r => r.blocksExport).map(r => r.id));
+// Every override-tier rulePolicy id is, by chief policy, "flagged" — it must gate export exactly
+// like the pre-existing postNightRest soft rule already does, so a chief confirms it before
+// finalizing rather than discovering it only after export. See rulePolicy.js/RULE_POLICY.
+const EXPORT_BLOCKING_RULE_IDS = new Set([
+  ...SOFT_RULES.filter(r => r.blocksExport).map(r => r.id),
+  ...OVERRIDE_TIER_RULE_IDS,
+]);
 // Accepts an untrusted persisted value (old backup, hand-edited storage) and returns a valid,
 // complete ordering: unknown ids dropped, missing ids appended in default order.
 export function normalizeRulePriority(arr) {
@@ -1933,11 +1983,11 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     const runAfter = nightRunAfter(rs, dateStr);
     const totalRun = runBefore + 1 + runAfter;
     if (totalRun > NIGHT_RULES.maxRun)
-      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: 'error' });
+      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax' });
     if (!nightOnly) {
       const totalNights = countNightsInSchedule(rs) + 1;
       if (totalNights > NIGHT_RULES.maxPerBlock)
-        violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
+        violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator'), rule: 'nightsTotalBlock' });
     }
     // Mirror of the 'day' branch below, but looking forward — a fill pass can place this night
     // shift AFTER a day shift already sits on dateStr+1/+2 (e.g. the generator's optional pass
@@ -1975,17 +2025,24 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     }
   }
 
-  // Evening → day the very next day (and the reverse) is disallowed even when a hard rest-hour
-  // check would clear it — an abrupt turnaround with no gradual transition.
+  // Evening → day the very next day is disallowed even when a hard rest-hour check would clear it
+  // — an abrupt turnaround with no gradual transition. Day → next-day evening (the reverse order,
+  // ~23h off) is ALLOWED (user decision 2026-09-27) and is not checked here. The two branches below
+  // both catch the SAME eve->day transition, just from whichever placement (the eve shift or the
+  // day shift) triggers the check — both fold under rule id 'eveToNextDayDay'.
   if (newType === 'eve') {
     const nextSid = rs[toDateStr(addDays(parseDate(dateStr), 1))];
     if (SHIFT_MAP[nextSid]?.type === 'day')
-      violations.push({ message: 'Evening shift immediately followed by a day shift the next day', level: 'error' });
+      violations.push({ message: 'Evening shift immediately followed by a day shift the next day', level: severityFor('eveToNextDayDay', 'validator'), rule: 'eveToNextDayDay' });
   }
   if (newType === 'day') {
     const prevSid = rs[toDateStr(addDays(parseDate(dateStr), -1))];
+    // Same eve->day transition as the 'eve' branch above, just seen from the day placement's own
+    // side (this function is called from both placement orders) — folds under the SAME rule id
+    // (eveToNextDayDay) rather than a separately-named "dayToNextDayEve", since it's one rule, not
+    // two. Day-then-eve (the OTHER direction) is allowed (user decision 2026-09-27) and has no check.
     if (SHIFT_MAP[prevSid]?.type === 'eve')
-      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: 'error' });
+      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: severityFor('eveToNextDayDay', 'validator'), rule: 'eveToNextDayDay' });
   }
 
   return violations;
@@ -2110,20 +2167,34 @@ function grWorkDow(resident) {
 // inference. Without bounds, callers get the old unconditional behavior (every in-block caller
 // already only ever asks about in-block dates, where the fallback is intentional per chief
 // sign-off — see the comment block above grWorkDow).
+//
+// Split out of isStreakWorkDay (solver-parity fix, 2026-09-27) so buildSolverPayload can ask "is
+// `ds` this resident's own GR/JC obligation day AT ALL" independent of the post-overnight GR
+// exemption below — the exemption depends on the day-BEFORE's shift, which for a fresh solve is a
+// solver decision, not a static fact yet (see PAYLOAD_SCHEMA.md's "GR-obligation staleness"
+// finding this replaces). Returns 'jc' (JC presenting date — never exempted) or 'gr' (own GR
+// weekday — CAN be exempted by isStreakWorkDay below), or null (not an obligation day at all).
+function obligationKind(resident, ds, bounds = null) {
+  if (!resident) return null;
+  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return null;
+  if (bounds && (ds < bounds.min || ds > bounds.max)) return null;
+  if ((resident.jcPresentDates || []).includes(ds)) return 'jc';
+  const g = grWorkDow(resident);
+  if (g == null || parseDate(ds).getDay() !== g) return null;
+  return 'gr';
+}
 export function isStreakWorkDay(rs, resident, ds, prevRs = null, bounds = null) {
   if ((rs && rs[ds]) || (prevRs && prevRs[ds])) return true;
-  if (!resident) return false;
-  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return false;
-  if (bounds && (ds < bounds.min || ds > bounds.max)) return false;
-  if ((resident.jcPresentDates || []).includes(ds)) return true;
-  const g = grWorkDow(resident);
-  if (g == null || parseDate(ds).getDay() !== g) return false;
-  // Post-overnight GR exemption (chief-directed): a resident who worked a night shift the
-  // calendar day immediately before their own GR weekday sleeps through Grand Rounds — GR was
-  // never a schedule entry to begin with, so this only changes whether the day counts toward the
-  // 6-consecutive-work-day streak, not anything actually placed on the schedule. This is also the
-  // mechanism by which a BAMC resident may legitimately miss one Thursday GR per rotation when
-  // coming straight off nights (grWorkDow(EM_BAMC) = Thursday, same exemption, no extra code).
+  const kind = obligationKind(resident, ds, bounds);
+  if (kind == null) return false;
+  if (kind === 'jc') return true;
+  // kind === 'gr': post-overnight GR exemption (chief-directed): a resident who worked a night
+  // shift the calendar day immediately before their own GR weekday sleeps through Grand Rounds —
+  // GR was never a schedule entry to begin with, so this only changes whether the day counts
+  // toward the 6-consecutive-work-day streak, not anything actually placed on the schedule. This
+  // is also the mechanism by which a BAMC resident may legitimately miss one Thursday GR per
+  // rotation when coming straight off nights (grWorkDow(EM_BAMC) = Thursday, same exemption, no
+  // extra code).
   const prevDs = toDateStr(addDays(parseDate(ds), -1));
   const prevSid = (rs && rs[prevDs]) || (prevRs && prevRs[prevDs]);
   return !isNightShiftId(prevSid);
@@ -2188,7 +2259,8 @@ export function sixDayRunRestViolation(rs, resident, dateStr, sid, prevRs = null
   if (gapH >= NIGHT_RULES.postNightDayRestH) return null;
   return {
     message: `Only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after a ${runLen}-day consecutive work run (last worked ${formatDisplayDate(lastWorkedDs)}) — requires ${NIGHT_RULES.postNightDayRestH}h before the next shift`,
-    level: 'error',
+    level: severityFor('sixDayRunRest', 'validator'),
+    rule: 'sixDayRunRest',
     // gapH/runLen exposed (in addition to message/level) so sixDayRunRestViolationAhead below can
     // build its own forward-facing message instead of parsing this one's prose.
     gapH, runLen,
@@ -2235,7 +2307,8 @@ export function sixDayRunRestViolationAhead(rs, resident, dateStr, sid, prevRs =
   if (sixDayRunRestViolation(rs, resident, laterDs, laterSid, prevRs, bounds, anchorFn)) return null;
   return {
     message: `Would leave the already-scheduled ${laterSid} on ${formatDisplayDate(laterDs)} with only ${withPlacement.gapH % 1 === 0 ? withPlacement.gapH : withPlacement.gapH.toFixed(1)}h rest after the ${withPlacement.runLen}-day consecutive work run this placement creates — requires ${NIGHT_RULES.postNightDayRestH}h`,
-    level: 'error',
+    level: severityFor('sixDayRunRest', 'validator'),
+    rule: 'sixDayRunRest',
   };
 }
 // The {min,max} bounds a streak walk for this block should respect (see isStreakWorkDay) — max is
@@ -2538,6 +2611,22 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
   return resident.pgy === comp.fallback && seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings, ayConf);
 }
 
+// R5 (2026-09-27 chief decision, memory rule-override-policy): which of the two substitute paths
+// seniorWellnessSubstituteAllowed actually matched on `ds` — used only for labeling a substitute
+// placement after the fact (report.podSubstitutes, validateAll's podPgy2Substitute info warn), never
+// to decide whether one is allowed (compositionSatisfies already owns that). Checks the block's own
+// Wellness Wednesday first: it's the more specific/local fact on the rare date a Wellness Wednesday
+// lands inside a conference window (e.g. AY26/27 Block 4's own POD Wellness Wednesday inside ACEP).
+// Returns null when neither path matched (caller has no business calling this then).
+function substituteReasonFor(area, ds, blockStart, appSettings, ayConf) {
+  const ownWellness = area === 'POD'
+    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings)
+    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings) : false;
+  if (ownWellness) return 'wellness';
+  if (isConferenceAwayFor(area, ds, ayConf)) return 'conference';
+  return null;
+}
+
 // ─── PGY gating pool-restrict (2b-2, chief-directed, SOFT with fallback) ──────────────────────
 // Distinct from SENIOR_COMPOSITION's HARD requirement on a POD/FLEX shift's first qualifying
 // body (that rule never bends, see compositionSatisfies above): this one governs which PGY may
@@ -2601,6 +2690,42 @@ export function computeScarceSeniorReservations(qualifiersByAreaDate) {
 // variants POD-D12/FLEX-D12, which are equally blocked by the same noDay restriction).
 function seniorCompositionExempt(shift, ds) {
   return shift.type === 'day' && parseDate(ds).getDay() === 3;
+}
+
+// Whether resident `r`'s placement on `shift`/`ds` is a fallback-PGY composition substitute worth
+// fixing: the fallback PGY (SENIOR_COMPOSITION[area].fallback) sits on the shift, compositionSatisfies
+// allows it (i.e. it's a genuine Wellness-Wednesday/conference substitute, not an ordinary hard
+// error), AND no true primary already covers the same shift/date (if one does, there's nothing to
+// swap — see the caller in preferTruePrimaryPass for why that case is a no-op). Shared by
+// preferTruePrimaryPass below (generateSchedule's Phase 3b, which performs the swap) and
+// hasFallbackComposition right below it (generateScheduleBest's own gate on whether Phase 3b's
+// replay pass is even worth running) so the two can never drift on what counts as "a fallback
+// placement". Returns the fallback resident, or undefined when this shift/date has none.
+function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf) {
+  const comp = SENIOR_COMPOSITION[area];
+  const fallback = allResidents.find(r =>
+    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.fallback &&
+    compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
+  if (!fallback) return undefined;
+  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && r.pgy === comp.primary)) return undefined;
+  return fallback;
+}
+// Scans the whole block for any fallbackCompositionAt hit across both SENIOR_COMPOSITION areas
+// (POD, FLEX) — used by generateScheduleBest to decide whether its extra truePrimaryOnly replay
+// pass (see that function's own comment) has any work to do at all before paying for a whole second
+// generateSchedule call on every single generation. Cheap: short-circuits on the first hit, and
+// fallbackCompositionAt's own `.find()` is a fast empty miss on every date the block's own 1-2
+// substitute-eligible dates aren't (same reasoning as preferTruePrimaryPass's header comment).
+function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
+  for (const area of Object.keys(SENIOR_COMPOSITION)) {
+    for (const shift of SHIFTS.filter(s => s.area === area)) {
+      for (const ds of getBlockDates(block.startDate, block.endDate)) {
+        if (seniorCompositionExempt(shift, ds)) continue;
+        if (fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ─── Journal Club ───────────────────────────────────────────────────────────
@@ -2769,7 +2894,12 @@ function getJCPresenterGaps(allResidents, block, ayConf = {}) {
 // Checks the manual, per-block dates a chief is expected to enter before generation: special-day
 // lists relevant to residents on this block, and Journal Club presenters for the Journal Club
 // dates that fall within the block.
-function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {} }) {
+// `mode` ('fill'|'clear'|'unlocked'|'range', see keptCellsForMode in lib/keptCellViolations.js)
+// plus the extra validateAll inputs are optional so any other caller of this function keeps
+// working unchanged — every real call site (below) supplies them. Return shape changed from a
+// flat string[] to { messages, keptViolations } — see the three ReadinessWarningPanel/
+// KeptCellViolationsPanel call sites in ScheduleGrid.
+function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd }) {
   const messages = [];
   for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
     messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
@@ -2777,7 +2907,18 @@ function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {} }) 
   for (const g of getJCPresenterGaps(allResidents, block, ayConf)) {
     messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
   }
-  return messages;
+  // Kept-cell hard-error warning (CLAUDE.md "chief sees red validateAll errors after hand-editing/
+  // locking cells or partial regenerate"): the generator/repair pass never overwrites a
+  // pre-existing non-empty cell, so a cell that already violates a hard rule survives every
+  // Generate/Regenerate untouched. Gated on `mode` (and the validateAll inputs it needs) being
+  // supplied — see keptCellsForMode for what "survives" means per action.
+  let keptViolations = { fixable: [], locked: [] };
+  if (mode) {
+    const issues = validateAll(allResidents, block.schedule || {}, block, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf);
+    const split = violatingCells(issues, block.schedule || {}, block.lockedCells || {});
+    keptViolations = keptCellsForMode(split, mode, rangeStart, rangeEnd);
+  }
+  return { messages, keptViolations };
 }
 
 // Shared list-builder for AY conference date ranges — both getConferencesInBlock (block-range
@@ -2860,7 +3001,9 @@ const AY_CONF_DATE_FIELDS = ['acepStart','acepEnd','iteDate','aaemStart','aaemEn
 // App-level settings (persisted in res_app_settings)
 const DEFAULT_APP_SETTINGS = {
   jeopardyPolicy: 'warn',     // 'block' = unschedulable | 'warn' = allowed with warning | 'off' = ignore
-  enforceRest: true,          // rest-period rule (shift length = required hours off)
+  enforceRest: true,          // LEGACY, inert (2026-09-26 policy: rest >= shift length is ACGME-hard
+                              // and always enforced now — this key is only read to stay harmless
+                              // for an old backup, nothing checks it any more; see checkRestViolations)
   emTraumaCap: 2,             // warn when an EM Home PGY-2/3 exceeds this many trauma shifts/block
   defaultBlockLength: 28,     // days — auto-fills end date when start date is set
   maxSavedBlocks: 24,         // history depth on the Dashboard's Block Calendar
@@ -2919,15 +3062,24 @@ function effectiveChiefRole(resident) {
 export function getShiftTarget(resident, appSettings = {}) {
   const o = appSettings.targetOverrides || {};
   const key = `${resident.category}_${resident.pgy}`;
+  // Vacation-rotation BLOCK_TARGETS entry (chief-directed reduced count, e.g. PGY-3 EM_VAC = 11)
+  // is computed once here — both the chief branch and the non-chief branch below need it, and
+  // both must let it win over their own next-in-line source (o.CHIEF / o[key] respectively).
+  const vacationKey = resident.blockType && VACATION_BLOCK_TYPES.has(resident.blockType) ? `${key}__${resident.blockType}` : null;
+  const vacationTarget = vacationKey ? BLOCK_TARGETS[vacationKey] : null;
   let base;
   if (effectiveChiefRole(resident)) {
     // Vacation-rotation BLOCK_TARGETS entry wins even for a chief resident (chief-directed: a
     // chief on a vacation block works the REDUCED vacation-block count, e.g. a PGY-3 chief on
     // EM_VAC works 11, not the flat 16) — checked only for the vacation blockTypes
     // (VACATION_BLOCK_TYPES); every other rotation still gets the flat chief target below.
-    const vacationKey = resident.blockType && VACATION_BLOCK_TYPES.has(resident.blockType) ? `${key}__${resident.blockType}` : null;
-    const vacationTarget = vacationKey ? BLOCK_TARGETS[vacationKey] : null;
     base = vacationTarget != null ? vacationTarget : (o.CHIEF ?? 16);
+  } else if (vacationTarget != null) {
+    // Same precedence for a non-chief EM Home resident: the reduced vacation BLOCK_TARGETS count
+    // wins even over a Settings targetOverrides[key] entry (mirrors the chief branch above) — a
+    // vacation block's reduced count reflects a real reduced-shift-count agreement, not something
+    // a generic per-category Settings override should be able to mask.
+    base = vacationTarget;
   } else if (o[key] != null) {
     base = o[key];
   } else if (resident.category === 'EM_HOME' && resident.blockType) {
@@ -3151,6 +3303,37 @@ function getEffectiveEligibility(resident, eligOverrides = {}) {
 // id is shown, so a user who skips two releases gets both. Keep entries written for the chief
 // (what changed for them and where to click), not commit messages.
 const CHANGELOG = [
+  {
+    id: '2026-09-26-cell-inspector',
+    date: '2026-09-26',
+    title: 'A cell inspector for hand-editing — click a cell to see who could take it instead',
+    items: [
+      'On the Schedule tab, **click any grid cell to select it** and open the review panel\'s new Cell Inspector — the resident, date, current shift (or "Off"), lock state, and any rule issues on that exact cell, in plain language.',
+      'A filled cell now offers **"Give to"** (other residents free that day who could legally take the shift, ranked by who\'s furthest under target) and **"Swap with"** (a resident working a different shift that day you could cleanly trade with) — one click applies it. An empty cell offers **"Assign"** (eligible shifts with coverage room, shifts below their minimum first).',
+      'The shift picker is still one click away via **"Change shift…"** in the inspector, and **double-clicking a cell** opens it directly, same as before. Locked cells show only their lock state — unlock first to edit.',
+      'Press **Enter** on a focused cell to select it, **Esc** to clear the selection and go back to the issue lists.',
+    ],
+  },
+  {
+    id: '2026-09-26-review-panel',
+    date: '2026-09-26',
+    title: 'A review panel beside the schedule grid, plus several mobile fixes',
+    items: [
+      'The **Schedule tab now has a review panel** next to the grid (below it on narrower screens) — "Must fix" errors, "Should look at" warnings, and Generation notes, all in one place instead of a separate Violations tab visit. Click any issue with a resident and date to jump straight to that cell in the grid.',
+      'The block status rail\'s "errors to fix" button now opens this panel directly on the Schedule tab instead of switching you to Violations.',
+      'On the grid, a **hard error still gets a red ring, but a soft rule warning (like a rest-hours preference) now gets a small dot instead** — so hard vs. soft reads at a glance. The legend below the grid explains every ring/dot/outline now, including locked cells.',
+      'Several small-screen fixes: the app header no longer overlaps the block name and the "Not saved yet" pill at phone widths, the per-cell lock button no longer sits on top of the shift label, day markers (GR/JC/WW) on a shift chip are now a small dot instead of covering the label text, the resident name column narrows on small screens so more date columns fit, and weekend columns are no longer washed-out white in dark mode.',
+    ],
+  },
+  {
+    id: '2026-09-26-block-status-rail',
+    date: '2026-09-26',
+    title: 'A block status rail shows what\'s left, and Publish moved to where you review',
+    items: [
+      'The bar above the Schedule/Violations/Coverage/etc. tabs now shows a **step rail** — Set up, Generated, errors, Publish, Export — so you can always tell what\'s left before a block is done at a glance, without digging through tabs.',
+      'You can now **publish a block right from that rail**, not just from the Dashboard\'s Block Calendar — the confirmation spells out exactly what publishing affects: the 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts.',
+    ],
+  },
   {
     id: '2026-08-22-trauma-nights-peds-progress-dark-mode',
     date: '2026-08-22',
@@ -3593,6 +3776,90 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   return eligible;
 }
 
+// Explains WHY getEligibleShifts excludes `shiftId` for `resident` on `dateStr`, tagged with a
+// rulePolicy id/tier so callers can grade severity instead of treating every ineligibility as an
+// unconditional hard block (see rulePolicy.js — a hand-edit surface must still BLOCK an acgme/
+// program-tier reason but may offer an override-tier one behind a confirm step). Reuses the same
+// shared predicates getEligibleShifts itself calls (isAvailableOnDate, isSchedulable,
+// shiftBlockedByRestrictions, effectiveWellnessWednesdayDate, stripPedGuardedShifts) — this is a
+// re-sequencing of those checks for diagnosis, not a second implementation of any of them.
+// Returns null when the shift IS eligible; otherwise { rule, tier, label } for the single most
+// specific reason (checked in roughly the same precedence order getEligibleShifts applies its own
+// filters, so the first true reason here is the one that actually explains the exclusion). Every
+// gate this function doesn't have a named policy id for (day-type restrictions, special-day lists,
+// shift gates, the Peds/Trauma half split, the 12h window swap, JC-presenter stripping) falls
+// through to the generic 'rotationEligibility' (acgme tier, always hard) — the same safe default
+// vacation/rotation eligibility already use, per chief policy ("Vacation and rotation eligibility
+// stay error").
+export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
+  if (getEligibleShifts(resident, dateStr, ctx.specialDays || {}, ctx.eligOverrides || {}, ctx.appSettings || {}, ctx.dayRules || {}, ctx).includes(shiftId)) return null;
+
+  const dow = parseDate(dateStr).getDay();
+  const type = SHIFT_MAP[shiftId]?.type;
+  const appSettings = ctx.appSettings || {};
+
+  if (!isSchedulable(resident)) return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+  if ((resident.vacationDates || []).includes(dateStr)) return { rule: 'vacation', tier: 'acgme', label: RULE_POLICY.vacation.label };
+  if ((resident.approvedDatesOff || []).includes(dateStr)) return { rule: 'approvedDayOff', tier: 'override', label: RULE_POLICY.approvedDayOff.label };
+  if (!isAvailableOnDate(resident, dateStr)) return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+  if ((appSettings.jeopardyPolicy ?? 'warn') === 'block' && isJeopardyDate(resident, dateStr, ctx.jeopardySchedule))
+    return { rule: 'jeopardyCollision', tier: 'program', label: RULE_POLICY.jeopardyCollision.label };
+  if (shiftBlockedByRestrictions(resident, dateStr, shiftId)) {
+    const r = findBlockingRestriction(resident, dateStr, shiftId);
+    return { rule: null, tier: null, label: r ? `Work restriction "${r.label}"` : 'Work restriction' };
+  }
+  if (resident.chiefRole === 'academic' && dow === 2 && ['eve', 'night'].includes(type))
+    return { rule: 'academicChiefTueEveNight', tier: 'override', label: RULE_POLICY.academicChiefTueEveNight.label };
+  const key = `${resident.category}_${resident.pgy}`;
+  if (!stripPedGuardedShifts([shiftId], key).includes(shiftId))
+    return { rule: 'pedNightSwingOwnerGuard', tier: 'override', label: RULE_POLICY.pedNightSwingOwnerGuard.label };
+  const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(type)
+    ? (getEffectiveDayRules(key, ctx.dayRules || {}).computedDayRules || []).find(c => c.type === 'wellnessWednesday')?.ordinal
+    : null;
+  const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, ctx.blockStart, ctx.dayRules, appSettings) : null;
+  if (wwDate && dateStr === wwDate) return { rule: 'wellnessWednesday', tier: 'override', label: RULE_POLICY.wellnessWednesday.label };
+  if ((resident.grLectureDates || []).includes(toDateStr(addDays(parseDate(dateStr), 1))) && ['eve', 'night'].includes(type))
+    return { rule: 'grLectureEveNight', tier: 'program', label: RULE_POLICY.grLectureEveNight.label };
+  if (ctx.finalSunday && dateStr === ctx.finalSunday && isNightShiftId(shiftId) && ctx.nextRotation?.known && !ctx.nextRotation.continuingEM)
+    return { rule: 'finalSundayOvernight', tier: 'override', label: RULE_POLICY.finalSundayOvernight.label };
+  return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
+}
+
+// Builds the human-readable eligibility message for a `reason` returned by eligibilityBlockReasons
+// — the SINGLE source both validateAll and cellViolations read from (see rulePolicy.js's fix note,
+// 2026-09-27). Before this, both call sites independently re-checked "is this WW / academic-chief /
+// final-Sunday" to pick a message, in a different order than eligibilityBlockReasons uses to pick a
+// severity (restriction-first) — so a cell with BOTH a custom work restriction AND a WW/academic-
+// chief/final-Sunday reason could show an override-tier message (e.g. "Wellness Wednesday...") while
+// being graded as a hard-blocking restriction with no override path. Deriving the message from the
+// SAME `reason` object that severityFor() grades removes that possibility by construction — the
+// switch below follows eligibilityBlockReasons' own precedence (restriction beats everything else).
+function eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appSettings) {
+  if (!reason) return 'Shift not eligible for this resident on this day';
+  if (reason.rule === null) return `${reason.label} blocks this shift on this date`; // custom work restriction — always wins
+  const dow = parseDate(dateStr).getDay();
+  switch (reason.rule) {
+    case 'wellnessWednesday': {
+      const wwOrdinal = (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules || {}).computedDayRules || [])
+        .find(c => c.type === 'wellnessWednesday')?.ordinal;
+      return resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
+        ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
+        : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
+    }
+    case 'academicChiefTueEveNight':
+      return 'Academic Chief — no Tuesday evening/night shifts';
+    case 'finalSundayOvernight':
+      return 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward';
+    case 'rotationEligibility':
+      if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day')
+        return 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
+      if (!SHIFT_MAP[sid]) return 'Unknown shift type';
+      return 'Shift not eligible for this resident on this day';
+    default:
+      return reason.label;
+  }
+}
+
 // Group residents' assignments by (date, shift-id) — considering only residents matching rowFilter
 // and shifts matching shiftFilter — and push one issue per resident wherever more than one lands on
 // the same (date, shift). Shared by the trauma single-resident rule and the no-two-interns rule so
@@ -3645,18 +3912,22 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     const rs = schedule[resident.id] || {};
     const name = `${resident.firstName} ${resident.lastName}`;
     const nextRotation = nextRotationFromSnapshot(resident, nextBlockSnap);
+    // Grand Rounds weekday for this resident (null if none) — used by the rest-length rule below
+    // and the ACGME weekly-hour-caps check further down; resolved once per resident, not per date.
+    const grDow = grWorkDow(resident);
     for (const [ds, sid] of Object.entries(rs)) {
       if (!sid) continue;
-      // Approved day off — highest-priority violation
+      // Approved day off — overridable-by-hand tier (chief policy 2026-09-26): the generator never
+      // places here, but a hand edit may, behind a confirm — see rulePolicy.js.
       if ((resident.approvedDatesOff || []).includes(ds)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
-          message: 'Shift scheduled on an approved day off', level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'approvedDayOff',
+          message: 'Shift scheduled on an approved day off', level: severityFor('approvedDayOff', 'validator') });
         continue;
       }
-      // Vacation — same severity as approved day off, distinct wording
+      // Vacation — ACGME/legal tier, always hard, distinct wording from approved day off above.
       if ((resident.vacationDates || []).includes(ds)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
-          message: 'Shift scheduled while resident is on vacation this date', level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'vacation',
+          message: 'Shift scheduled while resident is on vacation this date', level: severityFor('vacation', 'validator') });
         continue;
       }
       // Jeopardy call date — union of resident.jeopardyDates and block.jeopardySchedule (see
@@ -3665,37 +3936,36 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       // 'block' additionally `continue`s past further eligibility checks for that cell, 'warn'
       // does not. Policy 'off' deliberately remains a full escape hatch — completely silent.
       if (jeopardyPolicy !== 'off' && isJeopardyDate(resident, ds, block.jeopardySchedule)) {
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid,
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'jeopardyCollision',
           message: jeopardyPolicy === 'block'
             ? 'Shift scheduled on a jeopardy call date (blocked by Settings)'
             : 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day',
-          level: 'error' });
+          level: severityFor('jeopardyCollision', 'validator') });
         if (jeopardyPolicy === 'block') continue;
       }
-      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
-      const finalSundayBlocked = finalSunday && ds === finalSunday && isNightShiftId(sid) && nextRotation.known && !nextRotation.continuingEM;
-      if (!elig.includes(sid)) {
-        const dow = parseDate(ds).getDay();
-        let msg = 'Shift not eligible for this resident on this day';
-        // Not gated on dow===3 here — a chief-picked custom wellnessOverride date (see
-        // effectiveWellnessWednesdayDate) can legitimately land on a non-Wednesday.
-        const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
-          ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
-              .find(c => c.type === 'wellnessWednesday')?.ordinal
-          : null;
-        const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, block.startDate, dayRules, appSettings) : null;
-        const blockingRestriction = findBlockingRestriction(resident, ds, sid);
-        if (wwDate && ds === wwDate) {
-          msg = resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
-            ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
-            : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
+      // Jeopardy WINDOW (2026-09-26 policy, rule 'jeopardyWindow'): an overnight shift STARTING ds
+      // that runs past 07:00 into TOMORROW's jeopardy call is blocked too — same-day collisions are
+      // already covered above via isJeopardyDate(ds). See lib/jeopardyWindow.js.
+      if (jeopardyPolicy !== 'off') {
+        const nextDs = toDateStr(addDays(parseDate(ds), 1));
+        if (isJeopardyDate(resident, nextDs, block.jeopardySchedule) && shiftOverlapsJeopardyWindow(sid, ds, nextDs)) {
+          issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'jeopardyWindow',
+            message: `Overnight shift running past 07:00 into ${formatDisplayDate(nextDs)}'s jeopardy call — jeopardy must start the day non-clinical`,
+            level: severityFor('jeopardyWindow', 'validator') });
         }
-        else if (blockingRestriction) msg = `Work restriction "${blockingRestriction.label}" blocks this shift on this date`;
-        else if (resident.chiefRole === 'academic' && dow === 2 && ['eve', 'night'].includes(SHIFT_MAP[sid]?.type)) msg = 'Academic Chief — no Tuesday evening/night shifts';
-        else if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day') msg = 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
-        else if (finalSundayBlocked) msg = 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward';
-        else if (!SHIFT_MAP[sid]) msg = 'Unknown shift type';
-        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg, level: 'error' });
+      }
+      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+      if (!elig.includes(sid)) {
+        // eligibilityBlockReasons re-derives WHY elig excluded sid (same predicates, re-sequenced —
+        // see its own comment) and is now the SINGLE source for both the message (via
+        // eligibilityReasonMessage) and the severity (via severityFor) — a hand-restriction that
+        // actually bars the shift always wins over a WW/academic-chief/final-Sunday reason, in both
+        // what's shown and how it's graded (see eligibilityReasonMessage's comment).
+        const reason = eligibilityBlockReasons(resident, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+        const msg = eligibilityReasonMessage(reason, resident, ds, sid, dayRules, appSettings);
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg,
+          level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
+          ...(reason?.rule ? { rule: reason.rule } : {}) });
       } else if (finalSunday && ds === finalSunday && isNightShiftId(sid) && !nextRotation.known) {
         // Next block hasn't been saved/imported yet — can't confirm the resident continues on EM,
         // so this is advisory rather than a hard block (see nextBlockRotationFor).
@@ -3778,8 +4048,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const wedNightCount = Object.entries(rs)
         .filter(([ds, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(ds).getDay() === 3).length;
       if (wedNightCount > 1)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
+          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator') });
     }
 
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
@@ -3818,11 +4088,11 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const traumaHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
       const pedsHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
+          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator') });
       if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
+          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator') });
     }
 
     // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
@@ -3830,8 +4100,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     if (resident.category === 'EM_HOME') {
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator') });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -3869,8 +4139,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const priorDs = toDateStr(addDays(parseDate(grDate), -1));
       const priorSid = rs[priorDs];
       if (priorSid && ['eve', 'night'].includes(SHIFT_MAP[priorSid]?.type))
-        issues.push({ residentId: resident.id, name, dateStr: priorDs, shiftId: priorSid,
-          message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: 'error' });
+        issues.push({ residentId: resident.id, name, dateStr: priorDs, shiftId: priorSid, rule: 'grLectureEveNight',
+          message: `Evening/night shift the day before a Grand Rounds lecture (${formatDisplayDate(grDate)})`, level: severityFor('grLectureEveNight', 'validator') });
     }
 
     // 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as a
@@ -3886,9 +4156,9 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (runStart == null) return;
         const len = blockDayIndex(runStart, runEnd) + 1;
         if (len > MAX_CONSECUTIVE_WORK_DAYS && runHasShift && runEnd >= block.startDate)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'sixConsecutiveWorkDays',
             message: `${len} consecutive work days (${formatDisplayDate(runStart)}–${formatDisplayDate(runEnd)}) — max ${MAX_CONSECUTIVE_WORK_DAYS}`,
-            level: 'error' });
+            level: severityFor('sixConsecutiveWorkDays', 'validator') });
         runStart = null; runHasShift = false;
       };
       let prevDs = null;
@@ -3904,10 +4174,12 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       flushRun(walkDates[walkDates.length - 1]);
     }
 
-    // Rest-period check — sort all assignments by start time, then check each consecutive pair.
-    // The pairwise legal-rest-hours check below is the only part gated by enforceRest; the
-    // circadian/GR-rest checks that follow are hard circadian rules (matching how the generator
-    // already enforces them unconditionally) and always run regardless of that toggle.
+    // Rest-period check (ACGME 6.17.a.2, ALWAYS on — no more appSettings.enforceRest gate; memory
+    // acgme-em-work-hours) — sort all assignments by start time, then check each consecutive pair.
+    // Rest must be >= the length of the shift just worked, counted from Grand Rounds' own end
+    // (12:00) instead of the shift's own end when this resident's GR falls on the day the earlier
+    // shift ends and it ends before GR does (effectiveShiftEndMs, lib/acgmeHours.js) — same rule
+    // checkRestViolations enforces going forward in the generator/picker.
     const assignments = Object.entries(rs)
       .filter(([, sid]) => sid && SHIFT_TIMING[sid])
       .map(([ds, sid]) => ({
@@ -3918,25 +4190,24 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       }))
       .sort((a, b) => a.startMs - b.startMs);
 
-    if (appSettings.enforceRest !== false) {
-      for (let i = 0; i < assignments.length - 1; i++) {
-        const a = assignments[i];
-        const b = assignments[i + 1];
+    for (let i = 0; i < assignments.length - 1; i++) {
+      const a = assignments[i];
+      const b = assignments[i + 1];
 
-        if (a.endMs > b.startMs) {
-          // Shifts overlap
-          issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-            message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
-            level: 'error' });
-        } else {
-          const gapH = (b.startMs - a.endMs) / 3_600_000;
-          if (gapH < a.durationH) {
-            const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
-            issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
-              message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
-                       `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
-              level: 'error' });
-          }
+      if (a.endMs > b.startMs) {
+        // Shifts overlap
+        issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid,
+          message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
+          level: 'error' });
+      } else {
+        const restStartMs = effectiveShiftEndMs(a.sid, a.ds, resident, grDow);
+        const gapH = (b.startMs - restStartMs) / 3_600_000;
+        if (gapH < a.durationH) {
+          const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
+          issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid, rule: 'restShiftLength',
+            message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
+                     `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
+            level: severityFor('restShiftLength', 'validator') });
         }
       }
     }
@@ -3958,7 +4229,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // run specifically); this is keyed off the 6-day work streak and applies to any shift type.
     for (const a of assignments) {
       const v = sixDayRunRestViolation(rs, resident, a.ds, a.sid, prevTail[resident.id] || null, streakWalkBounds);
-      if (v) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level });
+      if (v) issues.push({ residentId: resident.id, name, dateStr: a.ds, shiftId: a.sid, message: v.message, level: v.level, rule: v.rule });
     }
 
     // ACGME 80-hour rolling 4-week average (advisory — a block shorter than 4 weeks has
@@ -3966,9 +4237,28 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     if (isSchedulable(resident)) {
       const { maxWeeklyAvg } = weeklyHourStats(rs);
       if (maxWeeklyAvg > 80)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'rolling80h',
           message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`,
-          level: 'warn' });
+          level: severityFor('rolling80h', 'validator') });
+    }
+
+    // ACGME EM 6.17.a.3 rolling-7-day weekly caps (hard, always on — memory acgme-em-work-hours):
+    // 60 scheduled ED hours and 72 total hours (ED + Grand Rounds + Journal Club) per ANY rolling 7
+    // days, EM Home/BAMC residents on a schedulable EM rotation ONLY — off-service residents keep
+    // just the 80h/4wk rule above (isEmResident/isSchedulable, same scope that check itself gates
+    // on for EM residents).
+    if (isEmResident(resident) && isSchedulable(resident)) {
+      const worst = worstRollingWeek(resident, rs, prevTail[resident.id] || null, grDow);
+      if (worst) {
+        if (worst.edHours > ED_WEEKLY_CAP_H)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'edWeekly60',
+            message: `${Math.round(worst.edHours)} scheduled ED hours in the 7 days starting ${formatDisplayDate(worst.edStartDate)} — ACGME caps this at ${ED_WEEKLY_CAP_H}`,
+            level: severityFor('edWeekly60', 'validator') });
+        if (worst.totalHours > TOTAL_WEEKLY_CAP_H)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'totalWeekly72',
+            message: `${Math.round(worst.totalHours)} total hours (ED + Grand Rounds/Journal Club) in the 7 days starting ${formatDisplayDate(worst.totalStartDate)} — ACGME caps this at ${TOTAL_WEEKLY_CAP_H}`,
+            level: severityFor('totalWeekly72', 'validator') });
+      }
     }
 
     // Circadian night-run check: consecutive night runs should be 5-6 (isolated <5-night stints
@@ -3983,10 +4273,16 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (runStart == null) return;
         const touchesEdge = runStart === blockDates[0] || blockDates[runEndIdx] === blockDates[blockDates.length - 1];
         if (runLen > NIGHT_RULES.maxRun)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightRunMax',
+            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator') });
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          // anchorDate (not dateStr): the run's first date, so a review-panel row can jump straight
+          // to it — see reviewPanel.js's issueJumpTarget. Deliberately a SEPARATE field from dateStr:
+          // dateStr also feeds violMap (ScheduleGrid's per-cell red-ring/warn-dot lookup, keyed
+          // `${residentId}_${dateStr}`), and this issue has never lit up a single cell there. Reusing
+          // dateStr would start doing that — a real behavior change to the grid — where anchorDate is
+          // inert everywhere except the review panel's own jump target resolution.
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, anchorDate: runStart,
             message: `Isolated night stint of ${runLen} (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — aim for ${NIGHT_RULES.minRun}-${NIGHT_RULES.idealRun} in a row`, level: 'warn' });
         // Trauma-night-within-run rules (chief-directed): at most 2 TRAUMA-N per contiguous night
         // run (hard), and a TRAUMA-N sitting strictly mid-run (not first/last night) of a MIXED
@@ -3997,8 +4293,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         // 'traumaRunCapped') and the soft traumaSecondInRun/traumaMidRun score() tie-breaks.
         const traumaRunCount = runShiftIds.filter(sid => sid === 'TRAUMA-N').length;
         if (traumaRunCount > 2)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${traumaRunCount} Trauma Night shifts in one consecutive night run (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max 2 per run`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaRunCap',
+            message: `${traumaRunCount} Trauma Night shifts in one consecutive night run (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max 2 per run`, level: severityFor('traumaRunCap', 'validator') });
         const runHasNonTrauma = runShiftIds.some(sid => sid !== 'TRAUMA-N');
         if (traumaRunCount > 0 && runHasNonTrauma) {
           runShiftIds.forEach((sid, idx) => {
@@ -4024,18 +4320,19 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       if (!nOnly) {
         const totalNights = countNightsInSchedule(rs);
         if (totalNights > NIGHT_RULES.maxPerBlock)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: 'warn' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightsTotalBlock',
+            message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator') });
         // Nights should land in one clean run per block. A 2nd separate stint is tolerated only
         // when necessary — warned, not blocked. A 3rd+ means nights are genuinely fragmented
-        // across the block instead of clustered, which is now a hard error (chief-directed).
+        // across the block instead of clustered — chief-overridable-by-hand tier (nightStintCount),
+        // not a hard block: the generator still never produces one on its own.
         const runCount = nightRunSegments(rs).length;
         if (runCount === 2)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
             message: `2 separate night stints this block — acceptable only if necessary, prefer clustering into one run`, level: 'warn' });
         else if (runCount > 2)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-            message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: 'error' });
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightStintCount',
+            message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: severityFor('nightStintCount', 'validator') });
       }
     }
   }
@@ -4081,13 +4378,29 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (seniorCompositionExempt(shift, ds)) continue; // Grand Rounds Wednesday — see seniorCompositionExempt
         const compSatisfiers = assignedHere.filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
         if (!compSatisfiers.length) {
-          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
-            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: 'error' });
+          // Chief-overridable-by-hand tier (2026-09-26 policy): the generator still never places a
+          // staffed POD/FLEX shift without its primary PGY when a real one is available (see
+          // narrowForSeniority/podWellnessSubstituteAllowed), so this stays a flagged, export-
+          // blocking warn rather than a hard error — see rulePolicy.js podPgy3Composition/
+          // flexSeniorComposition.
+          const compRule = area === 'POD' ? 'podPgy3Composition' : 'flexSeniorComposition';
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: compRule,
+            message: `${shift.label} (${formatDisplayDate(ds)}) requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: severityFor(compRule, 'validator') });
           // No `continue` here — the EM-count check right below is INDEPENDENT of whether the hard
           // PGY-class requirement passed (a shift staffed entirely off-service fails both at once,
           // and each says something different: "no senior class present" vs. "no EM at all"). Only
           // the PGY-gating check further down needs a genuine primary already present, and it
           // re-derives that from `compSatisfiers` itself rather than relying on control flow here.
+        } else if (area === 'POD' && !compSatisfiers.some(r => r.pgy === comp.primary)) {
+          // R5 (2026-09-27 chief decision, memory rule-override-policy): the requirement above is
+          // fully SATISFIED here (compSatisfiers is non-empty) via the PGY-2 substitute path, not
+          // unmet — this is purely informational, flagging that it happened, never export-blocking
+          // (rulePolicy.js's podPgy2Substitute is tier 'info': severityFor always returns 'warn' for
+          // it and it is never added to EXPORT_BLOCKING_RULE_IDS). See report.podSubstitutes in
+          // generateSchedule for the generator-side counterpart of this same event.
+          const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf);
+          issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'podPgy2Substitute',
+            message: `${shift.label} (${formatDisplayDate(ds)}) staffed by an EM PGY-2 in place of an unavailable PGY-3${reason ? ` (${reason})` : ''}`, level: severityFor('podPgy2Substitute', 'validator') });
         }
 
         // 2b-1 EM-count composition (SOFT, chief-directed): distinct from the hard PGY-CLASS check
@@ -4196,6 +4509,21 @@ export function isJeopardyDate(resident, dateStr, jeopardySchedule) {
   return (resident.jeopardyDates || []).includes(dateStr) || isOnJeopardySchedule(resident.id, dateStr, jeopardySchedule);
 }
 
+// Jeopardy WINDOW (chief-decided policy, 2026-09-26, memory rule-override-policy, rule id
+// 'jeopardyWindow'): a jeopardy call on date D blocks the whole [D 07:00, D+1 07:00) window, not
+// just date D — this extends isJeopardyDate's same-day-only answer with the one other case that
+// matters: an overnight STARTING `dateStr` that runs past 07:00 into `dateStr`+1 when that next day
+// is this resident's jeopardy date. Same-day is still checked here too (rather than assuming every
+// caller already checked isJeopardyDate(dateStr) itself) so this is a complete, single-call answer
+// for "would `shiftId` on `dateStr` collide with resident's jeopardy window." See
+// lib/jeopardyWindow.js for the pure ms-overlap math.
+export function jeopardyWindowConflict(resident, dateStr, shiftId, jeopardySchedule) {
+  if (isJeopardyDate(resident, dateStr, jeopardySchedule) && shiftOverlapsJeopardyWindow(shiftId, dateStr, dateStr)) return true;
+  const nextDs = toDateStr(addDays(parseDate(dateStr), 1));
+  if (isJeopardyDate(resident, nextDs, jeopardySchedule) && shiftOverlapsJeopardyWindow(shiftId, dateStr, nextDs)) return true;
+  return false;
+}
+
 // Stable id order — deterministic tie-break, no Math.random anywhere in this module.
 function jeopardyCandidatesFor(track, allResidents, emBlockAssignments = {}) {
   const pgy = JEOPARDY_TRACK_PGY[track];
@@ -4260,7 +4588,10 @@ export function fillJeopardy(block, allResidents, { emBlockAssignments } = {}) {
         !(c.vacationDates || []).includes(ds) && !(c.approvedDatesOff || []).includes(ds));
       if (offDutyEligible.length === 0) { unfilled.push({ track, date: ds, reason: 'allUnavailable' }); continue; }
 
-      const available = offDutyEligible.filter(c => !block.schedule?.[c.id]?.[ds]);
+      // Jeopardy WINDOW (2026-09-26 policy): don't assign a jeopardy call on `ds` to someone
+      // already mid-overnight into it (a D-1 shift running past 07:00 D), not just someone with a
+      // same-day clinical shift — scheduleHitsJeopardyWindow covers both (see lib/jeopardyWindow.js).
+      const available = offDutyEligible.filter(c => !scheduleHitsJeopardyWindow(block.schedule?.[c.id] || {}, ds));
       if (available.length === 0) { unfilled.push({ track, date: ds, reason: 'allScheduled' }); continue; }
 
       const pick = available.slice().sort((a, b) => {
@@ -4384,17 +4715,33 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // precomputed buildStaticGenContext(...) result — see that function's own header — that
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
-export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false }) {
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null }) {
+  // repair: 'truePrimaryOnly' (R5, 2026-09-27 chief decision) is a fourth mode besides
+  // true/false/undefined — see the fill-pass call site and the `preferTruePrimaryPass` definition
+  // below for what it actually does and why it exists (generateScheduleBest's own post-selection
+  // gap fix). `keptCellsOverride` exists ONLY for that mode: the caller is replaying a schedule
+  // that's ENTIRELY the generator's own prior output (via `block.schedule`), not a chief's manual
+  // entries, so the normal "every non-empty incoming cell is kept" rule would wrongly protect every
+  // cell from Phase 3b's own swap — the override lets the caller supply the schedule's TRUE
+  // kept-cell set (computed from the ORIGINAL block.schedule, before that prior generation ran)
+  // instead.
+  const truePrimaryOnlyMode = repair === 'truePrimaryOnly';
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
-  const enforceRest = appSettings.enforceRest !== false;
   const jeoPolicy   = appSettings.jeopardyPolicy ?? 'warn';
   const traumaCap   = getTraumaCap(appSettings);
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
   const generalPedsTarget = getGeneralPedsTarget(appSettings);
   const enforceWeekendOff = appSettings.enforceWeekendOff !== false;
   const blockWeekends = getBlockWeekends(dates);
+  // ACGME EM 6.17.a.3 weekly caps (R3): one shared, resident-independent date-string array
+  // covering the whole block PLUS a 6-day lookback pad (so a window straddling the block's own
+  // start date is still fully inside the range) — every resident's buildDailyContributions call
+  // reuses this exact array, and weeklyDateIndex gives O(1) `ds -> index` lookup, so the per-slot
+  // hot path (cachedWeeklyCapsBreach below) never does its own date arithmetic.
+  const weeklyRangeDates = getBlockDates(toDateStr(addDays(parseDate(dates[0]), -6)), dates[dates.length - 1]);
+  const weeklyDateIndex = new Map(weeklyRangeDates.map((ds, i) => [ds, i]));
 
   const genCtx = ctx || buildStaticGenContext({ allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, dates });
   const {
@@ -4492,15 +4839,44 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     const v = scheduleVersion[rid];
     const hit = checkCache[rid];
     if (hit && hit.v === v) return hit;
-    const fresh = { v, rest: new Map(), circ: new Map(), six1: new Map(), six2: new Map(), runLen: new Map() };
+    const fresh = { v, rest: new Map(), circ: new Map(), six1: new Map(), six2: new Map(), runLen: new Map(), weeklyCaps: new Map() };
     checkCache[rid] = fresh;
     return fresh;
   };
-  const cachedRestViolations = (rid, ds, shiftId) => {
-    const c = checkCacheFor(rid);
+  const cachedRestViolations = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
     const key = ds + '|' + shiftId;
     let v = c.rest.get(key);
-    if (v === undefined) { v = checkRestViolations(rid, ds, shiftId, schedule); c.rest.set(key, v); }
+    if (v === undefined) { v = checkRestViolations(r, ds, shiftId, schedule); c.rest.set(key, v); }
+    return v;
+  };
+  // ACGME EM 6.17.a.3 rolling-7-day weekly caps (60 ED / 72 total) — EM Home/BAMC residents on a
+  // schedulable EM rotation only (isEmResident + isSchedulable; off-service residents keep only the
+  // 80h/4wk rule above). Two-level cache, same idiom as cachedTimedFor/cachedRestViolations:
+  // cachedDailyContrib does the Date-heavy per-day GR/JC/ED lookup ONCE per resident per
+  // scheduleVersion (buildDailyContributions walks weeklyRangeDates just once), and
+  // cachedWeeklyCapsBreach's own per-(ds,shiftId) cache on top of that makes weeklyCapBreachAt's
+  // already-cheap array sums a one-time cost per slot too. Wiring the SLOW correctness-first
+  // wouldBreachWeeklyCaps (49 `new Date`s per call) straight into this hot loop measurably regressed
+  // generateScheduleBest's own CPU budget — see acgmeHours.js's own header on this pair.
+  const weeklyContribCache = {}; // rid -> { v, contrib: {ed[], other[]} }
+  const cachedDailyContrib = (r) => {
+    const v = scheduleVersion[r.id];
+    const hit = weeklyContribCache[r.id];
+    if (hit && hit.v === v) return hit.contrib;
+    const contrib = buildDailyContributions(r, schedule[r.id], prevTail[r.id] || null, grWorkDow(r), weeklyRangeDates);
+    weeklyContribCache[r.id] = { v, contrib };
+    return contrib;
+  };
+  const cachedWeeklyCapsBreach = (r, ds, shiftId) => {
+    const c = checkCacheFor(r.id);
+    const key = ds + '|' + shiftId;
+    let v = c.weeklyCaps.get(key);
+    if (v === undefined) {
+      const idx = weeklyDateIndex.get(ds);
+      v = idx == null ? { edBreach: false, totalBreach: false } : weeklyCapBreachAt(cachedDailyContrib(r), idx, shiftId);
+      c.weeklyCaps.set(key, v);
+    }
     return v;
   };
   const cachedCircadianViolations = (r, ds, shiftId) => {
@@ -4619,10 +4995,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // buildStaticGenContext — it reads the just-built per-attempt `schedule` copy above, even
   // though that copy's CONTENTS are themselves attempt-invariant; it's also cheap, O(kept cells),
   // so there's no perf reason to bother.)
-  const keptCells = new Set();
-  for (const r of allResidents) {
-    for (const ds of Object.keys(schedule[r.id])) {
-      if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
+  // `keptCellsOverride` (truePrimaryOnlyMode) replaces the usual "everything non-empty is kept"
+  // derivation — see this function's own header comment on why.
+  const keptCells = keptCellsOverride || new Set();
+  if (!keptCellsOverride) {
+    for (const r of allResidents) {
+      for (const ds of Object.keys(schedule[r.id])) {
+        if (schedule[r.id][ds]) keptCells.add(`${r.id}|${ds}`);
+      }
     }
   }
 
@@ -4635,12 +5015,23 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'jeopardyConflict', reported through the normal unfilled/summarizeGenerationReport path
     // instead), so the old "placed anyway, here's the list" tracking could never fire again.
     unfilled: [], underTarget: [], seniorGaps: [], restCompromises: [], repairs: [], capacityWarnings: [],
+    // Phase 5 (under-target lift, A2) placements that pushed a shift's headcount one over its
+    // coverage max as a last resort — see repairPass' overstaffFor. Always present (even empty) so
+    // downstream consumers (GenerationReportCard) never need an `?? []` guard.
+    overstaffed: [],
     // 2b-2 PGY gating pool-restrict: one entry per slot filled by the "gated" PGY (EM PGY-2 on
     // POD, EM PGY-3 on FLEX) because no qualifying primary-PGY candidate was available in that
     // shift's own pool — see narrowForPgyGate. Distinct array from the dormant seniorGaps (that
     // one tracked the HARD requirement, now unreachable — see its own comment); this is a genuine,
     // regularly-firing SOFT fallback log.
     pgyFallbacks: [],
+    // R5 (2026-09-27 chief decision): POD placements where the composition requirement (see
+    // SENIOR_COMPOSITION.POD) was met by an EM PGY-2 substituting for a genuinely-unavailable PGY-3
+    // on a conference-window or the block's own Wellness-Wednesday date. Rebuilt from the final
+    // schedule right after the fill/repair passes (see below), not logged live — repair can still
+    // move who ends up on the shift after fillDayPass first places someone. Always present (even
+    // empty), same convention as overstaffed/pgyFallbacks above.
+    podSubstitutes: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -4697,8 +5088,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // CLAUDE.md) — under any policy except 'off' this is now a hard exclusion, not a score()
     // preference (which would let a hard validateAll error slip into generateScheduleBest's
     // error-count ranking). 'off' is a full escape hatch, matching validateAll/cellViolations.
+    // jeopardyWindowConflict extends this beyond same-day: a jeopardy call on D also blocks an
+    // overnight STARTING ds that runs past 07:00 into D when ds+1 is the resident's jeopardy date
+    // (chief-decided 2026-09-26 policy — see lib/jeopardyWindow.js). Same reason id as before
+    // ('jeopardyConflict') — the reason is now just wider, not renamed.
     if (jeoPolicy !== 'off') {
-      pool = pool.filter(r => !isJeopardyDate(r, ds, block.jeopardySchedule));
+      pool = pool.filter(r => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule));
       if (!pool.length) return { candidates: [], reason: 'jeopardyConflict' };
     }
     pool = pool.filter(r => target[r.id] != null);
@@ -4719,6 +5114,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       pool = pool.filter(r => maxRollingWindowHoursFor(cachedTimedFor(r.id), { dateMs: dsMs, durationH: shiftDurationH }) <= ROLLING_WINDOW_CAP_H);
     }
     if (!pool.length) return { candidates: [], reason: 'hoursCapped' };
+    // ACGME EM 6.17.a.3 weekly caps (60 scheduled ED h / 72 total h per rolling 7 days) — EM
+    // Home/BAMC residents on a schedulable EM rotation only, always hard (memory
+    // acgme-em-work-hours). Off-service residents keep only the 80h/4wk rule above, so they're
+    // never excluded by this pair of filters (isEmResident/isSchedulable short-circuits false).
+    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).edBreach));
+    if (!pool.length) return { candidates: [], reason: 'edHoursCapped' };
+    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).totalBreach));
+    if (!pool.length) return { candidates: [], reason: 'totalHoursCapped' };
     if (isJcDay(ds) && shiftOverlapsJC(shift.id)) {
       pool = pool.filter(r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY);
       if (!pool.length) return { candidates: [], reason: 'jcCapped' };
@@ -4755,10 +5158,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       pool = pool.filter(r => !(r.category === 'EM_BAMC' && bamcWedNightCount[r.id] >= 1));
       if (!pool.length) return { candidates: [], reason: 'bamcWedNightCapped' };
     }
-    if (enforceRest) {
-      pool = pool.filter(r => cachedRestViolations(r.id, ds, shift.id).length === 0);
-      if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
-    }
+    // Rest >= shift-length (ACGME 6.17.a.2) is now ALWAYS enforced — no more appSettings.enforceRest
+    // gate (memory acgme-em-work-hours: "rest >= shift length between shifts, always"). The old
+    // toggle key is still read (harmlessly ignored) so an old backup with enforceRest:false doesn't
+    // throw; see DEFAULT_APP_SETTINGS.
+    pool = pool.filter(r => cachedRestViolations(r, ds, shift.id).length === 0);
+    if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
     // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
     // 24h post-night rest preference (rule: 'postNightRest') is a ranked soft rule — violators
     // stay in the pool as `restFallback` rather than being excluded; fillDayPass decides whether
@@ -5361,6 +5766,20 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // it that day — treated as if SENIOR_COMPOSITION had no entry for it at all.
       const seniorCompExempt = seniorCompositionExempt(slot.shift, ds);
       if (comp && !seniorFilled && !seniorCompExempt) {
+        // R5 (2026-09-27 chief decision): "replaced with a PGY-2" only when no PGY-3 is actually
+        // available. An EARLIER version of this fix pool-narrowed HERE (inside fillDayPass, i.e.
+        // inside all 20 of generateScheduleBest's independent attempts) — reverted (2026-09-27,
+        // chiefBenchmark tuning pass): score()'s `+ rng()` jitter term means ANY difference in how
+        // many candidates get scored ANYWHERE shifts every later rng() draw, so narrowing here (even
+        // though it only ever fires on the block's own 1-2 Wellness-Wednesday/conference dates)
+        // measurably changed which of the 20 attempts won best-of-N, cascading into a materially
+        // different final schedule (measured on the committed chief fixture: +2 hard errors, +3
+        // isolated night runs). The true-primary preference is enforced ONCE instead, as a single
+        // bounded swap on the WINNING attempt only — see repairPass's own "true-primary preference"
+        // phase, right after Phase 3. This branch goes back to plain scoring-only preference
+        // (comp.fallback still named in isSeniorFor for score()'s own tie-break, per this block's
+        // header comment) — compSatisfies still decides whether the fallback is ALLOWED here at all
+        // (unchanged), just not which of several eligible candidates wins.
         const primaryPool = candidates.filter(compSatisfies);
         if (primaryPool.length) {
           candidates = primaryPool;
@@ -5453,6 +5872,123 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
   }
 
+  // Shared by repairPass AND preferTruePrimaryPass (promoted out of repairPass so
+  // generateScheduleBest's truePrimaryOnlyMode gap-fix — see this function's own header comment on
+  // that mode — can call preferTruePrimaryPass standalone, without running any of repairPass's other
+  // phases). Cap on poolFor calls, so a stubborn block can't spin the repair pass indefinitely.
+  // Phases 1-3 (+3b) keep their original 300; Phase 4 (ejection chains) then gets a further +200 of
+  // its own (see its header) — a single shared 500 would let Phase 1's per-slot donor scan swallow
+  // the whole allowance on a hard block and starve Phase 4 down to a no-op, and would also perturb
+  // Phases 1-3's existing behaviour, which is deliberately left bit-for-bit unchanged here. Worst
+  // case across the whole repair pass is therefore 500 calls, up from 300. In truePrimaryOnlyMode
+  // only Phase 3b ever runs, so this budget is effectively unused (that phase only spends it on the
+  // block's own 1-2 substitute-eligible dates).
+  let budget = 300;
+  function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
+
+  // Exact inverse of fillDayPass's commit block (L2894 area) — every counter it increments,
+  // this decrements, term for term (including jcCount/traumaNightYearly, easy to miss).
+  function unassignCell(rid, ds) {
+    const sid = schedule[rid][ds];
+    if (!sid) return null;
+    delete schedule[rid][ds];
+    bumpScheduleVersion(rid);
+    assigned[rid]--;
+    const sh = SHIFT_MAP[sid];
+    if (sh) typeCount[rid][sh.type]--;
+    if (sh?.area === 'TRAUMA') traumaCount[rid]--;
+    if (sh?.area === 'PED') pedsCount[rid]--;
+    if (sid === 'PED-N') pedNCount[rid]--;
+    if (sh?.type === 'night') nightCount[rid]--;
+    if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
+    if (sh?.area) areaCount[rid][sh.area]--;
+    const r = residentById.get(rid);
+    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
+    if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
+    if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
+    if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
+    return sid;
+  }
+  function assignCell(rid, sid, ds) {
+    schedule[rid][ds] = sid;
+    bumpScheduleVersion(rid);
+    assigned[rid]++;
+    const sh = SHIFT_MAP[sid];
+    if (sh) typeCount[rid][sh.type]++;
+    if (sh?.area === 'TRAUMA') traumaCount[rid]++;
+    if (sh?.area === 'PED') pedsCount[rid]++;
+    if (sid === 'PED-N') pedNCount[rid]++;
+    if (sh?.type === 'night') nightCount[rid]++;
+    if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
+    if (sh?.area) areaCount[rid][sh.area]++;
+    const r = residentById.get(rid);
+    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
+    if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
+    if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
+    if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
+  }
+  // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
+  // resets it first, since repair jumps between arbitrary dates, not one day at a time.
+  function poolFor(shift, ds) {
+    streakCache = {};
+    budget--;
+    return candidatePool(shift, ds);
+  }
+  function pickBestScore(pool, shift, ds) {
+    const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
+    const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
+    let best = pool[0], bestScore = -Infinity;
+    for (const r of pool) {
+      const s = score(r, shift, ds, seniorFilled, assignedHereForSlot);
+      if (s > bestScore) { bestScore = s; best = r; }
+    }
+    return best;
+  }
+
+  // Phase 3b — POD/FLEX true-primary preference (R5, 2026-09-27 chief decision): "replaced with a
+  // PGY-2 only when no PGY-3 is actually available." compositionSatisfies already lets the fallback
+  // PGY (POD: PGY-2, FLEX: PGY-3) satisfy the hard requirement on a Wellness-Wednesday/conference
+  // date — this phase is the ONE place that then prefers a genuine primary over that substitute, by
+  // a single bounded unassign/recheck/reassign-or-revert swap, same idiom as Phase 2/3's swaps.
+  // Standalone (not nested inside repairPass) specifically so generateScheduleBest's gap-fix path
+  // (truePrimaryOnlyMode) can call it alone, without running fillDayPass or any other repair phase —
+  // see this function's own top-of-file header comment for why that path exists (a fix applied only
+  // when Phases 1-5 didn't ALSO strictly improve the score would otherwise get silently discarded,
+  // since this rule has no slot in betterQuality's lexicographic comparison). Called from repairPass
+  // itself too (as its own "Phase 3b", in sequence with every other phase) when repair:true runs the
+  // full pass. Scans every (area, shift, date) rather than a report array (there is no live report
+  // array for this — report.podSubstitutes is built AFTER repair, from whatever this phase leaves
+  // behind) — cheap in practice, since `fallback` only ever matches on the block's own 1-2
+  // substitute-eligible dates (fallbackCompositionAt's compositionSatisfies check never lets the
+  // fallback PGY qualify anywhere else, so the `.find()` inside it is a fast empty miss for every
+  // other date). "Is this shift/date a fallback placement worth fixing" is fallbackCompositionAt's
+  // own question (module scope, shared with generateScheduleBest's hasFallbackComposition gate) —
+  // this loop only decides what to DO once it has one.
+  function preferTruePrimaryPass() {
+    for (const area of Object.keys(SENIOR_COMPOSITION)) {
+      const comp = SENIOR_COMPOSITION[area];
+      for (const shift of SHIFTS.filter(s => s.area === area)) {
+        for (const ds of dates) {
+          if (budget <= 0) break;
+          if (seniorCompositionExempt(shift, ds)) continue;
+          const fallback = fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf);
+          if (!fallback) continue; // no substitute sitting on this shift/date (or already covered by a true primary elsewhere on it)
+          if (!movable(fallback.id, ds)) continue;
+          unassignCell(fallback.id, ds);
+          const { candidates } = poolFor(shift, ds);
+          const truePrimaries = candidates.filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary);
+          if (truePrimaries.length) {
+            const winner = pickBestScore(truePrimaries, shift, ds);
+            assignCell(winner.id, shift.id, ds);
+            report.repairs.push({ type: 'preferTruePrimary', dateStr: ds, shiftId: shift.id, area, replacedResidentId: fallback.id, withResidentId: winner.id });
+          } else {
+            assignCell(fallback.id, shift.id, ds); // revert — no true primary is actually available
+          }
+        }
+      }
+    }
+  }
+
   // Bounded post-fill repair pass (only runs when `repair:true` is passed — generateScheduleBest
   // calls this once, on the winning seed, after best-of-N selection). Every move goes through the
   // SAME candidatePool the fill passes used (zero parallel rule implementation, zero rule drift)
@@ -5462,14 +5998,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
   // never-overwrite invariant.
   function repairPass() {
-    // Cap on poolFor calls, so a stubborn block can't spin the repair pass indefinitely. Phases
-    // 1-3 keep their original 300; Phase 4 (ejection chains) then gets a further +200 of its own
-    // (see its header) — a single shared 500 would let Phase 1's per-slot donor scan swallow the
-    // whole allowance on a hard block and starve Phase 4 down to a no-op, and would also perturb
-    // Phases 1-3's existing behaviour, which is deliberately left bit-for-bit unchanged here.
-    // Worst case across the whole repair pass is therefore 500 calls, up from 300.
-    let budget = 300;
-
     function filledCount(sid, ds) {
       let n = 0;
       for (const r of allResidents) if (schedule[r.id][ds] === sid) n++;
@@ -5478,66 +6006,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     function minFor(sid, ds) {
       const dow = parseDate(ds).getDay();
       return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
-    }
-    function movable(rid, ds) { return !keptCells.has(`${rid}|${ds}`); }
-
-    // Exact inverse of fillDayPass's commit block (L2894 area) — every counter it increments,
-    // this decrements, term for term (including jcCount/traumaNightYearly, easy to miss).
-    function unassignCell(rid, ds) {
-      const sid = schedule[rid][ds];
-      if (!sid) return null;
-      delete schedule[rid][ds];
-      bumpScheduleVersion(rid);
-      assigned[rid]--;
-      const sh = SHIFT_MAP[sid];
-      if (sh) typeCount[rid][sh.type]--;
-      if (sh?.area === 'TRAUMA') traumaCount[rid]--;
-      if (sh?.area === 'PED') pedsCount[rid]--;
-      if (sid === 'PED-N') pedNCount[rid]--;
-      if (sh?.type === 'night') nightCount[rid]--;
-      if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
-      if (sh?.area) areaCount[rid][sh.area]--;
-      const r = residentById.get(rid);
-      if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
-      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
-      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
-      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
-      return sid;
-    }
-    function assignCell(rid, sid, ds) {
-      schedule[rid][ds] = sid;
-      bumpScheduleVersion(rid);
-      assigned[rid]++;
-      const sh = SHIFT_MAP[sid];
-      if (sh) typeCount[rid][sh.type]++;
-      if (sh?.area === 'TRAUMA') traumaCount[rid]++;
-      if (sh?.area === 'PED') pedsCount[rid]++;
-      if (sid === 'PED-N') pedNCount[rid]++;
-      if (sh?.type === 'night') nightCount[rid]++;
-      if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
-      if (sh?.area) areaCount[rid][sh.area]++;
-      const r = residentById.get(rid);
-      if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
-      if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
-      if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
-      if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
-    }
-    // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
-    // resets it first, since repair jumps between arbitrary dates, not one day at a time.
-    function poolFor(shift, ds) {
-      streakCache = {};
-      budget--;
-      return candidatePool(shift, ds);
-    }
-    function pickBestScore(pool, shift, ds) {
-      const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
-      const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
-      let best = pool[0], bestScore = -Infinity;
-      for (const r of pool) {
-        const s = score(r, shift, ds, seniorFilled, assignedHereForSlot);
-        if (s > bestScore) { bestScore = s; best = r; }
-      }
-      return best;
     }
     // Narrows a clean candidate pool by the same hard seniority-composition requirement
     // fillDayPass enforces for BOTH FLEX and POD (AY26/27 chief-directed, both hard now — see
@@ -5709,6 +6177,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     report.seniorGaps = report.seniorGaps.filter(g => !gapFixed.has(g));
 
+    // Phase 3b — POD/FLEX true-primary preference. See preferTruePrimaryPass's own header (defined
+    // just above repairPass) — full repair runs it here, in sequence with every other phase;
+    // generateScheduleBest's own gap-fix path (truePrimaryOnlyMode) calls it standalone instead.
+    preferTruePrimaryPass();
+
     // Phase 4 — bounded ejection chains (depth 2) for whatever min-slots Phase 1 could not fix.
     //
     // Phase 1's two moves are both depth-1 in the sense that matters: Move A relocates someone
@@ -5868,6 +6341,220 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Same re-derivation Phase 1 does: a row fixed as a side effect of a different slot's chain
     // must drop here too, so never trust the array itself after mutation.
     report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+
+    // Phase 5 — under-target lift (A2, fix/under-target-lift). Phases 1-4 only ever repair
+    // COVERAGE (min-slot) gaps; a resident sitting under their own shift-count TARGET with every
+    // coverage min already met was never addressed, and chiefs regularly see it. This phase closes
+    // that gap directly per-resident, most-short-first, trying four escalating moves for each
+    // ADDITIONAL shift a resident still needs: (1) Room — a free date+shift with real headroom
+    // (filled < coverage max) that the resident can legally take; (2) Steal — swap a shift 1-for-1
+    // away from a resident who is OVER target on that exact date+shift (headcount is unchanged, so
+    // this can never create a new coverage gap); (3) Chain — the shift is genuinely full (no
+    // headroom anywhere), so relocate ONE occupant sideways, same day, into a DIFFERENT shift that
+    // itself has headroom, then take the seat that relocation frees (two assignment changes total,
+    // hence "depth-2"); (4) Overstaff — last resort, place the resident on a shift already at max,
+    // pushing headcount one over (never TRAUMA-D/N — hard-clamped to 1 everywhere else in this
+    // file — and never a shift whose max is 0 that date, which also excludes every 12h id outside
+    // its own window). Every move is transactional through the exact same assignCell/unassignCell/
+    // narrowForSeniority/compositionStillSatisfied machinery Phases 1-4 use, so it can never violate
+    // a hard candidatePool rule (hoursCapped, streakBlocked, circadian, nightCapped,
+    // traumaRunCapped, jeopardy, vacation/off, hard seniority composition, ...) — those residents
+    // are left exactly as under-target as they started (see computeUnderTargetDiagnostics — the one
+    // genuinely legal outcome for a resident whose free dates are ALL hard-blocked). Own pool-call
+    // budget, never shared with Phases 1-4's `budget` — a stubborn block that exhausts the 500-call
+    // Phase 1-4 allowance must not starve this phase of its own chance to run, and vice versa.
+    // keptCells are never touched (every occupant/donor candidate is filtered through movable()).
+    let liftBudget = 400;
+    function poolFor5(shift, ds) {
+      streakCache = {};
+      liftBudget--;
+      return candidatePool(shift, ds);
+    }
+    function maxFor(sid, ds) {
+      const dow = parseDate(ds).getDay();
+      return getCoverageFor(sid, coverage, dow, conf12For(ds)).max;
+    }
+
+    // Step 1 — Room: r takes a free date+shift outright, no one else touched. Mirrors
+    // computeUnderTargetDiagnostics' own openSlots scan (dates × SHIFTS, own-eligibility screen,
+    // then a live headroom + candidatePool check) so a resident this step could not help is
+    // guaranteed to also score openSlots===0 in that diagnostic afterwards.
+    function roomFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (filledCount(shift.id, ds) >= cov.max) continue; // no headroom
+          const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+          if (!pool.includes(r)) continue;
+          assignCell(r.id, shift.id, ds);
+          report.repairs.push({ type: 'underTargetRoom', residentId: r.id, dateStr: ds, shiftId: shift.id });
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Step 2 — Steal: a straight 1-for-1 swap on the SAME date+shift, donor out, r in. Headcount
+    // on that shift/date is unchanged before and after (no coverage-min risk, no backfill needed —
+    // that's the whole reason this is simpler than Chain), so the only requirement beyond the usual
+    // hard-rule/composition checks is that the donor stays at or above their OWN target once the
+    // shift is gone.
+    function stealFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const donors = allResidents.filter(d =>
+            d.id !== r.id && schedule[d.id][ds] === shift.id && movable(d.id, ds) &&
+            target[d.id] != null && assigned[d.id] - 1 >= target[d.id]);
+          for (const donor of donors) {
+            if (liftBudget <= 0) return false;
+            unassignCell(donor.id, ds);
+            if (!compositionStillSatisfied(shift.id, ds)) { assignCell(donor.id, shift.id, ds); continue; }
+            const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+            if (!pool.includes(r)) { assignCell(donor.id, shift.id, ds); continue; }
+            assignCell(r.id, shift.id, ds);
+            report.repairs.push({ type: 'underTargetSteal', residentId: r.id, dateStr: ds, shiftId: shift.id, stolenFromResidentId: donor.id });
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Step 3 — Chain: the shift is genuinely full (filled >= max, so Room already can't help, and
+    // Step 2 already tried every over-target donor on it). Relocate ONE occupant sideways — same
+    // day, a DIFFERENT shift with its own real headroom — which frees exactly the one seat r needs
+    // without ever dropping below any shift's min or touching any other date. Bounded to a handful
+    // of occupants/relocation targets per slot so one pathological (shift, date) can't consume the
+    // whole phase budget.
+    const LIFT_CHAIN_MAX_OCCUPANTS = 4;
+    const LIFT_CHAIN_MAX_TARGETS = 4;
+    function chainFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (filledCount(shift.id, ds) < cov.max) continue; // real headroom — Room/Steal already own this case
+          const occupants = allResidents
+            .filter(o => o.id !== r.id && schedule[o.id][ds] === shift.id && movable(o.id, ds))
+            .slice(0, LIFT_CHAIN_MAX_OCCUPANTS);
+          for (const o of occupants) {
+            if (liftBudget <= 0) return false;
+            // o is unassigned exactly once here and stays that way for every zTarget attempt below
+            // (a failed attempt undoes ITS OWN assignCell(z) back to unassigned, never back to
+            // shift.id — reassigning o to shift.id mid-loop would double-count o's counters against
+            // whatever z the next attempt tries). The single final assignCell(o.id, shift.id, ds)
+            // after the loop is the only place o is restored to its original shift.
+            unassignCell(o.id, ds);
+            if (!compositionStillSatisfied(shift.id, ds)) { assignCell(o.id, shift.id, ds); continue; }
+            const zTargets = SHIFTS
+              .filter(z => z.id !== shift.id && shiftActiveOnDow(z.id, dsDow) && eligCache[o.id]?.[ds]?.has(z.id))
+              .slice(0, LIFT_CHAIN_MAX_TARGETS);
+            for (const z of zTargets) {
+              if (liftBudget <= 0) break;
+              if (filledCount(z.id, ds) >= maxFor(z.id, ds)) continue; // no headroom to relocate into
+              const zPool = narrowForSeniority(poolFor5(z, ds).candidates, z, ds);
+              if (!zPool.includes(o)) continue;
+              assignCell(o.id, z.id, ds); // o relocated — tentatively
+              const sPool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+              if (sPool.includes(r)) {
+                assignCell(r.id, shift.id, ds);
+                report.repairs.push({
+                  type: 'underTargetChain', residentId: r.id, dateStr: ds, shiftId: shift.id,
+                  relocatedResidentId: o.id, relocatedTo: z.id,
+                });
+                return true;
+              }
+              // r still can't take the freed seat — undo the relocation (o is unassigned again,
+              // exactly as it was before this z attempt), try the next z.
+              unassignCell(o.id, ds);
+            }
+            assignCell(o.id, shift.id, ds); // no z worked (or none existed) — restore o
+          }
+        }
+      }
+      return false;
+    }
+
+    // Step 4 — Overstaff: last resort, place r on a shift already at (or, after Steps 1-3, still
+    // at) max — accepted as a deliberate, visible exception rather than leaving the resident short.
+    // Never TRAUMA-D/N (hard-clamped to 1 everywhere else — see getCoverageFor's own TRAUMA_SOLO_IDS
+    // clamp) and never a shift whose max is 0 that date (this alone also excludes every 12h id
+    // outside its own chief-defined window — see twelveHourAllows/getCoverageFor). validateAll
+    // already reports count > max as a plain warn with no `rule` id (`Above maximum staffing`), so
+    // it is neither export-blocking nor counted in errorCount/blockingWarnCount — recorded here in
+    // report.overstaffed for the report card to surface explicitly.
+    function overstaffFor(r) {
+      for (const ds of dates) {
+        if (liftBudget <= 0) return false;
+        if (schedule[r.id][ds]) continue; // r must be free that day
+        const dsDow = parseDate(ds).getDay();
+        const elig = eligCache[r.id]?.[ds];
+        if (!elig) continue;
+        for (const shift of SHIFTS) {
+          if (liftBudget <= 0) return false;
+          if (shift.area === 'TRAUMA') continue; // never TRAUMA-D/N
+          if (shift.area === 'PED' && shift.type === 'night') continue; // never a Peds night (PED-N/PED-N-FM/PED-N12) — chief call 2026-09-26; solver coverage.py mirrors
+          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
+          if (!elig.has(shift.id)) continue;
+          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
+          if (cov.max <= 0) continue; // never a shift with max 0 that date (also excludes 12h-outside-window)
+          const filled = filledCount(shift.id, ds);
+          if (filled < cov.max) continue; // real headroom belongs to Room/Steal/Chain, not this
+          if (filled > cov.max) continue; // already overstaffed once — cap at max+1, same as the solver's overstaff BoolVar
+          const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
+          if (!pool.includes(r)) continue;
+          assignCell(r.id, shift.id, ds);
+          report.overstaffed.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, date: ds, shiftId: shift.id });
+          report.repairs.push({ type: 'underTargetOverstaff', residentId: r.id, dateStr: ds, shiftId: shift.id });
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Most-short-first: a resident 4 shifts under target is a bigger visible gap than one 1 short,
+    // so give the scarce lift budget to them first. Re-sorted fresh (not cached) since a Steal can
+    // move another resident's own assigned count, technically outside this phase's own population,
+    // but not one this population itself needs re-ranked by mid-pass — assignedAtStart pins the
+    // sort key so residents this phase itself is actively lifting don't jump around their own order.
+    const shortResidents = allResidents
+      .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
+      .map(r => ({ r, shortfall: target[r.id] - assigned[r.id] }))
+      .sort((a, b) => b.shortfall - a.shortfall)
+      .map(x => x.r);
+
+    for (const r of shortResidents) {
+      while (liftBudget > 0 && target[r.id] != null && assigned[r.id] < target[r.id]) {
+        if (roomFor(r)) continue;
+        if (stealFor(r)) continue;
+        if (chainFor(r)) continue;
+        if (overstaffFor(r)) continue;
+        break; // every move exhausted for this resident — genuinely infeasible, move on
+      }
+    }
   }
 
   // Three passes over the whole block: everything else at minimum coverage first, then Trauma
@@ -5875,10 +6562,39 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // schedule"), then every shift's optional headroom up to its maximum. Minimums across the
   // whole block are satisfied before any optional slot can consume a resident's target headroom.
   // The first two passes partition SHIFTS disjointly, so report.totalSlots sums correctly.
-  for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
-  for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
-  for (const ds of dates) fillDayPass(ds, () => true, 'optional');
-  if (repair) repairPass();
+  // truePrimaryOnlyMode skips all three fill passes entirely — `schedule` already arrived fully
+  // populated (via `block.schedule`, see generateScheduleBest's own gap-fix call site), and running
+  // fillDayPass's OPTIONAL phase over it would try to top up any shift not already at its own
+  // coverage MAX using a freshly-restarted rng stream, silently adding placements this replay has no
+  // business making. This mode exists to run Phase 3b and nothing else.
+  if (!truePrimaryOnlyMode) {
+    for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
+    for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
+    for (const ds of dates) fillDayPass(ds, () => true, 'optional');
+  }
+  if (repair === true) repairPass();
+  else if (truePrimaryOnlyMode) preferTruePrimaryPass();
+
+  // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
+  // repair, like report.underTarget right below) rather than logging live inside fillDayPass —
+  // repair can still move who ends up on a POD shift after the fill passes first place someone.
+  // `keptCells` scoping matters here specifically: a chief's own pre-existing manual PGY-2-on-POD
+  // entry is that chief's call, not something this generation run did, and must not be reported as
+  // if the generator made the substitution.
+  report.podSubstitutes = [];
+  for (const shift of SHIFTS.filter(s => s.area === 'POD')) {
+    for (const ds of dates) {
+      if (seniorCompositionExempt(shift, ds)) continue;
+      for (const r of allResidents) {
+        if (schedule[r.id][ds] !== shift.id) continue;
+        if (keptCells.has(`${r.id}|${ds}`)) continue;
+        if (r.category !== 'EM_HOME' || r.pgy !== SENIOR_COMPOSITION.POD.fallback) continue;
+        if (!compositionSatisfies('POD', r, ds, block.startDate, appSettings, ayConf)) continue;
+        const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf) || 'conference';
+        report.podSubstitutes.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: shift.id, reason });
+      }
+    }
+  }
 
   report.underTarget = allResidents
     .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
@@ -5977,6 +6693,22 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   return { schedule, report };
 }
 
+// Solver-payload-ONLY nudge (read solely by buildSolverPayload's preferences[] emission below —
+// generateSchedule/candidatePool/score() never read this, so the JS local engine's own behavior
+// is byte-for-byte unchanged). engineHeadToHead.test.js (2026-09-26 measurement) found the CP-SAT
+// solver racking up ~13x as many "Final-Sunday overnight — next block not imported" validateAll
+// advisories as the JS engine across the same 4 fixtures. Root cause: the JS engine has no
+// EXPLICIT score() term for this either — its near-avoidance is an emergent side effect of
+// nightCluster's isolated-run penalty (a night shift freshly started on the block's own last
+// calendar date can never extend into a run of >=2 WITHIN this block, since nightRunAfter has
+// nothing beyond the block to see, so score() already treats it as harshly as any other stranded
+// single night). The solver's objective has no equivalent run-shape-vs-block-boundary interaction,
+// so it had zero cost signal steering it away from an unconfirmed-continuation overnight there.
+// Same preference-tuple mechanism as traumaNightDow/pedNPgy1 just below — deliberately small
+// (between pedNPgy1Deprioritize=25 and nightCluster=40) so it only steers WHICH eligible resident
+// the solver reaches for that one date, never competes with coverageMin/targetDeficit.
+const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
+
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
 // solver-service/docs/PAYLOAD_SCHEMA.md, the authoritative contract this function targets. ALL
@@ -5987,8 +6719,19 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 // is represented by its opaque `id` only (this repo is public; see CLAUDE.md's "Data model &
 // conventions"). Same top-level args shape as generateSchedule, plus an optional `config` for
 // per-call solver-config overrides (maxTimeSeconds/numWorkers/randomSeed/coverageMinMode/
-// maxVerificationResolves/weights).
-export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {} }) {
+// maxVerificationResolves/weights/objectiveMode/stageSplit/symmetryLevel).
+//
+// R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): optional `hint` —
+// a schedule shaped exactly like `block.schedule` ({residentId: {dateStr: shiftId}}), normally
+// the LOCAL engine's own `generateScheduleBest(...).schedule` (see `generateViaSolverOrLocal`,
+// which now always runs local FIRST specifically to produce this). Converted to the SAME flat
+// {residentId,date,shiftId} cell shape `locked[]` already uses — the simplest mapping onto the
+// solver's own x[r,s,d] var keys — but emitted as a SEPARATE `hint` field: a hint is a soft
+// warm-start suggestion (CP-SAT `AddHint`), never a hard pin like `locked`. Omitted entirely
+// (not even an empty array) when `hint` isn't passed or resolves to zero cells, so a payload
+// built without it is byte-identical to a pre-R9 payload — see the dedicated test in
+// ResidentScheduler.test.js.
+export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   const sd = block.specialDays || {};
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
@@ -6042,10 +6785,20 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     const byDate = {};
     for (const ds of dates) {
       if (jeoPolicy !== 'off' && isJeopardyDate(r, ds, block.jeopardySchedule)) continue;
-      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, {
+      let list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, {
         blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds),
         finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule,
       });
+      // Jeopardy WINDOW (2026-09-26 policy) — payload gotcha (CLAUDE.md): candidatePool's own
+      // jeopardyWindowConflict exclusion must be mirrored here too. Per-SHIFT, not per-date, unlike
+      // the same-day skip above: an overnight starting `ds` that runs past 07:00 into TOMORROW's
+      // jeopardy call is blocked, but `ds`'s other shifts are unaffected.
+      if (jeoPolicy !== 'off') {
+        const nextDs = toDateStr(addDays(parseDate(ds), 1));
+        if (isJeopardyDate(r, nextDs, block.jeopardySchedule)) {
+          list = list.filter(sidCandidate => !shiftOverlapsJeopardyWindow(sidCandidate, ds, nextDs));
+        }
+      }
       if (list.length) byDate[ds] = list;
     }
     eligible[r.id] = byDate;
@@ -6075,20 +6828,35 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // even when the qualifying id list comes out EMPTY (no PGY-3/substitute available at all that
   // day) — an empty array is meaningful ("if staffed, nobody currently qualifies", i.e. structurally
   // unfillable that day), not "no constraint"; omitting it would silently mean the opposite.
+  // truePrimary[s][d] — R7 gap 3: the SAME (shift,date) keys as seniorPrimary, but restricted to
+  // residents who satisfy the area's composition as the TRUE primary PGY (comp.primary), never a
+  // Wellness-Wednesday/conference-away substitute. An empty array is meaningful here too — "no true
+  // primary is actually available today, so a substitute is the accepted stand-in, no preference
+  // penalty" — exactly mirroring preferTruePrimaryPass's own "no true primary available -> revert"
+  // branch. Lets the solver add a soft cost for staffing a substitute-eligible (shift,date) with only
+  // a fallback PGY when a true primary was in fact eligible, matching preferTruePrimaryPass for BOTH
+  // POD and FLEX (SENIOR_COMPOSITION's full key set — see that function's own scope).
   const seniorPrimary = {};
+  const truePrimary = {};
   for (const area of Object.keys(SENIOR_COMPOSITION)) {
+    const comp = SENIOR_COMPOSITION[area];
     for (const shift of SHIFTS.filter(s => s.area === area)) {
       const byDate = {};
+      const trueByDate = {};
       for (const ds of dates) {
         const dow = parseDate(ds).getDay();
         if (!shiftActiveOnDow(shift.id, dow)) continue;
         if (seniorCompositionExempt(shift, ds)) continue; // exempt (s,d) => no entry at all
-        byDate[ds] = schedulableResidents
-          .filter(r => (eligible[r.id][ds] || []).includes(shift.id))
+        const eligHere = schedulableResidents.filter(r => (eligible[r.id][ds] || []).includes(shift.id));
+        byDate[ds] = eligHere
           .filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf))
+          .map(r => r.id);
+        trueByDate[ds] = eligHere
+          .filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary)
           .map(r => r.id);
       }
       if (Object.keys(byDate).length) seniorPrimary[shift.id] = byDate;
+      if (Object.keys(trueByDate).length) truePrimary[shift.id] = trueByDate;
     }
   }
 
@@ -6110,7 +6878,13 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // this ("self-cover: no target ceiling, excluded from deficit/fairness terms" — see
     // PAYLOAD_SCHEMA.md) and is what the JS local generator's own `report.underTarget` (~line 5661)
     // and validateAll already achieve by gating on isSchedulable before ever computing a deficit.
-    const target = isSchedulable(r) ? getShiftTarget(r, appSettings) : null;
+    // `schedulable` ships separately from `target` (R7 gap fix, reviewer finding on 4d1b7ba):
+    // target is null both when this resident is off-rotation AND when a schedulable resident's
+    // target was bought down to <=0 (getShiftTarget returns null, never 0 — CLAUDE.md). The solver's
+    // weekly_hours.py/validate.py ACGME scope needs to tell those two apart, so it reads this field
+    // instead of inferring schedulability from `target is not None`.
+    const schedulable = isSchedulable(r);
+    const target = schedulable ? getShiftTarget(r, appSettings) : null;
     const isEmCore = isEmResident(r);
     const traumaCapSubject = isTraumaCapSubject(r);
     const splitResident = isTraumaPedsSplitResident(r, traumaBlocks);
@@ -6136,10 +6910,30 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 
     const ayPrior = ayPriorAll[r.id] || { nights: 0, weekendDates: 0, holidays: 0 };
 
+    // R7 (solver parity, gap 1/2): rolling-7-day ED/total-hour caps (6.17.a.3) need per-date
+    // GR/Journal-Club "obligation hours" — calendar facts independent of the solve, resolved here
+    // exactly like acgmeHours.js's own buildDailyContributions (grHoursOn/jcHoursOn), covering the
+    // SAME tail-window-to-block-end range that field's other tail constants already span (matches
+    // TAIL_WINDOW_DAYS on the Python side). `grDates` is the subset of dates where this resident's
+    // OWN Grand Rounds obligation lands (already vacation/off-filtered) — rest.py's rule 17 needs it
+    // to know when to measure rest from GR's own end (12:00) instead of the earlier shift's end.
+    const grDowR = grWorkDow(r);
+    const obligationHours = {};
+    const grDates = [];
+    for (let d = parseDate(tailWindowStart); d <= parseDate(block.endDate); d = addDays(d, 1)) {
+      const ds = toDateStr(d);
+      const gr = grHoursOn(r, ds, grDowR);
+      const jc = jcHoursOn(r, ds);
+      if (gr > 0) grDates.push(ds);
+      const h = gr + jc;
+      if (h > 0) obligationHours[ds] = h;
+    }
+
     return {
       id: r.id,
       cohort: eligKey(r),
       target,
+      schedulable,
       isEmCore,
       isIntern: isEmIntern(r),
       nightExempt: isNightOnlyResident(r, eligOverrides),
@@ -6163,22 +6957,44 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       priorTail: rPrevTail,
       priorTailObligations,
       priorTailHours,
+      obligationHours,
+      grDates,
       ayPrior: { nights: ayPrior.nights || 0, weekends: ayPrior.weekendDates || 0, holidays: ayPrior.holidays || 0 },
     };
   });
 
-  // ── obligations[r] — rule 19 inputs: in-block dates that count as a workday with NO shift
-  // assigned (own GR weekday, JC presenting), already excluding vacation/approved-off (
-  // isStreakWorkDay itself refuses to fabricate an obligation on those dates — see its own header).
+  // ── obligations[r] / obligationsExemptAfterNight[r] — rule 19 inputs: in-block dates that count
+  // as a workday with NO shift assigned (own GR weekday, JC presenting), already excluding
+  // vacation/approved-off (obligationKind itself refuses to fabricate an obligation on those dates
+  // — see its own header). Sent UNCONDITIONALLY now (2026-09-27, GR-after-night exemption as a
+  // model decision) -- i.e. ignoring isStreakWorkDay's post-overnight GR exemption entirely, which
+  // depends on the PRECEDING day's shift. For a fresh solve that's a solver decision, not a static
+  // fact yet (`block.schedule` is empty pre-generation, so the old `isStreakWorkDay(rs, ...)` call
+  // here could never see a night shift the solver/hint itself might place the day before, and
+  // treated every GR day as an unconditional workday -- manufacturing phantom 7-8-day runs; see
+  // PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding this replaces, including the reverted
+  // "source rs from the hint" attempt). `obligationsExemptAfterNight` names the subset of each
+  // resident's own `obligations` dates where the exemption CAN apply at all (own GR weekday, per
+  // `obligationKind`'s 'gr' result) -- JC presenting dates are never exempted (JC's
+  // unconditional-true branch in isStreakWorkDay runs before the exemption check), so they only
+  // ever appear in `obligations`, never here. The solver reifies the actual exemption against its
+  // own `night[r, d-1]` decision var (`workday_limits.py`'s `_obligation_term`) instead of a static
+  // input, so it can never go stale no matter what the polisher places the day before.
   const obligations = {};
+  const obligationsExemptAfterNight = {};
   for (const r of allResidents) {
     const rs = block.schedule?.[r.id] || {};
     const obligDates = [];
+    const exemptDates = [];
     for (const ds of dates) {
       if (rs[ds]) continue;
-      if (isStreakWorkDay(rs, r, ds, prevTail[r.id] || null, streakWalkBounds)) obligDates.push(ds);
+      const kind = obligationKind(r, ds, streakWalkBounds);
+      if (kind == null) continue;
+      obligDates.push(ds);
+      if (kind === 'gr') exemptDates.push(ds);
     }
     if (obligDates.length) obligations[r.id] = obligDates;
+    if (exemptDates.length) obligationsExemptAfterNight[r.id] = exemptDates;
   }
 
   // ── locked[] — rule 14: every non-empty cell already in block.schedule (manual entries AND
@@ -6189,6 +7005,19 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     const rs = block.schedule?.[r.id] || {};
     for (const [ds, sid] of Object.entries(rs)) {
       if (sid) locked.push({ residentId: r.id, date: ds, shiftId: sid });
+    }
+  }
+
+  // ── hint[] (R9, optional) — same loop shape as locked[] just above, over the CALLER-supplied
+  // `hint` schedule instead of `block.schedule`. See this function's own header comment for why
+  // this stays a separate field from `locked` (soft suggestion vs. hard pin).
+  const hintCells = [];
+  if (hint) {
+    for (const r of allResidents) {
+      const rs = hint[r.id] || {};
+      for (const [ds, sid] of Object.entries(rs)) {
+        if (sid) hintCells.push({ residentId: r.id, date: ds, shiftId: sid });
+      }
     }
   }
 
@@ -6212,6 +7041,21 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     for (const ds of dates) {
       if ((eligible[r.id]?.[ds] || []).includes('PED-N')) {
         preferences.push({ residentId: r.id, shiftId: 'PED-N', date: ds, bonus: -SCORE_WEIGHTS.pedNPgy1Deprioritize, tag: 'pedNPgy1' });
+      }
+    }
+  }
+  // finalSundayUnconfirmed (solver-only — see FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header
+  // comment for why this has no JS SCORE_WEIGHTS counterpart to mirror). Only residents whose next
+  // rotation is NOT known are targeted: known-and-continuing residents are exactly the ones who'll
+  // never trigger the warning, and known-and-not-continuing residents are already hard-excluded
+  // from `eligible` above (the finalSundayBlocked branch inside getEligibleShifts), so neither
+  // needs a preference entry.
+  if (finalSunday) {
+    for (const r of schedulableResidents) {
+      if (nextRotation[r.id]?.known) continue;
+      for (const sid of eligible[r.id]?.[finalSunday] || []) {
+        if (SHIFT_MAP[sid]?.type !== 'night') continue;
+        preferences.push({ residentId: r.id, shiftId: sid, date: finalSunday, bonus: -FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE, tag: 'finalSundayUnconfirmed' });
       }
     }
   }
@@ -6258,7 +7102,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 
   const resolvedConfig = {
     maxTimeSeconds: 30,
-    numWorkers: 8,
+    // R9: no hardcoded default here any more (was 8) — an explicit `numWorkers` still overrides
+    // via `config`, but leaving it OFF the payload lets the solver's own default (os.cpu_count(),
+    // clamped >= 1 — solver-service/solver/solve.py's `_num_workers`) actually take effect instead
+    // of every request pinning a stale worker count regardless of the box it runs on.
     randomSeed: 42,
     coverageMinMode: 'elastic_always',
     maxVerificationResolves: 2,
@@ -6274,9 +7121,12 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     residents,
     eligible,
     obligations,
+    obligationsExemptAfterNight,
     locked,
+    ...(hintCells.length ? { hint: hintCells } : {}),
     coverage: coverageOut,
     seniorPrimary,
+    truePrimary,
     jcDates: jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate }),
     holidays: Object.fromEntries(
       holidaysInRange(block.startDate, block.endDate, ayConf).flatMap(h => h.dates.map(ds => [ds, h.name]))
@@ -6284,7 +7134,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     preferences,
     rulePriority: normalizeRulePriority(appSettings.rulePriority),
     settings: {
-      enforceRest: appSettings.enforceRest !== false,
+      // Always true now (2026-09-26 policy: rest >= shift length is ACGME-hard, no more toggle) —
+      // sent as a literal so an older solver build that still reads this flag keeps enforcing rest
+      // rather than reading a stale appSettings.enforceRest:false from an old backup.
+      enforceRest: true,
       enforceWeekendOff: appSettings.enforceWeekendOff !== false,
     },
     traumaNightShiftIds,
@@ -6303,6 +7156,10 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     jcWindowStartH: JC_WINDOW_START_H,
     jcWindowEndH: JC_WINDOW_END_H,
     postNightDayRestH: NIGHT_RULES.postNightDayRestH,
+    // Grand Rounds end hour (rest.py's rule 17 GR-end adjustment, R7 gap 2) — same "altitude fix"
+    // convention as the three fields directly above: an OPTIONAL field an older solver build simply
+    // ignores, falling back to its own hardcoded 12.
+    grEndH: GR_END_H,
   };
 }
 
@@ -6312,7 +7169,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // through the same updateBlockTracked call. Only receives `{ block }` (not the full args
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
-export function mapSolverResult(json, { block, allResidents } = {}) {
+export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {} } = {}) {
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -6322,6 +7179,31 @@ export function mapSolverResult(json, { block, allResidents } = {}) {
   const schedule = {};
   for (const rid of Object.keys(block?.schedule || {})) schedule[rid] = {};
   for (const [rid, row] of Object.entries(json?.schedule || {})) schedule[rid] = { ...(schedule[rid] || {}), ...row };
+
+  // R7 (2026-09-27, gap 3): rebuild report.podSubstitutes from the FINAL merged schedule — the exact
+  // same scan generateSchedule itself runs post-repair (see that function's own header right above
+  // its own `report.podSubstitutes = []` loop), so the Generation notes surface the solver's own POD
+  // PGY-2 substitutions identically to the local engine's. Excludes any (resident,date) cell that was
+  // already non-empty in the REQUEST's block.schedule (a locked/manual entry, not the solver's own
+  // decision) — the solver-path equivalent of the local engine's `keptCells` guard. Only runs when
+  // `allResidents` is supplied (optional, backward-compatible, same posture as the `underTarget`
+  // filter below).
+  const podSubstitutes = [];
+  if (Array.isArray(allResidents)) {
+    for (const shift of SHIFTS.filter(s => s.area === 'POD')) {
+      for (const ds of getBlockDates(block?.startDate, block?.endDate)) {
+        if (seniorCompositionExempt(shift, ds)) continue;
+        for (const r of allResidents) {
+          if (schedule[r.id]?.[ds] !== shift.id) continue;
+          if (block?.schedule?.[r.id]?.[ds]) continue; // pre-existing locked/manual cell, not the solver's own decision
+          if (r.category !== 'EM_HOME' || r.pgy !== SENIOR_COMPOSITION.POD.fallback) continue;
+          if (!compositionSatisfies('POD', r, ds, block.startDate, appSettings, ayConf)) continue;
+          const reason = substituteReasonFor('POD', ds, block.startDate, appSettings, ayConf) || 'conference';
+          podSubstitutes.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: shift.id, reason });
+        }
+      }
+    }
+  }
 
   // Response `unfilled` entries carry a `shortBy` count (may be >1 for a shift/date short several
   // bodies); this app's own report shape is one entry per SLOT (dateStr/shiftId/slotIndex/reason —
@@ -6357,6 +7239,7 @@ export function mapSolverResult(json, { block, allResidents } = {}) {
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
+      podSubstitutes,
       // Defensive filter, mirroring buildSolverPayload's own `target: null` fix (see that map's
       // comment): a resident who isn't schedulable this block (isSchedulable false — e.g. an
       // EM_HOME/EM_BAMC resident on an atUH:false blockType) already gets `target: null` in the
@@ -6472,14 +7355,24 @@ function scoreGenerationResult(res, args, rulePriority) {
 // nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
 // different schedules), scores each with scoreGenerationResult, and keeps the strictly best
 // result per betterQuality. One explicit baseSeed is generated per call (or accepted via opts)
-// and persisted on the winning report alongside the winning seed + attempt index, so any result
-// is replayable: `generateSchedule({...args, rng: mulberry32(report.seed)})` reproduces it.
+// and persisted on the winning report alongside the winning seed + attempt index.
 //
 // Repair runs once, AFTER selection: the winning seed is re-run with repair enabled (deterministic
 // rng reproduces the exact same pre-repair schedule, then repair mutates from there) and the
 // repaired result is adopted only on STRICT betterQuality improvement — a tie (or worse) keeps the
 // unrepaired winner, since repair could otherwise trade away something the quality vector doesn't
 // score for zero measured benefit.
+//
+// REPLAY (report.replay, see the true-primary gap-fix block below): when `report.replay.
+// truePrimaryOnly` is false, a plain `generateSchedule({...args, rng: mulberry32(report.replay.seed),
+// repair: true})` reproduces `best` exactly. When it's true, that single call only reproduces the
+// PRE-fix schedule — the actual winner needs the same second step this function itself ran:
+//   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: false });
+//   const winner = generateSchedule({ ...args, rng: mulberry32(report.replay.seed),
+//     repair: 'truePrimaryOnly', block: { ...args.block, schedule: base.schedule },
+//     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
+//     args.block.schedule> }).
+// See CLAUDE.md's Generator section for the one-line version of this contract.
 export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = true } = {}) {
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
@@ -6524,6 +7417,74 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
   }
 
+  // R5 (2026-09-27 chief decision) gap fix, memory rule-override-policy: the true-primary
+  // preference (preferTruePrimaryPass, generateSchedule's "Phase 3b") is a RULE, not a quality
+  // preference — betterQuality's lexicographic ladder has no slot for it (podPgy2Substitute is a
+  // plain, non-blocking info warn, not counted in errorCount/blockingWarnCount — see rulePolicy.js),
+  // so the `repaired` attempt just above gets discarded whenever Phases 1-5 didn't ALSO strictly
+  // improve the score, even on the run where fixing exactly this substitute was Phase 3b's ONLY
+  // change. Left alone, `best` then reverts to the never-repaired attempt from the loop above, which
+  // never ran Phase 3b at all — silently losing the "a free PGY-3 always covers POD/FLEX over a
+  // substitute" guarantee whenever the rest of repair wasn't ALSO an improvement.
+  //
+  // Fix: apply Phase 3b as its own final, always-attempted step, independent of the keep/discard
+  // decision above. `repair:'truePrimaryOnly'` (see generateSchedule's own header on that mode) runs
+  // ONLY that one bounded swap on top of whatever `best.result.schedule` currently is — fillDayPass
+  // and every other repair phase are skipped entirely, so this can't reopen or re-decide anything
+  // else `best` already settled, and it can't perturb the 20-attempt race above (it only ever runs
+  // once, after that race and its own keep/discard decision are both already final).
+  // `keptCellsOverride` is computed from the CALLER's own original `args.block.schedule` — NOT
+  // `best.result.schedule`, which is mostly the generator's own fill — so a genuine chief hand-edit
+  // stays exactly as protected from this pass as it would be from a normal repair run.
+  //
+  // Gated on hasFallbackComposition (perf): the extra generateSchedule call below is real work (a
+  // full attempt's worth of setup, thrown away when it finds nothing), and on a normal schedule
+  // there is no fallback-PGY composition placement anywhere for Phase 3b to fix — that's the fast,
+  // fully-expected case per this fix's own header (score()'s seniorAdj term already makes a fallback
+  // over a genuinely free true primary essentially never happen). Uses the SAME predicate
+  // preferTruePrimaryPass itself uses (fallbackCompositionAt, via this scan) so the gate can never
+  // skip a case the pass below would actually have fixed.
+  if (repair && hasFallbackComposition(best.result.schedule, args.allResidents, args.block, args.appSettings, args.ayConf)) {
+    const trueKeptCells = new Set();
+    for (const r of args.allResidents) {
+      for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
+        if (sid) trueKeptCells.add(`${r.id}|${ds}`);
+      }
+    }
+    const fixAttempt = generateSchedule({
+      ...deferredArgs,
+      block: { ...args.block, schedule: best.result.schedule },
+      rng: mulberry32(best.seed),
+      repair: 'truePrimaryOnly',
+      keptCellsOverride: trueKeptCells,
+    });
+    if (fixAttempt.report.repairs.length) { // Phase 3b actually found and fixed something
+      const fixedResult = {
+        schedule: fixAttempt.schedule,
+        report: {
+          ...best.result.report,
+          podSubstitutes: fixAttempt.report.podSubstitutes,
+          underTarget: fixAttempt.report.underTarget,
+          // Threaded from fixAttempt, not best.result — the deferred closure captures its OWN
+          // report.underTarget array by reference; taking best.result's own closure here would
+          // silently compute openSlots/blockedBy onto the wrong (now-orphaned) array below.
+          computeUnderTargetDiagnostics: fixAttempt.report.computeUnderTargetDiagnostics,
+          repairs: [...best.result.report.repairs, ...fixAttempt.report.repairs],
+          truePrimaryFixApplied: true,
+        },
+      };
+      const fixedScore = scoreGenerationResult(fixedResult, args, rulePriority);
+      // Non-worse hard-error backstop, not a re-run of betterQuality's full lexicographic ladder —
+      // this is a rule fix, not a quality preference, so it applies whenever it doesn't make the one
+      // thing that actually matters (hard errors) worse. Phase 3b's own revert-if-no-true-primary
+      // path already guarantees it can't introduce a new error on its own; this stays a hard
+      // backstop rather than relying on that alone.
+      if (fixedScore.errorCount <= best.score.errorCount) {
+        best = { seed: best.seed, result: fixedResult, score: fixedScore };
+      }
+    }
+  }
+
   // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
   // definition in generateSchedule). Deleted afterwards because the report is persisted onto the
   // block: a function property would be silently dropped by the JSON round-trip, and a report that
@@ -6537,13 +7498,55 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   best.result.report.baseSeed = resolvedBaseSeed;
   best.result.report.seed = best.seed;
   best.result.report.qualityVector = best.score.qualityVector;
+  // Replay recipe (see this function's own header). `truePrimaryOnly` reflects whether the gap-fix
+  // block above actually replaced `best` (mirrors report.truePrimaryFixApplied, when present) —
+  // false means a single seed replay with repair:true is exact; true means the two-step recipe is
+  // required to reproduce this exact schedule.
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied };
   return best.result;
+}
+
+// Engine arbitration between the optional CP-SAT solver and the built-in local engine (prior art:
+// em-scheduler's `pickEngineResult` in src/engine/quality.js — same idea, different tie policy,
+// see below). Both `solverRes`/`localRes` are `{schedule, report}` results (either may be `null` —
+// a failed solver call, or a local generation that short-circuited on an empty date range) and are
+// scored with the exact same `scoreGenerationResult`/`betterQuality` ladder generateScheduleBest
+// uses for its own best-of-N pick, so the solver is held to the identical bar the local engine
+// holds itself to. Unlike em-scheduler (which keeps CP-SAT on a tie), a tie here goes to LOCAL:
+// local is ~10x faster and, unlike a FEASIBLE/RELAXED solver result, exactly replayable from its
+// seed — a solver result must win STRICTLY to be worth the extra latency and the lost replay.
+// `engineComparison` is plain JSON (no functions) because it rides the persisted generation
+// report; callers must not add anything but numbers/strings/arrays to it.
+export function pickEngineResult(solverRes, localRes, args) {
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  const solverScore = solverRes ? scoreGenerationResult(solverRes, args, rulePriority) : null;
+  const localScore = localRes ? scoreGenerationResult(localRes, args, rulePriority) : null;
+
+  const toComparison = score => score
+    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector }
+    : null;
+
+  if (!solverScore && !localScore) return { result: null, winner: null, engineComparison: null };
+  if (!solverScore) {
+    return { result: localRes, winner: 'local', engineComparison: { winner: 'local', solver: null, local: toComparison(localScore) } };
+  }
+  if (!localScore) {
+    return { result: solverRes, winner: 'cpsat', engineComparison: { winner: 'cpsat', solver: toComparison(solverScore), local: null } };
+  }
+
+  const solverStrictlyBetter = betterQuality(solverScore, localScore);
+  const winner = solverStrictlyBetter ? 'cpsat' : 'local';
+  return {
+    result: solverStrictlyBetter ? solverRes : localRes,
+    winner,
+    engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore) },
+  };
 }
 
 // ─── WHAT-IF OPTIMIZATION SWEEP ────────────────────────────────────────────────────────────
 // Decision-support sweep, ported from sibling em-scheduler's `runOptimizationAnalysis`: generates
 // alternate schedule candidates under variant configurations (rulePriority reorderings, extra
-// seed batches, enforceRest toggled off) and scores EVERY one of them — baseline included —
+// seed batches) and scores EVERY one of them — baseline included —
 // under one fixed reference config, the chief's CURRENT appSettings, using the exact same
 // `scoreGenerationResult` generateScheduleBest itself uses for its own best-of-N selection. A
 // variant can never "win" by demoting the rule it violates, because the reference config (and
@@ -6605,11 +7608,10 @@ export async function runOptimizationSweep(args, {
     qualityVector: computeQualityVector(baselineMetrics, referenceRulePriority),
   };
 
-  // Variant list: every non-current rulePriority ordering, a handful of alternative-seed draws
-  // (same rules, different random restart — useful when a tie was broken unluckily), and, when
-  // the chief has the rest-hours soft check enabled, one variant with it off (the one other
-  // chief-configurable knob in this generator's config that trades off against coverage/rest —
-  // see CLAUDE.md "Soft Rule Priority"/`enforceRest`).
+  // Variant list: every non-current rulePriority ordering, plus a handful of alternative-seed
+  // draws (same rules, different random restart — useful when a tie was broken unluckily). The
+  // old "rest-hours soft check disabled" variant is gone — rest >= shift length is now ACGME-hard
+  // and always on (2026-09-26 policy), so there's no longer a legal "off" state to sweep.
   const ruleVariants = buildRulePriorityVariants(referenceRulePriority).map((v, i) => ({
     id: `rule-${i}`, kind: 'rules', rulePriority: v.rulePriority,
     label: `Rule order: ${v.rulePriority.map(id => SOFT_RULES.find(r => r.id === id)?.label || id).join(' → ')}`,
@@ -6623,11 +7625,7 @@ export async function runOptimizationSweep(args, {
       variantArgs: args, seed: (seedBase + (100 + k) * 0x9E3779B9) >>> 0,
     };
   });
-  const restVariants = appSettings?.enforceRest !== false ? [{
-    id: 'rest-off', kind: 'restToggle', label: 'Rest-hours soft check disabled',
-    variantArgs: { ...args, appSettings: { ...appSettings, enforceRest: false } },
-  }] : [];
-  const allVariants = [...ruleVariants, ...seedVariants, ...restVariants];
+  const allVariants = [...ruleVariants, ...seedVariants];
 
   const candidates = [];
   let truncated = false;
@@ -6730,6 +7728,8 @@ const UNDER_TARGET_BLOCK_LABELS = {
   nightCapped:          'night cap for the block',
   nightStintCapped:     'night-run limit',
   hoursCapped:          '80-hour limit',
+  edHoursCapped:        'ACGME 60-hour/week ED limit',
+  totalHoursCapped:     'ACGME 72-hour/week total limit',
   traumaCapped:         'trauma cap',
   traumaRunCapped:      'trauma-nights-per-run cap',
   halfTargetMet:        'trauma/peds split sub-target met',
@@ -6746,7 +7746,7 @@ const KNOWN_UNFILLED_REASONS = new Set([
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
   'nightCapped', 'nightStintCapped', 'jcCapped', 'restProtected', 'seniorProtected',
   'pgy3Required', 'pgy2Required', 'hoursCapped', 'bamcWedNightCapped', 'jeopardyConflict',
-  'traumaRunCapped',
+  'traumaRunCapped', 'edHoursCapped', 'totalHoursCapped',
 ]);
 export function summarizeGenerationReport(report, appSettings = {}, blockStart = null) {
   const byShift = {};
@@ -6838,6 +7838,8 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.pgy3Required) pushRec('pgy3Required', `No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, or during a conference that takes PGY-3s away (ACEP), PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
     if (reasonCounts.pgy2Required) pushRec('pgy2Required', `No EM Home PGY-2 (or, on the block's own PGY-2 Wellness Wednesday, or during a conference that takes PGY-2s away (AAEM), PGY-3 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
     if (reasonCounts.hoursCapped) pushRec('hoursCapped', `Eligible residents were already within reach of the ACGME 80h/4-week rolling average for this block — cover ${label} with a resident further from the cap, or assign manually.`);
+    if (reasonCounts.edHoursCapped) pushRec('edHoursCapped', `Eligible residents were already within reach of the ACGME ${ED_WEEKLY_CAP_H}-scheduled-ED-hour/rolling-7-day cap (6.17.a.3) — cover ${label} with a resident further from the cap, or assign manually.`);
+    if (reasonCounts.totalHoursCapped) pushRec('totalHoursCapped', `Eligible residents were already within reach of the ACGME ${TOTAL_WEEKLY_CAP_H}-total-hour/rolling-7-day cap (ED + Grand Rounds/Journal Club, 6.17.a.3) — cover ${label} with a resident further from the cap, or assign manually.`);
     if (reasonCounts.bamcWedNightCapped) pushRec('bamcWedNightCapped', `Eligible EM BAMC residents had already worked their one Wednesday-night shift this block (BAMC allows at most one — runs into Thursday GR) — cover ${label} with a different resident.`);
     if (reasonCounts.jeopardyConflict) pushRec('jeopardyConflict', `Every eligible resident for ${label} was on jeopardy call that date — a jeopardy call may never double as a clinical shift. Cover ${label} with a resident off jeopardy that day, or reassign the call.`);
     // Generic fallback for a reason string this function doesn't otherwise know about — notably
@@ -7384,27 +8386,31 @@ function StatCard({ label, value, sub, icon: Icon, tone = "neutral", bar = null 
 // Autosave pill — always shows the local-only "Saving…"/"Saved locally" behavior, plus (when
 // cloud sync is configured — see SUPABASE SYNC) a cloud-aware "Loading…"/"Synced"/"Sync error"
 // state layered on top.
+// Mobile fix: every branch's text collapses to icon-only below `sm` (the icon + `title` tooltip
+// still carry the full meaning) — at ~400px header width this is one of several things competing
+// for space with the block title/status pill, and the icon alone is enough at a glance.
 function AutosaveIndicator({ state, cloudEnabled, dbStatus, dbError }) {
   const saving = state === 'saving' || (cloudEnabled && dbStatus === 'saving');
   if (cloudEnabled && dbStatus === 'loading') {
     return (
-      <span className="flex items-center gap-1 text-[11px] font-medium text-gray-400">
-        <RefreshCw size={11} className="animate-spin"/> Loading…
+      <span title="Loading…" className="flex items-center gap-1 text-[11px] font-medium text-gray-400">
+        <RefreshCw size={11} className="animate-spin"/> <span className="hidden sm:inline">Loading…</span>
       </span>
     );
   }
   if (cloudEnabled && dbStatus === 'error') {
     return (
-      <span title={dbError} className="flex items-center gap-1 text-[11px] font-medium text-red-500">
-        <AlertCircle size={11}/> Sync error
+      <span title={dbError || 'Sync error'} className="flex items-center gap-1 text-[11px] font-medium text-red-500">
+        <AlertCircle size={11}/> <span className="hidden sm:inline">Sync error</span>
       </span>
     );
   }
+  const label = saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally');
   return (
     <span title={cloudEnabled ? 'Synced across your devices' : "Data auto-saved to this browser's local storage"}
       className={`flex items-center gap-1 text-[11px] font-medium ${saving ? 'text-amber-600' : 'text-gray-400'}`}>
       {saving ? <RefreshCw size={11} className="animate-spin"/> : <CheckCircle size={11}/>}
-      {saving ? 'Saving…' : (cloudEnabled ? 'Synced' : 'Saved locally')}
+      <span className="hidden sm:inline">{label}</span>
     </span>
   );
 }
@@ -8416,7 +9422,7 @@ function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpan
         <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
           {!unsaved && (
             <button onClick={() => onTogglePublished(snap.id)}
-              title="Published blocks count toward each resident's 3-journal-club-per-year cap"
+              title="Published blocks count toward each resident's 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts"
               className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${snap.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-card border-border text-muted-foreground hover:border-green-300'}`}>
               {snap.published ? 'Published' : 'Publish'}
             </button>
@@ -12485,36 +13491,29 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // legal rest hours, max-run/eve-day-turnaround circadian checks) from the ranked postNightRest soft
 // rule ('warn'), so the picker and drag-and-drop UIs can visually tell apart a genuine hard block
 // from a chief-configurable preference, both surfaced the same "Assign/Swap/Move Anyway" way.
-function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}) {
+// allResidents/blocksHistory are OPTIONAL (default []) — every check that needs them (POD/FLEX
+// composition, JC cap) degrades to "skip that one check" rather than throwing when a caller can't
+// supply them yet, matching this file's usual "untrusted/partial shape" posture. Every caller that
+// CAN reach them (ShiftPickerModal, ScheduleGrid's handleDrop/inspectorData) does.
+export function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}, allResidents = [], blocksHistory = []) {
   if (!sid) return [];
   const sd = block.specialDays || {};
   const nextRotation = nextRotationMap[resident.id] || null;
-  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+  const eligCtx = { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule, appSettings, dayRules, specialDays: sd, eligOverrides };
+  const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, eligCtx);
   const vs = [];
-  const finalSundayBlocked = finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation?.known && !nextRotation.continuingEM;
-  // 1. Eligibility check
+  // 1. Eligibility check — eligibilityBlockReasons re-derives WHY (same predicates getEligibleShifts
+  // itself calls, re-sequenced) so this can grade severity by rule tier instead of hard-blocking
+  // every ineligible placement (see rulePolicy.js and validateAll's identical use of this helper).
   if (!eligible.includes(sid)) {
-    const dow = parseDate(dateStr).getDay();
-    // Not gated on dow===3 here — a chief-picked custom wellnessOverride date can legitimately
-    // land on a non-Wednesday (see effectiveWellnessWednesdayDate).
-    const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(SHIFT_MAP[sid]?.type)
-      ? (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules).computedDayRules || [])
-          .find(c => c.type === 'wellnessWednesday')?.ordinal
-      : null;
-    const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, block.startDate, dayRules, appSettings) : null;
-    const isWwHere = wwDate && dateStr === wwDate;
-    const blockingRestriction = !isWwHere ? findBlockingRestriction(resident, dateStr, sid) : null;
-    vs.push({ message: isWwHere
-      ? (resident.wellnessOverride && resident.wellnessOverride !== 'optOut'
-          ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
-          : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`)
-      : blockingRestriction
-      ? `Work restriction "${blockingRestriction.label}" blocks this shift on this date`
-      : resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day'
-      ? 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)'
-      : finalSundayBlocked
-      ? 'Final-Sunday overnight — next block shows a different (or non-schedulable) rotation, so this run cannot roll onward'
-      : 'Shift not in eligibility matrix for this resident/day combination', level: 'error' });
+    // reason is now the SINGLE source for both message (eligibilityReasonMessage) and severity
+    // (severityFor) — see validateAll's identical fix and eligibilityReasonMessage's own comment.
+    // A hand-restriction that actually bars the shift always wins over a WW/academic-chief/
+    // final-Sunday reason, in both what's shown here and how it's graded.
+    const reason = eligibilityBlockReasons(resident, dateStr, sid, eligCtx);
+    vs.push({ message: eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appSettings),
+      level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
+      ...(reason?.rule ? { rule: reason.rule } : {}) });
   } else if (finalSunday && dateStr === finalSunday && isNightShiftId(sid) && nextRotation && !nextRotation.known) {
     vs.push({ message: 'Final-Sunday overnight — next block not imported — confirm resident continues in the ED before working the final-Sunday overnight', level: 'warn' });
   }
@@ -12523,12 +13522,21 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   // exactly as it does for any other error, this just stops the two surfaces from disagreeing.
   const policy = (appSettings || {}).jeopardyPolicy ?? 'warn';
   if (policy === 'warn' && isJeopardyDate(resident, dateStr, block.jeopardySchedule)) {
-    vs.push({ message: 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day', level: 'error' });
+    vs.push({ message: 'Scheduled clinically while on jeopardy call — jeopardy must be a non-clinical day', level: severityFor('jeopardyCollision', 'validator'), rule: 'jeopardyCollision' });
   }
-  // 3. Rest-period check against neighbouring shifts in the schedule (legal rest hours — always hard)
-  vs.push(...checkRestViolations(resident.id, dateStr, sid, block.schedule || {}).map(message => ({ message, level: 'error' })));
+  // 2b. Jeopardy WINDOW (2026-09-26 policy) — placing an overnight on `dateStr` that runs past
+  // 07:00 into TOMORROW's jeopardy call is blocked too, not just a same-day collision above. See
+  // lib/jeopardyWindow.js / CLAUDE.md.
+  if (policy !== 'off') {
+    const nextDs = toDateStr(addDays(parseDate(dateStr), 1));
+    if (isJeopardyDate(resident, nextDs, block.jeopardySchedule) && shiftOverlapsJeopardyWindow(sid, dateStr, nextDs)) {
+      vs.push({ message: `Overnight shift running past 07:00 into ${formatDisplayDate(nextDs)}'s jeopardy call — jeopardy must start the day non-clinical`, level: severityFor('jeopardyWindow', 'validator'), rule: 'jeopardyWindow' });
+    }
+  }
+  // 3. Rest-period check against neighbouring shifts in the schedule (ACGME 6.17.a.2 — always hard)
+  vs.push(...checkRestViolations(resident, dateStr, sid, block.schedule || {}).map(message => ({ message, level: severityFor('restShiftLength', 'validator'), rule: 'restShiftLength' })));
   // 4. Circadian rules (night-run length, post-night rest before days, eve→day turnaround) — each
-  // already carries its own level/rule (postNightRest is 'warn', everything else 'error').
+  // already carries its own level/rule (postNightRest is 'warn', everything else severityFor'd).
   const nightOnly = isNightOnlyResident(resident, eligOverrides);
   vs.push(...checkCircadianViolations(resident, dateStr, sid, (block.schedule || {})[resident.id] || {}, { nightOnly })
     .map(v => ({ message: v.message, level: v.level, rule: v.rule })));
@@ -12538,21 +13546,118 @@ function cellViolations(resident, dateStr, sid, block, eligOverrides, appSetting
   const row = (block.schedule || {})[resident.id] || {};
   const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null, streakBounds(block, prevTail));
   if (len > MAX_CONSECUTIVE_WORK_DAYS) {
-    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: 'error' });
+    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: severityFor('sixConsecutiveWorkDays', 'validator'), rule: 'sixConsecutiveWorkDays' });
   }
   // 6. 24h rest after a maxed 6-consecutive-work-day run (ACGME, hard) — see
   // sixDayRunRestViolation; distinct from the postNightRest soft rule already covered by the
   // circadian checks above.
   const sixDayRunBounds = streakBounds(block, prevTail);
   const sixDayRunV = sixDayRunRestViolation(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
-  if (sixDayRunV) vs.push({ message: sixDayRunV.message, level: sixDayRunV.level });
+  if (sixDayRunV) vs.push({ message: sixDayRunV.message, level: sixDayRunV.level, rule: sixDayRunV.rule });
   // 6b. Forward mirror of the above — this placement can complete a maxed 6-day run that an
   // already-scheduled LATER shift then follows too closely behind (see
   // sixDayRunRestViolationAhead); sixDayRunRestViolation itself only looks backward from dateStr,
   // so without this the picker would let a chief create this violation and only find out later
   // from validateAll.
   const sixDayRunAheadV = sixDayRunRestViolationAhead(row, resident, dateStr, sid, prevTail[resident.id] || null, sixDayRunBounds);
-  if (sixDayRunAheadV) vs.push({ message: sixDayRunAheadV.message, level: sixDayRunAheadV.level });
+  if (sixDayRunAheadV) vs.push({ message: sixDayRunAheadV.message, level: sixDayRunAheadV.level, rule: sixDayRunAheadV.rule });
+
+  // ─── R2 additions (2026-09-26 policy): the picker/drag-drop/inspector used to be silent on every
+  // one of these — a chief could hand-place a 7th night, a 3rd trauma night in a run, or a POD shift
+  // with no PGY-3, and only find out from validateAll afterward. Every check below simulates `sid`
+  // landing on `dateStr` (hypRow) and reuses the EXACT SAME primitives validateAll's own retrospective
+  // walk already uses for the same rule, so the two surfaces can't disagree.
+  const shift = SHIFT_MAP[sid];
+  const hypRow = { ...row, [dateStr]: sid };
+  const dow = parseDate(dateStr).getDay();
+
+  // 7. ACGME 80h/4-week rolling average — same weeklyHourStats/ROLLING_WINDOW_CAP_H core the
+  // generator's candidatePool hard-excludes on and validateAll reports retrospectively.
+  if (isSchedulable(resident)) {
+    const { maxWeeklyAvg } = weeklyHourStats(hypRow);
+    if (maxWeeklyAvg > 80)
+      vs.push({ message: `Averages ${Math.round(maxWeeklyAvg)}h/wk over a 4-week window (exceeds ACGME 80h limit)`, level: severityFor('rolling80h', 'validator'), rule: 'rolling80h' });
+  }
+
+  // 7b. ACGME EM 6.17.a.3 weekly caps (60 ED / 72 total per rolling 7 days) — EM Home/BAMC on a
+  // schedulable EM rotation only, same worstRollingWeek core validateAll uses retrospectively.
+  if (isEmResident(resident) && isSchedulable(resident)) {
+    const grDowHere = grWorkDow(resident);
+    const worst = worstRollingWeek(resident, hypRow, prevTail[resident.id] || null, grDowHere);
+    if (worst) {
+      if (worst.edHours > ED_WEEKLY_CAP_H)
+        vs.push({ message: `${Math.round(worst.edHours)} scheduled ED hours in the 7 days starting ${formatDisplayDate(worst.edStartDate)} — ACGME caps this at ${ED_WEEKLY_CAP_H}`, level: severityFor('edWeekly60', 'validator'), rule: 'edWeekly60' });
+      if (worst.totalHours > TOTAL_WEEKLY_CAP_H)
+        vs.push({ message: `${Math.round(worst.totalHours)} total hours (ED + Grand Rounds/Journal Club) in the 7 days starting ${formatDisplayDate(worst.totalStartDate)} — ACGME caps this at ${TOTAL_WEEKLY_CAP_H}`, level: severityFor('totalWeekly72', 'validator'), rule: 'totalWeekly72' });
+    }
+  }
+
+  if (shift?.type === 'night' && !nightOnly) {
+    // 8. Total nights this block (chief-overridable-by-hand — see rulePolicy.js).
+    const totalNights = countNightsInSchedule(hypRow);
+    if (totalNights > NIGHT_RULES.maxPerBlock)
+      vs.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator'), rule: 'nightsTotalBlock' });
+    // 9. Night stint count — a 3rd+ separate run (chief-overridable-by-hand).
+    const runCount = nightRunSegments(hypRow).length;
+    if (runCount > 2)
+      vs.push({ message: `${runCount} separate night stints this block — nights should cluster into a single run`, level: severityFor('nightStintCount', 'validator'), rule: 'nightStintCount' });
+  }
+
+  // 10. Trauma nights per contiguous run — >2 TRAUMA-N in one run (chief-overridable-by-hand).
+  if (sid === 'TRAUMA-N') {
+    const traumaRunCount = traumaNightRunCount(row, dateStr, -1) + 1 + traumaNightRunCount(row, dateStr, 1);
+    if (traumaRunCount > 2)
+      vs.push({ message: `${traumaRunCount} Trauma Night shifts in one consecutive night run — max 2 per run`, level: severityFor('traumaRunCap', 'validator'), rule: 'traumaRunCap' });
+  }
+
+  // 11. POD PGY-3 / FLEX senior composition for THIS date+shift — reuses compositionSatisfies/
+  // seniorCompositionExempt exactly as validateAll's own FLEX/POD composition block (never forked).
+  // allResidents is optional (default []) — skipped (not silently wrong) when a caller can't supply
+  // the roster yet.
+  if (shift && SENIOR_COMPOSITION[shift.area] && !seniorCompositionExempt(shift, dateStr) && allResidents.length) {
+    const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
+    const assignedHere = allResidents.filter(r => (scheduleWithPlacement[r.id] || {})[dateStr] === sid);
+    const satisfied = assignedHere.some(r => compositionSatisfies(shift.area, r, dateStr, block.startDate, appSettings, ayConf));
+    if (!satisfied) {
+      const comp = SENIOR_COMPOSITION[shift.area];
+      const compRule = shift.area === 'POD' ? 'podPgy3Composition' : 'flexSeniorComposition';
+      vs.push({ message: `${shift.label} requires an EM PGY-${comp.primary} — none assigned (exceptions: the block's own PGY-${comp.primary} Wellness Wednesday, or a conference date that takes PGY-${comp.primary}s away)`, level: severityFor(compRule, 'validator'), rule: compRule });
+    }
+  }
+
+  // 12. BAMC: at most one Wednesday-night shift per block (program tier — always hard).
+  if (resident.category === 'EM_BAMC' && shift?.type === 'night' && dow === 3) {
+    const wedNightCount = Object.entries(hypRow).filter(([d, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(d).getDay() === 3).length;
+    if (wedNightCount > 1)
+      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight' });
+  }
+
+  // 13. Trauma/Peds split sub-caps (program tier — always hard).
+  {
+    const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+    if (shift && isTraumaPedsSplitResident(resident, traumaBlocks)) {
+      if (shift.area === 'TRAUMA') {
+        const traumaHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
+        if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
+          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+      } else if (shift.area === 'PED') {
+        const pedsHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
+        if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
+          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+      }
+    }
+  }
+
+  // 14. Journal Club cap — max 3 worked/AY (program tier — always hard). blocksHistory is optional
+  // (default []); an empty history under-counts published-block JCs rather than throwing, same
+  // graceful-degradation posture as allResidents above.
+  if (resident.category === 'EM_HOME' && shiftOverlapsJC(sid)) {
+    const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
+    const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
+    if (jcTotal > JC_MAX_PER_AY)
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy' });
+  }
+
   return vs;
 }
 
@@ -12612,15 +13717,67 @@ function ShiftOverlapHoverCard({ anchorRect, shiftId, dateStr, overlap }) {
   );
 }
 
-function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf, prevTail, finalSunday, nextRotationMap, allResidents }) {
+// Tier-aware classification for hand-edit surfaces (picker/drag-drop/inspector) — see rulePolicy.js
+// (chief policy, 2026-09-26). `blocking`: acgme/program-tier violations, or any rule-less hard error
+// (a raw shift overlap has no rule id — severityFor's own "unrecognized id defaults to error"
+// already treats it the same way; the ordinary rest-length violation DOES carry a rule id now,
+// 'restShiftLength', tier acgme — R3) — no "place/move anyway" path exists for any of these.
+// `overridable`: override-tier — the generator never breaks these, but a hand edit may, behind an
+// explicit confirm step that gets stamped into block.overrideLog (see withOverrideEvents/
+// updateBlockTracked). `advisory`: everything else (postNightRest and other untiered soft warnings)
+// — informational only, exactly like today's plain "Assign/Swap/Move Anyway".
+function classifyForHandEdit(violations) {
+  const blocking = violations.filter(v => v.level === 'error');
+  const overridable = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier === 'override');
+  const advisory = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier !== 'override');
+  return { blocking, overridable, advisory };
+}
+
+// Red "cannot proceed" panel for acgme/program-tier violations — no button anywhere offers to place/
+// move/swap through this; the chief must pick something else or clear the conflicting shift first.
+function BlockingReasonsPanel({ blocking }) {
+  if (!blocking.length) return null;
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Blocked — hard rule</div>
+      {blocking.map((w, i) => <p key={i} className="text-xs text-red-600 ml-4">{w.message}</p>)}
+      <p className="text-xs text-red-500 ml-4 mt-1 italic">This rule never bends — for a hand edit or the generator.</p>
+    </div>
+  );
+}
+
+// Amber "Override program rule" confirm panel for override-tier violations — chief policy requires
+// an explicit affirmative step (not just a colored "Anyway" button) plus an optional note, both of
+// which get stamped into block.overrideLog via updateBlockTracked's overrideMeta param.
+function OverrideConfirmPanel({ overridable, note, onNoteChange }) {
+  return (
+    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-amber-800 font-medium text-sm mb-1"><AlertTriangle size={13}/> Override program rule</div>
+      {overridable.map((w, i) => <p key={i} className="text-xs text-amber-700 ml-4">{w.message}</p>)}
+      <label className="block text-xs text-amber-700 mt-2 ml-4">
+        Note (optional)
+        <textarea value={note} onChange={e => onNoteChange(e.target.value)} rows={2}
+          className="mt-1 w-full text-xs border border-amber-300 rounded px-2 py-1 bg-white"
+          placeholder="Why is this override needed?"/>
+      </label>
+    </div>
+  );
+}
+
+function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverrides, appSettings, dayRules, onSelect, onClose, showToast, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory }) {
   const [pending, setPending] = useState(null);
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [overrideNote, setOverrideNote] = useState('');
+  // A different candidate shift invalidates whatever override confirmation was in progress for the
+  // previous one — never carry a stale note/confirm state onto a newly-picked shift.
+  useEffect(() => { setConfirmingOverride(false); setOverrideNote(''); }, [pending]);
   const sd = block.specialDays || {};
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap?.[resident.id] || null, jeopardySchedule: block.jeopardySchedule });
   const display = formatDisplayDate(dateStr);
   const name = `${resident.firstName} ${resident.lastName}`;
   const onJeopardy = isJeopardyDate(resident, dateStr, block.jeopardySchedule);
 
-  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap);
+  const v = cellViolations(resident, dateStr, pending, block, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
   // Same helper/renderer as the grid's hover card (see CLAUDE.md Phase 8.2) — shown for the
   // currently-selected/highlighted shift so touch users (who never get a hover event) still see it.
   const overlapInfo = useMemo(
@@ -12637,8 +13794,11 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
     return row;
   }, [block.schedule, resident.id, dateStr]);
 
+  const { blocking, overridable } = classifyForHandEdit(v);
+
   function confirm() {
-    onSelect(pending);
+    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null;
+    onSelect(pending, overrideMeta);
     showToast(`Assigned ${pending} to ${name} on ${display}`, v.length>0?'amber':'green');
     onClose();
   }
@@ -12697,7 +13857,11 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         </div>
       )}
 
-      {pending && <ViolationPanel violations={v}/>}
+      {pending && blocking.length > 0 && <BlockingReasonsPanel blocking={blocking}/>}
+      {pending && blocking.length === 0 && overridable.length > 0 && confirmingOverride && (
+        <OverrideConfirmPanel overridable={overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+      )}
+      {pending && blocking.length === 0 && !(overridable.length > 0 && confirmingOverride) && <ViolationPanel violations={v}/>}
       {pending && v.length === 0 && (
         <div className="flex items-center gap-1.5 text-green-600 text-xs mb-3"><CheckCircle size={13}/> No violations</div>
       )}
@@ -12706,9 +13870,17 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
         {currentShift && <button onClick={()=>{onSelect(null);showToast(`Cleared ${name} on ${display}`,'amber');onClose();}} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg border border-red-200 font-medium">Clear</button>}
         <div className="flex-1"/>
         <button onClick={onClose} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-        {pending && <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-primary hover:bg-primary/90'}`}>
-          {v.length>0?'Assign Anyway':'Assign Shift'}
-        </button>}
+        {/* Tier acgme/program: no confirm path at all — see BlockingReasonsPanel above. */}
+        {pending && blocking.length === 0 && overridable.length > 0 && !confirmingOverride && (
+          <button onClick={()=>setConfirmingOverride(true)} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            Override Program Rule
+          </button>
+        )}
+        {pending && blocking.length === 0 && (overridable.length === 0 || confirmingOverride) && (
+          <button onClick={confirm} className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white transition-colors ${v.length>0?'bg-amber-500 hover:bg-amber-600':'bg-primary hover:bg-primary/90'}`}>
+            {overridable.length > 0 ? 'Confirm Override' : (v.length>0?'Assign Anyway':'Assign Shift')}
+          </button>
+        )}
       </div>
     </Modal>
   );
@@ -12716,10 +13888,31 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
-  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy } = useUiPrefsContext();
+  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
+  const reviewPanelOpen = uiPrefs.reviewPanelOpen;
+  // Cell the review panel most recently jumped to — local selection state only (P3 builds the real
+  // cell inspector on top of this later). Cleared implicitly whenever a different jump replaces it;
+  // never persisted.
+  const [selectedCell, setSelectedCell] = useState(null); // {residentId, dateStr} | null
+  // Populated by each rendered cell via a callback ref (see renderResidentRow) so jumpToCell can
+  // find the real DOM node to scroll to without any manual row/column pixel math of its own — the
+  // grid already handles CSS `zoom` and sticky header/name-column layout for every other scroll
+  // path (week-scroll buttons, jump-to-date), and scrollIntoView rides that same real layout instead
+  // of recomputing it.
+  const cellRefs = useRef(new Map());
+  // Mirror of cellRefs for row-level jumps (P2 follow-up): several review-panel issues name a
+  // resident but no single date (e.g. "Under target", "No full weekend off" — see
+  // reviewPanel.js's issueJumpTarget), so there's no cell to select; jumpToResidentRow scrolls the
+  // resident's own sticky name cell into view instead. Populated by renderResidentRow's name-column
+  // div, one entry per resident id (not per cell, so this stays small regardless of block length).
+  const rowRefs = useRef(new Map());
+  // Which resident's row was most recently jumped to — drives a brief highlight flash on the name
+  // cell (cleared by its own timeout below) so the jump is visible even though, unlike a cell jump,
+  // there's no persistent selection outline to land on. Never persisted.
+  const [highlightedRow, setHighlightedRow] = useState(null);
   const showUnscheduled = uiPrefs.showUnscheduled;
   // Readability controls (persisted per viewer in res_ui_prefs, never in a backup or the shared
   // cloud document — how large someone wants this grid on their own screen is not chief data).
@@ -12729,6 +13922,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // min-width expression below already reads `CELL_W`, so widening a column is this one line.
   const CELL_W = CELL_W_BASE + gridColExtra;
   const zoomScale = gridZoom / 100;
+  // Mobile fix: the resident name column narrows below `sm` (Tailwind's 640px breakpoint) so a
+  // 400px-wide phone screen shows more than 2-3 date columns. `NAME_W` shadows the module-level
+  // `NAME_W_BASE` for every one of this component's own usages (all 7 are inside this function —
+  // the Coverage tab has its own separate constant). A resize listener (not a CSS media query) is
+  // necessary here, not just cosmetic — every place that reads `NAME_W` also does real width
+  // ARITHMETIC (e.g. the scroll container's `minWidth:NAME_W+CELL_W*dates.length`), and a CSS-only
+  // narrowing would leave that arithmetic reserving the old, wider number, opening a blank gap
+  // between the (now-narrower) sticky column and the first date column.
+  const [narrowNameCol, setNarrowNameCol] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
+  useEffect(() => {
+    const onResize = () => setNarrowNameCol(window.innerWidth < 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const NAME_W = narrowNameCol ? 108 : NAME_W_BASE;
   // Resolved once for the whole grid rather than per rendered day cell.
   const jcDaySet = useMemo(
     () => new Set(jcDatesInRange(block.startDate, block.endDate, block.academicYear, ayConf, { fallbackDateStr: block.startDate })),
@@ -12744,7 +13952,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmUnlockAll, setConfirmUnlockAll] = useState(false);
-  const [confirmGenerate, setConfirmGenerate] = useState(null); // string[] | null — readiness warnings
+  const [confirmGenerate, setConfirmGenerate] = useState(null); // {messages,keptViolations} | null — readiness warnings
   // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
   // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
   const [rangeStart, setRangeStart] = useState('');
@@ -12756,10 +13964,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // dismissing, a picker closing elsewhere). Shared by the Clear & Regenerate confirm modal AND the
   // partial-regenerate confirm modal — same inputs, same warnings either way, so one memo gated on
   // "either confirm modal is open" replaces what used to be two identical memos.
-  const generateReadiness = useMemo(
-    () => (confirmRegen || confirmPartialRegen) ? checkGenerateReadiness({ allResidents, block, dayRules, ayConf }) : [],
-    [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf]
-  );
+  const generateReadiness = useMemo(() => {
+    if (confirmRegen) return checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'clear' });
+    if (confirmPartialRegen) return checkGenerateReadiness({
+      allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory,
+      mode: confirmPartialRegen.kind === 'range' ? 'range' : 'unlocked',
+      rangeStart: confirmPartialRegen.start, rangeEnd: confirmPartialRegen.end,
+    });
+    return { messages: [], keptViolations: { fixable: [], locked: [] } };
+  }, [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory]);
   // What-If Optimization Sweep — see runOptimizationSweep. sweepResult/sweepRunning/sweepOpen are
   // ephemeral (not persisted, not part of the block) — a fresh Generate/Regenerate invalidates any
   // prior sweep result since it no longer describes "vs the current schedule".
@@ -12943,13 +14156,28 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return m;
   }, [allResidents, block.id, block.endDate, blocksHistory]);
 
+  // Single validateAll pass, shared by violMap (grid cell red-ring rendering, below) and
+  // violatingSummary (Fix Violations — see keptCellViolations.js) so the two can never disagree
+  // about what's a hard error.
+  const scheduleIssues = useMemo(
+    () => validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf),
+    [allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf]
+  );
   const violMap = useMemo(()=>{
     const m={};
-    for (const issue of validateAll(allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf)) {
+    for (const issue of scheduleIssues) {
       if (issue.dateStr && issue.residentId) { const k=`${issue.residentId}_${issue.dateStr}`; (m[k]=m[k]||[]).push(issue); }
     }
     return m;
-  },[allResidents,sched,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,ayConf]);
+  },[scheduleIssues]);
+  // Hard (level:'error'), resident+date-attributable issues on cells that already exist —
+  // generation never overwrites a non-empty cell, so these survive every fill/repair pass
+  // untouched (CLAUDE.md "chief sees red validateAll errors after hand-editing/locking cells or
+  // partial regenerate"). Powers the standalone "Fix Violations" toolbar button below.
+  const violatingSummary = useMemo(
+    () => violatingCells(scheduleIssues, sched, block.lockedCells || {}),
+    [scheduleIssues, sched, block.lockedCells]
+  );
 
   // Solver relaxed-rule cell flagging (see PAYLOAD_SCHEMA.md's `feasibility.violations` shape) —
   // same `${residentId}_${dateStr}` key convention as violMap above, but sourced from the last
@@ -13022,8 +14250,234 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     [visibleResidents, uiPrefs.gridGroupBy]
   );
 
-  function assign(resId,ds,sid) {
-    updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}));
+  // Review panel (P2) — grouped from the ROOT `issues` memo passed in as a prop (see
+  // ResidentScheduler's own `issues` memo and CLAUDE.md "Counts come from the root issues memo,
+  // never a new validateAll call"). EXPORT_BLOCKING_RULE_IDS is the same module-level Set the root
+  // issueCounts memo and the export-confirm gate already read.
+  const panelIssues = useMemo(
+    () => groupPanelIssues(issues || [], EXPORT_BLOCKING_RULE_IDS),
+    [issues]
+  );
+
+  // Cell inspector (P3) — candidate math for the selected cell only (never all cells), so this is
+  // cheap for ~25 residents even though it calls cellViolations per candidate: findGiveCandidates/
+  // findSwapCandidates/findAssignOptions live in lib/cellAlternatives.js (pure; every rule-domain
+  // helper below is injected as a parameter, same trick as scheduleGrouping.js). A locked cell
+  // short-circuits before any of that runs — the inspector shows only its lock state then, no
+  // actions (see CLAUDE.md "locked cells untouchable").
+  const inspectorData = useMemo(() => {
+    if (!selectedCell) return null;
+    const { residentId, dateStr } = selectedCell;
+    const residentById = new Map(allResidents.map(r => [r.id, r]));
+    const resident = residentById.get(residentId);
+    if (!resident) return null;
+    const shiftId = sched[residentId]?.[dateStr] || null;
+    const locked = !!block.lockedCells?.[residentId]?.[dateStr];
+    const cellIssues = violMap[`${residentId}_${dateStr}`] || [];
+    if (locked) return { resident, dateStr, shiftId, locked, cellIssues, give: [], swap: [], assign: [] };
+
+    const isEligible = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return false;
+      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules,
+        { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+      return list.includes(sid);
+    };
+    // R6: when isEligible says no, this explains WHY (see eligibilityBlockReasons) so
+    // findGiveCandidates/findSwapCandidates can still offer an override-tier-ineligible candidate
+    // (approvedDayOff, wellnessWednesday, academicChiefTueEveNight, finalSundayOvernight,
+    // pedNightSwingOwnerGuard) tagged needsOverride, instead of silently dropping it.
+    const eligibilityReasonFor = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return null;
+      return eligibilityBlockReasons(r, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+    };
+    // Mirrors cellViolations exactly — the SAME hard/soft split ScheduleGrid's own handleDrop
+    // uses for a drag-drop swap (level==='error' vs everything else); scheduleOverride lets the
+    // swap finder validate each side with the OTHER side's cell already cleared, same as
+    // scheduleClearing does for handleDrop.
+    const violationsFor = (rid, ds, sid, scheduleOverride) => {
+      const r = residentById.get(rid);
+      if (!r) return [];
+      return cellViolations(r, ds, sid, { ...block, schedule: scheduleOverride || sched },
+        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
+    };
+    const hardViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level === 'error');
+    const softViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level !== 'error');
+    const targetInfo = rid => {
+      const r = residentById.get(rid);
+      const count = Object.values(sched[rid] || {}).filter(Boolean).length;
+      return { count, target: r ? getShiftTarget(r, appSettings) : null };
+    };
+    const lockedCells = block.lockedCells || {};
+    const enrich = list => list.map(c => ({ ...c, resident: residentById.get(c.residentId) }));
+
+    if (shiftId) {
+      const give = enrich(findGiveCandidates({
+        residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
+        isEligible, eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, targetInfo,
+      }));
+      const swap = enrich(findSwapCandidates({
+        residentId, dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells,
+        isEligible, eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, targetInfo,
+      }));
+      return { resident, dateStr, shiftId, locked, cellIssues, give, swap, assign: [] };
+    }
+    const elig = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules,
+      { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[residentId], jeopardySchedule: block.jeopardySchedule });
+    const coverageFor = sid => coverageByDate[dateStr]?.perShift[sid] || null;
+    // allShiftIds/eligibilityReasonFor widen the candidate list to override-tier-ineligible shifts
+    // (approved day off, Wellness Wednesday, academic-chief Tue eve/night, final-Sunday, Peds
+    // night/swing owner guard) tagged needsOverride, same posture as Give/Swap above — see
+    // findAssignOptions' own comment.
+    const assign = findAssignOptions({
+      residentId, dateStr, candidateShiftIds: elig, allShiftIds: SHIFTS.map(s => s.id), schedule: sched, lockedCells,
+      eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, coverageFor,
+    });
+    return { resident, dateStr, shiftId: null, locked, cellIssues, give: [], swap: [], assign };
+  }, [selectedCell, sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
+      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
+      coverageByDate, violMap, sd, blocksHistory]);
+
+  // Ref on the mobile review-panel drawer (below the grid) — selectCell scrolls it into view on
+  // phone/tablet widths, where there's no desktop sidebar already on screen for the click to land
+  // beside.
+  const reviewPanelMobileRef = useRef(null);
+
+  // Selecting a cell (single click / Enter — see the cell's own handlers below) opens the review
+  // panel if it's closed and, below the lg breakpoint (the same one the desktop-sidebar/mobile-
+  // drawer split below already uses), scrolls the panel into view.
+  function selectCell(residentId, dateStr) {
+    setSelectedCell({ residentId, dateStr });
+    if (!reviewPanelOpen) setReviewPanelOpen(true);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        reviewPanelMobileRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+    }
+  }
+
+  // Esc clears the cell selection (the inspector's own "Back to review" does the same thing) —
+  // global, not gated on focus being inside the grid, since focus is often inside the panel itself.
+  useEffect(() => {
+    // Not while the shift picker is open: Esc there would silently drop the selection underneath it.
+    if (!selectedCell || picker) return;
+    const onKey = e => { if (e.key === 'Escape') setSelectedCell(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedCell, picker]);
+
+  // The inspector's three one-click actions — each is ONE functional updateBlockTracked (single
+  // undo step, override log stays intact — see CLAUDE.md "every mutation via updateBlockTracked").
+  // selectedCell is left pointing at the same {residentId,dateStr} afterward; the inspector
+  // "refreshes on the new state" simply because `sched`/`inspectorData` are recomputed off it.
+  // R6: any inspector action (give/swap/assign) whose chosen candidate is tagged `needsOverride`
+  // (see cellAlternatives.js) routes through this same confirm-with-note step instead of applying
+  // one-click — never a bare apply for an override-tier violation. `run(overrideMeta)` is the actual
+  // mutation, deferred until the chief confirms; a clean/advisory-only candidate calls it immediately
+  // with `null`, exactly matching pre-R6 behavior.
+  const [pendingInspectorOverride, setPendingInspectorOverride] = useState(null); // {overridable, run} | null
+  const [inspectorOverrideNote, setInspectorOverrideNote] = useState('');
+  function runOrConfirmOverride(candidate, run) {
+    if (candidate?.needsOverride) {
+      const overridable = (candidate.softViolations || []).filter(v => RULE_POLICY[v.rule]?.tier === 'override');
+      setPendingInspectorOverride({ overridable, run });
+      return;
+    }
+    run(null);
+  }
+  function confirmInspectorOverride() {
+    if (!pendingInspectorOverride) return;
+    const ruleIds = [...new Set(pendingInspectorOverride.overridable.map(w => w.rule).filter(Boolean))];
+    pendingInspectorOverride.run({ ruleIds, note: inspectorOverrideNote.trim() || null });
+    setPendingInspectorOverride(null);
+    setInspectorOverrideNote('');
+  }
+  function cancelInspectorOverride() {
+    setPendingInspectorOverride(null);
+    setInspectorOverrideNote('');
+  }
+
+  function applyGive(candidateResidentId, candidate) {
+    if (!inspectorData?.shiftId) return;
+    const { resident, dateStr, shiftId } = inspectorData;
+    const cand = allResidents.find(r => r.id === candidateResidentId);
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: null };
+        s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Gave ${shiftId} (${formatDisplayDate(dateStr)}) to ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
+    });
+  }
+  function applySwap(candidateResidentId, candidate) {
+    if (!inspectorData?.shiftId) return;
+    const { resident, dateStr, shiftId } = inspectorData;
+    const cand = allResidents.find(r => r.id === candidateResidentId);
+    const otherShiftId = sched[candidateResidentId]?.[dateStr] || null;
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[resident.id] = { ...(s[resident.id] || {}), [dateStr]: otherShiftId };
+        s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Swapped ${shiftId} ↔ ${otherShiftId} (${formatDisplayDate(dateStr)}) between ${resident.firstName} ${resident.lastName} and ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
+    });
+  }
+  function applyAssign(assignShiftId, candidate) {
+    if (!inspectorData || inspectorData.shiftId) return;
+    const { resident, dateStr } = inspectorData;
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => ({
+        ...b, schedule: { ...b.schedule, [resident.id]: { ...(b.schedule[resident.id] || {}), [dateStr]: assignShiftId } },
+      }), overrideMeta);
+      showToast(`Assigned ${assignShiftId} to ${resident.firstName} ${resident.lastName} (${formatDisplayDate(dateStr)})`, 'green');
+    });
+  }
+
+  // Jump-to-cell (P2): switches the category filter to All when the target resident is filtered
+  // out, forces Grid view (the only view with per-cell refs registered), marks the cell selected,
+  // then scrolls it into view. scrollIntoView (not manual scrollLeft/scrollTop math) is deliberate:
+  // it walks every scrollable ancestor — the grid's own bounded overflow-auto container AND the
+  // outer page — and already accounts for CSS `zoom` on the grid, which hand-rolled pixel math
+  // would have to reverse itself (see the existing jump-to-date select for the alternative, which
+  // only has to solve the simpler horizontal-only, unzoomed case). `block:'center'/inline:'center'`
+  // (not 'nearest') leaves clearance from the sticky header/name column, which 'nearest' can leave
+  // the target sitting flush against.
+  function jumpToCell(residentId, dateStr) {
+    const res = allResidents.find(r => r.id === residentId);
+    if (res && catFilter !== 'ALL' && res.category !== catFilter) setCatFilter('ALL');
+    setView('grid');
+    setSelectedCell({ residentId, dateStr });
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      cellRefs.current.get(`${residentId}_${dateStr}`)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }));
+  }
+
+  // Jump-to-ROW (P2 follow-up): the review panel's counterpart to jumpToCell for an issue that
+  // names a resident but no single date (issueJumpTarget's {type:'row'} — "Under target", "No full
+  // weekend off", etc.). Same category-filter/view-switch setup as jumpToCell, but scrolls the
+  // resident's own sticky name cell (rowRefs, populated by renderResidentRow) into view and flashes
+  // a brief highlight instead of the persistent cell-selection outline — there's no one cell to
+  // outline. `inline:'start'` (not 'center') since the name column doesn't need horizontal centering
+  // the way a date cell buried mid-scroll does; it's already pinned to the left edge.
+  function jumpToResidentRow(residentId) {
+    const res = allResidents.find(r => r.id === residentId);
+    if (res && catFilter !== 'ALL' && res.category !== catFilter) setCatFilter('ALL');
+    setView('grid');
+    setSelectedCell(null);
+    setHighlightedRow(residentId);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      rowRefs.current.get(residentId)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'start' });
+    }));
+    window.setTimeout(() => setHighlightedRow(r => (r === residentId ? null : r)), 1800);
+  }
+
+  function assign(resId,ds,sid,overrideMeta) {
+    updateBlockTracked(b=>({...b,schedule:{...b.schedule,[resId]:{...(b.schedule[resId]||{}),[ds]:sid}}}), overrideMeta);
   }
 
   // Cell locks: `block.lockedCells[residentId][dateStr] = true` — nested inside `block`, so it
@@ -13160,13 +14614,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
-      eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap
+      eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
     ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
-          eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap
+          eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
         ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
       : [];
 
@@ -13177,7 +14631,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     else setDropConfirm({ src: srcInfo, tgt: tgtInfo, kind, violations });
   }
 
-  function commitDrop(src, tgt, kind, wasOverridden) {
+  function commitDrop(src, tgt, kind, wasOverridden, overrideMeta) {
     updateBlockTracked(b => {
       const s = { ...b.schedule };
       if (src.resId === tgt.resId) {
@@ -13187,7 +14641,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         s[tgt.resId] = { ...(s[tgt.resId]||{}), [tgt.ds]: src.sid };
       }
       return { ...b, schedule: s };
-    });
+    }, overrideMeta);
     const verb = kind === 'swap' ? 'Swapped' : 'Moved';
     showToast(`${verb} ${src.sid} (${formatDisplayDate(src.ds)}) for ${tgt.res.lastName}${kind==='swap'?` ↔ ${tgt.sid} for ${src.res.lastName}`:''}`,
       wasOverridden ? 'amber' : 'green');
@@ -13197,56 +14651,84 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // Warns before generating if the block's manual per-block dates (special-day lists, JC
   // presenters) haven't been entered — chief can override and generate anyway.
   function requestGenerate() {
-    const issues = checkGenerateReadiness({ allResidents, block, dayRules, ayConf });
-    if (issues.length) setConfirmGenerate(issues);
+    const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill' });
+    if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate(readiness);
     else runGenerate(false);
   }
 
-  // Shared by runGenerate/runPartialRegenerate: tries the external CP-SAT solver first when
-  // configured (SOLVER_ENABLED — see src/lib/solverClient.js), falling back to the built-in JS
-  // generator (generateScheduleBest) on ANY failure — solver not reachable, timeout, a non-200
-  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR; only OPTIMAL/
-  // FEASIBLE/RELAXED are committed). `genBlock` already carries whatever `schedule` this call
-  // should treat as locked/kept (see PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an
-  // emptied schedule for Clear & Regenerate, runPartialRegenerate passes its own pre-cleared
-  // workingSchedule; buildSolverPayload has no separate clearFirst concept of its own, it always
-  // just reads whatever's non-empty in `genBlock.schedule`. Returns `{ schedule, report }` (same
-  // shape generateScheduleBest returns) plus `engineUsed`/`relaxed` for the caller's toast, or
-  // `null` when the block has no valid date range (mirrors generateSchedule's own null return).
+  // Shared by runGenerate/runPartialRegenerate: R9 (2026-09-27, CP-SAT-as-polisher) — runs the
+  // built-in JS generator (generateScheduleBest) FIRST, ALWAYS (not just as a fallback), then —
+  // when the solver is configured — asks CP-SAT to POLISH that same result, warm-started from it
+  // (`buildSolverPayload`'s `hint`, PAYLOAD_SCHEMA.md's dated R9 section) rather than racing it
+  // from scratch. A measurement (engineHeadToHead.test.js) had shown CP-SAT losing to the local
+  // engine on most quality axes and running ~10x slower when solving cold; warm-starting from an
+  // already-good local schedule is what makes the solver a reliable improver instead of a
+  // from-scratch competitor. The solver is still held to the exact same bar either way: its result
+  // is scored against the ALREADY-COMPUTED local result and arbitrated via pickEngineResult, which
+  // keeps local on any tie. On ANY solver failure — not configured, unreachable, timeout, a non-200
+  // response, or a status the client doesn't treat as usable (INFEASIBLE/ERROR never get this far)
+  // — this returns the local result directly; the local run already happened, so there is no
+  // separate "fallback" generation call any more (was a second, wasted generateScheduleBest run,
+  // pre-R9). `genBlock` already carries whatever `schedule` this call should treat as locked/kept
+  // (see PAYLOAD_SCHEMA.md's `locked[]`) — runGenerate passes an emptied schedule for Clear &
+  // Regenerate, runPartialRegenerate passes its own pre-cleared workingSchedule; buildSolverPayload
+  // has no separate clearFirst concept of its own, it always just reads whatever's non-empty in
+  // `genBlock.schedule`. Returns `{ schedule, report }` (same shape generateScheduleBest returns,
+  // report additionally carrying `engineComparison` on the solver path) plus `engineUsed`/`relaxed`
+  // for the caller's toast, or `null` when the block has no valid date range (mirrors
+  // generateSchedule's own null return).
   async function generateViaSolverOrLocal(genBlock, clearFirst) {
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const hasValidDates = getBlockDates(genBlock.startDate, genBlock.endDate).length > 0;
+    if (!hasValidDates) return null;
+
+    // Local FIRST, always — see this function's own header for why (both the warm-start source
+    // AND, on any solver failure, the final answer itself; generateScheduleBest's own null return
+    // for an invalid date range is already handled by the hasValidDates guard just above).
+    setGenStageLabel(SOLVER_ENABLED ? 'Generating (built-in engine)…' : 'Preparing…');
+    await yieldToPaint();
+    const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
+    if (!localRes) return null;
+
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
     // `!== false` so an old backup/cloud row with no such key keeps the solver ON — the env-var
     // (VITE_SOLVER_URL) stays the deploy-level switch, this one needs no redeploy.
     const solverAllowed = appSettings.useSolverService !== false;
-    setGenStageLabel('Preparing…');
-    if (SOLVER_ENABLED && solverAllowed && hasValidDates) {
+    if (SOLVER_ENABLED && solverAllowed) {
       try {
-        const payload = buildSolverPayload({ ...baseArgs, block: genBlock });
         setGenStageLabel('Optimizing schedule — up to ~30s…');
+        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule });
         const json = await solveRemote(payload);
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
-        const res = mapSolverResult(json, { block: genBlock, allResidents });
-        return { ...res, engineUsed: 'cpsat', relaxed: json.mode === 'relaxed' };
+        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf });
+        // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
+        // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
+        // polisher, not a blind trust.
+        const scoreArgs = { ...baseArgs, block: genBlock };
+        const { result, winner, engineComparison } = pickEngineResult(solverRes, localRes, scoreArgs);
+        return {
+          ...result,
+          report: { ...result.report, engineComparison },
+          engineUsed: winner === 'cpsat' ? 'cpsat' : 'local-better',
+          relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
+        };
       } catch (e) {
-        console.warn('Solver unavailable — falling back to the built-in generator:', e);
-        setGenStageLabel('Optimizer unavailable — using built-in generator…');
-        await yieldToPaint(); // let the fallback label actually paint before the sync generator blocks the thread
-        const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
-        return res ? { ...res, engineUsed: 'fallback', relaxed: false } : null;
+        console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
+        return { ...localRes, engineUsed: 'fallback', relaxed: false };
       }
     }
-    setGenStageLabel('Generating (built-in engine)…');
-    await yieldToPaint();
-    const res = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
-    return res ? { ...res, engineUsed: 'local', relaxed: false } : null;
+    return { ...localRes, engineUsed: 'local', relaxed: false };
   }
 
-  async function runGenerate(clearFirst) {
+  // `overrideSchedule` (fill mode only): lets "Fix Violations"/the readiness modal's "Clear
+  // unlocked violators and generate" commit a just-cleared schedule via updateBlockTracked and
+  // immediately generate off of it in the same handler, without waiting a render for `block` (a
+  // prop) to catch up — reading `block.schedule` here would otherwise still see the pre-clear
+  // cells until the next render.
+  async function runGenerate(clearFirst, overrideSchedule) {
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmRegen(false);
@@ -13256,7 +14738,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       // Clear & Regenerate: buildSolverPayload has no clearFirst of its own (see
       // generateViaSolverOrLocal's header comment) — an emptied schedule here makes its `locked[]`
       // come out empty too, the solver-path equivalent of generateSchedule's clearFirst:true.
-      const genBlock = clearFirst ? { ...block, schedule: {} } : block;
+      const genBlock = clearFirst ? { ...block, schedule: {} } : { ...block, schedule: overrideSchedule || block.schedule };
       const res = await generateViaSolverOrLocal(genBlock, clearFirst);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
@@ -13274,9 +14756,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
+      if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -13290,7 +14773,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // get (re)filled; locked/out-of-range cells are never touched. Feeds the solver path exactly the
   // same way (see generateViaSolverOrLocal): workingSchedule's non-empty cells become the payload's
   // `locked[]` naturally, no extra plumbing needed.
-  async function runPartialRegenerate(req) {
+  // `baseSchedule` (default: `sched`, i.e. `block.schedule`): same override-for-freshness reason
+  // as runGenerate's `overrideSchedule` above — the readiness modal's "Clear unlocked violators
+  // and generate" action for Regenerate Range needs this call to see the violator cells it just
+  // cleared, not the stale pre-clear `block` prop.
+  async function runPartialRegenerate(req, baseSchedule = sched) {
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmPartialRegen(null);
@@ -13299,8 +14786,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const locked = block.lockedCells || {};
       const inRange = req.kind === 'range' ? (ds => ds >= req.start && ds <= req.end) : (() => true);
       const workingSchedule = {};
-      for (const resId of Object.keys(sched)) {
-        const row = sched[resId] || {};
+      for (const resId of Object.keys(baseSchedule)) {
+        const row = baseSchedule[resId] || {};
         const newRow = {};
         for (const ds of Object.keys(row)) {
           const cellLocked = !!locked[resId]?.[ds];
@@ -13323,8 +14810,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
+      if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback') ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -13382,6 +14870,30 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     setConfirmPartialRegen({ kind: 'range', start: rangeStart, end: rangeEnd });
   }
 
+  // Clears the given (unlocked, hard-rule-violating) cells via ONE functional updateBlockTracked,
+  // then hands the resulting schedule straight to `followUp` — runGenerate/runPartialRegenerate's
+  // override-schedule params — so the refill sees the just-cleared cells immediately instead of
+  // waiting a render for the `block` prop to catch up. Shared by the standalone "Fix Violations"
+  // button and the readiness modals' "Clear unlocked violators and generate" action.
+  // block.lockedCells is untouched — only `schedule` changes.
+  function clearViolatorsThenGenerate(fixableCells, followUp) {
+    if (!fixableCells.length) return;
+    const cleared = { ...sched };
+    for (const c of fixableCells) {
+      cleared[c.residentId] = { ...(cleared[c.residentId] || {}), [c.dateStr]: null };
+    }
+    updateBlockTracked(b => ({ ...b, schedule: cleared }));
+    followUp(cleared);
+  }
+
+  // Standalone "Fix Violations" toolbar action: clears every unlocked cell that already has a hard
+  // validateAll error, then refills the holes with a plain fill pass (never overwrites an existing
+  // cell — same guarantee "Generate Schedule" gives). Locked violators are left exactly as they
+  // are; they need unlocking first (see the "locked — unlock to fix" note in the toolbar tooltip).
+  function requestFixViolations() {
+    clearViolatorsThenGenerate(violatingSummary.fixable, cleared => runGenerate(false, cleared));
+  }
+
   if (!dates.length) return (
     <div className="text-center py-16 text-gray-400">
       <Calendar size={40} className="mx-auto mb-3 opacity-40"/>
@@ -13416,22 +14928,35 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       : null;
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
-        <div className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 ${cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
+        <div ref={el=>{ if(el) rowRefs.current.set(res.id, el); else rowRefs.current.delete(res.id); }}
+          className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 transition-colors ${highlightedRow===res.id?'bg-primary/20':cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
-            <div className="flex items-center gap-1 mt-0.5">
-              <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
-              {res.blockType && res.category!=='PEDS' && (
-                <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
-              )}
-              {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
-              {rowHasDelta && (
-                <span title={res.targetNote || (rowDelta<0?'Target reduced this block':'Target increased this block')}
-                  className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
-                  {rowDelta>0?`+${rowDelta}`:rowDelta}
-                </span>
-              )}
-            </div>
+            {narrowNameCol ? (
+              // Mobile fix: compact single-line "First L. · PGY-N" instead of the two-row
+              // Last,-First + badges layout — full name still available via the row's own `title`
+              // just above (offSummary) and the hover/tap-visible lock button; this line exists so
+              // ≥4 date columns fit alongside it at ~400px width.
+              <div className="text-xs font-medium text-gray-800 truncate" title={`${res.lastName}, ${res.firstName}`}>
+                {res.firstName} {res.lastName.charAt(0)}.<span className="text-gray-400 font-normal"> · PGY-{res.pgy}</span>
+              </div>
+            ) : (
+              <>
+                <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
+                  {res.blockType && res.category!=='PEDS' && (
+                    <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
+                  )}
+                  {tgt!=null && <span className={`text-xs font-medium ${over?'text-red-500':'text-gray-400'}`}>{cnt}/{tgt}</span>}
+                  {rowHasDelta && (
+                    <span title={res.targetNote || (rowDelta<0?'Target reduced this block':'Target increased this block')}
+                      className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
+                      {rowDelta>0?`+${rowDelta}`:rowDelta}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
           <button type="button" onClick={()=>rowLocked?unlockRow(res.id):lockRow(res.id)}
             title={rowLocked?`Unlock all of ${res.lastName}'s locked cells`:`Lock all of ${res.lastName}'s assigned cells`}
@@ -13442,7 +14967,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
           const isLocked=!!(block.lockedCells?.[res.id]?.[ds]);
-          const vKey=`${res.id}_${ds}`; const hasV=!!(violMap[vKey]?.length);
+          // P2 (review panel): hard errors keep the red ring; a cell whose ONLY issues are warnings
+          // gets a small corner dot instead — a bigger/darker one when the warning actually blocks
+          // export, a plain one when it's purely advisory — see the in-grid legend below.
+          // classifyCellIssues is the SAME helper PerResidentMonthView/ResidentCardsView use, so all
+          // three surfaces read this distinction identically. hasV stays "any issue at all" for the
+          // things that don't care about the distinction (red-tinted background, hover title).
+          const vKey=`${res.id}_${ds}`; const cellIssuesHere=violMap[vKey]||[];
+          const cellTone=classifyCellIssues(cellIssuesHere, EXPORT_BLOCKING_RULE_IDS);
+          const hasV=cellTone.hasIssue;
+          const hasError=cellTone.hasError;
+          const hasWarnOnly=cellTone.hasWarn&&!hasError;
+          const hasBlockingWarn=cellTone.hasBlockingWarn;
           const relaxedHere=relaxedCellSet[vKey];
           const hasRelaxed=!!(relaxedHere&&relaxedHere.length);
           const isApprovedOff=(res.approvedDatesOff||[]).includes(ds);
@@ -13481,23 +15017,39 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           // a structurally-unfillable one were indistinguishable. Slate also carries enough weight
           // to read as a band across a sideways-scrolling grid, which gray-50 did not.
           let bg=isApprovedOff?'bg-orange-50':isVacation?'bg-teal-50':isJeoBlocked?'bg-purple-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':isWknd?'bg-slate-100':elig.length===0?'bg-gray-50':'bg-white';
-          if(hasV) bg='bg-red-50';
+          // Only a hard error tints the whole cell — a warn-only cell keeps its normal background
+          // (day-marker tint, weekend band, etc.) and relies on the corner dot below instead, so a
+          // soft rest-preference nudge doesn't visually outrank a real day-marker cue.
+          if(hasError) bg='bg-red-50';
           const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
           const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
           const wwIsCustom = res.wellnessOverride && res.wellnessOverride !== 'optOut';
           const dayMarkerText = isWW ? (wwIsCustom ? 'Wellness Wednesday (custom date)' : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal]||`${wwOrdinal}th`} of block)`) : isJC ? 'JC presenting' : isGR ? 'Grand Rounds' : null;
           const cornerLabel = isWW ? 'WW' : isJC ? 'JC' : isGR ? 'GR' : null;
-          const cornerColor = isWW ? DAY_MARKERS.WW.onShift : isJC ? DAY_MARKERS.JC.onShift : DAY_MARKERS.GR.onShift;
+          const cornerDotColor = isWW ? DAY_MARKERS.WW.dot : isJC ? DAY_MARKERS.JC.dot : DAY_MARKERS.GR.dot;
           // Lock-paint mode hijacks click/mousedown/mouseenter on this cell (only when it holds a
           // shift — an empty cell has nothing to lock) instead of opening the picker; see CLAUDE.md
           // "Locking UX" for why the origin cell's toggle happens on mousedown (not click) — a real
           // drag ends its mouseup over a *different* cell than it started on, so click never fires
           // on the origin cell at all.
           const paintable = lockMode && !!sid;
+          // Review-panel jump-to-cell selection (P2) — thick primary outline via inline style so it
+          // can never collide with (or get overridden by) the ring-based error/lock/drag classes
+          // above, all of which are also `ring-*` utilities on this same element.
+          const isSelected = !!selectedCell && selectedCell.residentId===res.id && selectedCell.dateStr===ds;
           return (
-            <div key={ds} style={{width:CELL_W,minWidth:CELL_W,height:36}}
-              onClick={()=>{ if(drag||lockMode) return; if(clickable){ cancelHover(); setPicker({resident:res,dateStr:ds}); } }}
+            <div key={ds}
+              ref={el=>{ const k=`${res.id}_${ds}`; if(el) cellRefs.current.set(k, el); else cellRefs.current.delete(k); }}
+              style={{width:CELL_W,minWidth:CELL_W,height:36, ...(isSelected?{outline:'3px solid hsl(var(--primary))',outlineOffset:'-3px'}:null)}}
+              tabIndex={lockMode?undefined:0}
+              onClick={()=>{ if(drag||lockMode) return; selectCell(res.id, ds); }}
+              onDoubleClick={()=>{ if(drag||lockMode) return; if(clickable){ cancelHover(); setPicker({resident:res,dateStr:ds}); } }}
+              onKeyDown={e=>{
+                if(lockMode) return;
+                if(e.key==='Enter'){ e.preventDefault(); selectCell(res.id, ds); }
+                else if(e.key==='Escape'){ setSelectedCell(null); }
+              }}
               onMouseDown={()=>{ if(!paintable) return; const target=!isLocked; paintValueRef.current=target; toggleLock(res.id, ds); }}
               onMouseEnter={e=>{ if(!paintable||paintValueRef.current===null||e.buttons!==1) return; if(isLocked!==paintValueRef.current) toggleLock(res.id, ds); }}
               onDragOver={e=>{ if(!drag) return; e.preventDefault(); setDragOver({resId:res.id,ds}); }}
@@ -13506,9 +15058,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               title={[
                 lockMode?(sid?(isLocked?'Locked — click/drag to unlock':'Click/drag to lock'):''):isApprovedOff?(offReason?`Approved day off — ${offReason}`:'Approved day off'):isVacation?'On vacation':isJeoBlocked?'Jeopardy call (blocked by Settings)':isJeopardy?'Jeopardy call':dayMarkerText?(shift?`${sid} — ${dayMarkerText}`:isWW?`${dayMarkerText} — no day/eve`:dayMarkerText):isLocked?'Locked — unlock to edit':elig.length===0?'No eligible shifts':'',
                 gapsWords,
+                hasV?cellIssuesHere.map(labelForIssue).join('; '):'',
                 hasRelaxed?`Rule relaxed by optimizer: ${[...new Set(relaxedHere.map(v=>v.ruleLabel||v.rule))].join(', ')}`:'',
               ].filter(Boolean).join(' — ')}
-              className={`relative group ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-b border-gray-100 ${bg} ${hasV?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
+              className={`relative group ${dow===1?'border-l-2 border-l-gray-300':''} border-r border-b border-gray-100 ${bg} ${hasError?'ring-1 ring-inset ring-red-400':''} ${hasRelaxed?'outline outline-2 outline-dashed outline-amber-500 -outline-offset-2':''} ${isLocked?'ring-2 ring-inset ring-indigo-400':''} ${isDragOverHere?'ring-2 ring-inset ring-primary':''} ${paintable?'cursor-cell':lockMode?'cursor-default':clickable?'cursor-pointer hover:brightness-95':'cursor-default'} transition-all`}>
               {isApprovedOff&&!sid && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.OFF.chip}`}>OFF</span></div>}
               {isVacation&&!sid&&!isApprovedOff && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.VAC.chip}`}>VAC</span></div>}
               {isJeoBlocked&&!sid&&!isApprovedOff&&!isVacation && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.J.chip}`}>J</span></div>}
@@ -13523,20 +15076,39 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                   onMouseLeave={cancelHover}
                   onFocus={e=>scheduleHover(res.id, ds, sid, e)}
                   onBlur={cancelHover}
-                  className={`absolute inset-1 flex items-center justify-center rounded text-xs font-bold ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
+                  className={`absolute inset-1 flex items-center justify-center rounded font-bold whitespace-nowrap overflow-hidden ${isLongShiftId(sid)?'text-[9px] tracking-tighter':'text-xs'} ${isLocked?'cursor-default':'cursor-grab active:cursor-grabbing'} ${shift.chip} ${isDragSource?'opacity-40':''}`}>
                   {sid}
                 </div>
               )}
+              {/* Mobile fix: this used to be opacity-60 (visible, and covering the chip label) by
+                  default on EVERY pointer type. It's now invisible until needed: a hover-capable
+                  pointer reveals it on :hover (via the .chip-lock-toggle rule in index.css, gated
+                  `@media (hover:hover)` so it never engages from a touch tap), and a locked cell (or
+                  Lock Mode being on) forces it visible on every pointer type so there's still a way
+                  to see/reach it on touch. */}
               {shift && (
                 <button type="button" onClick={e=>{ e.stopPropagation(); toggleLock(res.id, ds); }}
                   title={isLocked?'Unlock cell (allow drag/regenerate/edit)':'Lock cell (protect from drag, regenerate, and manual edit)'}
-                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white':'bg-white/70 text-gray-400 opacity-60 group-hover:opacity-100 hover:text-gray-700'}`}>
+                  className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white opacity-100':lockMode?'bg-white/70 text-gray-400 opacity-100 hover:text-gray-700':'chip-lock-toggle bg-white/70 text-gray-400 opacity-0 hover:text-gray-700 focus-visible:opacity-100'}`}>
                   {isLocked?<Lock size={11}/>:<Unlock size={11}/>}
                 </button>
               )}
-              {shift && cornerLabel && <span className={`absolute bottom-0 left-0 text-[10px] leading-none font-bold rounded-tr px-0.5 py-px z-10 shadow-sm ${cornerColor}`} title={dayMarkerText}>{cornerLabel}</span>}
+              {/* Mobile fix: GR/JC/WW used to render as a 2-letter text badge flush against the
+                  cell's actual corner (0,0), overlapping the centered shift-label text on a 52×36
+                  cell (worst on longer ids like PED-N-FM). A small colored dot carries the same cue
+                  (color matches the marker's own bg-*-50 tint elsewhere) without covering any
+                  character; the full name is still one tap/hover away via `title`. */}
+              {shift && cornerLabel && <span className={`absolute bottom-0.5 left-0.5 w-2 h-2 rounded-full ring-1 ring-white z-10 ${cornerDotColor}`} title={dayMarkerText}/>}
               {isJeopardy&&!isJeoBlocked && <span className={`absolute top-0 right-0 text-[10px] leading-none font-bold rounded-bl px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.J.onShift}`} title={DAY_MARKERS.J.title}>J</span>}
               {isPendingRequest && <span className={`absolute top-0 left-0 text-[10px] leading-none font-bold rounded-br px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.R.onShift}`} title={DAY_MARKERS.R.title}>R</span>}
+              {/* P2: soft warns (postNightRest etc.) get a small dot instead of the red ring so hard
+                  vs soft reads at a glance — see the in-grid legend below. Centered at the top edge
+                  so it never competes with the R/J/lock/day-marker corners. */}
+              {hasWarnOnly && (
+                hasBlockingWarn
+                  ? <span className="absolute top-0 left-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full ring-1 ring-white bg-amber-700 z-10" title="Export-blocking rule warning — see the review panel"/>
+                  : <span className="absolute top-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-amber-500 z-10" title="Rule warning — see the review panel"/>
+              )}
             </div>
           );
         })}
@@ -13569,13 +15141,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="flex items-center gap-2 flex-wrap">
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
-          <Button variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
+          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
           </Button>
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
             title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
             What-If Sweep
+          </Button>
+          <Button variant="dangerOutline" size="sm" icon={Wrench} onClick={requestFixViolations}
+            disabled={violatingSummary.fixable.length === 0}
+            title={violatingSummary.fixable.length
+              ? `Clears ${violatingSummary.fixable.length} unlocked assignment${violatingSummary.fixable.length !== 1 ? 's' : ''} that already break a hard rule, then refills the holes${violatingSummary.locked.length ? ` (${violatingSummary.locked.length} more are locked — unlock them first)` : ''}.`
+              : violatingSummary.locked.length
+              ? `${violatingSummary.locked.length} locked cell${violatingSummary.locked.length !== 1 ? 's' : ''} break a hard rule — unlock to fix.`
+              : 'No unlocked assignments currently break a hard rule.'}>
+            Fix Violations{violatingSummary.fixable.length > 0 ? ` (${violatingSummary.fixable.length})` : ''}
           </Button>
           <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={()=>setConfirmRegen(true)}>
             Clear &amp; Regenerate
@@ -13607,9 +15188,23 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full Screen'}
           </Button>
+          {/* P2: the one control that opens/closes the review panel on EVERY screen width — the
+              desktop sidebar also gets its own collapse arrow (see below), but a mobile/tablet
+              viewer has no sidebar to click on, so this toolbar button is the only affordance there. */}
+          <Button variant={reviewPanelOpen?'primary':'ghost'} size="sm" icon={ClipboardList} onClick={()=>setReviewPanelOpen(o=>!o)}
+            title={reviewPanelOpen?'Hide review panel':'Show review panel — errors, warnings, and generation notes'}>
+            Review{panelIssues.mustFix.length>0?` (${panelIssues.mustFix.length})`:''}
+          </Button>
         </span>
       </div>
 
+      {/* P2: review panel sits BESIDE this whole column on desktop (its own flex sibling below,
+          outside every overflow-auto scroll container in here — including the grid's own, per
+          CLAUDE.md's sticky-axis rule) and as a full-width section UNDER it on narrow screens
+          (rendered again below, `lg:hidden`, off the exact same `reviewPanelOpen`/`panelIssues`
+          state — no separate mobile-only state to drift). No CSS transform anywhere in this. */}
+      <div className="flex gap-4 items-start">
+      <div className="flex-1 min-w-0">
       <div className="no-print">
       <SubTabs value={view} onChange={setView} options={[
         {id:'grid', label:'Grid', icon:Table2},
@@ -13734,9 +15329,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.J.chip}`} title={DAY_MARKERS.J.title}>J</span>
         <span>= Grand Rounds day · JC presenting · wellness Wednesday · approved off · vacation · jeopardy call</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
-        <span>= rule violation</span>
+        <span>= rule violation (error)</span>
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"/><span className="text-amber-600 font-medium">dot</span></span>
+        <span>= rule warning (advisory)</span>
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-400"><span className="w-2.5 h-2.5 rounded-full bg-amber-700"/><span className="text-amber-700 font-medium">dot</span></span>
+        <span>= rule warning (blocks export)</span>
         <span className="px-1.5 py-0.5 rounded border-2 border-dashed border-amber-500 text-amber-600 font-medium">dashed amber</span>
         <span>= rule relaxed by optimizer</span>
+        <span className="px-1.5 py-0.5 rounded border border-indigo-300 text-indigo-600 font-medium">indigo ring</span>
+        <span>= locked</span>
       </div>
       )}
 
@@ -13811,7 +15412,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               This clears <strong>all current assignments — including ones you entered manually</strong> — and
               regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.
             </p>
-            <ReadinessWarningPanel issues={generateReadiness}/>
+            <ReadinessWarningPanel messages={generateReadiness.messages}/>
+            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmRegen(false)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runGenerate(true)}>Clear &amp; Regenerate</Button>
@@ -13828,7 +15430,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                 ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
                 : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>}
             </p>
-            <ReadinessWarningPanel issues={generateReadiness}/>
+            <ReadinessWarningPanel messages={generateReadiness.messages}/>
+            <KeptCellViolationsPanel violations={generateReadiness.keptViolations}
+              onFixAndGenerate={() => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
+                cleared => runPartialRegenerate(confirmPartialRegen, cleared))}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmPartialRegen(null)}>Cancel</Button>
               <Button variant="danger" onClick={()=>runPartialRegenerate(confirmPartialRegen)}>Regenerate</Button>
@@ -13838,13 +15443,18 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       )}
 
       {confirmGenerate && (
-        <Modal title="Missing manual dates" onClose={()=>setConfirmGenerate(null)}>
+        <Modal title="Before You Generate" onClose={()=>setConfirmGenerate(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
-              rules that depend on these dates may not apply correctly.
-            </p>
-            <ReadinessWarningPanel issues={confirmGenerate}/>
+            {confirmGenerate.messages.length > 0 && (
+              <p className="text-sm text-gray-600">
+                Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but
+                rules that depend on these dates may not apply correctly.
+              </p>
+            )}
+            <ReadinessWarningPanel messages={confirmGenerate.messages}/>
+            <KeptCellViolationsPanel violations={confirmGenerate.keptViolations}
+              onFixAndGenerate={() => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
+                cleared => runGenerate(false, cleared))}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={()=>setConfirmGenerate(null)}>Cancel</Button>
               <Button variant="primary" onClick={()=>runGenerate(false)}>Generate Anyway</Button>
@@ -14022,18 +15632,65 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
+      {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. Ref'd
+          by selectCell so a phone/tablet tap scrolls the panel (and its inspector) into view. */}
+      {reviewPanelOpen && (
+        <div ref={reviewPanelMobileRef} className="no-print lg:hidden mt-4">
+          <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}
+            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
+            onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
+        </div>
+      )}
+      </div>
+
+      {/* Desktop sidebar — outside the flex-1 column above, so it sits beside the grid rather than
+          inside its own scroll container. `height` (not just `maxHeight`) is load-bearing: ReviewPanel's
+          own root is `h-full`, which only resolves against a parent that has an actual height — against
+          an auto-height parent (maxHeight alone leaves height:auto) a percentage height computes as
+          'auto' too, so the panel grew to fit its content instead of clipping, and a long "Should look
+          at" list overflowed past the viewport with no way to reach the rest in fullscreen. A fixed
+          height gives h-full something concrete to fill; ReviewPanel's own overflow-hidden root plus
+          its inner overflow-y-auto content div then scroll internally instead. Fullscreen needs a
+          smaller subtraction than normal mode — same reason the grid's own scroll container above
+          splits 12rem (fullscreen) vs 20rem (normal): fullscreen replaces the page header/toolbar
+          chrome with just this wrapper's own p-3 padding, so there's more usable height, not less. */}
+      {reviewPanelOpen && (
+        <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, height:`calc(100vh - ${fullscreen ? '3rem' : '8rem'})`}}>
+          <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
+            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}
+            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
+            onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
+        </div>
+      )}
+      </div>
+
       {dropConfirm && (
         <DragConfirmModal dropConfirm={dropConfirm}
           onCancel={()=>setDropConfirm(null)}
-          onConfirm={()=>commitDrop(dropConfirm.src, dropConfirm.tgt, dropConfirm.kind, true)}/>
+          onConfirm={(overrideMeta)=>commitDrop(dropConfirm.src, dropConfirm.tgt, dropConfirm.kind, true, overrideMeta)}/>
+      )}
+
+      {pendingInspectorOverride && (
+        <Modal title="Override Program Rule" onClose={cancelInspectorOverride}>
+          <OverrideConfirmPanel overridable={pendingInspectorOverride.overridable} note={inspectorOverrideNote} onNoteChange={setInspectorOverrideNote}/>
+          <div className="flex justify-end gap-2">
+            <button onClick={cancelInspectorOverride} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
+            <button onClick={confirmInspectorOverride} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">Confirm Override</button>
+          </div>
+        </Modal>
       )}
 
       {picker && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
           block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
-          allResidents={allResidents}
-          onSelect={sid=>assign(picker.resident.id,picker.dateStr,sid)}
+          allResidents={allResidents} blocksHistory={blocksHistory}
+          onSelect={(sid,overrideMeta)=>assign(picker.resident.id,picker.dateStr,sid,overrideMeta)}
           onClose={()=>setPicker(null)} showToast={showToast} ayConf={ayConf} prevTail={prevTail}
           finalSunday={finalSunday} nextRotationMap={nextRotationMap}/>
       )}
@@ -14049,12 +15706,53 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
 // Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
 // red warning-panel style as DragConfirmModal's violation list below.
-function ReadinessWarningPanel({ issues }) {
-  if (!issues.length) return null;
+function ReadinessWarningPanel({ messages }) {
+  if (!messages.length) return null;
   return (
     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
       <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
-      {issues.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
+      {messages.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
+    </div>
+  );
+}
+
+// Kept-cell hard-error warning for the same three readiness modals (see checkGenerateReadiness/
+// keptCellsForMode in lib/keptCellViolations.js): lists exactly the non-empty cells that will
+// SURVIVE the pending Generate/Clear & Regenerate/Regenerate Unlocked/Range action with an
+// existing hard validateAll error — generation never overwrites a non-empty cell (CLAUDE.md
+// "chief sees red validateAll errors after hand-editing/locking cells or partial regenerate"), so
+// without this the chief would only discover the still-red cell AFTER running the action.
+// `onFixAndGenerate` is omitted for Clear & Regenerate — its `keptViolations` is always empty
+// (nothing survives a full wipe), so there'd never be a fixable cell to offer here.
+function KeptCellViolationsPanel({ violations, onFixAndGenerate }) {
+  const { fixable, locked } = violations;
+  if (!fixable.length && !locked.length) return null;
+  const total = fixable.length + locked.length;
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1">
+        <AlertCircle size={13}/> {total} existing assignment{total !== 1 ? 's' : ''} already break a hard rule
+      </div>
+      <p className="text-xs text-red-600 ml-4 mb-1.5">
+        Generation never overwrites an existing cell — these will still be red afterward unless cleared first.
+      </p>
+      <div className="ml-4 space-y-0.5 max-h-32 overflow-auto">
+        {fixable.map((c,i)=>(
+          <p key={`f${i}`} className="text-xs text-red-600">
+            {c.name || c.residentId} · {formatDisplayDate(c.dateStr)} · {c.shiftId} — {c.messages.join('; ')}
+          </p>
+        ))}
+        {locked.map((c,i)=>(
+          <p key={`l${i}`} className="text-xs text-red-600">
+            {c.name || c.residentId} · {formatDisplayDate(c.dateStr)} · {c.shiftId} — {c.messages.join('; ')} (locked — unlock to fix)
+          </p>
+        ))}
+      </div>
+      {onFixAndGenerate && fixable.length > 0 && (
+        <Button variant="dangerOutline" size="sm" className="mt-2 ml-4" onClick={onFixAndGenerate}>
+          Clear unlocked violators and generate
+        </Button>
+      )}
     </div>
   );
 }
@@ -14080,10 +15778,23 @@ function ViolationPanel({ violations }) {
   );
 }
 
+// onConfirm(overrideMeta) — overrideMeta is null for an advisory-only drop (soft warnings, e.g.
+// postNightRest — same "just proceed" UX as before) or {ruleIds, note} once the chief has confirmed
+// an override-tier violation. Tier acgme/program violations get NO confirm path at all — see
+// BlockingReasonsPanel.
 function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const { src, tgt, kind, violations } = dropConfirm;
+  const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [overrideNote, setOverrideNote] = useState('');
   const srcShift = SHIFT_MAP[src.sid];
   const tgtShift = tgt.sid ? SHIFT_MAP[tgt.sid] : null;
+  const { blocking, overridable } = classifyForHandEdit(violations);
+  const verb = kind === 'swap' ? 'Swap' : 'Move';
+
+  function confirm() {
+    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null);
+  }
+
   return (
     <Modal title={kind === 'swap' ? 'Confirm Swap' : 'Confirm Move'} onClose={onCancel}>
       <div className="flex items-center gap-3 mb-3 text-sm">
@@ -14101,12 +15812,24 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
           </>
         )}
       </div>
-      <ViolationPanel violations={violations}/>
+      {blocking.length > 0 && <BlockingReasonsPanel blocking={blocking}/>}
+      {blocking.length === 0 && overridable.length > 0 && confirmingOverride && (
+        <OverrideConfirmPanel overridable={overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+      )}
+      {blocking.length === 0 && !(overridable.length > 0 && confirmingOverride) && <ViolationPanel violations={violations}/>}
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-        <button onClick={onConfirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
-          {kind === 'swap' ? 'Swap Anyway' : 'Move Anyway'}
-        </button>
+        {/* Tier acgme/program: no confirm path — see BlockingReasonsPanel above. */}
+        {blocking.length === 0 && overridable.length > 0 && !confirmingOverride && (
+          <button onClick={()=>setConfirmingOverride(true)} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            Override Program Rule
+          </button>
+        )}
+        {blocking.length === 0 && (overridable.length === 0 || confirmingOverride) && (
+          <button onClick={confirm} className="px-3 py-1.5 text-sm rounded-lg font-medium text-white bg-amber-500 hover:bg-amber-600">
+            {overridable.length > 0 ? 'Confirm Override' : `${verb} Anyway`}
+          </button>
+        )}
       </div>
     </Modal>
   );
@@ -14135,7 +15858,9 @@ function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onAppl
     const map = {
       rules: ['Rule order', 'bg-blue-100 text-blue-800'],
       seed: ['Random draw', 'bg-purple-100 text-purple-800'],
-      restToggle: ['Rest-hours off', 'bg-amber-100 text-amber-800'],
+      // 'restToggle' variant kind removed (2026-09-26 policy: rest >= shift length is always on now,
+      // no legal "off" state to sweep) — map[kind] falls back to the generic gray chip for any
+      // stray old id, so this stays harmless if ever seen again.
     };
     const [label, cls] = map[kind] || [kind, 'bg-gray-100 text-gray-700'];
     return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${cls}`}>{label}</span>;
@@ -14528,15 +16253,24 @@ function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, app
               const isJC = (res.jcPresentDates||[]).includes(ds);
               const isGR = grWorkDow(res)===dow && !isOff && !isVac;
               const isWW = !!wwDate && ds===wwDate;
-              const hasV = inBlock && !!(violMap[`${res.id}_${ds}`]?.length);
+              // Shared error/blocking-warn/advisory split (classifyCellIssues, same helper
+              // ScheduleGrid's own cells and ResidentCardsView use) — this used to be a bare
+              // "any issue at all" hasV that rang the same red alarm for a hard error and a purely
+              // advisory warning alike.
+              const cellIssuesForDate = inBlock ? (violMap[`${res.id}_${ds}`] || []) : [];
+              const cellTone = classifyCellIssues(cellIssuesForDate, EXPORT_BLOCKING_RULE_IDS);
+              const hasV = cellTone.hasIssue;
               const shift = sid ? SHIFT_MAP[sid] : null;
               let bg = isOff?'bg-orange-50':isVac?'bg-teal-50':isWW?'bg-violet-50':isJC?'bg-sky-50':isGR?'bg-yellow-50':'bg-white';
-              if (hasV) bg = 'bg-red-50';
+              if (cellTone.hasError) bg = 'bg-red-50';
               const clickable = inBlock;
+              const ringCls = cellTone.hasError ? 'ring-1 ring-inset ring-red-400'
+                : cellTone.hasBlockingWarn ? 'ring-1 ring-inset ring-amber-500'
+                : cellTone.hasAdvisoryOnly ? 'ring-1 ring-inset ring-amber-300' : '';
               return (
                 <div key={ds} onClick={()=>clickable && onCellClick(res, ds)}
-                  title={[hasV ? violMap[`${res.id}_${ds}`].map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ') || undefined}
-                  className={`relative min-h-[70px] border-r border-gray-100 last:border-r-0 p-1 ${inBlock ? bg : 'bg-gray-50/60 opacity-50'} ${hasV ? 'ring-1 ring-inset ring-red-400' : ''} ${clickable ? 'cursor-pointer hover:brightness-95' : ''}`}>
+                  title={[hasV ? cellIssuesForDate.map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ') || undefined}
+                  className={`relative min-h-[70px] border-r border-gray-100 last:border-r-0 p-1 ${inBlock ? bg : 'bg-gray-50/60 opacity-50'} ${ringCls} ${clickable ? 'cursor-pointer hover:brightness-95' : ''}`}>
                   <span className="text-xs font-semibold text-gray-600">{d.getDate()}</span>
                   {shift && (
                     <div className={`mt-1 text-[10px] font-bold px-1 py-0.5 rounded truncate ${shift.chip}`}>{sid}</div>
@@ -14825,7 +16559,14 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
               {rows.map(({ds,sid,isOff,isVac,isJeo,isJC,isLecture,isGR,isWW})=>{
                 const shift = sid ? SHIFT_MAP[sid] : null;
                 const vKey = `${res.id}_${ds}`;
-                const hasV = !!(violMap[vKey]?.length);
+                // Shared error/blocking-warn/advisory split — see PerResidentMonthView's identical
+                // comment; both views used to fork their own "any issue -> red alarm" hasV.
+                const cellIssuesForDate = violMap[vKey] || [];
+                const cellTone = classifyCellIssues(cellIssuesForDate, EXPORT_BLOCKING_RULE_IDS);
+                const hasV = cellTone.hasIssue;
+                const ringCls = cellTone.hasError ? 'ring-1 ring-inset ring-red-400 bg-red-50'
+                  : cellTone.hasBlockingWarn ? 'ring-1 ring-inset ring-amber-500'
+                  : cellTone.hasAdvisoryOnly ? 'ring-1 ring-inset ring-amber-300' : '';
                 const d = parseDate(ds);
                 const offReason = isOff ? offReasonText(res, ds) : null;
                 // Hours since/until the nearest shift on either side, measured against this
@@ -14838,8 +16579,8 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
                 const nextShort = gaps?.next && gapIsShort(sid, gaps.next.gapH);
                 return (
                   <div key={ds} onClick={()=>onRowClick(res,ds)}
-                    title={[hasV ? violMap[vKey].map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ')}
-                    className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${hasV?'ring-1 ring-inset ring-red-400 bg-red-50':''}`}>
+                    title={[hasV ? cellIssuesForDate.map(v=>v.message).join('; ') : '', offReason].filter(Boolean).join(' — ')}
+                    className={`flex items-center gap-2 px-3 py-1 cursor-pointer hover:bg-gray-50 ${ringCls}`}>
                     <span className="text-[10px] text-gray-400 tabular-nums font-mono w-10 shrink-0">{DOW[d.getDay()]} {d.getMonth()+1}/{d.getDate()}</span>
                     {shift && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${shift.chip}`}>{sid}</span>}
                     {shift && <span className="text-[10px] text-gray-400">{shift.hours}</span>}
@@ -14983,7 +16724,28 @@ function FeasibilityReportCard({ feasibility, allResidents }) {
   );
 }
 
-function GenerationReportCard({ report, appSettings, blockStart }) {
+// P2 (review panel) — GenerationReportCard's "Generation notes" section, collapsed to a one-line
+// count that expands IN PLACE. `compact=false` (ValidationTab's usage, unchanged) returns `children`
+// untouched — zero markup difference from before this prop existed, so the Violations tab keeps
+// rendering the exact same full card. `compact=true` (the review panel's usage) wraps the SAME
+// existing per-section markup behind a toggle, rather than duplicating it, so the two surfaces can
+// never drift on what a section actually says — only how much of it shows by default.
+function ReportSubsection({ compact, title, count, children }) {
+  const [open, setOpen] = useState(false);
+  if (!compact) return children;
+  return (
+    <div>
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        className="w-full flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground py-1 text-left">
+        <ChevronRight size={12} className={`shrink-0 transition-transform ${open?'rotate-90':''}`}/>
+        {title} ({count})
+      </button>
+      {open && <div className="mt-1 space-y-3">{children}</div>}
+    </div>
+  );
+}
+
+function GenerationReportCard({ report, appSettings, blockStart, compact = false }) {
   const summary = useMemo(()=>summarizeGenerationReport(report, appSettings, blockStart),[report,appSettings,blockStart]);
   const realGapGroups = summary.filter(s=>!s.structural);
   const structuralGroups = summary.filter(s=>s.structural);
@@ -14991,37 +16753,63 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
-      <div className="px-4 py-3 border-b border-border bg-primary/10">
+      {/* bg-blue-50/text-blue-700 (not the design-system bg-primary/10 + text-primary pairing used
+          elsewhere) — that pairing measures under 4.5:1 contrast in dark mode here (text and
+          background both derive from the same --primary hue/lightness, so a thin 10%-opacity tint
+          under text of that same color reads as "blue on blue"). bg-blue-50/text-blue-700 already
+          have their own dark-mode remaps in index.css (picked there specifically for legibility —
+          see the '.dark .text-blue-700' comment) and measure over 7:1 here. Scoped to just this
+          card's header rather than the shared token, since bg-primary/10 + text-primary is a
+          widely-used, already-fine combo elsewhere (usually paired with a solid/opaque background,
+          not another translucent tint of the same hue). */}
+      <div className="px-4 py-3 border-b border-border bg-blue-50">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <span className="text-sm font-semibold text-primary flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
-          <span className="text-xs text-primary">{new Date(report.generatedAt).toLocaleString()}</span>
+          <span className="text-sm font-semibold text-blue-700 flex items-center gap-1.5"><Wand2 size={14}/> Generation Report</span>
+          <span className="text-xs text-blue-700">{new Date(report.generatedAt).toLocaleString()}</span>
         </div>
-        <p className="text-xs text-primary mt-1">
+        <p className="text-xs text-blue-700 mt-1">
           Filled {report.filled} of {report.totalSlots} minimum coverage slots ({report.keptManual} kept from manual entries){report.optionalFilled > 0 ? `, plus ${report.optionalFilled} optional slots toward each shift's maximum` : ''}.
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
+        {report.engineComparison && (
+          <p className="text-xs text-blue-700 mt-1 flex items-center gap-1.5 flex-wrap">
+            <span className="px-1.5 py-0.5 rounded-full font-bold bg-blue-100">
+              {report.engineComparison.winner === 'cpsat' ? 'Optimizer' : 'Built-in engine'} used
+            </span>
+            <span>
+              optimizer: {report.engineComparison.solver ? `${report.engineComparison.solver.errorCount} error${report.engineComparison.solver.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.solver.blockingWarnCount} blocking warning${report.engineComparison.solver.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
+              {' · '}
+              built-in: {report.engineComparison.local ? `${report.engineComparison.local.errorCount} error${report.engineComparison.local.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.local.blockingWarnCount} blocking warning${report.engineComparison.local.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
+            </span>
+          </p>
+        )}
       </div>
       <div className="p-4 space-y-3">
         {report.unfilled.length === 0 && report.underTarget.length === 0 && (report.seniorGaps||[]).length === 0 && (report.restCompromises||[]).length === 0 && (report.pgyFallbacks||[]).length === 0 && (
           <p className="text-sm text-green-600 flex items-center gap-1.5"><CheckCircle size={14}/> Every minimum coverage slot was filled.</p>
         )}
 
-        {realGapGroups.map(g => (
-          <div key={g.shiftId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFT_MAP[g.shiftId]?.chip}`}>{g.shiftId}</span>
-              <span className="text-xs text-amber-700 font-medium">{g.slots.length} below minimum coverage</span>
-            </div>
-            {g.recommendations.map((r,i)=>(
-              <div key={i} className={i>0 ? 'mt-1.5' : ''}>
-                <p className="text-xs text-gray-500">{r.slots.map(s=>formatDisplayDate(s.dateStr)).join(', ')}</p>
-                <p className="text-xs text-gray-700">→ {r.text}</p>
+        {realGapGroups.length > 0 && (
+          <ReportSubsection compact={compact} title="Coverage gaps below minimum" count={realGapGroups.length}>
+            {realGapGroups.map(g => (
+              <div key={g.shiftId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded font-bold ${SHIFT_MAP[g.shiftId]?.chip}`}>{g.shiftId}</span>
+                  <span className="text-xs text-amber-700 font-medium">{g.slots.length} below minimum coverage</span>
+                </div>
+                {g.recommendations.map((r,i)=>(
+                  <div key={i} className={i>0 ? 'mt-1.5' : ''}>
+                    <p className="text-xs text-gray-500">{r.slots.map(s=>formatDisplayDate(s.dateStr)).join(', ')}</p>
+                    <p className="text-xs text-gray-700">→ {r.text}</p>
+                  </div>
+                ))}
               </div>
             ))}
-          </div>
-        ))}
+          </ReportSubsection>
+        )}
 
         {(report.seniorGaps||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="FLEX/POD missing a senior resident" count={report.seniorGaps.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">FLEX/POD missing a senior resident</span>
             <ul className="mt-1 space-y-0.5">
@@ -15030,9 +16818,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {(report.restCompromises||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="24h post-night rest preference broken" count={report.restCompromises.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">24h post-night rest preference broken to fill minimum coverage</span>
             <ul className="mt-1 space-y-0.5">
@@ -15041,9 +16831,26 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
+        )}
+
+        {(report.overstaffed||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="Placed over maximum staffing" count={report.overstaffed.length}>
+          <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-amber-700">Placed one over maximum staffing to close a shift-target gap</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.overstaffed.map((o,i)=>(
+                <li key={i} className="text-xs text-gray-700">
+                  {formatDisplayDate(o.date)} — {SHIFT_MAP[o.shiftId]?.label || o.shiftId}{o.name ? ` — ${o.name}` : ''} (last resort — Room/Steal/Chain had no legal option; review before export)
+                </li>
+              ))}
+            </ul>
+          </div>
+          </ReportSubsection>
         )}
 
         {(report.pgyFallbacks||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="PGY gating fallback" count={report.pgyFallbacks.length}>
           <div className="border border-amber-200 bg-amber-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-amber-700">PGY gating fallback — no senior PGY available for these extra POD/FLEX slots</span>
             <ul className="mt-1 space-y-0.5">
@@ -15052,9 +16859,24 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
+        )}
+
+        {(report.podSubstitutes||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="PGY-2 covering POD" count={report.podSubstitutes.length}>
+          <div className="border border-blue-200 bg-blue-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-blue-700">R5: PGY-3 unavailable (conference or Wellness Wednesday) — an EM PGY-2 covered POD instead, informational only</span>
+            <ul className="mt-1 space-y-0.5">
+              {report.podSubstitutes.map((s,i)=>(
+                <li key={i} className="text-xs text-gray-700">{formatDisplayDate(s.dateStr)} — {SHIFT_MAP[s.shiftId]?.label || s.shiftId} — {s.name} ({s.reason === 'wellness' ? "POD's own Wellness Wednesday" : 'conference'})</li>
+              ))}
+            </ul>
+          </div>
+          </ReportSubsection>
         )}
 
         {structuralCount > 0 && (
+          <ReportSubsection compact={compact} title="Expected gaps (day-of-week rules)" count={structuralCount}>
           <div className="border border-gray-200 bg-gray-50 rounded-lg p-3">
             <span className="text-xs font-medium text-gray-500 px-1.5 py-0.5 rounded bg-gray-200 mr-1.5">Expected</span>
             <span className="text-xs text-gray-500">{structuralCount} shift{structuralCount!==1?'s have':' has'} gaps that match a day-of-week rule (e.g. Trauma window, GR Wednesday) — not a coverage problem.</span>
@@ -15064,9 +16886,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               <p key={g.shiftId} className="text-xs text-gray-600 mt-1">→ {g.recommendations[0]?.text ?? ''}</p>
             ))}
           </div>
+          </ReportSubsection>
         )}
 
         {(report.capacityWarnings||[]).length > 0 && (
+          <ReportSubsection compact={compact} title="Structural capacity check" count={report.capacityWarnings.length}>
           <div className="border border-rose-200 bg-rose-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-rose-700">Structural capacity check</span>
             <ul className="mt-1 space-y-0.5">
@@ -15075,9 +16899,11 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
         {report.underTarget.length > 0 && (
+          <ReportSubsection compact={compact} title="Residents left under target" count={report.underTarget.length}>
           <div className="border border-gray-200 rounded-lg p-3">
             <span className="text-xs font-semibold text-gray-600">Residents left under target</span>
             <ul className="mt-1 space-y-0.5">
@@ -15108,10 +16934,334 @@ function GenerationReportCard({ report, appSettings, blockStart }) {
               ))}
             </ul>
           </div>
+          </ReportSubsection>
         )}
 
       </div>
     </div>
+  );
+}
+
+// Schedule tab's review panel (P2 of the chief-review-loop plan) — lives beside (desktop) or below
+// (mobile) the grid, both wired up in ScheduleGrid's own return. `panelIssues` is
+// groupPanelIssues(issues, EXPORT_BLOCKING_RULE_IDS) computed once in ScheduleGrid from the ROOT
+// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` and
+// `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
+// supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
+// closing it there).
+function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onJumpToRow, onClose,
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
+  const { mustFix, orderedWarns } = panelIssues;
+  // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
+  // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
+  // which case this falls back to the lists rather than showing a blank inspector.
+  const showInspector = !!selectedCell && !!inspectorData;
+  // "Should look at" collapses by default once it's long enough that showing it open would push
+  // Generation notes off the initial view — Must fix (the thing that blocks export) always stays
+  // visible in full.
+  const [warnsOpen, setWarnsOpen] = useState(orderedWarns.length <= 8);
+  // Panel-flood fix: "Should look at" ALWAYS groups by kind (see groupIssuesByKind) — a block with
+  // 129 warnings otherwise rendered 129 individual rows, nearly all repeats of "Isolated night
+  // stint…"/"No full weekend off"/"…separate night stints". Must-fix stays UNGROUPED (one row per
+  // error, unchanged) until it grows past the point grouping actually helps — a short error list is
+  // usually faster to scan directly than through an extra collapse/expand click.
+  const warnGroups = useMemo(() => groupIssuesByKind(orderedWarns, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID), [orderedWarns]);
+  const groupMustFix = mustFix.length > 10;
+  const mustFixGroups = useMemo(
+    () => (groupMustFix ? groupIssuesByKind(mustFix, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID) : null),
+    [groupMustFix, mustFix]
+  );
+
+  return (
+    <div className="bg-card border border-border rounded-xl shadow-sm flex flex-col h-full overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2 shrink-0">
+        {showInspector ? (
+          <button type="button" onClick={onClearSelection}
+            className="flex items-center gap-1 text-sm font-semibold text-foreground hover:text-primary transition-colors">
+            <ChevronLeft size={16}/> Cell inspector
+          </button>
+        ) : (
+          <span className="text-sm font-semibold text-foreground">Review</span>
+        )}
+        {onClose && (
+          <button type="button" onClick={onClose} title="Collapse review panel"
+            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
+            <ChevronRight size={16}/>
+          </button>
+        )}
+      </div>
+      {showInspector ? (
+        <div className="overflow-y-auto flex-1 p-3 text-sm">
+          <CellInspector data={inspectorData} onBack={onClearSelection} onChangeShift={onChangeShift}
+            onUnlockCell={onUnlockCell} onGive={onGive} onSwap={onSwap} onAssign={onAssign}/>
+        </div>
+      ) : (
+      <div className="overflow-y-auto flex-1 p-3 space-y-4 text-sm">
+        <section>
+          {/* tabIndex + id: goToErrorsStep (BlockContextBar's rail button) focuses this heading
+              directly so "N errors to fix" always lands somewhere visible, not just "panel opened". */}
+          <h3 id="review-panel-must-fix" tabIndex={-1}
+            className="text-xs font-bold uppercase tracking-wide text-destructive mb-1.5">
+            Must fix ({mustFix.length})
+          </h3>
+          {mustFix.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">No hard errors.</p>
+          ) : groupMustFix ? (
+            <ul className="space-y-1">
+              {mustFixGroups.map(g => renderIssueOrGroup(g, 'error', onJumpToCell, onJumpToRow))}
+            </ul>
+          ) : (
+            <ul className="space-y-1">
+              {mustFix.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone="error" onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>)}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <button type="button" onClick={()=>setWarnsOpen(o=>!o)}
+            className="w-full flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wide text-amber-600 mb-1.5">
+            <span>Should look at ({orderedWarns.length})</span>
+            <ChevronDown size={12} className={`shrink-0 transition-transform ${warnsOpen?'rotate-180':''}`}/>
+          </button>
+          {warnsOpen && (
+            warnGroups.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
+            ) : (
+              <ul className="space-y-1">
+                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow))}
+              </ul>
+            )
+          )}
+        </section>
+
+        {report && (
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Generation notes</h3>
+            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} compact/>
+          </section>
+        )}
+      </div>
+      )}
+    </div>
+  );
+}
+
+// P3 (chief-review-loop plan): the Cell inspector — replaces the issue lists inside ReviewPanel
+// while a grid cell is selected. `data` is ScheduleGrid's inspectorData memo: { resident, dateStr,
+// shiftId, locked, cellIssues, give, swap, assign }. A locked cell shows only its lock state (see
+// CLAUDE.md "locked cells untouchable") — no Give/Swap/Assign section at all, matching the plan's
+// "no other actions". `onGive`/`onSwap` take the candidate's residentId; `onAssign` takes a
+// shiftId; all three are ScheduleGrid's applyGive/applySwap/applyAssign, each one functional
+// updateBlockTracked call (one undo step).
+const INSPECTOR_SHOW_MORE_STEP = 5;
+function CellInspector({ data, onBack, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
+  const { resident, dateStr, shiftId, locked, cellIssues, give, swap, assign } = data;
+  const [giveShown, setGiveShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const [swapShown, setSwapShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const [assignShown, setAssignShown] = useState(INSPECTOR_SHOW_MORE_STEP);
+  const shiftLabel = shiftId ? (SHIFT_MAP[shiftId]?.label || shiftId) : null;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-sm font-semibold text-foreground">{resident.firstName} {resident.lastName}</div>
+        <div className="text-xs text-muted-foreground">{formatDisplayDate(dateStr)}</div>
+        <div className="mt-1 text-sm">
+          {shiftId
+            ? <span className="font-mono font-semibold">{shiftId}</span>
+            : <span className="italic text-muted-foreground">Off</span>}
+          {shiftLabel && shiftLabel !== shiftId && <span className="text-muted-foreground"> — {shiftLabel}</span>}
+        </div>
+      </div>
+
+      {cellIssues.length > 0 && (
+        <ul className="space-y-1">
+          {cellIssues.map(issue => (
+            <li key={issueKey(issue)}
+              className={`text-xs px-2 py-1.5 rounded-lg border ${issue.level === 'error' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-amber-200 bg-amber-50/60 text-amber-700'}`}>
+              {labelForIssue(issue)}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {locked ? (
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 flex items-center justify-between gap-2">
+          <span className="text-xs text-indigo-700 font-medium flex items-center gap-1.5"><Lock size={12}/> Locked — unlock to edit</span>
+          <Button variant="secondary" size="sm" icon={Unlock} onClick={onUnlockCell}>Unlock</Button>
+        </div>
+      ) : (
+        <>
+          {shiftId && (
+            <Button variant="secondary" size="sm" className="w-full" onClick={onChangeShift}>Change shift…</Button>
+          )}
+
+          {shiftId && (
+            <InspectorSection title={`Give to (${give.length})`} count={give.length} empty="No one else can take this shift here.">
+              {give.slice(0, giveShown).map(c => (
+                <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
+                  softViolations={c.softViolations} needsOverride={c.needsOverride} actionLabel="Give" onApply={() => onGive(c.residentId, c)}/>
+              ))}
+              {give.length > giveShown && <ShowMoreButton onClick={() => setGiveShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+
+          {shiftId && (
+            <InspectorSection title={`Swap with (${swap.length})`} count={swap.length} empty="No clean swap available today.">
+              {swap.slice(0, swapShown).map(c => (
+                <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
+                  softViolations={c.softViolations} needsOverride={c.needsOverride} shiftNote={`${c.otherShiftId} ↔ ${shiftId}`}
+                  actionLabel="Swap" onApply={() => onSwap(c.residentId, c)}/>
+              ))}
+              {swap.length > swapShown && <ShowMoreButton onClick={() => setSwapShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+
+          {!shiftId && (
+            <InspectorSection title={`Assign (${assign.length})`} count={assign.length} empty="No eligible shift has room today.">
+              {assign.slice(0, assignShown).map(a => (
+                <AssignRow key={a.shiftId} shiftId={a.shiftId} min={a.min} max={a.max} count={a.count}
+                  softViolations={a.softViolations} needsOverride={a.needsOverride} onApply={() => onAssign(a.shiftId, a)}/>
+              ))}
+              {assign.length > assignShown && <ShowMoreButton onClick={() => setAssignShown(n => n + INSPECTOR_SHOW_MORE_STEP)}/>}
+            </InspectorSection>
+          )}
+        </>
+      )}
+
+      <Button variant="ghost" size="sm" icon={ChevronLeft} className="w-full" onClick={onBack}>Back to review</Button>
+    </div>
+  );
+}
+
+function InspectorSection({ title, count, empty, children }) {
+  return (
+    <div>
+      <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">{title}</h4>
+      {count > 0 ? <ul className="space-y-1">{children}</ul> : <p className="text-xs text-muted-foreground italic">{empty}</p>}
+    </div>
+  );
+}
+
+function ShowMoreButton({ onClick }) {
+  return (
+    <li>
+      <button type="button" onClick={onClick} className="w-full text-xs text-primary hover:underline py-1">Show more</button>
+    </li>
+  );
+}
+
+// One "Give to"/"Swap with" candidate row — target-count delta ("18→19 of 20") makes the ranking
+// visible, not just implied by list order; a soft violation shows as a small amber note rather
+// than blocking the action (only a HARD violation excludes a candidate at all — see
+// cellAlternatives.js).
+// "Needs override" tag (R6): a candidate whose only soft violations are override-tier rulePolicy
+// ids (see cellAlternatives.js's needsOverride/hasOverrideTierViolation) — applying it routes
+// through the same confirm-with-note step the picker/drag-drop use, never a bare one-click apply.
+function NeedsOverrideTag() {
+  return <span className="inline-block text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ml-1.5">Needs override</span>;
+}
+
+function CandidateRow({ resident, count, target, softViolations, needsOverride, shiftNote, actionLabel, onApply }) {
+  if (!resident) return null;
+  return (
+    <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground truncate flex items-center">{resident.firstName} {resident.lastName}{needsOverride && <NeedsOverrideTag/>}</div>
+        <div className="text-[11px] text-muted-foreground">
+          {target != null ? `${count}→${count + 1} of ${target}` : `${count} shifts (no target)`}
+          {shiftNote && ` · ${shiftNote}`}
+        </div>
+        {softViolations.length > 0 && (
+          <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
+        )}
+      </div>
+      <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>{actionLabel}</Button>
+    </li>
+  );
+}
+
+// One "Assign" candidate row — coverage shortfall drives ranking (below-minimum shifts first).
+function AssignRow({ shiftId, min, max, count, softViolations, needsOverride, onApply }) {
+  return (
+    <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
+      <div className="min-w-0">
+        <div className="text-xs font-mono font-semibold text-foreground truncate flex items-center">{shiftId}{needsOverride && <NeedsOverrideTag/>}</div>
+        <div className="text-[11px] text-muted-foreground">{`${count}→${count + 1} of ${min} min (${max} max)`}</div>
+        {softViolations.length > 0 && (
+          <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
+        )}
+      </div>
+      <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>Assign</Button>
+    </li>
+  );
+}
+
+// Renders one groupIssuesByKind() group: a singleton group (count===1) is just its one IssueRow —
+// no point wrapping a single row behind a collapse/expand click — anything bigger becomes a
+// collapsed IssueGroupRow. Shared by both the Must-fix (>10) and Should-look-at group lists so they
+// can't render this decision differently.
+function renderIssueOrGroup(group, tone, onJumpToCell, onJumpToRow) {
+  return group.count === 1
+    ? <IssueRow key={issueKey(group.items[0])} issue={group.items[0]} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>
+    : <IssueGroupRow key={group.key} group={group} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>;
+}
+
+// Collapsed "kind" row for the panel-flood fix (groupIssuesByKind) — "Isolated night stints · 43"
+// collapsed by default, expanding in place to the individual IssueRow list (same click-to-jump
+// behavior per row as the ungrouped rendering, just nested one level).
+function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li>
+      <button type="button" onClick={()=>setOpen(o=>!o)}
+        className={`w-full flex items-center justify-between gap-2 text-left px-2 py-1.5 rounded-lg border text-xs transition-colors ${
+          tone==='error' ? 'border-destructive/20 bg-destructive/5' : 'border-amber-200 bg-amber-50/60'
+        }`}>
+        <span className={tone==='error' ? 'text-destructive font-medium' : 'text-amber-700 font-medium'}>
+          {group.label} · {group.count}
+        </span>
+        <ChevronRight size={12} className={`shrink-0 transition-transform ${open?'rotate-90':''}`}/>
+      </button>
+      {open && (
+        <ul className="mt-1 ml-2 space-y-1 border-l border-border pl-2">
+          {group.items.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>)}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+// One issue row. Jumps to a cell when a specific date is known (dateStr or anchorDate), to the
+// resident's ROW when only a resident is named (e.g. "Under target", "No full weekend off" — see
+// issueJumpTarget), or is disabled when the issue names no resident at all (a block-wide coverage
+// gap). `labelForIssue` is the ONLY place this renders "what rule is this" — never issue.rule
+// directly, so an unmapped id can't leak through as a bare programmer string (see lib/reviewPanel.js).
+function IssueRow({ issue, tone, onJumpToCell, onJumpToRow }) {
+  const target = issueJumpTarget(issue);
+  const jumpable = !!target;
+  const handleClick = () => {
+    if (!target) return;
+    if (target.type === 'cell') onJumpToCell(target.residentId, target.dateStr);
+    else onJumpToRow(target.residentId);
+  };
+  return (
+    <li>
+      <button type="button" disabled={!jumpable} onClick={handleClick}
+        title={jumpable ? (target.type === 'cell' ? 'Jump to this cell in the grid' : "Jump to this resident's row") : undefined}
+        className={`w-full text-left px-2 py-1.5 rounded-lg border text-xs transition-colors ${
+          tone==='error' ? 'border-destructive/20 bg-destructive/5' : 'border-amber-200 bg-amber-50/60'
+        } ${jumpable ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}>
+        {(issue.name || issue.dateStr || issue.shiftId) && (
+          <div className="text-muted-foreground text-[11px] mb-0.5">
+            {[issue.name, issue.dateStr && formatDisplayDate(issue.dateStr), issue.shiftId].filter(Boolean).join(' · ')}
+          </div>
+        )}
+        <div className={tone==='error' ? 'text-destructive font-medium' : 'text-amber-700 font-medium'}>
+          {labelForIssue(issue)}
+        </div>
+      </button>
+    </li>
   );
 }
 
@@ -15628,6 +17778,19 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     });
   }
 
+  // Same sparse-write convention as updQgendaTask, for the CSV column HEADER text
+  // (appSettings.qgendaHeaderOverrides — src/lib/qgenda.js's QGENDA_COLUMN_DEFAULTS/
+  // resolveQgendaHeaders): blank, whitespace-only, or exactly-the-default input deletes the
+  // override key rather than storing a no-op string.
+  function updQgendaHeader(col, raw) {
+    setAppSettings(p => {
+      const o = { ...(p.qgendaHeaderOverrides || {}) };
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed === QGENDA_COLUMN_DEFAULTS[col]) delete o[col]; else o[col] = trimmed;
+      return { ...p, qgendaHeaderOverrides: o };
+    });
+  }
+
   function exportData() {
     if (SUPABASE_ENABLED && demoMode && !dbReady) {
       showToast('Demo data is still loading from the cloud — wait a moment and try again.', 'amber');
@@ -15745,7 +17908,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           {/* Jeopardy policy */}
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Jeopardy Call Handling</label>
-            <p className="text-xs text-gray-400 mb-2">What happens when a resident has a shift on a jeopardy call date</p>
+            <p className="text-xs text-gray-400 mb-2">What happens when a resident has a shift overlapping a jeopardy call's window (07:00 the call date through 07:00 the next day — an overnight into the call date counts too, not just a shift that same day)</p>
             <div className="flex gap-2 flex-wrap">
               {[
                 { v: 'block', l: 'Block',  d: 'Day is unschedulable (like a day off)' },
@@ -15774,15 +17937,14 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </label>
           )}
 
-          {/* Rest rule */}
-          <label className="flex items-start gap-2.5 cursor-pointer select-none">
-            <input type="checkbox" checked={appSettings.enforceRest !== false}
-              onChange={e=>updS('enforceRest', e.target.checked)} className="rounded mt-0.5"/>
+          {/* Rest rule — no longer a toggle (2026-09-26 policy: ACGME 6.17.a.2 is always hard) */}
+          <div className="flex items-start gap-2.5">
+            <Lock size={14} className="text-gray-400 mt-0.5 shrink-0" />
             <span>
-              <span className="block text-xs font-semibold text-gray-700">Enforce rest-period rule</span>
-              <span className="block text-xs text-gray-400">After a shift of H hours, the resident needs ≥ H hours off before the next shift (e.g. 12h Trauma → 12h rest)</span>
+              <span className="block text-xs font-semibold text-gray-700">Rest between shifts is always enforced</span>
+              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured from the end of Grand Rounds instead of the shift's own end when GR is attended that day. No longer a setting — this can't be turned off.</span>
             </span>
-          </label>
+          </div>
 
           {/* Trauma cap */}
           <div className="flex items-center gap-3">
@@ -15947,6 +18109,60 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                   </div>
                 </div>
               ))}
+              {/* Jeopardy/call export row — not a SHIFTS entry, so it's rendered separately from
+                  the SHIFT_AREAS.map loop above, but reads/writes the exact same
+                  qgendaTaskOverrides map under QGENDA_JEOPARDY_TASK_ID (src/lib/qgenda.js). Every
+                  resident on jeopardy that date with no clinical shift exports one row under this
+                  task name (buildQGendaCSVRows) — see CLAUDE.md "Jeopardy never collides...". */}
+              <div>
+                <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Jeopardy / Call</div>
+                <div className="space-y-1.5">
+                  {(() => {
+                    const shiftId = QGENDA_JEOPARDY_TASK_ID;
+                    const placeholder = QGENDA_TASKS[shiftId];
+                    const override = (appSettings.qgendaTaskOverrides || {})[shiftId] ?? '';
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs w-28 shrink-0 truncate text-gray-600" title="Jeopardy / call day (no clinical shift)">
+                            Jeopardy / Call
+                          </span>
+                          <input value={override} onChange={e=>updQgendaTask(shiftId, e.target.value)} placeholder={placeholder}
+                            className={`flex-1 min-w-0 text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary ${
+                              override ? 'border-primary bg-primary/10 font-medium' : 'border-gray-200'
+                            }`}/>
+                          {override && (
+                            <button onClick={()=>updQgendaTask(shiftId, '')} title="Reset to default" className="text-gray-300 hover:text-primary shrink-0"><RefreshCw size={10}/></button>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-gray-400 mt-0.5 ml-[7.5rem]">Exported for a jeopardy/call day with no clinical shift that date. No confirmed QGenda timing exists for jeopardy yet, so Start/End/EndDate stay blank in the "With times" export.</p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">CSV column headers</label>
+            <p className="text-xs text-gray-400 mb-3">The printed header text for each export column — fix these if your QGenda import template expects different spellings (e.g. StartDate/TaskName). Blank uses the default shown as placeholder; this never changes which data lands in the column, only its header text.</p>
+            <div className="space-y-1.5">
+              {Object.keys(QGENDA_COLUMN_DEFAULTS).map(col => {
+                const override = (appSettings.qgendaHeaderOverrides || {})[col] ?? '';
+                return (
+                  <div key={col} className="flex items-center gap-2">
+                    <span className="text-xs w-20 shrink-0 truncate text-gray-600" title={col}>{col}</span>
+                    <input value={override} onChange={e=>updQgendaHeader(col, e.target.value)} placeholder={QGENDA_COLUMN_DEFAULTS[col]}
+                      className={`flex-1 min-w-0 text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary ${
+                        override ? 'border-primary bg-primary/10 font-medium' : 'border-gray-200'
+                      }`}/>
+                    {override && (
+                      <button onClick={()=>updQgendaHeader(col, '')} title="Reset to default" className="text-gray-300 hover:text-primary shrink-0"><RefreshCw size={10}/></button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -17226,15 +19442,80 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
 // chief can jump straight to EM Residents/Schedule/etc. from a deep link or leftover tab state
 // without first passing through the Dashboard, so this is the one place block identity stays
 // visible on every one of those tabs.
-function BlockContextBar({ block, blockSaveState, onSave, onSwitch }) {
+// One rail item. 'done' renders a check + muted label (nothing to click — it already happened).
+// 'pending' renders a muted label (not reachable yet). 'current' is the ONE primary button in the
+// whole rail — the single next action the chief needs, styled like every other primary CTA in the
+// app (see BUTTON_VARIANTS.primary) so it doesn't invent a second "important button" language.
+// Steps with no `onAction` entry (currently just 'setup' — dates are edited on the Dashboard's
+// Current Block editor, not from this rail) render as plain text even when current.
+function BlockStatusRailStep({ step, onAction, isLast }) {
+  const action = onAction?.[step.id];
   return (
-    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex items-center gap-3 text-xs no-print">
-      <CalendarDays size={14} className="text-primary shrink-0"/>
-      <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
-      <span className="hidden sm:inline text-muted-foreground">
-        {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
-      </span>
-      <SaveStatePill state={blockSaveState}/>
+    <div className="flex items-center gap-1.5 shrink-0">
+      {step.state === 'done' && (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <Check size={12} className="text-green-600 shrink-0"/> {step.label}
+        </span>
+      )}
+      {step.state === 'pending' && (
+        <span className="text-muted-foreground/50">{step.label}</span>
+      )}
+      {step.state === 'current' && (
+        action ? (
+          <Button variant="primary" size="sm" onClick={action}>{step.label}</Button>
+        ) : (
+          <span className="flex items-center gap-1.5 font-medium text-foreground">
+            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0"/> {step.label}
+          </span>
+        )
+      )}
+      {!isLast && <ChevronRight size={12} className="text-muted-foreground/40 shrink-0"/>}
+    </div>
+  );
+}
+
+// Extended (P1 of the chief-review-loop plan) with a compact step rail: Set up -> Generated ->
+// Errors -> Publish -> Export. Pure derivation lives in lib/blockStatus.js (deriveBlockSteps) —
+// this component only supplies the inputs it already has as props and renders the result. The
+// error count comes from the ROOT `issues`/`issueCounts` memo the caller already computed once for
+// the whole app (see ResidentScheduler()'s `issueCounts`) — never a second validateAll pass here.
+function BlockContextBar({ block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+  const steps = useMemo(() => deriveBlockSteps({
+    hasDates: !!(block.startDate && block.endDate),
+    hasReport,
+    errorCount,
+    published,
+    hasSnapshot,
+    lastExportedAt: block.lastExportedAt || null,
+  }), [block.startDate, block.endDate, hasReport, errorCount, published, hasSnapshot, block.lastExportedAt]);
+
+  const stepActions = {
+    generated: onGoToGenerate,
+    errors: onGoToErrors,
+    // 'publish' doubles as "Save block first" while unsaved (see deriveBlockSteps) — either way the
+    // current step's button always needs SOME handler, so route to save whenever there's no snapshot
+    // yet, exactly like the Dashboard's own "Go to Schedule"/"Publish" split does.
+    publish: hasSnapshot ? onPublish : onSave,
+    export: onExport,
+  };
+
+  return (
+    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
+      <div className="flex items-center gap-2 min-w-0 shrink-0">
+        <CalendarDays size={14} className="text-primary shrink-0"/>
+        <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
+        <span className="hidden sm:inline text-muted-foreground">
+          {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
+        </span>
+        <SaveStatePill state={blockSaveState}/>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Block status">
+        {steps.map((step, i) => (
+          <BlockStatusRailStep key={step.id} step={step} onAction={stepActions} isLast={i === steps.length - 1}/>
+        ))}
+      </div>
+
       <div className="ml-auto flex items-center gap-2">
         <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
         <Button variant="ghost" size="sm" onClick={onSwitch}>Switch block…</Button>
@@ -17406,6 +19687,11 @@ export function migratePedsPgy1ToPgy2(list) {
 // and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
 // session at all, and the header simply omits the identity chip in that case.
 export default function ResidentScheduler({ viewer } = {}) {
+  // Called here (not inside <UiPrefsProvider> below) so this component's own body — specifically
+  // goToErrorsStep, which needs to open the Schedule tab's review panel from OUTSIDE the Provider's
+  // rendered subtree — can read/write prefs directly. See UiPrefsProvider's own comment in
+  // src/uiPrefs.js for why the Provider takes this value instead of calling the hook itself.
+  const uiPrefsApi = useUiPrefs(viewer);
   const [tab, setTab] = useState('dashboard');
   // Defensive fallback: the Home tab was removed and merged into Dashboard. `tab` itself isn't
   // persisted today, but guard anyway in case a future change (deep link, restored session, etc.)
@@ -17425,6 +19711,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [pdfPicker, setPdfPicker] = useState(false);
   const [qgendaPicker, setQgendaPicker] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [publishConfirm, setPublishConfirm] = useState(false); // block status rail's "Publish" step
 
   // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
   // A disposable copy of the whole workspace an admin can experiment in without risking the real
@@ -18011,7 +20298,13 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Every schedule-mutating call site (assign, drag-drop, generate/regenerate, cell lock toggle)
   // calls this instead of the bare updateBlock above, so the action becomes undoable. Non-schedule
   // updateBlock calls (block name/dates, etc.) stay on the untracked one.
-  function updateBlockTracked(fn) {
+  // overrideMeta ({ruleIds, note} | null/undefined) — set by a hand-edit surface (picker/drag-drop/
+  // inspector) after the chief explicitly confirmed an "Override Program Rule" step (see
+  // classifyForHandEdit/OverrideConfirmPanel). When present, the diffed cells are logged into
+  // block.overrideLog UNCONDITIONALLY (unlike withOverrideEvents' generic capture below, which only
+  // fires against a schedule that came from a generation) — a confirmed rule override is worth
+  // recording regardless of whether the schedule under it was generated or hand-built.
+  function updateBlockTracked(fn, overrideMeta) {
     setUndoStack(s => {
       const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
@@ -18023,6 +20316,15 @@ export default function ResidentScheduler({ viewer } = {}) {
     // the updater — not the `block` closure — so it always sees the authoritative previous state.
     setBlock(prev => {
       const next = typeof fn === 'function' ? fn(prev) : { ...prev, ...fn };
+      if (overrideMeta) {
+        const events = diffScheduleCells(prev.schedule, next.schedule);
+        if (events.length) {
+          const at = new Date().toISOString();
+          const stamped = events.map(e => ({ ...e, at, ruleIds: overrideMeta.ruleIds || [], note: overrideMeta.note || null, generatedAt: prev.generationReport?.generatedAt || null }));
+          const merged = [...(prev.overrideLog || []), ...stamped].slice(-OVERRIDE_LOG_CAP);
+          return { ...next, overrideLog: merged };
+        }
+      }
       return withOverrideEvents(prev, next);
     });
   }
@@ -18178,25 +20480,36 @@ export default function ResidentScheduler({ viewer } = {}) {
     return [header,...rows];
   }
 
-  // QGenda CSV: tidy/long format — one row per assignment, columns driven entirely by
-  // QGENDA_VARIANTS[variant].columns (src/lib/qgenda.js) rather than hardcoded here, since we
-  // cannot verify QGenda's expected header names without admin access to trial an import — a
-  // wrong header is meant to be a one-line data fix in that file, not an edit here.
+  // QGenda CSV: tidy/long format — one row per assignment (plus one per open jeopardy/call day,
+  // see below), columns driven entirely by QGENDA_VARIANTS[variant].columns (src/lib/qgenda.js)
+  // rather than hardcoded here, since we cannot verify QGenda's expected header names without
+  // admin access to trial an import — a wrong header is meant to be a one-line data fix in that
+  // file (or a Settings edit via qgendaHeaderOverrides), not an edit here.
   // Start/EndDate/StartTime/EndTime are derived from SHIFT_TIMING's numeric startH/durationH (the
   // same source rest-period math uses), not a display label string — handles midnight rollover
-  // correctly. Date/EndDate use qgendaDate() (4-digit year) — NEVER prettyDate, which QGenda's
-  // importer rejects (2-digit year).
-  // Returns { rows, unmapped, count }: `rows` includes the header row, ready for downloadCSV.
-  // `unmapped` collects the shift id of every assignment whose QGENDA task fell back to its
-  // on-screen label (qgendaTaskFor's source==='fallback') — one entry per occurrence, so its
-  // length is directly "how many assignments would export with an unconfirmed task name", and the
-  // caller de-dupes for display. `count` is the total number of assignment rows (independent of
-  // unmapped), for any caller that wants a plain "N shifts will export" figure.
+  // correctly (qgendaShiftClock/qgendaEndDate in qgenda.js). Date/EndDate use qgendaDate() (4-digit
+  // year) — NEVER prettyDate, which QGenda's importer rejects (2-digit year).
+  // Jeopardy/call rows: for every EM_HOME/EM_BAMC resident with no clinical shift that date (see
+  // isJeopardyDate's own category guard) who's on jeopardy that date (chief-typed
+  // resident.jeopardyDates OR block.jeopardySchedule track), one row is added with the synthetic
+  // shift id QGENDA_JEOPARDY_TASK_ID, resolved through the SAME qgendaTaskFor override mechanism
+  // (default task name 'Call', chief-editable in Settings). Jeopardy has no confirmed timing
+  // anywhere in this app, so qgendaShiftClock naturally leaves Start/End blank and EndDate
+  // un-rolled for these rows — that's deliberate, not a bug, until QGenda timing is confirmed.
+  // The `if (sid) { ...; continue; }` branch below means a jeopardy row is only ever added for a
+  // cell with NO clinical shift — jeopardy never collides with a clinical shift by rule (see
+  // CLAUDE.md), but this guard keeps a stray/manual collision from ever double-exporting a date.
+  // Returns { rows, unmapped, count }: `rows` includes the header row (resolveQgendaHeaders
+  // applies appSettings.qgendaHeaderOverrides over QGENDA_COLUMN_DEFAULTS), ready for downloadCSV.
+  // `unmapped` collects the shift id of every row whose QGENDA task fell back to its on-screen
+  // label (qgendaTaskFor's source==='fallback') — one entry per occurrence, so its length is
+  // directly "how many rows would export with an unconfirmed task name", and the caller de-dupes
+  // for display. `count` is the total number of rows (independent of unmapped), for any caller
+  // that wants a plain "N rows will export" figure.
   function buildQGendaCSVRows(variant) {
     const v = QGENDA_VARIANTS[variant] ? variant : 'minimal';
     const columns = QGENDA_VARIANTS[v].columns;
     const dates=getBlockDates(block.startDate,block.endDate);
-    const fmtHM = h => { const hh=Math.floor(h)%24, mm=Math.round((h-Math.floor(h))*60); return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`; };
     const nameFormat = appSettings.qgendaNameFormat ?? 'lastFirstInitial';
     const overrides = appSettings.qgendaTaskOverrides ?? {};
     const unmapped=[];
@@ -18204,28 +20517,21 @@ export default function ResidentScheduler({ viewer } = {}) {
     for (const r of allResidents) {
       for (const d of dates) {
         const sid=block.schedule?.[r.id]?.[d];
-        if (!sid) continue;
-        const t=SHIFT_TIMING[sid];
-        const startH=t?.startH;
-        const durationH=t?.durationH;
-        const rollsOver = startH!=null && durationH!=null && (startH + durationH) >= 24;
-        const startStr = startH!=null ? fmtHM(startH) : '';
-        const endStr = (startH!=null && durationH!=null) ? fmtHM(startH + durationH) : '';
-        const endDate = rollsOver ? toDateStr(addDays(parseDate(d), 1)) : d;
-        const { task, source } = qgendaTaskFor(sid, r, overrides);
-        if (source === 'fallback') unmapped.push(sid);
-        const valuesByColumn = {
-          Staff: qgendaName(r, nameFormat),
-          Date: qgendaDate(d),
-          EndDate: qgendaDate(endDate),
-          Task: task,
-          StartTime: startStr,
-          EndTime: endStr,
-        };
-        dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+        if (sid) {
+          const { valuesByColumn, source } = qgendaRowValues(sid, r, d, { overrides, nameFormat });
+          if (source === 'fallback') unmapped.push(sid);
+          dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+          continue;
+        }
+        if (isJeopardyDate(r, d, block.jeopardySchedule)) {
+          const { valuesByColumn, source } = qgendaRowValues(QGENDA_JEOPARDY_TASK_ID, r, d, { overrides, nameFormat });
+          if (source === 'fallback') unmapped.push(QGENDA_JEOPARDY_TASK_ID);
+          dataRows.push(columns.map(col => valuesByColumn[col] ?? ''));
+        }
       }
     }
-    return { rows: [columns, ...dataRows], unmapped, count: dataRows.length };
+    const header = resolveQgendaHeaders(columns, appSettings.qgendaHeaderOverrides);
+    return { rows: [header, ...dataRows], unmapped, count: dataRows.length };
   }
 
   function downloadICS(filename, contents) {
@@ -18250,6 +20556,48 @@ export default function ResidentScheduler({ viewer } = {}) {
         downloadICS(`${safeName}${demoFilenameSuffix(demoMode)}.ics`, ics);
       }, i * 150);
     });
+  }
+
+  // ─── Block status rail actions (BlockContextBar) ────────────────────────────
+  // "Generate" — wiring runGenerate() itself across components is invasive: it's a local closure
+  // inside ScheduleGrid with a lot of local state (progress overlay, solver-vs-local arbitration,
+  // baseArgs) that would need lifting to the parent for one button. Lower-risk option per the plan:
+  // switch tabs and hand focus to the real Generate Schedule button (id="generate-schedule-btn" on
+  // ScheduleGrid) so the chief lands right on it and can press it themselves. Double rAF so the
+  // focus call runs after ScheduleGrid has actually mounted/painted (same idiom as yieldToPaint
+  // inside ScheduleGrid itself), not mid-tab-switch.
+  function goToGenerateStep() {
+    setTab('schedule');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById('generate-schedule-btn')?.focus();
+    }));
+  }
+  // Retargeted for P2 (chief-review-loop plan): the rail's error step used to send the chief to the
+  // whole separate Violations tab. Now it opens/focuses the Schedule tab's review panel instead —
+  // same tab the grid itself lives on, no round trip. Works identically whether the chief is
+  // already on the Schedule tab (setTab is a no-op re-set) or on a different one (switches first).
+  function goToErrorsStep() {
+    setTab('schedule');
+    uiPrefsApi.setReviewPanelOpen(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById('review-panel-must-fix')?.focus();
+    }));
+  }
+  function requestPublishStep() {
+    setPublishConfirm(true);
+  }
+  function confirmPublishStep() {
+    // Explicit set, never toggleBlockPublished: the confirm can sit open while another device
+    // publishes via cloud sync, and a blind flip would then UN-publish behind a green toast.
+    const id = block.id;
+    setBlocksHistory(p => p.map(b => b.id === id ? { ...b, published: true } : b));
+    setPublishConfirm(false);
+    showToast('Block published', 'green');
+  }
+  function goToExportStep() {
+    // exportMenuOpen already lives at this level (header's own Export dropdown) — no lifting
+    // needed, and the header renders on every block-scoped tab, so no tab switch either.
+    setExportMenuOpen(true);
   }
 
   function pendingErrorCount() {
@@ -18285,6 +20633,11 @@ export default function ResidentScheduler({ viewer } = {}) {
         return;
       }
     }
+    // Stamps the "Exported" step of the block status rail — rides the block's existing persistence
+    // (no new res_* key, see CLAUDE.md). Untracked: this isn't schedule data, so it shouldn't consume
+    // an undo-stack slot the way updateBlockTracked calls do. Only reached on a successful export —
+    // both early returns above (demo-mode QGenda block, PDF failure) skip it on purpose.
+    updateBlock(b => ({ ...b, lastExportedAt: new Date().toISOString() }));
     setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);
   }
 
@@ -18314,7 +20667,7 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   return (
     <WalkthroughRoot session={viewer?.session} role={viewer?.role || 'admin'} setActiveTab={setTab}>
-    <UiPrefsProvider viewer={viewer}>
+    <UiPrefsProvider value={uiPrefsApi}>
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
       <header className="bg-card border-b border-border shrink-0 no-print relative z-50">
@@ -18328,10 +20681,21 @@ export default function ResidentScheduler({ viewer } = {}) {
               <CalendarDays size={18}/>
             </div>
             <div className="flex flex-col min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
+              {/* Mobile fix: hidden below sm — at ~400px width there isn't room for both this
+                  eyebrow line and the block name + Not-saved pill without them overlapping, and the
+                  block status rail (BlockContextBar, on every block-scoped tab) already repeats the
+                  block name, so nothing is lost. */}
+              <p className="hidden sm:block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
               <div className="flex items-center gap-2 min-w-0">
-                <h1 className="text-base font-semibold text-foreground truncate">{block.name || 'Untitled block'}</h1>
-                <SaveStatePill state={blockSaveState}/>
+                {/* Mobile fix: `truncate` on a flex child does nothing without `min-w-0` on that
+                    SAME element — without it the child refuses to shrink below its full-text
+                    intrinsic width in a flex row, which is what was pushing the "Not saved yet"
+                    pill into (or past) the title at narrow widths. */}
+                <h1 className="text-base font-semibold text-foreground truncate min-w-0">{block.name || 'Untitled block'}</h1>
+                {/* Mobile fix: hidden below sm — BlockContextBar's own SaveStatePill already covers
+                    this on every block-scoped tab; the header's copy is a nice-to-have on wider
+                    screens, not something 400px width has room for right next to a truncated title. */}
+                <span className="hidden sm:inline shrink-0"><SaveStatePill state={blockSaveState}/></span>
                 <span className="hidden lg:inline text-xs text-muted-foreground shrink-0">
                   {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
                 </span>
@@ -18453,7 +20817,12 @@ export default function ResidentScheduler({ viewer } = {}) {
       )}
 
       {BLOCK_SCOPED_TABS.has(tab) && (
-        <BlockContextBar block={block} blockSaveState={blockSaveState} onSave={saveBlock} onSwitch={()=>setTab('dashboard')}/>
+        <BlockContextBar block={block} blockSaveState={blockSaveState}
+          hasReport={!!block.generationReport} errorCount={issueCounts.errors}
+          published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
+          onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
+          onGoToGenerate={goToGenerateStep} onGoToErrors={goToErrorsStep}
+          onPublish={requestPublishStep} onExport={goToExportStep}/>
       )}
 
       {/* Body: sidebar + content */}
@@ -18488,7 +20857,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
@@ -18522,6 +20891,27 @@ export default function ResidentScheduler({ viewer } = {}) {
               {pendingSnap.startDate && <span className="text-xs text-muted-foreground/70 ml-2">{prettyDate(pendingSnap.startDate)} → {prettyDate(pendingSnap.endDate)}</span>}
             </div>
           )}
+        </ConfirmDialog>
+      )}
+
+      {/* Block status rail's Publish step — same toggleBlockPublished the Dashboard Block Calendar
+          pill already uses (see CLAUDE.md: two surfaces, one state transition). Text spells out the
+          real effects instead of just the JC cap, matching the corrected Dashboard pill tooltip. */}
+      {publishConfirm && (
+        <ConfirmDialog icon={CheckCircle} tone="info" title="Publish this block?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={()=>setPublishConfirm(false)}>Cancel</Button>
+              <Button variant="primary" size="sm" icon={CheckCircle} onClick={confirmPublishStep}>Publish</Button>
+            </>
+          }>
+          <p>Publishing <span className="font-medium text-foreground">"{block.name || 'this block'}"</span> makes it count toward:</p>
+          <ul className="list-disc pl-5 mt-2 space-y-1">
+            <li>each resident's 3-journal-club-per-year cap</li>
+            <li>year-to-date fairness carryover into future blocks</li>
+            <li>holiday and trauma-night yearly counts</li>
+          </ul>
+          <p className="mt-2">You can unpublish later from the Dashboard's Block Calendar if you need to.</p>
         </ConfirmDialog>
       )}
 

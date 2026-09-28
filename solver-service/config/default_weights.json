@@ -3,6 +3,7 @@
   "targetDeficitCore": { "perUnit": 10000 },
   "postNightRest": { "perViolation": 50000 },
   "targetDeficit": { "perUnit": 5000 },
+  "overstaffCoverage": { "perUnit": 2000 },
   "pedsInternNightDeficit": { "perUnit": 800 },
   "fairness": { "deficit": 100, "holiday": 80, "night": 60, "weekend": 40 },
   "isolatedNight": { "perUnit": 200 },
@@ -19,5 +20,6 @@
   "flexEmComposition": { "perUnit": 600 },
   "podPgy2Fallback": { "perUnit": 250 },
   "flexPgy3Fallback": { "perUnit": 250 },
+  "seniorTruePrimary": { "perUnit": 600 },
   "dowPreference": { "scale": 1 }
 }

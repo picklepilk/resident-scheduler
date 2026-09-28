@@ -40,7 +40,7 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     const schedule = { p3: { [ORDINARY_WED]: 'FLEX-E' } };
     const issues = compositionIssues([pgy3], schedule);
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'error', dateStr: ORDINARY_WED, shiftId: 'FLEX-E' });
+    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'flexSeniorComposition', dateStr: ORDINARY_WED, shiftId: 'FLEX-E' });
     expect(issues[0].message).toContain('PGY-2');
   });
 
@@ -55,7 +55,7 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     const schedule = { p3: { [POD_WW]: 'FLEX-E' } };
     const issues = compositionIssues([pgy3], schedule);
     expect(issues).toHaveLength(1);
-    expect(issues[0].level).toBe('error');
+    expect(issues[0].level).toBe('warn');
   });
 
   it('FLEX staffed by a PGY-2 (the primary) on an ordinary day raises no issue', () => {
@@ -82,7 +82,7 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     const schedule = { p2: { [POD_WW]: 'POD-E' } };
     const issues = compositionIssues([pgy2], schedule, { wellnessWednesdaysEnabled: false });
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'error', dateStr: POD_WW, shiftId: 'POD-E' });
+    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'podPgy3Composition', dateStr: POD_WW, shiftId: 'POD-E' });
     expect(issues[0].message).toContain('PGY-3');
   });
 
@@ -91,7 +91,7 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     const schedule = { p3: { [FLEX_WW]: 'FLEX-E' } };
     const issues = compositionIssues([pgy3], schedule, { wellnessWednesdaysEnabled: false });
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'error', dateStr: FLEX_WW, shiftId: 'FLEX-E' });
+    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'flexSeniorComposition', dateStr: FLEX_WW, shiftId: 'FLEX-E' });
     expect(issues[0].message).toContain('PGY-2');
   });
 
@@ -157,7 +157,7 @@ describe('Conference-aware seniority fallback (POD/FLEX primary PGY away at a co
     const schedule = { p2: { [ACEP_START]: 'POD-E' } };
     const issues = compositionIssues([pgy2], schedule, {}, {});
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'error', dateStr: ACEP_START, shiftId: 'POD-E' });
+    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'podPgy3Composition', dateStr: ACEP_START, shiftId: 'POD-E' });
     expect(issues[0].message).toContain('PGY-3');
   });
 
@@ -353,6 +353,25 @@ describe('1.10 getShiftTarget — vacation-rotation BLOCK_TARGETS wins even for 
   it('a non-chief resident on a vacation block is unaffected by this change (unchanged path)', () => {
     const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM_VAC' };
     expect(getShiftTarget(r)).toBe(11);
+  });
+
+  // A1: mirror of the chief precedence above — a non-chief EM Home resident on a vacation-type
+  // rotation must also have the reduced BLOCK_TARGETS count win over a Settings targetOverrides[key]
+  // entry (previously the o[key] branch fired first and masked the vacation reduction for anyone
+  // with a per-category Settings override configured).
+  it('a non-chief PGY-3 on EM_VAC still works 11 even with a Settings EM_HOME_3 override set', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM_VAC' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 99 } })).toBe(11);
+  });
+
+  it('a non-chief PGY-2 on EM_VAC still works 12 even with a Settings EM_HOME_2 override set', () => {
+    const r = { category: 'EM_HOME', pgy: 2, blockType: 'EM_VAC' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_2: 0 } })).toBe(12);
+  });
+
+  it('a non-chief resident on a NON-vacation rotation still respects the Settings override (unchanged)', () => {
+    const r = { category: 'EM_HOME', pgy: 3, blockType: 'EM' };
+    expect(getShiftTarget(r, { targetOverrides: { EM_HOME_3: 5 } })).toBe(5);
   });
 });
 

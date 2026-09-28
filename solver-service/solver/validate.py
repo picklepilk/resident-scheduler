@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from solver.io.payload import Payload
 from solver.model import timing
+from solver.model.coverage import no_overstaff_shift
 
 MAX_CONSECUTIVE_WORK_DAYS = 6
 NIGHT_RUN_MAX = 6
@@ -64,12 +65,29 @@ def _shift_on(payload: Payload, resident, date_str: str, schedule: dict):
 
 
 def _work_flags(payload: Payload, resident, schedule: dict) -> dict:
+    """`obligations` (GR weekday / JC presenting, no shift on the date itself)
+    counts as worked UNLESS the date is in `obligations_exempt_after_night`
+    (GR only -- JC presenting dates are never exempt) AND the resident worked
+    a night-type shift the calendar day before, exactly mirroring
+    isStreakWorkDay's own post-overnight GR exemption in ResidentScheduler.jsx
+    (JC's unconditional-true branch runs BEFORE that exemption check there, so
+    it never applies to JC). `night_flags` gives the concrete answer for
+    "did they actually work a night the day before" against this schedule --
+    unlike the solver model, this is a post-solve check on a fixed schedule,
+    so there's no need to reify anything.
+    """
     obligations = payload.obligations.get(resident.id, set())
+    exempt_dates = payload.obligations_exempt_after_night.get(resident.id, set())
+    night_flags = _night_flags(payload, resident, schedule)
     flags = {}
     for d in payload.tail_dates:
         flags[d] = (d in resident.prior_tail) or (d in resident.prior_tail_obligations)
     for d in payload.block.dates:
-        flags[d] = bool(schedule.get(resident.id, {}).get(d)) or (d in obligations)
+        has_shift = bool(schedule.get(resident.id, {}).get(d))
+        obligated = d in obligations
+        if obligated and d in exempt_dates:
+            obligated = not night_flags.get(timing.add_days(d, -1), False)
+        flags[d] = has_shift or obligated
     return flags
 
 
@@ -117,14 +135,16 @@ def validate_schedule(payload: Payload, schedule: dict) -> list:
     failures += _check_eligibility_and_locked(payload, schedule)
     failures += _check_coverage_max(payload, schedule)
     failures += _check_senior_composition(payload, schedule)
-    if payload.settings.enforce_rest:
-        failures += _check_rest_gap(payload, schedule)
+    # R7 (2026-09-27): rest >= shift length is ACGME-hard and always on now -- no longer gated by
+    # settings.enforce_rest (see rest.py's own docstring for the same change on the build side).
+    failures += _check_rest_gap(payload, schedule)
     failures += _check_circadian_pairs(payload, schedule)
     failures += _check_night_run_and_cap_and_segments(payload, schedule)
     failures += _check_trauma_run_cap(payload, schedule)
     failures += _check_consecutive_work(payload, schedule)
     failures += _check_post_run6_rest(payload, schedule)
     failures += _check_hours_cap(payload, schedule)
+    failures += _check_weekly_hours_cap(payload, schedule)
     failures += _check_count_caps(payload, schedule)
     return failures
 
@@ -146,15 +166,23 @@ def _check_eligibility_and_locked(payload: Payload, schedule: dict) -> list:
 
 
 def _check_coverage_max(payload: Payload, schedule: dict) -> list:
+    """Mirrors `solver/model/coverage.py`'s own hard cap EXACTLY: a non-TRAUMA, non-Peds-night
+    (shift, date) with max>0 gets a +1 last-resort overstaff allowance (the app's own
+    under-target-lift policy), so this independent re-check must allow it too -- fixed 2026-09-27,
+    was previously failing on that allowed +1 (`chiefBenchmark.solver.test.js` caught it live:
+    `coverageMax: '3 assigned, max 2'`)."""
     failures = []
     counts = {}
     for resident_id, by_date in schedule.items():
         for date_str, shift_id in by_date.items():
             counts[(shift_id, date_str)] = counts.get((shift_id, date_str), 0) + 1
     for shift_id, by_date in payload.coverage.items():
+        shift = payload.shifts[shift_id]
+        allowance = 0 if no_overstaff_shift(shift) else 1
         for date_str, entry in by_date.items():
             n = counts.get((shift_id, date_str), 0)
-            if n > entry.max:
+            cap = entry.max + (allowance if entry.max > 0 else 0)
+            if n > cap:
                 failures.append(_fail("coverageMax", [], [date_str], [shift_id], f"{n} assigned, max {entry.max}"))
     return failures
 
@@ -177,6 +205,19 @@ def _check_senior_composition(payload: Payload, schedule: dict) -> list:
     return failures
 
 
+def _effective_earlier_end_min(payload: Payload, date1: str, shift1, resident) -> int:
+    """Independent re-implementation of rest.py's own `_effective_earlier_end_min` -- see that
+    module's docstring for the GR-end adjustment's rationale (R7, 2026-09-27)."""
+    end_min = timing.shift_end_min(date1, shift1)
+    if not resident.gr_dates:
+        return end_min
+    end_date = timing.shift_end_date(date1, shift1)
+    if end_date not in resident.gr_dates:
+        return end_min
+    gr_end_min = timing.hour_mark_min(end_date, payload.gr_end_h)
+    return max(end_min, gr_end_min)
+
+
 def _check_rest_gap(payload: Payload, schedule: dict) -> list:
     failures = []
     for resident in payload.residents:
@@ -186,13 +227,14 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
                 continue
             shift1 = payload.shifts[shift_id1]
             required = timing.required_rest_gap_min(shift1)
+            earlier_end = _effective_earlier_end_min(payload, date1, shift1, resident)
             for delta in (1, 2):
                 date2 = timing.add_days(date1, delta)
                 shift_id2 = _shift_on(payload, resident, date2, schedule)
                 if not shift_id2:
                     continue
                 shift2 = payload.shifts[shift_id2]
-                gap = timing.gap_between(date1, shift1, date2, shift2)
+                gap = timing.shift_start_min(date2, shift2) - earlier_end
                 if gap < required:
                     failures.append(
                         _fail(
@@ -204,6 +246,10 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
 
 
 def _check_circadian_pairs(payload: Payload, schedule: dict) -> list:
+    """Hard: eve shift immediately followed by a day shift the next calendar
+    day is forbidden. Day-then-eve is ALLOWED (user decision 2026-09-27) --
+    see `solver/model/circadian.py`'s `_add_eve_day_pairs`, whose docstring
+    this mirrors."""
     failures = []
     for resident in payload.residents:
         for date1 in payload.all_dates:
@@ -211,15 +257,14 @@ def _check_circadian_pairs(payload: Payload, schedule: dict) -> list:
             if not shift_id1:
                 continue
             type1 = payload.shifts[shift_id1].type
-            if type1 not in ("eve", "day"):
+            if type1 != "eve":
                 continue
             date2 = timing.add_days(date1, 1)
             shift_id2 = _shift_on(payload, resident, date2, schedule)
             if not shift_id2:
                 continue
             type2 = payload.shifts[shift_id2].type
-            forbidden = "day" if type1 == "eve" else "eve"
-            if type2 == forbidden:
+            if type2 == "day":
                 failures.append(
                     _fail("circadianPair", [resident.id], [date1, date2], [shift_id1, shift_id2], f"{type1}->{type2}")
                 )
@@ -240,9 +285,14 @@ def _check_night_run_and_cap_and_segments(payload: Payload, schedule: dict) -> l
             if total > resident.caps.nights:
                 failures.append(_fail("nightCap", [resident.id], [], [], f"{total} nights, cap {resident.caps.nights}"))
 
-        segments = _runs_touching_block(payload.all_dates, flags, block_dates)
-        if segments > NIGHT_SEGMENTS_MAX:
-            failures.append(_fail("nightSegments", [resident.id], [], [], f"{segments} night-run segments"))
+        # night_exempt (e.g. FM-3 on PED-N-FM) skips the segments cap too, same as the nights-cap
+        # check above -- mirrors circadian.py's `_add_night_run_segments` (fixed 2026-09-27) and
+        # ResidentScheduler.jsx's own `!nOnly` gate around its whole nightStintCount check: a
+        # night-only rotation's weekly recurring stint pattern is expected, not fragmentation.
+        if not resident.night_exempt:
+            segments = _runs_touching_block(payload.all_dates, flags, block_dates)
+            if segments > NIGHT_SEGMENTS_MAX:
+                failures.append(_fail("nightSegments", [resident.id], [], [], f"{segments} night-run segments"))
     return failures
 
 
@@ -334,6 +384,49 @@ def _check_hours_cap(payload: Payload, schedule: dict) -> list:
     return failures
 
 
+WEEKLY_WINDOW_DAYS = 7
+ED_WEEKLY_CAP_H = 60
+TOTAL_WEEKLY_CAP_H = 72
+
+
+def _check_weekly_hours_cap(payload: Payload, schedule: dict) -> list:
+    """R7 (2026-09-27): independent re-check of ACGME EM 6.17.a.3's rolling-7-day 60 ED / 72 total
+    hour caps (solver/model/weekly_hours.py) -- EM residents on a schedulable EM rotation only, same
+    scope predicate as that module's `_in_scope` (`is_em_core and schedulable` -- NOT `target is not
+    None`, which is also null for a schedulable resident bought down to a 0 target; see
+    weekly_hours.py's module docstring for the full gap-fix rationale)."""
+    failures = []
+    dates = payload.all_dates
+    n = len(dates)
+    tail_len = len(payload.tail_dates)
+    for resident in payload.residents:
+        if not (resident.is_em_core and resident.schedulable):
+            continue
+        ed_by_date = {}
+        for d in dates:
+            sid = _shift_on(payload, resident, d, schedule)
+            ed_by_date[d] = payload.shifts[sid].duration_h if sid else 0
+        for start in range(0, n - WEEKLY_WINDOW_DAYS + 1):
+            end = start + WEEKLY_WINDOW_DAYS
+            if end <= tail_len:
+                continue  # window entirely inside the tail -- pure history, not this solve's doing
+            window = dates[start:end]
+            ed_sum = sum(ed_by_date[d] for d in window)
+            obl_sum = sum(resident.obligation_hours.get(d, 0) for d in window)
+            if ed_sum > ED_WEEKLY_CAP_H:
+                failures.append(
+                    _fail("edWeekly60", [resident.id], [window[0], window[-1]], [], f"{ed_sum}h ED in 7 days")
+                )
+            if ed_sum + obl_sum > TOTAL_WEEKLY_CAP_H:
+                failures.append(
+                    _fail(
+                        "totalWeekly72", [resident.id], [window[0], window[-1]], [],
+                        f"{ed_sum + obl_sum}h total in 7 days",
+                    )
+                )
+    return failures
+
+
 def _check_count_caps(payload: Payload, schedule: dict) -> list:
     failures = []
     for resident in payload.residents:
@@ -364,6 +457,9 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
         if resident.caps.peds_mix_max is not None and peds_n > resident.caps.peds_mix_max:
             failures.append(_fail("pedsMixMax", [resident.id], [], [], f"{peds_n} peds, cap {resident.caps.peds_mix_max}"))
 
+        # Target-only check, not a schedulability gate (unlike weekly_hours' `_in_scope` above) --
+        # a target ceiling is meaningless when there is no target to exceed, regardless of why
+        # (non-schedulable OR a genuine bought-down-to-0 target); correct as written.
         if resident.target is not None:
             total_n = len(by_date)
             if total_n > resident.target:

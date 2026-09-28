@@ -27,11 +27,36 @@ class PayloadError(ValueError):
 @dataclass(frozen=True)
 class Config:
     max_time_seconds: float = 30.0
-    num_workers: int = 8
+    # 0 is a sentinel meaning "use os.cpu_count()" (solve.py's `_num_workers`)
+    # -- R9 (2026-09-27, CP-SAT-as-polisher): the old hardcoded default of 8
+    # either starved a bigger box or thrashed a smaller one. An explicit
+    # positive value here (from `config.numWorkers`) still overrides.
+    num_workers: int = 0
     random_seed: int = 42
     coverage_min_mode: str = "elastic_always"  # or "hard_then_elastic"
     max_verification_resolves: int = 2
     weights: dict = field(default_factory=dict)
+    # R9: staged (lexicographic-tiered) objective vs. the original single
+    # weighted sum -- see solver/model/objective.py's `stage_exprs` and
+    # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
+    # keeps the pre-R9 single-shot solve for comparison/rollback.
+    objective_mode: str = "staged"
+    # Fraction of `max_time_seconds` given to each of the 3 stages (errors ->
+    # blocking-warns -> quality). Must sum to <= 1.0; solve.py renormalizes
+    # defensively if a caller sends something that doesn't. Skewed toward
+    # stage 3 on purpose (was an even-ish 30/20/50): stages 1-2 are usually
+    # ALREADY at their optimum from the warm-start hint alone (targetDeficit/
+    # postNightRest are typically 0 in a good local schedule) and only need
+    # enough time to CONFIRM that via presolve/propagation, not to search;
+    # stage 3 (coverage + every quality term) is the one doing real
+    # combinatorial work and benefits far more from a bigger share -- see
+    # solve.py's `_solve_staged` docstring and PAYLOAD_SCHEMA.md's dated R9
+    # section for the engineHeadToHead measurement that motivated this.
+    stage_split: tuple = (0.15, 0.15, 0.7)
+    # CP-SAT `CpSolverParameters.symmetry_level` override (0-3). None keeps
+    # OR-Tools' own default -- this repo has no hand-written symmetry-
+    # breaking constraints to conflict with it (see solve.py's docstring).
+    symmetry_level: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +98,15 @@ class Resident:
     cohort: Optional[str]
     target: Optional[int]
     is_em_core: bool
+    # R7 gap fix (2026-09-27): whether this resident is on the schedulable EM rotation THIS BLOCK
+    # (JS's own `isSchedulable(r)`) -- independent of `target`, which is null both for a
+    # non-schedulable resident (this flag false) AND for a schedulable resident whose target was
+    # bought down to <=0 (getShiftTarget returns None, never 0, per CLAUDE.md -- this flag stays
+    # true). `target is not None` was previously (mis)used as the schedulability proxy in
+    # weekly_hours.py/validate.py's ACGME rolling-hours scope, silently leaving a bought-down-target
+    # EM resident uncapped despite still being eligible for shifts. Optional, defaults to True for
+    # back-compat with an older JS build that doesn't send it (no narrower than before).
+    schedulable: bool
     is_intern: bool
     night_exempt: bool
     caps: ResidentCaps
@@ -81,6 +115,15 @@ class Resident:
     prior_tail_obligations: frozenset  # dates
     prior_tail_hours: int
     ay_prior: AyPrior
+    # R7 (2026-09-27, ACGME EM 6.17.a.3 rolling-7-day 60/72h caps + rest.py's GR-end adjustment):
+    # `obligation_hours` covers BOTH tail and block dates -- GR/Journal-Club hours are calendar
+    # facts independent of the solve (src/lib/acgmeHours.js's grHoursOn/jcHoursOn), never entangled
+    # with any x-var. `gr_dates` is the subset of dates (tail or block) this resident's own Grand
+    # Rounds obligation lands on (already vacation/off-filtered by the JS side). Both OPTIONAL,
+    # additive, default empty -- a payload that doesn't send them makes solver/model/weekly_hours.py
+    # count zero obligation hours and rest.py's GR-end adjustment a no-op, matching pre-R7 behavior.
+    obligation_hours: dict = field(default_factory=dict)      # date -> hours (int)
+    gr_dates: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -122,6 +165,14 @@ class Payload:
     eligible: dict                     # residentId -> date -> set[shiftId]
     obligations: dict                  # residentId -> set[date]
     locked: list                       # list[LockedCell]
+    # R9 (2026-09-27, CP-SAT-as-polisher): warm-start hint -- SAME shape as
+    # `locked` ({residentId, date, shiftId}), but a soft suggestion consumed
+    # only by solver/model/hint.py's AddHint calls, never a hard pin. A hint
+    # cell that isn't a legal (resident,shift,date) var, or that conflicts
+    # with a hard constraint, is silently dropped by `apply_hint` -- CP-SAT's
+    # own `repair_hint` (solve.py) handles the rest without crashing. Default
+    # empty: a payload with no `hint` field solves byte-identically to today.
+    hint: list                         # list[LockedCell]
     coverage: dict                     # shiftId -> date -> CoverageEntry
     senior_primary: dict               # shiftId -> date -> list[residentId]
     jc_dates: frozenset
@@ -157,6 +208,33 @@ class Payload:
     jc_window_start_h: int = 18
     jc_window_end_h: int = 21
     post_night_day_rest_h: int = 24
+    # ---- R7 (2026-09-27, solver parity gaps 2/3) ----
+    # `gr_end_h`: same "altitude fix" convention as the three fields directly above (Grand Rounds'
+    # own end hour, src/lib/acgmeHours.js's GR_END_H) -- rest.py's rule 17 needs it for the GR-end
+    # rest adjustment. OPTIONAL, defaults to 12 (today's only real value) so an older JS build that
+    # doesn't send it keeps today's behavior unchanged.
+    gr_end_h: int = 12
+    # `true_primary[shiftId][date]` -- SAME shape/keys as `senior_primary`, restricted to residents
+    # who satisfy the area's composition as the TRUE primary PGY (never a Wellness-Wednesday/
+    # conference-away substitute). OPTIONAL, additive, defaults to {} (a documented no-op for
+    # solver/model/senior_composition.py's add_true_primary_preference_terms -- see that function's
+    # own docstring).
+    true_primary: dict = field(default_factory=dict)
+
+    # ---- R9 follow-up (2026-09-27, GR-after-night exemption as a model decision) ----
+    # Subset of each resident's own `obligations` dates where isStreakWorkDay's post-overnight GR
+    # exemption CAN apply -- i.e. it's a GR-weekday obligation, not a JC-presenting one (JC's
+    # unconditional-true branch in ResidentScheduler.jsx runs BEFORE that exemption check, so JC
+    # dates are never exempt and never appear here). `obligations` itself is now built UNCONDITIONALLY
+    # on the JS side (ignoring the night-before fact entirely) -- whether an exempt date actually
+    # counts as worked is a solver decision (workday_limits.py's `_obligation_term`, reified off
+    # `night[r, d-1]`), never a static payload fact, so a night shift the solver itself places the day
+    # before can correctly exempt a GR day without ever going stale (see the "obligations-from-hint"
+    # revert this replaces -- this file's git history / PAYLOAD_SCHEMA.md's dated section). OPTIONAL,
+    # additive: an older JS build that doesn't send this field gets an empty dict here, so every
+    # `obligations` date counts as worked unconditionally -- byte-identical to pre-this-change
+    # behavior (never LESS strict than before).
+    obligations_exempt_after_night: dict = field(default_factory=dict)  # residentId -> set[date]
 
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
@@ -227,6 +305,7 @@ def _parse_residents(raw: list) -> list:
                 cohort=r.get("cohort"),
                 target=r.get("target"),
                 is_em_core=bool(r.get("isEmCore", False)),
+                schedulable=bool(r.get("schedulable", True)),
                 is_intern=bool(r.get("isIntern", False)),
                 night_exempt=bool(r.get("nightExempt", False)),
                 caps=caps,
@@ -235,6 +314,8 @@ def _parse_residents(raw: list) -> list:
                 prior_tail_obligations=frozenset(r.get("priorTailObligations", ()) or ()),
                 prior_tail_hours=int(r.get("priorTailHours", 0) or 0),
                 ay_prior=ay,
+                obligation_hours={d: int(h) for d, h in (r.get("obligationHours", {}) or {}).items()},
+                gr_dates=frozenset(r.get("grDates", ()) or ()),
             )
         )
     return out
@@ -281,13 +362,17 @@ def parse_payload(raw: dict) -> Payload:
             dates=list(block_raw["dates"]),
         )
         config_raw = raw.get("config", {}) or {}
+        stage_split_raw = config_raw.get("stageSplit")
         config = Config(
             max_time_seconds=float(config_raw.get("maxTimeSeconds", 30)),
-            num_workers=int(config_raw.get("numWorkers", 8)),
+            num_workers=int(config_raw.get("numWorkers", 0) or 0),
             random_seed=int(config_raw.get("randomSeed", 42)),
             coverage_min_mode=config_raw.get("coverageMinMode", "elastic_always"),
             max_verification_resolves=int(config_raw.get("maxVerificationResolves", 2)),
             weights=dict(config_raw.get("weights", {}) or {}),
+            objective_mode=config_raw.get("objectiveMode", "staged"),
+            stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
+            symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
@@ -305,6 +390,7 @@ def parse_payload(raw: dict) -> Payload:
             eligible=_parse_eligible(raw.get("eligible", {})),
             obligations=_parse_obligations(raw.get("obligations", {})),
             locked=_parse_locked(raw.get("locked", [])),
+            hint=_parse_locked(raw.get("hint", [])),
             coverage=_parse_coverage(raw.get("coverage", {})),
             senior_primary=raw.get("seniorPrimary", {}) or {},
             jc_dates=frozenset(raw.get("jcDates", ()) or ()),
@@ -323,6 +409,9 @@ def parse_payload(raw: dict) -> Payload:
             jc_window_start_h=int(raw.get("jcWindowStartH", 18) or 18),
             jc_window_end_h=int(raw.get("jcWindowEndH", 21) or 21),
             post_night_day_rest_h=int(raw.get("postNightDayRestH", 24) or 24),
+            gr_end_h=int(raw.get("grEndH", 12) or 12),
+            true_primary=raw.get("truePrimary", {}) or {},
+            obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

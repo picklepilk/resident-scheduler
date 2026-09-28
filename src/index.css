@@ -74,6 +74,17 @@
   .dark .bg-white { background-color: #101827; }
   .dark .bg-gray-50 { background-color: #0b1220; }
   .dark .bg-gray-100 { background-color: #1e293b; }
+  /* ScheduleGrid weekend-column band — missed by the Round 2b audit below because bg-slate-100 has
+     exactly one call site (the grid's own weekend cells) and wasn't caught by the color-class grep
+     at the time. Without this it renders near-white in dark mode. Deliberately a touch lighter than
+     .bg-gray-100's remap so the weekend band still reads as a distinct stripe. */
+  .dark .bg-slate-100 { background-color: #26374f; }
+  /* Schedule grid's DOW/date header weekend band (the two-tier header's second row) — the ONE
+     other call site of a raw slate utility, missed by the same audit that caught bg-slate-100
+     above. Without this it renders near-white in dark mode. One step lighter than bg-slate-100's
+     own remap so the header weekend band still reads distinctly from the body weekend band
+     beneath it, mirroring how bg-gray-200 sits one step lighter than bg-gray-100 below. */
+  .dark .bg-slate-200 { background-color: #334155; }
   .dark .bg-gray-200 { background-color: #334155; }
   .dark .hover\:bg-gray-100:hover { background-color: #1e293b; }
   .dark .hover\:bg-gray-200:hover { background-color: #334155; }
@@ -302,6 +313,16 @@ body {
 .schedule-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
 .schedule-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
 .schedule-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
+
+/* Per-cell lock-toggle affordance on a shift chip (ScheduleGrid) — mobile fix. It ships opacity-0
+   in its own Tailwind classes (locked/Lock-Mode cells override that inline instead of through this
+   rule) so it never sits on top of the chip's label text by default. `hover:hover` — not a bare
+   `.group:hover` rule in a utility class — deliberately excludes touch: most mobile browsers
+   simulate `:hover` on tap, which would otherwise make the very first tap on a cell reveal (and
+   sometimes eat) the lock toggle instead of opening the shift picker. */
+@media (hover: hover) {
+  .group:hover .chip-lock-toggle { opacity: 1; }
+}
 
 /* Print: hide app chrome (header, sidebar, action bars, toasts) and keep content on white.
    Best print/PDF surfaces are the Calendar and By Resident views — the wide residents×dates

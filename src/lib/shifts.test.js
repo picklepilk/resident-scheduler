@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, SHIFT_AREAS, SHIFT_TYPES,
-  shiftStartMs, shiftEndMs, isNightShiftId, shiftOverlapsJC, overlappingAssignments,
+  shiftStartMs, shiftEndMs, isNightShiftId, shiftOverlapsJC, overlappingAssignments, isLongShiftId,
 } from './shifts.js';
 
 describe('shift catalog integrity', () => {
@@ -99,6 +99,37 @@ describe('isNightShiftId', () => {
 
   it('is false for an unknown shift id', () => {
     expect(isNightShiftId('NOT-A-SHIFT')).toBe(false);
+  });
+});
+
+describe('isLongShiftId', () => {
+  // Chip-sizing heuristic (ScheduleGrid) — every id below was empirically measured against the
+  // grid's real 52px chip box (see lib/shifts.js's own comment). This test is the guardrail: a
+  // catalog id that starts overflowing (or stops needing to) must update this list deliberately,
+  // not silently regress into a wrapped-to-two-lines chip or an unnecessarily shrunk one.
+  it('is false for every plain 4-6 char id with no digits (fits at normal size)', () => {
+    for (const id of ['POD-D', 'POD-E', 'POD-N', 'PED-D', 'PED-E', 'PED-N', 'PED-S',
+      'FLEX-D', 'FLEX-E', 'FLEX-N', 'MT-D', 'MT-E', 'MT-N']) {
+      expect(isLongShiftId(id), id).toBe(false);
+    }
+  });
+
+  it('is true for every id over 6 characters, even with no digits', () => {
+    for (const id of ['PED-N-FM', 'TRAUMA-D', 'TRAUMA-N']) {
+      expect(isLongShiftId(id), id).toBe(true);
+    }
+  });
+
+  it('is true for every 12-hour ("…12") id, including the 6-char ones a length-only check would miss', () => {
+    for (const id of ['MT-D12', 'MT-N12', 'POD-D12', 'POD-N12', 'FLEX-D12', 'FLEX-N12', 'PED-D12', 'PED-N12']) {
+      expect(isLongShiftId(id), id).toBe(true);
+    }
+  });
+
+  it('is false for a non-string or empty input', () => {
+    expect(isLongShiftId(null)).toBe(false);
+    expect(isLongShiftId(undefined)).toBe(false);
+    expect(isLongShiftId('')).toBe(false);
   });
 });
 

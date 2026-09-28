@@ -104,10 +104,14 @@ def _anti_fill_sum(weights: dict) -> int:
     flex_em_comp = weights["flexEmComposition"]["perUnit"]
     pod_pgy2_fallback = weights["podPgy2Fallback"]["perUnit"]
     flex_pgy3_fallback = weights["flexPgy3Fallback"]["perUnit"]
+    # R7 (2026-09-27, gap 3): seniorTruePrimary -- one penalty var per (shift,date), same x1 stacking
+    # as podPgy2Fallback/flexPgy3Fallback (a single (shift,date) pair is only ever charged once).
+    senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
     return (
         isolated_night + work + fairness + weekend_off + intern_pair + dow
         + trauma_second + trauma_mid + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
+        + senior_true_primary
     )
 
 
@@ -141,6 +145,9 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["flexEmComposition"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
         + weights["podPgy2Fallback"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["flexPgy3Fallback"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        # R7 (2026-09-27, gap 3): one penalty var per (POD|FLEX shift, date), same scale as
+        # podEmComposition/flexEmComposition.
+        + weights["seniorTruePrimary"]["perUnit"] * GENEROUS_COVERAGE_SLOTS
     )
 
 
@@ -152,6 +159,40 @@ def test_coverage_min_dominates_anti_fill_terms():
     weights = load_default_weights()
     coverage_min = weights["coverageMin"]["perSlack"]
     assert coverage_min >= 100 * _anti_fill_sum(weights)
+
+
+# ---------------------------------------------------------------------------
+# overstaffCoverage: policy requires "larger than any [ordinary] soft rule,
+# smaller than target shortfall" -- see coverage.py/objective.py's own
+# docstrings for the full rationale. coverageMin/postNightRest are excluded
+# from the "any soft rule" comparison on purpose: both are structurally
+# elevated, rulePriority-orderable terms in their own bracket, not ordinary
+# preference-only soft rules.
+# ---------------------------------------------------------------------------
+
+def test_overstaff_coverage_dominates_ordinary_soft_rules():
+    weights = load_default_weights()
+    ordinary_soft_max = max(
+        weights["isolatedNight"]["perUnit"],
+        weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"],
+        max(weights["fairness"].values()),
+        weights["weekendOff"]["perMissing"],
+        weights["internPair"]["perExcess"],
+        weights["traumaSecondInRun"]["perUnit"], weights["traumaMidRun"]["perUnit"],
+        weights["nightDurationAlternation"]["perUnit"], weights["secondRestDay"]["perUnit"],
+        weights["pedsMixMin"]["perUnit"], weights["fm1Peds"]["perUnit"],
+        weights["podEmComposition"]["perUnit"], weights["flexEmComposition"]["perUnit"],
+        weights["podPgy2Fallback"]["perUnit"], weights["flexPgy3Fallback"]["perUnit"],
+        weights["pedsInternNightDeficit"]["perUnit"],
+        weights["seniorTruePrimary"]["perUnit"],
+    )
+    assert weights["overstaffCoverage"]["perUnit"] > ordinary_soft_max
+
+
+def test_overstaff_coverage_is_cheaper_than_any_target_shortfall():
+    weights = load_default_weights()
+    target_min = min(weights["targetDeficitCore"]["perUnit"], weights["targetDeficit"]["perUnit"])
+    assert weights["overstaffCoverage"]["perUnit"] < target_min
 
 
 # ---------------------------------------------------------------------------

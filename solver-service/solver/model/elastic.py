@@ -33,9 +33,12 @@ Never touches (rebuilt via the EXACT SAME functions build.py uses for pass
 1, so there is only one encoding of every never-relax rule): eligibility /
 variable existence / at-most-one / locked cells (`build_variables`),
 coverage MAX (`coverage.py`, always hard), trauma solo / senior composition
-(`senior_composition.py`, always hard), and the batch-2 <=2-trauma-nights-
+(`senior_composition.py`, always hard), the batch-2 <=2-trauma-nights-
 per-run cap (`trauma_runs.add_trauma_run_hard_cap`, always hard -- the chief
-never wants this one negotiable, same posture as senior composition).
+never wants this one negotiable, same posture as senior composition), and
+R7's ACGME 6.17.a.3 rolling-7-day 60/72h caps (`weekly_hours.py`, always
+hard -- an accreditation requirement, stricter than the ordinary duty-hour
+families this module DOES relax).
 
 Objective: pass-2's objective = pass-1's soft objective (unchanged, built by
 `objective.build_objective` with its own fixed, moderate per-term weights --
@@ -76,39 +79,94 @@ from solver.io.payload import Payload
 from solver.model.circadian import add_circadian_constraints
 from solver.model.count_caps import add_count_cap_constraints
 from solver.model.coverage import add_coverage_constraints
+from solver.model.hint import apply_hint
 from solver.model.hours_cap import add_hours_cap_constraints
 from solver.model.objective import ObjectiveInfo, build_objective
 from solver.model.rest import add_rest_constraints
 from solver.model.senior_composition import add_senior_composition_constraints
 from solver.model.trauma_runs import add_trauma_run_hard_cap
 from solver.model.variables import VarStore, build_variables
+from solver.model.weekly_hours import add_weekly_hours_cap_constraints
 from solver.model.workday_limits import add_workday_limit_constraints
 
 # One literal per (resident, family) gates EVERY instance of that family for
 # that resident -- see the docstrings of rest.py / circadian.py /
 # workday_limits.py / hours_cap.py for exactly which constraint each family
 # name corresponds to.
-DUTY_HOUR_FAMILIES = (
+#
+# R7 fix (2026-09-27, chief policy 2026-09-26 memory `rule-override-policy` /
+# `src/lib/rulePolicy.js`): restGap/circadianPair/nightRunMax/consecutiveWork/
+# postRun6Rest/hours320 are ALL tier `acgme` on the JS side -- "accreditation-
+# required, never broken, anywhere. No 'place anyway' path" (rulePolicy.js's
+# own comment). Only nightCap ("6 nights total/block") and nightSegments
+# ("max 2 night stints/block") are tier `override` -- "the generator never
+# breaks these either, but a chief may break one by hand", which is exactly
+# what pass-2's elastic ok[...] literal buys: a last-resort, FLAGGED break.
+#
+# Before this fix, ALL 8 families shared one `duty_enforcement` callback and
+# were equally relaxable, contradicting rulePolicy.js/the chief's own written
+# policy -- confirmed live by `chiefBenchmark.solver.test.js` intermittently
+# reporting real `restShiftLength`/`eveToNextDayDay` structural errors (and
+# even literal shift-time overlaps -- rest.py's forbid_pair doesn't
+# distinguish "gap short" from "gap negative", both routed through the same
+# ok[resident,"restGap"] literal) whenever pass 1 went INFEASIBLE for any
+# reason (R9's staged solve / hint pinning / GR-obligation reification made
+# this measurably more likely) and pass 2 chose to relax an ACGME-hard rule
+# instead of a merely program/override-tier one. `docs/PAYLOAD_SCHEMA.md`'s
+# R7 section calling these "pass-2-relaxable last resorts" predates and
+# conflicts with the 2026-09-26 policy; this fix brings the code in line with
+# the policy (the newer, chief-approved source of truth), not the stale doc
+# prose. `ALWAYS_HARD_DUTY_HOUR_FAMILIES` is never wrapped by a literal at
+# all -- see `duty_enforcement` below -- so it can never show up in
+# `feasibility.violations`; a schedule that can only be found by breaking one
+# of these now correctly comes back RELAXED-mode INFEASIBLE (or plain
+# pass-1 INFEASIBLE) instead of silently shipping an illegal schedule.
+ALWAYS_HARD_DUTY_HOUR_FAMILIES = (
     "restGap",
     "circadianPair",
     "nightRunMax",
     "consecutiveWork",
     "postRun6Rest",
     "hours320",
+)
+RELAXABLE_DUTY_HOUR_FAMILIES = (
     "nightCap",
     "nightSegments",
 )
+DUTY_HOUR_FAMILIES = ALWAYS_HARD_DUTY_HOUR_FAMILIES + RELAXABLE_DUTY_HOUR_FAMILIES
 
 # One literal per (resident, capFamily) -- see count_caps.py's SPEC_TO_RULE
 # and FAMILY_TRAUMA_PEDS_SPLIT for the source of truth on these names.
-POLICY_CAP_FAMILIES = (
-    "traumaCap",
+#
+# R9 follow-up (2026-09-28, chief policy 2026-09-26 memory `rule-override-
+# policy` / `src/lib/rulePolicy.js`), same class of bug as R7's duty-hour
+# split above: `bamcWedNight`, `jcCap` (rulePolicy.js's `jcMaxPerAy`) and
+# `traumaPedsSplit` are ALL tier `program` on the JS side -- "chief-decided
+# hard policy, blocks everywhere exactly like 'acgme'" (rulePolicy.js's own
+# comment: the two tiers differ in WHY they're hard, not in how hard they
+# are). `traumaCap`, `pedsMixMax` and `targetCeiling` have no entry in
+# `RULE_POLICY` at all -- the JS side only ever reports these as a plain,
+# non-blocking warn, never a hard error -- so those three stay genuinely
+# pass-2-relaxable last resorts, same posture as `nightCap`/`nightSegments`
+# above. Before this fix all 6 families shared one `cap_enforcement`
+# callback and were equally relaxable, contradicting the chief's own written
+# policy for half of them exactly the way the pre-R7 `duty_enforcement` did.
+# `ALWAYS_HARD_POLICY_CAP_FAMILIES` is never wrapped by a literal at all --
+# see `cap_enforcement` below -- so it can never show up in
+# `feasibility.violations`; a schedule reachable only by breaking one of
+# these now correctly comes back RELAXED-mode INFEASIBLE (or plain pass-1
+# INFEASIBLE) instead of silently shipping a program-policy violation.
+ALWAYS_HARD_POLICY_CAP_FAMILIES = (
     "bamcWedNight",
     "jcCap",
-    "pedsMixMax",
     "traumaPedsSplit",
+)
+RELAXABLE_POLICY_CAP_FAMILIES = (
+    "traumaCap",
+    "pedsMixMax",
     "targetCeiling",
 )
+POLICY_CAP_FAMILIES = ALWAYS_HARD_POLICY_CAP_FAMILIES + RELAXABLE_POLICY_CAP_FAMILIES
 
 TIER_DUTY_HOUR = "relaxDutyHour"
 TIER_COVERAGE_MIN = "relaxCoverageMin"
@@ -169,18 +227,34 @@ class ElasticBuildResult:
 def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     model = cp_model.CpModel()
     store = build_variables(model, payload)
+    apply_hint(model, payload, store)  # R9: warm start, see solver/model/hint.py
 
     duty_pool = LitPool(model)
     coverage_pool = LitPool(model)
     cap_pool = LitPool(model)
 
     def duty_enforcement(resident_id: str, family: str):
+        # ACGME-tier families (ALWAYS_HARD_DUTY_HOUR_FAMILIES, see that
+        # tuple's own comment) return None here -- every call site already
+        # treats a None literal as "add the real, unconditional hard
+        # constraint" (`lit = enforcement(...) if enforcement else None`,
+        # then `if lit is not None: c.only_enforce_if(lit)` / `forbid_pair`'s
+        # own None-means-hard branch), so this is the ONE place that decides
+        # which duty-hour families pass 2 is even ALLOWED to offer CP-SAT a
+        # way to break.
+        if family not in RELAXABLE_DUTY_HOUR_FAMILIES:
+            return None
         return duty_pool.get(family, resident_id)
 
     def coverage_enforcement(shift_id: str, date_str: str):
         return coverage_pool.get("coverageMin", shift_id, date_str)
 
     def cap_enforcement(resident_id: str, family: str):
+        # program-tier families (ALWAYS_HARD_POLICY_CAP_FAMILIES, see that
+        # tuple's own comment) return None here -- mirrors duty_enforcement's
+        # own None-means-unconditionally-hard convention above.
+        if family not in RELAXABLE_POLICY_CAP_FAMILIES:
+            return None
         return cap_pool.get(family, resident_id)
 
     coverage_result = add_coverage_constraints(model, payload, store, min_enforcement=coverage_enforcement)
@@ -191,6 +265,7 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     add_count_cap_constraints(model, payload, store, enforcement=cap_enforcement)
     add_senior_composition_constraints(model, payload, store)  # always hard, unchanged
     add_trauma_run_hard_cap(model, payload, store)  # always hard, unchanged -- batch 2
+    add_weekly_hours_cap_constraints(model, payload, store)  # always hard, unchanged -- R7
 
     # build_objective() sets model.minimize(objective.total_expr) as a side
     # effect -- harmless, since the combined pass-2 objective computed below

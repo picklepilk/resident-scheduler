@@ -134,6 +134,24 @@ describe('buildSolverPayload', () => {
     expect(payload.eligible.syn_golf).toBeUndefined();
   });
 
+  it('residents[] carries a schedulable boolean mirroring isSchedulable, independent of target', () => {
+    // Gap fix (2026-09-27, reviewer finding on 4d1b7ba): target is null for TWO different reasons —
+    // a non-schedulable resident AND a schedulable resident whose target was bought down to <=0
+    // (getShiftTarget returns null, never 0 — CLAUDE.md). The solver's weekly-hours ACGME scope
+    // needs to tell those apart, so `schedulable` is sent independently of `target`.
+    const fixture = makeFixture('standard');
+    const allResidents = fixture.allResidents.map(r =>
+      r.id === 'syn_golf' ? { ...r, blockType: 'MICU' } : r
+    );
+    const payload = buildSolverPayload({ ...fixture, allResidents });
+    const byId = Object.fromEntries(payload.residents.map(r => [r.id, r]));
+    expect(byId.syn_golf.schedulable).toBe(false);
+    expect(byId.syn_golf.target).toBeNull();
+    // An ordinary schedulable resident: schedulable true, target matches getShiftTarget.
+    expect(byId.syn_mike.schedulable).toBe(true);
+    expect(byId.syn_mike.target).not.toBeNull();
+  });
+
   it('caps are null for residents the cap does not apply to, and set for ones it does', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
@@ -173,9 +191,60 @@ describe('buildSolverPayload', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: 5 } });
     expect(payload.config.maxTimeSeconds).toBe(5);
-    expect(payload.config.numWorkers).toBe(8);
+    // R9: numWorkers is no longer defaulted client-side (was a hardcoded 8) — the solver itself
+    // defaults to os.cpu_count() when the field is absent (solver-service/solver/solve.py's
+    // `_num_workers`), so an unconfigured payload correctly carries no opinion here.
+    expect(payload.config.numWorkers).toBeUndefined();
     expect(payload.config.randomSeed).toBe(42);
     expect(payload.config.coverageMinMode).toBe('elastic_always');
+  });
+
+  it('numWorkers still overrides via config when explicitly requested', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload({ ...fixture, config: { numWorkers: 2 } });
+    expect(payload.config.numWorkers).toBe(2);
+  });
+
+  // R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): warm-start hint.
+  describe('hint (R9 warm start)', () => {
+    it('omits the hint field entirely when no hint arg is passed — byte-identical to pre-R9', () => {
+      const fixture = makeFixture('standard');
+      const withoutHintArg = buildSolverPayload(fixture);
+      const explicitlyNull = buildSolverPayload({ ...fixture, hint: null });
+      expect(withoutHintArg).not.toHaveProperty('hint');
+      expect(JSON.stringify(explicitlyNull)).toBe(JSON.stringify(withoutHintArg));
+    });
+
+    it('omits the hint field when the hint schedule has zero assigned cells', () => {
+      const fixture = makeFixture('standard');
+      const emptyHintSchedule = Object.fromEntries(fixture.allResidents.map(r => [r.id, {}]));
+      const payload = buildSolverPayload({ ...fixture, hint: emptyHintSchedule });
+      expect(payload).not.toHaveProperty('hint');
+    });
+
+    it('emits one {residentId,date,shiftId} cell per non-empty hint-schedule entry, same shape as locked[]', () => {
+      const fixture = makeFixture('standard');
+      const [r1, r2] = fixture.allResidents;
+      const ds = fixture.block.startDate;
+      const hintSchedule = { [r1.id]: { [ds]: 'POD-D' }, [r2.id]: { [ds]: 'FLEX-D' } };
+      const payload = buildSolverPayload({ ...fixture, hint: hintSchedule });
+      expect(payload.hint).toEqual(
+        expect.arrayContaining([
+          { residentId: r1.id, date: ds, shiftId: 'POD-D' },
+          { residentId: r2.id, date: ds, shiftId: 'FLEX-D' },
+        ])
+      );
+      expect(payload.hint).toHaveLength(2);
+    });
+
+    it('hint is independent of locked[] — a hint cell for an otherwise-empty block.schedule does not appear in locked', () => {
+      const fixture = makeFixture('standard');
+      const r1 = fixture.allResidents[0];
+      const ds = fixture.block.startDate;
+      const payload = buildSolverPayload({ ...fixture, hint: { [r1.id]: { [ds]: 'POD-D' } } });
+      expect(payload.locked).toEqual([]);
+      expect(payload.hint).toEqual([{ residentId: r1.id, date: ds, shiftId: 'POD-D' }]);
+    });
   });
 
   it('shifts catalog carries startH/durationH/type/area for every SHIFT_MAP id', () => {
@@ -235,6 +304,77 @@ describe('buildSolverPayload', () => {
     expect(payload.emPgy3ResidentIds).not.toContain('syn_sierra');
   });
 
+  // ── R7 (2026-09-27): ACGME EM 6.17.a.3 weekly caps + GR-end rest adjustment + PGY-3-first ──
+  it('residents[] carries obligationHours/grDates for the weekly-hour caps and GR-end rest adjustment', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    const mike = payload.residents.find(p => p.id === 'syn_mike'); // EM_HOME chief PGY-3
+    expect(mike).toBeTruthy();
+    expect(Array.isArray(mike.grDates)).toBe(true);
+    expect(mike.grDates).toContain('2026-07-15'); // EM_HOME's GR weekday is Wednesday
+    expect(mike.grDates.every(ds => new Date(ds + 'T00:00:00').getDay() === 3)).toBe(true);
+    expect(typeof mike.obligationHours).toBe('object');
+    expect(mike.obligationHours['2026-07-15']).toBe(4); // GR_DURATION_H
+  });
+
+  // ── R9 follow-up (2026-09-27): GR-after-night exemption is now a solver decision, not a static
+  // fact baked into `obligations` up front (PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding).
+  describe('obligations / obligationsExemptAfterNight', () => {
+    it('sends a GR-weekday obligation unconditionally, flagged exempt-after-night, ignoring the pre-generation schedule', () => {
+      const fixture = makeFixture('standard');
+      const payload = buildSolverPayload(fixture);
+      // syn_mike: EM_HOME chief PGY-3, GR weekday Wednesday 2026-07-15, no shift assigned there
+      // (block.schedule is {} pre-generation) — must appear in BOTH maps.
+      expect(payload.obligations.syn_mike).toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike).toContain('2026-07-15');
+    });
+
+    it('sends a JC presenting-date obligation but NEVER flags it exempt-after-night (isStreakWorkDay never exempts JC)', () => {
+      const fixture = makeFixture('standard');
+      const payload = buildSolverPayload(fixture);
+      // syn_charlie: EM_HOME PGY-1, jcPresentDates: ['2026-07-07'] (syntheticRoster.js).
+      expect(payload.obligations.syn_charlie).toContain('2026-07-07');
+      expect(payload.obligationsExemptAfterNight.syn_charlie || []).not.toContain('2026-07-07');
+    });
+
+    it('never fabricates an obligation on a vacation/approved-off date, exempt-flagged or not', () => {
+      const fixture = makeFixture('standard');
+      const mike = fixture.allResidents.find(r => r.id === 'syn_mike');
+      mike.vacationDates = [...(mike.vacationDates || []), '2026-07-15'];
+      const payload = buildSolverPayload(fixture);
+      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
+    });
+
+    it('omits a date already carrying a real assigned shift from both maps (locked cells force work=1 on their own)', () => {
+      const fixture = makeFixture('standard');
+      fixture.block.schedule = { syn_mike: { '2026-07-15': 'POD-D' } };
+      const payload = buildSolverPayload(fixture);
+      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
+    });
+  });
+
+  it('grEndH is sent (altitude fix, defaults to 12 — Grand Rounds\' own end hour)', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(payload.grEndH).toBe(12);
+  });
+
+  it('truePrimary shares seniorPrimary\'s exact (shift,date) keys and is always a subset per date', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    expect(Object.keys(payload.truePrimary).sort()).toEqual(Object.keys(payload.seniorPrimary).sort());
+    for (const shiftId of Object.keys(payload.seniorPrimary)) {
+      expect(Object.keys(payload.truePrimary[shiftId]).sort()).toEqual(Object.keys(payload.seniorPrimary[shiftId]).sort());
+      for (const ds of Object.keys(payload.truePrimary[shiftId])) {
+        for (const rid of payload.truePrimary[shiftId][ds]) {
+          expect(payload.seniorPrimary[shiftId][ds]).toContain(rid);
+        }
+      }
+    }
+  });
+
   it('alternationExemptDates is empty with no 12h windows configured (no-op guarantee)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
@@ -255,6 +395,51 @@ describe('buildSolverPayload', () => {
     expect(payload.alternationExemptDates).toContain('2026-07-16');
     expect(payload.alternationExemptDates).not.toContain('2026-07-14');
     expect(payload.alternationExemptDates).not.toContain('2026-07-20');
+  });
+
+  // engineHeadToHead.test.js (2026-09-26) found the solver placing an overnight on the block's
+  // final Sunday far more often than the JS engine when the next block hasn't been imported — see
+  // FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header comment for why the JS engine's own
+  // near-avoidance is emergent (nightCluster) rather than an explicit score() term, and why the
+  // fix is a solver-only preference nudge in buildSolverPayload instead.
+  describe('finalSundayUnconfirmed preference', () => {
+    it('emits a negative-bonus preference for every night shift a resident is eligible for on the block\'s final Sunday when the next block is unimported', () => {
+      const fixture = makeFixture('standard'); // block ends 2026-08-02, a Sunday; empty blocksHistory
+      const payload = buildSolverPayload(fixture);
+      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
+      expect(finalSundayPrefs.length).toBeGreaterThan(0);
+      for (const p of finalSundayPrefs) {
+        expect(p.date).toBe('2026-08-02');
+        expect(p.bonus).toBeLessThan(0);
+        expect(payload.eligible[p.residentId]?.[p.date] || []).toContain(p.shiftId);
+      }
+      // Never emitted for a day shift, even for a resident who does get a night-shift entry.
+      expect(finalSundayPrefs.some(p => p.shiftId.endsWith('-D') || p.shiftId.endsWith('-D12'))).toBe(false);
+    });
+
+    it('is never emitted when the block does not end on a Sunday (no finalSunday at all)', () => {
+      const fixture = makeFixture('standard');
+      // Shift the block by one day so it no longer ends on a Sunday.
+      const block = { ...fixture.block, startDate: '2026-07-07', endDate: '2026-08-03' };
+      const payload = buildSolverPayload({ ...fixture, block });
+      expect(payload.preferences.some(p => p.tag === 'finalSundayUnconfirmed')).toBe(false);
+    });
+
+    it('is not emitted for a resident whose next-block rotation is already known (continuing or not)', () => {
+      const fixture = makeFixture('standard');
+      const [firstId] = fixture.allResidents.map(r => r.id);
+      // A next-block snapshot naming firstId as continuing on a schedulable EM rotation.
+      const nextBlockSnap = {
+        id: 'next-block',
+        data: {
+          startDate: '2026-08-03', endDate: '2026-08-30',
+          emBlockAssignments: { [firstId]: { blockType: 'EM' } },
+        },
+      };
+      const payload = buildSolverPayload({ ...fixture, blocksHistory: [nextBlockSnap] });
+      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
+      expect(finalSundayPrefs.some(p => p.residentId === firstId)).toBe(false);
+    });
   });
 });
 
@@ -367,5 +552,65 @@ describe('mapSolverResult', () => {
     expect(report.unfilled).toEqual([]);
     expect(report.seniorGaps).toEqual([]);
     expect(report.mode).toBe('strict');
+  });
+
+  // R7 (2026-09-27, gap 3): report.podSubstitutes rebuilt from the solver's own final schedule, the
+  // same scan generateSchedule itself runs post-repair (mirrors podPgy2Substitute.test.js's
+  // hand-built-resident/fixed-block pattern).
+  describe('podSubstitutes', () => {
+    const ppBlock = { id: 'blk_test', startDate: '2026-07-06', endDate: '2026-08-02', academicYear: 'AY26/27', specialDays: {}, schedule: {} };
+    const POD_WW = '2026-07-22'; // POD's own Wellness Wednesday (3rd Wed on/after block start)
+    function res(overrides) {
+      return {
+        id: overrides.id, firstName: 'Test', lastName: 'Resident',
+        category: overrides.category, pgy: overrides.pgy,
+        approvedDatesOff: [], vacationDates: [], jeopardyDates: [], jcPresentDates: [], grLectureDates: [],
+      };
+    }
+
+    it('flags an EM PGY-2 covering POD on its own Wellness Wednesday, reason "wellness"', () => {
+      const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy2] });
+      expect(report.podSubstitutes).toHaveLength(1);
+      expect(report.podSubstitutes[0]).toMatchObject({ residentId: 'p2', dateStr: POD_WW, shiftId: 'POD-N', reason: 'wellness' });
+    });
+
+    it('does not flag a cell already present (locked/manual) in the request block.schedule', () => {
+      const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+      const seededBlock = { ...ppBlock, schedule: { p2: { [POD_WW]: 'POD-N' } } };
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: seededBlock, allResidents: [pgy2] });
+      expect(report.podSubstitutes).toEqual([]);
+    });
+
+    it('does not flag a true PGY-3 on POD (no substitution happened)', () => {
+      const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p3: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy3] });
+      expect(report.podSubstitutes).toEqual([]);
+    });
+
+    it('is empty when allResidents is omitted (backward compatible)', () => {
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { p2: { [POD_WW]: 'POD-N' } },
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block: ppBlock });
+      expect(report.podSubstitutes).toEqual([]);
+    });
   });
 });

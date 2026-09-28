@@ -7,7 +7,7 @@ import copy
 import solver.validate as validate
 from solver.io.payload import parse_payload
 from solver.solve import solve
-from tests.helpers import load_fixture
+from tests.helpers import load_fixture, make_payload, make_resident
 
 
 def test_coverage_shortage_elastic_always_stays_strict_no_pass2():
@@ -66,58 +66,47 @@ def test_coverage_recommendation_verified_when_lowering_min_fixes_it():
     assert rec["verified"] is True
 
 
-def test_infeasible_rest_locked_cells_force_relaxation():
+def test_infeasible_rest_locked_cells_stays_infeasible_never_relaxed():
+    """R7 rest-tier fix (2026-09-27): `restGap` is tier `acgme` in
+    `src/lib/rulePolicy.js` -- "never broken, anywhere. No 'place anyway'
+    path" -- so it's no longer one of pass 2's relaxable duty-hour families
+    (see `solver/model/elastic.py`'s `ALWAYS_HARD_DUTY_HOUR_FAMILIES`). Two
+    LOCKED cells (chief-entered, can't be moved) that violate rest between
+    them used to be "solved" by silently breaking the rest rule instead;
+    that's exactly the class of bug `chiefBenchmark.solver.test.js` caught
+    live (JS `validateAll` flagging real `restShiftLength` errors on the
+    solver's mapped-out schedule). The correct behavior is the same as any
+    other genuinely unfixable hard conflict (see the double-locked-TRAUMA
+    test below): INFEASIBLE, not a silently illegal schedule."""
     payload = parse_payload(load_fixture("infeasible_rest.json"))
     result = solve(payload)
 
-    assert result.status == "RELAXED"
-    assert result.mode == "relaxed"
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"  # pass 2 was reached and also failed
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+    assert result.validation == {"passed": True, "failures": []}
 
-    # both locked cells still land in the final schedule -- locked cells are
-    # never relaxable.
-    assert result.schedule["r1"]["2026-02-02"] == "N"
-    assert result.schedule["r1"]["2026-02-03"] == "D"
-
-    violations = result.feasibility["violations"]
-    assert len(violations) == 1
-    v = violations[0]
-    assert v["rule"] == "restGap"
-    assert v["tier"] == 1
-    assert v["residentIds"] == ["r1"]
-    assert set(v["dates"]) == {"2026-02-02", "2026-02-03"}
-    assert "540min" in v["magnitude"]  # required gap == the night shift's own 9h duration
+    # independent re-check still recognizes this AS a rest violation if you
+    # hand it the (never delivered) locked-only schedule directly -- proves
+    # validate.py itself didn't lose the ability to see the conflict; the
+    # solver just correctly refuses to ship it.
+    locked_schedule = {"r1": {"2026-02-02": "N", "2026-02-03": "D"}}
+    independent = validate.validate_schedule(payload, locked_schedule)
+    assert any(f["rule"] == "restGap" for f in independent)
 
 
-def test_infeasible_rest_validation_matches_violations_exactly():
+def test_conflict_probe_on_the_rest_fixture_has_no_relaxable_literal_to_blame():
+    """With restGap no longer wrapped by an `ok[...]` literal at all, the
+    contradiction between the two locked cells is a plain, unconditional
+    hard-constraint clash -- there's no assumption CP-SAT could drop to
+    explain it away, so the probe (best-effort, diagnostic only) correctly
+    comes back empty rather than pointing at a family that was never
+    negotiable in the first place."""
     payload = parse_payload(load_fixture("infeasible_rest.json"))
     result = solve(payload)
 
-    assert result.validation["passed"] is True
-    failures = result.validation["failures"]
-    assert len(failures) == 1
-    f = failures[0]
-    assert f["rule"] == "restGap"
-    assert f["residentIds"] == ["r1"]
-
-    # independent re-check agrees.
-    independent = validate.validate_schedule(payload, result.schedule)
-    assert independent == failures
-
-
-def test_conflict_probe_reports_something_on_the_rest_fixture():
-    """Best-effort per the plan -- ortools' `sufficient_assumptions_for_
-    infeasibility` returns A sufficient conflicting subset, not necessarily
-    a minimal one, so we only assert shape/non-emptiness rather than an
-    exact literal set (that would make this test flaky against solver
-    version/search changes)."""
-    payload = parse_payload(load_fixture("infeasible_rest.json"))
-    result = solve(payload)
-
-    conflicts = result.feasibility["conflicts"]
-    assert isinstance(conflicts, list)
-    assert len(conflicts) >= 1
-    assert all(isinstance(group, list) and group for group in conflicts)
-    assert any("restGap:r1" in group for group in conflicts)
+    assert result.feasibility["conflicts"] == []
 
 
 def test_determinism_same_fixture_solved_twice_identical_report():
@@ -125,19 +114,81 @@ def test_determinism_same_fixture_solved_twice_identical_report():
     r1 = solve(parse_payload(raw))
     r2 = solve(parse_payload(raw))
 
-    assert r1.status == r2.status == "RELAXED"
-    assert r1.schedule == r2.schedule
+    assert r1.status == r2.status == "INFEASIBLE"
+    assert r1.schedule == r2.schedule == {}
     assert r1.feasibility == r2.feasibility
     assert r1.report == r2.report
 
 
-def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
-    """If validate.py's rest-gap checker silently stopped detecting the
-    violation the model actually relaxed, solve() must raise rather than
-    return a feasibility report the independent validator can't confirm."""
-    monkeypatch.setattr(validate, "_check_rest_gap", lambda payload, schedule: [])
+def _night_cap_relaxation_payload() -> dict:
+    """A resident LOCKED into 2 nights while `caps.nights == 1` -- unlike
+    restGap, `nightCap` ("6 nights total/block") is tier `override` in
+    `rulePolicy.js` ("a chief may break one by hand"), so it's still one of
+    pass 2's genuinely relaxable duty-hour families
+    (`RELAXABLE_DUTY_HOUR_FAMILIES`). The two locked nights are 4 calendar
+    days apart -- no rest/circadian/run-length rule is anywhere near
+    triggered -- so `nightCap` is the ONLY thing pass 2 can possibly be
+    relaxing here."""
+    return make_payload(
+        residents=[make_resident("r1", caps={"nights": 1})],
+        eligible={"r1": {"2026-01-05": ["N"], "2026-01-09": ["N"]}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "N"},
+            {"residentId": "r1", "date": "2026-01-09", "shiftId": "N"},
+        ],
+    )
 
-    payload = parse_payload(load_fixture("infeasible_rest.json"))
+
+def test_infeasible_circadian_pair_locked_cells_stays_infeasible_never_relaxed():
+    """Same shape as the restGap test above, for `circadianPair`
+    (eve(D)->day(D+1), rule 18) -- also tier `acgme` in `rulePolicy.js`
+    ("Evening shift followed by a day shift the next day" — never broken
+    anywhere) and therefore also removed from
+    `ALWAYS_HARD_DUTY_HOUR_FAMILIES`'s complement. Two locked cells forcing
+    exactly that forbidden pair must come back INFEASIBLE, never a silently
+    relaxed schedule."""
+    payload_dict = make_payload(
+        residents=[make_resident("r1")],
+        eligible={"r1": {"2026-01-05": ["E"], "2026-01-06": ["D"]}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "E"},
+            {"residentId": "r1", "date": "2026-01-06", "shiftId": "D"},
+        ],
+    )
+    payload = parse_payload(payload_dict)
+    result = solve(payload)
+
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+
+
+def test_night_cap_is_still_a_genuinely_relaxable_last_resort():
+    payload = parse_payload(_night_cap_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "RELAXED"
+    assert result.mode == "relaxed"
+    assert result.schedule == {"r1": {"2026-01-05": "N", "2026-01-09": "N"}}
+
+    violations = result.feasibility["violations"]
+    assert len(violations) == 1
+    assert violations[0]["rule"] == "nightCap"
+    assert violations[0]["residentIds"] == ["r1"]
+    assert "cap 1" in violations[0]["magnitude"]
+
+
+def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
+    """If validate.py's night-cap checker silently stopped detecting the
+    violation the model actually relaxed, solve() must raise rather than
+    return a feasibility report the independent validator can't confirm.
+    (Moved off the old `infeasible_rest.json`/restGap fixture -- restGap can
+    no longer be relaxed at all, so it can never reach this guard; nightCap
+    is the still-relaxable family this guard now needs to exercise.)"""
+    monkeypatch.setattr(validate, "_check_night_run_and_cap_and_segments", lambda payload, schedule: [])
+
+    payload = parse_payload(_night_cap_relaxation_payload())
     try:
         solve(payload)
         assert False, "expected RuntimeError"
@@ -145,13 +196,49 @@ def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
         assert "do not correspond 1:1" in str(exc)
 
 
-def test_double_infeasible_never_relax_conflict_stays_infeasible():
-    """Two locked cells that ALSO collide on coverage max (never-relax) can't
-    be fixed by any relaxation -- pass 2 itself must come back INFEASIBLE."""
+def test_double_locked_max_collision_absorbed_by_plus_one_overstaff():
+    """Two locked cells colliding on a non-TRAUMA coverage max by exactly 1
+    are no longer a never-relax conflict -- `solver/model/coverage.py`'s
+    +1-overstaff allowance (mirrors the JS repairPass's
+    `underTargetOverstaff` last resort, see that module's docstring) absorbs
+    it directly in pass 1, before pass 2 is ever reached. This used to be
+    the fixture for "never relax" (coverage max was a pure hard cap); the
+    policy change means this exact scenario is the new allowed case -- see
+    the TRAUMA variant below for a conflict that's still genuinely
+    unfixable."""
     raw = copy.deepcopy(load_fixture("infeasible_rest.json"))
+    # Drop the fixture's own r1 N(2/2)->D(2/3) lock pair -- that's restGap's
+    # OWN never-relax fixture (see the tests above); this test wants ONLY
+    # the coverage-max collision below isolated, not that rest conflict
+    # riding along and forcing INFEASIBLE for an unrelated reason (R7 fix:
+    # restGap is no longer relaxable at all).
+    raw["locked"] = [lc for lc in raw["locked"] if lc["shiftId"] != "N"]
     # Lock r2 into the same D slot on 2026-02-03, where max is 2 -- still
-    # fine on its own. Instead, force a genuine never-relax conflict: clamp
-    # coverage max for D that date to 1 while TWO residents are locked onto it.
+    # fine on its own. Instead, clamp coverage max for D that date to 1
+    # while TWO residents are locked onto it (exceeds max by exactly 1).
+    raw["locked"].append({"residentId": "r2", "date": "2026-02-03", "shiftId": "D"})
+    raw["coverage"]["D"]["2026-02-03"]["max"] = 1
+
+    payload = parse_payload(raw)
+    result = solve(payload)
+
+    assert result.status in ("OPTIMAL", "FEASIBLE", "RELAXED")
+    assert result.schedule["r1"]["2026-02-03"] == "D"
+    assert result.schedule["r2"]["2026-02-03"] == "D"
+
+
+def test_double_locked_max_collision_on_trauma_still_infeasible():
+    """Same double-lock shape as above, but on a TRAUMA-area shift --
+    TRAUMA is excluded from the +1-overstaff allowance (its max is
+    separately hard-clamped to 1 and its run cap is "never relaxed"), so
+    this exact conflict must still come back INFEASIBLE."""
+    raw = copy.deepcopy(load_fixture("infeasible_rest.json"))
+    # Same isolation as the +1-overstaff test above -- keep this test's
+    # INFEASIBLE result attributable to the TRAUMA coverage-max collision
+    # it's actually testing, not the fixture's own (also never-relax, but
+    # unrelated) restGap conflict.
+    raw["locked"] = [lc for lc in raw["locked"] if lc["shiftId"] != "N"]
+    raw["shifts"]["D"]["area"] = "TRAUMA"
     raw["locked"].append({"residentId": "r2", "date": "2026-02-03", "shiftId": "D"})
     raw["coverage"]["D"]["2026-02-03"]["max"] = 1
 
@@ -160,3 +247,106 @@ def test_double_infeasible_never_relax_conflict_stays_infeasible():
 
     assert result.status == "INFEASIBLE"
     assert result.schedule == {}
+
+
+def _bamc_wed_night_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 night shifts on 2 different Wednesdays while
+    `caps.bamcWedNights == 1` -- `bamcWedNight` is tier `program` in
+    `src/lib/rulePolicy.js` ("BAMC more than one Wednesday-night shift per
+    block", blocks everywhere exactly like `acgme`), so it now belongs in
+    `elastic.py`'s `ALWAYS_HARD_POLICY_CAP_FAMILIES`, not the relaxable set.
+    2026-01-07 and 2026-01-14 are both Wednesdays, 7 days apart -- no rest/
+    circadian/run-length rule is anywhere near triggered by two isolated
+    night shifts a week apart, so `bamcWedNight` is the ONLY thing pass 2
+    could possibly be relaxing here."""
+    dates = ["2026-01-07", "2026-01-14"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"bamcWedNights": 1})],
+        dates=dates,
+        eligible={"r1": {d: ["N"] for d in dates}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-07", "shiftId": "N"},
+            {"residentId": "r1", "date": "2026-01-14", "shiftId": "N"},
+        ],
+    )
+
+
+def test_infeasible_bamc_wed_night_locked_cells_stays_infeasible_never_relaxed():
+    """`bamcWedNight` fix (2026-09-28): same class of bug as R7's duty-hour
+    split, one level down in `solver/model/count_caps.py`'s policy-cap
+    families -- see `_bamc_wed_night_relaxation_payload`'s own docstring."""
+    payload = parse_payload(_bamc_wed_night_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"  # pass 2 was reached and also failed
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+
+
+def _jc_cap_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 evening shifts (15:00-23:00, overlapping the default
+    18:00-21:00 JC window) on 2 different `jcDates` while
+    `caps.jcRemaining == 1` -- `jcCap` (`rulePolicy.js`'s `jcMaxPerAy`) is
+    also tier `program`, so it belongs in `ALWAYS_HARD_POLICY_CAP_FAMILIES`
+    too. The two dates are adjacent day-then-day-evening -- no eve/day
+    circadian rule is anywhere near triggered by two lone evening shifts, so
+    `jcCap` is the ONLY thing pass 2 could possibly be relaxing here."""
+    dates = ["2026-01-05", "2026-01-06"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"jcRemaining": 1})],
+        dates=dates,
+        eligible={"r1": {d: ["E"] for d in dates}},
+        jcDates=dates,
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "E"},
+            {"residentId": "r1", "date": "2026-01-06", "shiftId": "E"},
+        ],
+    )
+
+
+def test_infeasible_jc_cap_locked_cells_stays_infeasible_never_relaxed():
+    """`jcCap` fix (2026-09-28) -- see `_jc_cap_relaxation_payload`'s own
+    docstring."""
+    payload = parse_payload(_jc_cap_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "INFEASIBLE"
+    assert result.mode == "relaxed"
+    assert result.schedule == {}
+    assert result.feasibility == {"mode": "relaxed", "violations": [], "conflicts": [], "recommendations": []}
+
+
+def _trauma_cap_relaxation_payload() -> dict:
+    """r1 LOCKED into 2 TRAUMA-area day shifts on 2 different dates while
+    `caps.trauma == 1` -- unlike `bamcWedNight`/`jcCap`/`traumaPedsSplit`,
+    `traumaCap` has no entry in `src/lib/rulePolicy.js` at all (the JS side
+    only ever reports it as a plain, non-blocking warn), so it stays in
+    `RELAXABLE_POLICY_CAP_FAMILIES` -- this confirms the R9-follow-up split
+    didn't over-correct and make every policy cap always-hard."""
+    shifts = {"TRAUMA-D": {"startH": 7, "durationH": 9, "type": "day", "area": "TRAUMA"}}
+    dates = ["2026-01-05", "2026-01-06"]
+    return make_payload(
+        residents=[make_resident("r1", caps={"trauma": 1})],
+        shifts=shifts,
+        dates=dates,
+        eligible={"r1": {d: ["TRAUMA-D"] for d in dates}},
+        locked=[
+            {"residentId": "r1", "date": "2026-01-05", "shiftId": "TRAUMA-D"},
+            {"residentId": "r1", "date": "2026-01-06", "shiftId": "TRAUMA-D"},
+        ],
+    )
+
+
+def test_trauma_cap_is_still_a_genuinely_relaxable_last_resort():
+    payload = parse_payload(_trauma_cap_relaxation_payload())
+    result = solve(payload)
+
+    assert result.status == "RELAXED"
+    assert result.mode == "relaxed"
+    assert result.schedule == {"r1": {"2026-01-05": "TRAUMA-D", "2026-01-06": "TRAUMA-D"}}
+
+    violations = result.feasibility["violations"]
+    assert len(violations) == 1
+    assert violations[0]["rule"] == "traumaCap"
+    assert violations[0]["residentIds"] == ["r1"]
