@@ -16850,7 +16850,7 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
         )}
 
         {(report.podSubstitutes||[]).length > 0 && (
-          <ReportSubsection compact={compact} title={`PGY-2 covering POD (${report.podSubstitutes.length})`} count={report.podSubstitutes.length}>
+          <ReportSubsection compact={compact} title="PGY-2 covering POD" count={report.podSubstitutes.length}>
           <div className="border border-blue-200 bg-blue-50/60 rounded-lg p-3">
             <span className="text-xs font-semibold text-blue-700">R5: PGY-3 unavailable (conference or Wellness Wednesday) — an EM PGY-2 covered POD instead, informational only</span>
             <ul className="mt-1 space-y-0.5">
