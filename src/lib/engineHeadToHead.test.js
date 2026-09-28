@@ -394,34 +394,22 @@ function renderVariantMarkdown(res) {
     // win both pass. If this fails, the fix belongs in the objective-tier mapping (see
     // docs/PAYLOAD_SCHEMA.md's dated R9 section), not in loosening this assertion.
     //
-    // KNOWN_GAP: "vacationHeavy" stays excluded from the hard gate (2026-09-27, "pin coverage to
-    // the app's own miss count" task — re-investigated, decision UNCHANGED). Investigated by hand:
-    // 10 real CLI solves via a throwaway diagnostic script plus 4 full sequential `engineHeadToHead`
-    // runs (`SOLVER_PARITY=1`, one at a time) found NO mapping gap between the solver's hard-pinned
-    // `coverageMin` expression and JS's own `coverageMiss` metric — `report.hintPinning.pinned.
-    // coverageMin` and the recomputed `solverMetrics.coverageMiss` on the final MAPPED schedule were
-    // IDENTICAL in every single run, including the runs where this fixture LOST overall (see the
-    // coverage-pin regression assertion added above, which now guards this permanently and would
-    // fail loudly if that ever stopped being true). The 3 clean-win runs that briefly looked like
-    // "bar met, remove the exclusion" were immediately followed by a 4th run with a genuine loss —
-    // so the bar ("all 4 never-worse 3/3") is NOT actually met; this fixture is still flaky.
-    // **The loss is not a coverage regression at all**: in every observed loss, `qualityVector`'s
-    // n0/n1/n2 (coverageMin/seniorComposition/postNightRest) TIE EXACTLY with local, and the solver
-    // loses purely on qualityVector's 4th slot (`fairnessPlusShape`/TIER_QUALITY) — e.g. one 2026-
-    // 09-27 run: local [139,0,0,418.48] vs solver [139,0,0,424.48]. `hint_pin.py` deliberately never
-    // pins TIER_QUALITY (its own docstring: "that's the one thing this feature still lets the solver
-    // freely improve") — pinning it too might close this permanently but is real, unverified
-    // additional work (risking a repeat of the `overstaffCoverage` mistake documented in hint_pin.py,
-    // where pinning something JS's ladder DOES measure but without confirming an exact numeric
-    // correspondence first made 3/4 fixtures worse) — out of scope for this task, which was
-    // specifically about the coverage-mapping question (now closed: there is no gap). Left as a
-    // documented, tracked gap rather than a flaky hard gate: this test still PRINTS its outcome
-    // every run via the `console.log` above, and any fixture OTHER than this one regressing still
-    // fails the suite. NOTE: the 2026-09-27 gate-check run also caught "standard" losing via the
-    // exact same shape-only mechanism (not previously in `KNOWN_GAP_VARIANTS`) — PAYLOAD_SCHEMA.md's
-    // R9 "known gaps" section already flagged this as a real, undecided widening question; not
-    // widened here since it's the same out-of-scope TIER_QUALITY issue, not a new regression.
-    const KNOWN_GAP_VARIANTS = new Set(['vacationHeavy']);
+    // KNOWN_GAP: previously `{'vacationHeavy'}` — REMOVED 2026-09-28 ("never fall to pass 2 when the
+    // warm-start hint is feasible" task). Every prior loss recorded in this doc's history for
+    // vacationHeavy/standard/conferenceBlock (see PAYLOAD_SCHEMA.md's "Coverage-mapping
+    // investigation, part 3" and earlier sections) traced to the SAME two root causes, both now
+    // fixed on this branch: (1) ec74598 made pass 2 unable to relax ACGME-hard duty-hour families,
+    // which turned a pre-existing bug — pass 1's staged solve reporting a merely-timed-out `UNKNOWN`
+    // stage as outward `INFEASIBLE` and escalating to pass 2 even when `evaluate_hint` had already
+    // proven a feasible witness existed — into occasional `RELAXED`-status losses instead of the
+    // quieter `TIER_QUALITY`-only noise seen before; (2) this task's fix (`solve.py`'s
+    // `_solve_staged` now falls back to `evaluate_hint`'s own already-solved clone instead of
+    // escalating) closes that gap, so pass 2 no longer fires at all when the hint is feasible. 3
+    // sequential full runs after the fix (`SOLVER_PARITY=1`, one at a time, 2026-09-28): every
+    // fixture WON or TIED every run, zero losses, zero `RELAXED` statuses observed — see
+    // PAYLOAD_SCHEMA.md's dated section for the exact per-run table. Re-add a fixture here (with a
+    // fresh diagnosis) if a real regression resurfaces — don't silently re-widen this on a flaky run.
+    const KNOWN_GAP_VARIANTS = new Set();
     for (const res of results) {
       if (KNOWN_GAP_VARIANTS.has(res.variant)) continue;
       expect(res.comparison.outcome, `solver lost to local on the "${res.variant}" fixture — see ${OUT_FILE}`).not.toBe('loss');

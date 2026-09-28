@@ -64,6 +64,7 @@ gets measured" and "what gets pinned", so they can never drift apart.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from ortools.sat.python import cp_model
@@ -113,6 +114,18 @@ class HintEvaluation:
     # name -> achieved int value (PINNED_COMPONENTS keys), populated only
     # when feasible is True.
     components: dict = field(default_factory=dict)
+    # The CpSolver that solved the fully-pinned CLONE (every x var fixed to
+    # the hint), kept only when feasible. Populated so a caller can use it as
+    # a GUARANTEED fallback pass-1 result -- see solve.py's `_solve_staged`
+    # -- when the real staged solve times out (UNKNOWN) or is otherwise
+    # unable to reproduce a solution despite this already-proven feasible
+    # witness. Reading `.value(...)` off this solver against the ORIGINAL
+    # model's vars/exprs (`store.x`, `objective.*`) is valid: `CpModel.clone()`
+    # preserves every variable's index 1:1, and `pinned_component_exprs`
+    # above already relies on exactly this fact (it evaluates original-model
+    # expressions against this same clone-solved solver).
+    solver: object = None
+    solve_time_ms: int = 0
 
 
 def evaluate_hint(payload: Payload, build_result) -> HintEvaluation:
@@ -149,7 +162,9 @@ def evaluate_hint(payload: Payload, build_result) -> HintEvaluation:
     # any realistic payload (see comment above) -- the cap is a safety net,
     # not a real budget.
     solver.parameters.max_time_in_seconds = min(30.0, max(5.0, payload.config.max_time_seconds))
+    t0 = time.time()
     status = solver.solve(clone)
+    solve_time_ms = int((time.time() - t0) * 1000)
     if solver.status_name(status) not in SOLVABLE_STATUSES:
         return HintEvaluation(feasible=False)
 
@@ -164,7 +179,7 @@ def evaluate_hint(payload: Payload, build_result) -> HintEvaluation:
     # extension of them.
     exprs = pinned_component_exprs(payload, build_result.objective)
     components = {name: round(solver.value(expr)) for name, expr in exprs.items()}
-    return HintEvaluation(feasible=True, components=components)
+    return HintEvaluation(feasible=True, components=components, solver=solver, solve_time_ms=solve_time_ms)
 
 
 def apply_hint_pins(model, payload: Payload, objective, hint_eval: HintEvaluation) -> None:

@@ -154,7 +154,7 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
     """Runs the 3-stage lexicographic ladder described at `_STAGE_3_NAME`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -184,9 +184,24 @@ def _solve_staged(payload: Payload, build_result: BuildResult):
     (spec): a later stage's own INFEASIBLE/UNKNOWN never discards an earlier
     stage's real solution -- the loop just stops and hands back the last
     successful `solver`. Only the FIRST stage failing outright has nothing to
-    fall back to, so that (rare -- pass 1 is only ever called when a full
-    strict solve is expected to be feasible) case reports whatever status
-    that first solve returned, same as the pre-staged code path always did.
+    fall back to from WITHIN this ladder.
+
+    `hint_eval` (2026-09-28 fix, "never fall to pass 2 when the warm-start
+    hint is feasible"): when the FIRST stage fails outright (no earlier
+    stage solution to fall back to) but `hint_eval.feasible` is True, this
+    is NOT a real infeasibility -- `evaluate_hint` already proved a complete,
+    hard-constraint-satisfying solution exists for this exact model (the
+    hint itself, possibly hard-pinned). A stage returning UNKNOWN/INFEASIBLE
+    here only ever means the search ran out of its (deliberately small,
+    15% by default) time budget before CP-SAT's own hint-validation/search
+    machinery reported back -- it does NOT mean no solution exists. Treating
+    it as real infeasibility was a bug: `solve()`'s caller collapses ANY
+    non-solvable pass-1 status into "run pass 2", and pass 2's elastic model
+    is then free to relax (or blow the search on) rules the hint never
+    needed to touch at all. The fix: fall back to `hint_eval`'s own
+    already-solved clone as this ladder's result instead -- see that
+    dataclass's own docstring for why evaluating the ORIGINAL model's
+    vars/exprs against that clone's solver is valid.
     """
     model = build_result.model
     store = build_result.store
@@ -238,6 +253,14 @@ def _solve_staged(payload: Payload, build_result: BuildResult):
         if status_name not in SOLVABLE_STATUSES:
             if have_solution:
                 break  # keep the previous stage's solver/solution as final
+            if hint_eval is not None and hint_eval.feasible:
+                # See this function's own `hint_eval` docstring paragraph:
+                # the first stage found no solution inside its time budget,
+                # but a feasible witness (the hint) is already proven to
+                # exist for this model -- report THAT instead of a bogus
+                # INFEASIBLE that would otherwise send solve() into an
+                # unnecessary (and possibly rule-relaxing) pass 2.
+                return "FEASIBLE", hint_eval.solver, total_time_ms + hint_eval.solve_time_ms
             return status_name, solver, total_time_ms  # first stage failed outright -- nothing to fall back to
 
         have_solution = True
@@ -286,24 +309,30 @@ def solve(payload: Payload) -> SolveResult:
     return run_pass2(payload)
 
 
-def _apply_hint_pinning(payload: Payload, build_result: BuildResult) -> dict:
+def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
     """R9 follow-up ("pin to hint", see solver/model/hint_pin.py): only in
     staged mode, and only when a hint was actually supplied -- weighted mode
     is the deliberate pre-R9 rollback path and gets none of this. Mutates
     `build_result.model` in place (adds hard `<=` constraints) when the hint
-    is feasible; returns a small diagnostics dict that rides along in every
-    SolveResult's `report["hintPinning"]` regardless of outcome, per the
-    "record hintFeasible:false" spec.
+    is feasible.
+
+    Returns `(hint_diag, hint_eval)`: `hint_diag` is the small diagnostics
+    dict that rides along in every SolveResult's `report["hintPinning"]`
+    regardless of outcome, per the "record hintFeasible:false" spec.
+    `hint_eval` is the full `HintEvaluation` (or `None` when pinning never
+    even ran) -- `_solve_staged` needs it too, as a guaranteed fallback pass-1
+    result when the staged solve itself can't reproduce a solution despite
+    the hint already being proven feasible (2026-09-28 fix).
     """
     if payload.config.objective_mode != "staged" or not payload.hint:
-        return {"applied": False, "hintFeasible": None, "pinned": {}}
+        return {"applied": False, "hintFeasible": None, "pinned": {}}, None
 
     hint_eval = evaluate_hint(payload, build_result)
     if not hint_eval.feasible:
-        return {"applied": False, "hintFeasible": False, "pinned": {}}
+        return {"applied": False, "hintFeasible": False, "pinned": {}}, hint_eval
 
     apply_hint_pins(build_result.model, payload, build_result.objective, hint_eval)
-    return {"applied": True, "hintFeasible": True, "pinned": hint_eval.components}
+    return {"applied": True, "hintFeasible": True, "pinned": hint_eval.components}, hint_eval
 
 
 def _solve_pass1(payload: Payload) -> SolveResult:
@@ -311,7 +340,7 @@ def _solve_pass1(payload: Payload) -> SolveResult:
     store = build_result.store
     objective = build_result.objective
 
-    hint_diag = _apply_hint_pinning(payload, build_result)
+    hint_diag, hint_eval = _apply_hint_pinning(payload, build_result)
 
     # R9: staged is the new default (payload.py's Config.objective_mode) --
     # `"weighted"` keeps the pre-R9 single-shot solve on `objective.total_expr`
@@ -319,7 +348,7 @@ def _solve_pass1(payload: Payload) -> SolveResult:
     # `model.minimize(objective.total_expr)` as its own default, so the
     # weighted branch needs no further setup beyond solving as before.
     if payload.config.objective_mode == "staged":
-        status_name, solver, solve_time_ms = _solve_staged(payload, build_result)
+        status_name, solver, solve_time_ms = _solve_staged(payload, build_result, hint_eval)
     else:
         solver = _configure_solver(payload)
         solver.parameters.max_time_in_seconds = payload.config.max_time_seconds

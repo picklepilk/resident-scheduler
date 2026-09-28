@@ -739,3 +739,73 @@ actually met once measured past 3 runs. `standard` also lost once (1/5) — a fi
 `TIER_QUALITY` noise as `vacationHeavy`'s, not a new regression, and this doc already flags widening
 the gate as "a real open decision left for a future round" rather than something to do reactively off
 one flaky run.
+
+## Never fall to pass 2 when the warm-start hint is feasible (2026-09-28)
+
+**Symptom**: `chiefBenchmark.solver.test.js` and `engineHeadToHead.test.js` occasionally reported the
+solver's pass-1 status as `RELAXED` (i.e. `run_pass2` had fired) on `standard`/`vacationHeavy`, and
+lost to local under `betterQuality`, even though `evaluate_hint` (`solver/model/hint_pin.py`) reports
+every one of the 4 `engineHeadToHead` fixtures' warm-start hints as feasible in the pass-1 model as of
+the GR-after-night reification fix (see "R9 follow-up, part 2" above) — a known feasible witness
+existing for the exact model pass 1 solves should mean pass 1 can never be genuinely INFEASIBLE, and
+`run_pass2` should never even be called.
+
+**Diagnosis (hypothesis 1 confirmed, hypotheses 2-4 ruled out)**: `solve.py`'s `_solve_pass1` collapses
+EVERY non-solvable staged-solve status — `INFEASIBLE` *and* `UNKNOWN` alike — into one outward
+`"INFEASIBLE"` (`if status_name not in SOLVABLE_STATUSES: return SolveResult(status="INFEASIBLE", ...)`),
+and `solve()` escalates to `run_pass2` on ANY `"INFEASIBLE"` pass-1 result, with no check of whether a
+feasible hint was already known to exist. `_solve_staged`'s first stage (`TIER_ERRORS`, 15% of
+`max_time_seconds` by default — ~4.5s of a 30s budget) genuinely can return `UNKNOWN` under load or CPU
+contention (`CpSolverParameters.num_workers > 1` search is non-deterministic run-to-run even at a fixed
+seed, already documented above) — a plain search-budget timeout, not evidence that no solution exists.
+Reproduced directly against real production-shaped payloads (dumped `buildSolverPayload({..., hint})`
+output for all 4 `engineHeadToHead` fixtures, replayed through `solver.solve.solve()` with
+`cp_model.CpSolver.solve` monkeypatched to return `UNKNOWN` on the 2nd call — i.e. stage 1, right after
+`evaluate_hint`'s own clone-solve succeeds): before this fix, that single forced `UNKNOWN` propagated
+all the way to `run_pass2` firing. Hypotheses 2 (hint evaluated on a divergent clone) and 4
+(`evaluate_hint`'s single-worker params missing real constraints) were ruled out — `hint_eval.feasible`
+was `True` in every reproduction, proving the hint clone and the real model already agree; hypothesis 3
+(staged per-stage budget too small to ever find the hint) doesn't distinguish UNKNOWN-from-timeout from
+genuine infeasibility, which is exactly the gap this fix closes regardless of which one occurs.
+
+**Fix**: `solver/model/hint_pin.py`'s `HintEvaluation` now also keeps the `CpSolver` that solved the
+fully-pinned clone (`solver`) and its solve time (`solve_time_ms`) whenever `feasible` is `True` —
+reading `.value(...)` off that solver against the ORIGINAL model's vars/exprs (`store.x`,
+`objective.*`) is valid because `CpModel.clone()` preserves every variable's index 1:1, the exact same
+fact `pinned_component_exprs` already relied on for this same solver object. `solve.py`'s
+`_apply_hint_pinning` now returns `(hint_diag, hint_eval)` instead of just the diagnostics dict, and
+`_solve_pass1` threads `hint_eval` into `_solve_staged(payload, build_result, hint_eval)`. Inside the
+staged loop, the ONE branch that previously returned an unconditional failure — "first stage failed
+outright, no earlier stage solution to fall back to" — now checks `hint_eval is not None and
+hint_eval.feasible` first: if so, it returns `("FEASIBLE", hint_eval.solver, ...)` — the hint's own
+already-solved clone — instead of the failed stage's status. `solve()` then sees a normal solvable
+status and never calls `run_pass2` at all. When no hint was supplied, the hint was itself infeasible,
+or `objectiveMode` is `"weighted"` (`hint_eval` is `None` in all three cases), behavior is completely
+unchanged — pass 1 can still genuinely report `INFEASIBLE` and pass 2 still runs exactly as before.
+
+**Tests**: `solver-service/tests/test_hint_pin.py`'s new
+`test_staged_stage1_unknown_with_feasible_hint_falls_back_to_hint_not_pass2` — same
+`cp_model.CpSolver.solve` call-count monkeypatch pattern `test_hint_and_staged.py`'s
+`test_staged_mid_ladder_failure_returns_last_good_stage_solution` already uses, forcing call #2 (stage
+1, right after `evaluate_hint`'s call #1) to `UNKNOWN` on a fixture with a proven-feasible hint —
+asserts the result comes back `status="FEASIBLE"`/`mode="strict"` (pass 2 never entered), with
+`hintPinning.applied`/`hintFeasible` both `True` and the schedule exactly matching the hint, and that
+`CpSolver.solve` is never called a 3rd time (stage 2/3 must never run once the fallback engages). Full
+`pytest` (168 passed, was 167 — the one new test).
+
+**Verification — `engineHeadToHead.test.js`, `SOLVER_PARITY=1`, 3 sequential full runs, one at a
+time (2026-09-28, final code on this branch)**:
+
+| run | standard | understaffed | vacationHeavy | conferenceBlock |
+|---|---|---|---|---|
+| 1 | win | win | win | win |
+| 2 | win | win | win | win |
+| 3 | win | win | tie | win |
+
+Zero losses and zero `RELAXED` statuses across all 3 runs — every fixture never-worse in every run,
+meeting the task's own bar ("if all 4 never-worse 3/3, remove `vacationHeavy`"). **`KNOWN_GAP_VARIANTS`
+is now empty** (`src/lib/engineHeadToHead.test.js`) — `vacationHeavy` removed.
+
+Also verified: `chiefBenchmark.solver.test.js` 3/3 passed, `solverParity.test.js` passed, full
+`pytest` (168 passed), full `npm test` (see task report for the count), all 4 quality baselines run
+one at a time (unchanged from their committed baselines), and `chiefBenchmark.test.js` passed.

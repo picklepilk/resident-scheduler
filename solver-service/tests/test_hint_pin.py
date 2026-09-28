@@ -11,6 +11,9 @@ worse than the hint on anything the solver itself can measure.
 
 from __future__ import annotations
 
+from ortools.sat.python import cp_model
+
+import solver.solve as solve_module
 from solver.build import build_model
 from solver.io.payload import parse_payload
 from solver.model.hint_pin import PINNED_COMPONENTS, apply_hint_pins, evaluate_hint, pinned_component_exprs
@@ -132,6 +135,59 @@ def test_pinned_component_exprs_only_counts_em_core_residents_for_target_deficit
     # r2/r3 (non-core) are free to stay under target -- pinning never touches
     # them, so this is unconstrained by hintPinning and may be > 0.
     assert non_core_shortfall >= 0
+
+
+def test_staged_stage1_unknown_with_feasible_hint_falls_back_to_hint_not_pass2(monkeypatch):
+    """2026-09-28 fix ("never fall to pass 2 when the warm-start hint is
+    feasible"): `evaluate_hint` can prove a hint feasible under the pass-1
+    model's own hard constraints, then the staged solve's FIRST stage can
+    still come back UNKNOWN if it merely runs out of its (small, 15% by
+    default) time budget before finishing search -- this is NOT a real
+    infeasibility. Before this fix, `_solve_pass1` collapsed that UNKNOWN
+    into an outward "INFEASIBLE" status, and `solve()` then unconditionally
+    escalated to pass 2 (`run_pass2`), which can legally relax rules
+    (nightCap/nightSegments) the hint never needed to touch at all, and uses
+    a different (single-shot weighted) objective that can score worse than
+    the hint itself. The fix: when the first staged-solve stage fails with
+    no earlier-stage solution to fall back to, and `evaluate_hint` already
+    proved the hint feasible, report the hint's OWN already-solved clone as
+    the pass-1 result instead.
+
+    Call-count bookkeeping: call #1 is `evaluate_hint`'s clone solve (must
+    succeed normally so the hint really is proven feasible); call #2 is
+    stage 1 (TIER_ERRORS, the first non-empty stage for this fixture) --
+    forced to UNKNOWN here. The fix must return immediately at that point
+    (never touching stage 2/3), so no further `CpSolver.solve` calls happen.
+    """
+    raw = load_fixture("small_feasible.json")
+    raw["hint"] = _full_coverage_hint()
+    payload = parse_payload(raw)
+
+    original_cpsolver_solve = cp_model.CpSolver.solve
+    call_count = {"n": 0}
+
+    def fake_solve(self, model):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            return cp_model.UNKNOWN
+        return original_cpsolver_solve(self, model)
+
+    monkeypatch.setattr(cp_model.CpSolver, "solve", fake_solve)
+
+    result = solve_module.solve(payload)
+
+    assert call_count["n"] == 2, "fix must return immediately on the hint fallback, never reaching stage 2/3"
+    assert result.status == "FEASIBLE"
+    assert result.mode == "strict"  # pass 2 (mode "relaxed") must never have run
+    assert result.feasibility is None
+    diag = result.report["hintPinning"]
+    assert diag["applied"] is True
+    assert diag["hintFeasible"] is True
+    assert result.validation["passed"] is True
+    # The fallback schedule must be exactly the hint's own placement.
+    dates = load_fixture("small_feasible.json")["block"]["dates"]
+    assert result.schedule["r1"] == {d: "D" for d in dates[:3]}
+    assert result.schedule["r2"] == {d: "D" for d in dates[3:]}
 
 
 def test_apply_hint_pins_adds_hard_constraints_to_the_real_model():
