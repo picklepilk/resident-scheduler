@@ -18,7 +18,7 @@ const blockDates = getBlockDates(args.block.startDate, args.block.endDate);
 
 // Deep-clones `res` and force-writes one guaranteed hard validateAll error: an evening shift
 // immediately followed by a day shift the next day for the same resident (CLAUDE.md: "eve→day
-// next day (and reverse) hard errors"). generateScheduleBest's own candidate pool hard-excludes
+// next day hard (either placement order)"). generateScheduleBest's own candidate pool hard-excludes
 // this pattern (see checkCircadianViolations), so a real best-of-N result should have zero of
 // these already — writing exactly one in reliably makes the mutated schedule strictly worse than
 // the unmutated one, regardless of whatever baseline errors the small synthetic fixture already

@@ -764,7 +764,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
-const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day, or vice versa; max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
+const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 — hard, sole exception the resident\'s own 2nd Wellness Wednesday (PGY-3 may substitute that one day). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation.';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
@@ -6945,6 +6945,28 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // ── obligations[r] — rule 19 inputs: in-block dates that count as a workday with NO shift
   // assigned (own GR weekday, JC presenting), already excluding vacation/approved-off (
   // isStreakWorkDay itself refuses to fabricate an obligation on those dates — see its own header).
+  // TRIED AND REJECTED (2026-09-27): sourcing `rs` from the caller's `hint` schedule instead of
+  // `block.schedule` when a hint is present. Motivation was real -- isStreakWorkDay's "worked a
+  // night shift the day before" GR exemption reads `rs[prevDs]`, and `block.schedule` (the
+  // pre-generation schedule, empty on a fresh solve) can never see a night shift the HINT itself
+  // placed, so `evaluate_hint` wrongly rejected several `engineHeadToHead` fixtures' hints as
+  // infeasible over a GR day that JS's own validateAll (checked against the real hint schedule)
+  // never flagged. But `obligations` feeds `build_model` ONCE, shared by both `evaluate_hint`'s
+  // fully-pinned clone (safe -- every x var is fixed to the hint there, so the hint-derived
+  // obligation is self-consistent by construction) AND the REAL staged solve (NOT safe -- only 3
+  // objective components are hard-pinned to the hint; the polisher is free to place a DIFFERENT
+  // shift, or none, the day before that same GR date). Baking the hint's own night-before fact in
+  // as a hard input let the polisher's real output drift from the hint at that exact spot while the
+  // model still believed the GR day could never count as a workday -- measured result:
+  // `engineHeadToHead` errorCount got WORSE, not better (e.g. standard 3->12, vacationHeavy 7->13,
+  // one run), from new `sixConsecutiveWorkDays`/`sixDayRunRest` violations validateAll caught on the
+  // solver's ACTUAL output that the solver's own (now wrongly-relaxed) hard constraint never forbade.
+  // Reverted. A correct fix needs the night-before fact reified against the model's OWN decision
+  // variables (like `night[]` elsewhere in this module), not a static payload input -- real modeling
+  // work, left for a dedicated task. Circadian eve/day + night-run-segments fixes (this same date)
+  // were kept -- they close the *actual* `engineHeadToHead` gap on their own (measured 4/4 win with
+  // this obligations change reverted), so the hint-infeasible diagnostic gap this would have closed
+  // is a known, harmless leftover (see solver-service/docs/PAYLOAD_SCHEMA.md's R9 section).
   const obligations = {};
   for (const r of allResidents) {
     const rs = block.schedule?.[r.id] || {};

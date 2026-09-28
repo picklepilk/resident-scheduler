@@ -323,32 +323,27 @@ Phase 5) and pays no JS-side scoring penalty for, so forbidding the solver from 
 than the hint happened to use could only ever make `coverageMin` (the metric that actually matters)
 worse, never better. Fixed by pinning only the 3 components JS's ladder can actually see.
 
-**Bigger, NOT-fixed-here finding: the hint is judged infeasible on every one of the 4
-`engineHeadToHead` fixtures**, so pinning never actually engages on any of them (`evaluate_hint`
-returns `feasible=False` for standard/understaffed/vacationHeavy/conferenceBlock alike — verified by
-dumping each fixture's real `buildSolverPayload` output and running `evaluate_hint` on it directly).
-Root cause, confirmed by bisecting hard-constraint families one at a time against the fixed hint:
+**RESOLVED 2026-09-27 (was: "hint judged infeasible on every one of the 4 `engineHeadToHead`
+fixtures").** The original finding here diagnosed the mismatch backwards. What was actually true:
 every fixture's warm-start schedule (the JS engine's own `generateScheduleBest` output) contains
 multiple resident/date pairs where a **day shift is immediately followed by an evening shift the
 next calendar day** (12-24 occurrences per fixture, e.g. `FLEX-D` on day N then `FLEX-E` on day
-N+1) — `solver/model/circadian.py`'s `_add_eve_day_pairs` treats BOTH `eve-then-day` and
-`day-then-eve` as hard-forbidden (per this doc's own tier-mapping table and this repo's
-`CLAUDE.md`: "eve→day next day (and reverse) hard"), but `ResidentScheduler.jsx`'s
-`checkCircadianViolations` only actually implements the `eve-then-day` direction — its `newType ===
-'day'` branch checks the PREVIOUS day for an eve shift (catching the SAME `eve→day` transition from
-the day-shift's own placement order, for a generator that fills passes in either direction), not the
-NEXT day, so `day→eve` is never checked at all despite the function's own comment claiming "(and the
-reverse)". This is a real, pre-existing bug in the JS engine's own rule enforcement — the SOLVER
-faithfully implements the documented policy; the JS generator does not — but it is a hard,
-never-relaxed rule (`rulePolicy.js` tiers `acgme`/`program`, both always-blocking) whose enforcement
-sits inside the ~8,300-line generator/repair/validator core, exercised by every quality-baseline
-ratchet test and `chiefBenchmark`. Fixing it changes what the GENERATOR is allowed to place, which
-can shift quality-baseline numbers and needs its own dedicated, reviewed task (see this repo's
-`rule-override-policy` memory note on how deliberately hard-rule changes are handled here) — **not
-fixed in this task**. Until it is, `evaluate_hint` will keep (correctly) rejecting most real hints,
-and pinning will mostly sit inert, falling back to the pre-existing staged behavior. The fallback
-itself is safe and exercised by `tests/test_hint_pin.py`; this is a missed-opportunity gap, not a
-correctness bug in the pinning feature.
+N+1) — `solver/model/circadian.py`'s `_add_eve_day_pairs` treated BOTH `eve-then-day` and
+`day-then-eve` as hard-forbidden, while `ResidentScheduler.jsx`'s `checkCircadianViolations` only
+ever enforced the `eve-then-day` direction (its `newType === 'day'` branch checks the PREVIOUS day
+for an eve shift — catching the SAME `eve→day` transition from the day-shift's own placement order,
+never the day→eve direction). This was written up as "a real, pre-existing bug in the JS engine's
+own rule enforcement" against a solver that "faithfully implements the documented policy." A
+follow-up user decision (2026-09-27) settled which side was actually right: **day shift followed by
+a next-day evening shift (~23h off, forward rotation) is explicitly ALLOWED** — only
+evening-then-day stays hard. So the JS engine's enforcement was correct all along; the SOLVER was
+over-forbidding. Fixed by narrowing `_add_eve_day_pairs` (and `validate.py`'s
+`_check_circadian_pairs`) to forbid only `eve-then-day`, matching what the JS generator already did.
+See root `CLAUDE.md`'s circadian rule line and `CLAUDE-Archive.md`'s superseded note for the policy
+change itself. With the solver now agreeing with the JS generator's own hard-rule enforcement, a
+warm-start hint containing a day→next-day-eve pair (extremely common — it's an allowed, unremarkable
+transition) is no longer rejected on account of it; see the re-measurement below for the resulting
+`hintFeasible` values on all 4 fixtures.
 
 ### Search tuning
 
@@ -457,16 +452,102 @@ file plus stdout) is the regression gate; everything else in that file remains m
   by `tests/test_hint_pin.py` (6 tests: feasible hints get pinned at their own achieved values,
   infeasible hints fall back cleanly with `hintFeasible: false`, only EM-core residents count toward
   `targetDeficitCore`, and the pins are real hard constraints on the model CP-SAT actually solves).
-- **Blocking discovery: `evaluate_hint` reports EVERY ONE of the 4 `engineHeadToHead` fixtures'
-  hints as infeasible**, so the pinning feature above never actually engages on any of them —
-  see "Pinning the polisher to its own hint"'s big caveat for the full diagnosis (a real,
-  pre-existing bug in `ResidentScheduler.jsx`'s `checkCircadianViolations`: it only enforces the
-  `eve`-immediately-followed-by-`day` direction of the hard eve/day adjacency rule, never the
-  `day`-immediately-followed-by-`eve` direction its own comment and `CLAUDE.md` both claim is also
-  hard). **Not fixed here** — deliberately out of scope: it's a correction to a hard,
-  never-relaxed rule's enforcement inside the ~8,300-line generator/repair/validator core, exercised
-  by every quality-baseline ratchet test and `chiefBenchmark`, and this repo's own
-  `rule-override-policy` memory note treats changes to hard-rule enforcement as needing dedicated,
-  reviewed work rather than a drive-by fix inside an unrelated solver task. Until it's fixed, `pin to
-  hint` will keep gracefully falling back to the pre-existing (un-pinned) staged solve on most real
-  hints instead of providing its intended protection.
+- **PARTIALLY RESOLVED 2026-09-27 (was: "Blocking discovery: `evaluate_hint` reports EVERY ONE of
+  the 4 `engineHeadToHead` fixtures' hints as infeasible").** One real root cause was a mismatch
+  between the solver's `_add_eve_day_pairs` (forbade both eve→day and day→eve) and the JS
+  generator's `checkCircadianViolations` (only ever enforced eve→day) — see "Pinning the polisher to
+  its own hint"'s rewritten diagnosis above. A 2026-09-27 user decision confirmed day→next-day-eve
+  is intentionally ALLOWED, so the solver (not the JS engine) was wrong; fixed by narrowing
+  `_add_eve_day_pairs`/`_check_circadian_pairs` to eve→day only. This alone makes the `standard`
+  fixture's hint feasible. Bisecting the other 3 fixtures turned up TWO more distinct causes, one
+  fixed (a `_add_night_run_segments` gap missing the `night_exempt` skip `_add_night_cap` already
+  had) and one found-but-reverted (a GR-obligation staleness issue in `buildSolverPayload`, unsafe to
+  fix the way first attempted) — see "Pin-to-hint re-measurement (post circadian fix)" below for the
+  full breakdown, the resulting `hintFeasible` values, and the `KNOWN_GAP_VARIANTS` decision.
+
+### Pin-to-hint re-measurement (post circadian fix, 2026-09-27)
+
+Re-ran `evaluate_hint` directly (dumped each fixture's real `buildSolverPayload({..., hint})` output
+via a throwaway vitest script, loaded it with `parse_payload`/`build_model` in Python, called
+`evaluate_hint`) after narrowing `_add_eve_day_pairs` to eve→day only:
+
+| fixture | hintFeasible (after eve/day fix alone) |
+|---|---|
+| standard | **true** |
+| understaffed | false |
+| vacationHeavy | false |
+| conferenceBlock | false |
+
+Bisected the 3 still-infeasible fixtures by rebuilding the model with one hard-constraint family
+skipped at a time (same method the original diagnosis used) against the hint fixed to every `x` var.
+Two more distinct causes, both traced to real resident/date pairs via `solver/validate.py`'s
+`validate_schedule` run directly against the hint (`{resident_id: {date: shift_id}}`):
+
+1. **`nightSegments` (fixed, kept).** `understaffed`'s hint has an FM-3 resident on `PED-N-FM`
+   (Mon/Tue/Wed nights only, `night_exempt=True`) working 4 separate 3-night stints across the
+   block — structurally inevitable for a shift that recurs the same 3 nights every week, and
+   `ResidentScheduler.jsx`'s own `checkCircadianViolations` already exempts night-only residents from
+   its ENTIRE `nightStintCount` check (`if (!nOnly) { ... }`, not just the total-nights cap). But
+   `circadian.py`'s `_add_night_run_segments` had no `night_exempt` skip at all (unlike
+   `_add_night_cap` right above it in the same file, which already did). Fixed by adding the same
+   skip; mirrored in `validate.py`'s `_check_night_run_and_cap_and_segments`. New pytest:
+   `test_night_exempt_resident_skips_night_run_segments_cap`. This alone makes `understaffed`'s hint
+   feasible.
+2. **GR-obligation staleness (found, NOT fixed — reverted after measuring real harm).**
+   `vacationHeavy`/`conferenceBlock`'s hints each have a resident working a night shift the day
+   before their own GR weekday, then several more shifts after — `isStreakWorkDay`'s documented
+   exemption ("worked a night shift the calendar day before... they sleep through GR... doesn't
+   count" — root `CLAUDE.md`) means that GR day should NOT count as a workday, so the true
+   consecutive-work run is short and legal (confirmed: running `validateAll` on the JS engine's OWN
+   winning schedule for these fixtures finds ZERO `sixConsecutiveWorkDays`/`sixDayRunRest` issues).
+   But `buildSolverPayload`'s `obligations` loop reads `rs = block.schedule?.[r.id] || {}` — the
+   PRE-generation schedule, empty on a fresh solve — so `isStreakWorkDay`'s `rs[prevDs]` lookup can
+   never see the night shift the HINT itself placed, and marks the GR day obligated anyway,
+   manufacturing an 7-8-day "run" only the SOLVER's payload believes exists. `evaluate_hint`
+   (correctly, given that input) then rejects the hint as infeasible.
+   - **Tried**: sourcing `rs` from the caller's `hint` schedule instead of `block.schedule` when a
+     hint is present (hint is a strict superset of `block.schedule`'s locked cells — generator never
+     overwrites non-empty cells). This DID make `vacationHeavy`/`conferenceBlock`'s hints feasible.
+   - **Reverted**: `obligations` feeds `build_model` ONCE, shared by both `evaluate_hint`'s
+     fully-pinned clone (safe — every `x` var is fixed to the hint there, so the hint-derived
+     obligation is self-consistent) AND the REAL staged solve (NOT safe — only 3 objective
+     components are hard-pinned; the polisher is free to place a different shift, or none, the day
+     before that same GR date). Baking the hint's own night-before fact in as a hard model input let
+     the polisher's real output drift from the hint at exactly that spot while the model still
+     believed the GR day could never count as a workday. Measured on a real `engineHeadToHead` run
+     with the fix in place: `errorCount` got WORSE, not better (`standard` 3→12, `vacationHeavy`
+     7→13, `conferenceBlock` 1→4 in one run), from new `sixConsecutiveWorkDays`/`sixDayRunRest`
+     violations `validateAll` caught on the solver's ACTUAL output — violations the solver's own
+     (now wrongly-relaxed) hard constraint never forbade, because its hard-coded obligation
+     assumption no longer matched what it actually placed. **Reverted** (`ResidentScheduler.jsx`
+     keeps `rs = block.schedule?.[r.id] || {}` unchanged, with an inline comment recording this
+     finding). A correct fix needs the "worked a night shift the day before" fact reified against the
+     model's OWN decision variables (like `night[]` already is elsewhere in `circadian.py`), not a
+     static payload input computed once up front — real modeling work, left for a dedicated task.
+     `understaffed`/`vacationHeavy`/`conferenceBlock` therefore still report `hintFeasible: false`
+     after this task (only `standard` is `true`) — a known, accepted, pre-existing-adjacent gap, not
+     a regression.
+
+**Net effect measured where it actually matters — `engineHeadToHead.test.js`, `SOLVER_PARITY=1`, 3
+sequential full runs, one at a time, final code (eve/day fix + night-segments fix; obligations
+change reverted)**:
+
+| run | standard | understaffed | vacationHeavy | conferenceBlock |
+|---|---|---|---|---|
+| 1 | win (errorCount 3→2) | win (errorCount 3→2) | win (errorCount 7→7 tie, shape 418→414) | win (blockingWarnCount 2→1) |
+| 2 | win (errorCount 3→2) | win (errorCount 3→2) | **loss** (errorCount 7→7 tie, but qualityVector n2 0→1) | win (blockingWarnCount 2→2 tie, coverageMiss 114→110) |
+| 3 | win (errorCount 3→2) | win (errorCount 3→2) | win (errorCount 7→7 tie, coverageMiss 139→138) | win (blockingWarnCount 2→1) |
+
+`standard`, `understaffed`, and `conferenceBlock` all won 3/3 — a marked improvement over this
+section's earlier "flaky standard/conferenceBlock" finding (both pre-dated the eve/day fix; the
+bogus day→eve hard-forbid was very likely eating into their own search quality too, not just the
+hint's feasibility). `vacationHeavy` won 2/3, lost 1/3 (`evaluate_hint` still reports its hint
+infeasible per the un-fixed GR-obligation gap above, so pinning never engages on it — same
+un-pinned staged-solve flakiness this doc already documented, not a new regression).
+
+**Decision: `KNOWN_GAP_VARIANTS` is left unchanged (`vacationHeavy` only)** — the task's own bar
+("if all 4 never-worse 3/3, remove `vacationHeavy`") was not met (1 loss in 3 runs), so the exclusion
+stays. This is nonetheless the best `vacationHeavy` has measured across every round of this feature
+(previously 3/3 losses, then 3/3 losses again under pinning-without-a-working-hint) — closing the
+GR-obligation gap properly (the reified-variable approach above) is the clear next step to chase a
+true 3/3 and revisit this decision.

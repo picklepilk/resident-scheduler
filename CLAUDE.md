@@ -54,7 +54,7 @@ npx vitest run src/lib/qgenda.test.js        # single file
 - Per-resident counts from real historical schedules never derive/validate targets (chief call-in/payback noise).
 
 ## Scheduling rules (getEligibleShifts / validateAll / generator)
-- **Circadian** (`NIGHT_RULES` 4-6-6): eve→day next day (and reverse) hard; max 6 nights/block; ≥24h post-night rest before day/eve/GR soft `postNightRest`, both directions. Hard circadian + GR-gap checks run regardless of `appSettings.enforceRest`. Rolling 80h/wk cap → `'hoursCapped'`.
+- **Circadian** (`NIGHT_RULES` 4-6-6): eve→day next day hard (either placement order); day→next-day eve allowed (user decision 2026-09-27); max 6 nights/block; ≥24h post-night rest before day/eve/GR soft `postNightRest`, both directions. Hard circadian + GR-gap checks run regardless of `appSettings.enforceRest`. Rolling 80h/wk cap → `'hoursCapped'`.
 - **Trauma**: TRAUMA-D/N clamped max 1; hard ≤2 TRAUMA-N per contiguous night run (`traumaRunCapped`, solver rule 43, never relaxed).
 - **Max 6 consecutive work days** (`MAX_CONSECUTIVE_WORK_DAYS`): counts assigned shift (incl. `prevBlockTailSchedules`), GR weekday (`grWorkDow`), JC presenting date — unless vacation/approved-off. Shared by validator, generator, picker.
 - **Journal Club** (`src/lib/journalClub.js`): consumers use `resolveJcDates`/`jcDatesInRange`/`isJcDate`/`isJcDateAnyAy` — never re-derive. Absent config = first Tuesdays; explicit `[]` honored. `ayWindowFor().end` EXCLUSIVE.

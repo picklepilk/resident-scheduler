@@ -229,6 +229,10 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
 
 
 def _check_circadian_pairs(payload: Payload, schedule: dict) -> list:
+    """Hard: eve shift immediately followed by a day shift the next calendar
+    day is forbidden. Day-then-eve is ALLOWED (user decision 2026-09-27) --
+    see `solver/model/circadian.py`'s `_add_eve_day_pairs`, whose docstring
+    this mirrors."""
     failures = []
     for resident in payload.residents:
         for date1 in payload.all_dates:
@@ -236,15 +240,14 @@ def _check_circadian_pairs(payload: Payload, schedule: dict) -> list:
             if not shift_id1:
                 continue
             type1 = payload.shifts[shift_id1].type
-            if type1 not in ("eve", "day"):
+            if type1 != "eve":
                 continue
             date2 = timing.add_days(date1, 1)
             shift_id2 = _shift_on(payload, resident, date2, schedule)
             if not shift_id2:
                 continue
             type2 = payload.shifts[shift_id2].type
-            forbidden = "day" if type1 == "eve" else "eve"
-            if type2 == forbidden:
+            if type2 == "day":
                 failures.append(
                     _fail("circadianPair", [resident.id], [date1, date2], [shift_id1, shift_id2], f"{type1}->{type2}")
                 )
@@ -265,9 +268,14 @@ def _check_night_run_and_cap_and_segments(payload: Payload, schedule: dict) -> l
             if total > resident.caps.nights:
                 failures.append(_fail("nightCap", [resident.id], [], [], f"{total} nights, cap {resident.caps.nights}"))
 
-        segments = _runs_touching_block(payload.all_dates, flags, block_dates)
-        if segments > NIGHT_SEGMENTS_MAX:
-            failures.append(_fail("nightSegments", [resident.id], [], [], f"{segments} night-run segments"))
+        # night_exempt (e.g. FM-3 on PED-N-FM) skips the segments cap too, same as the nights-cap
+        # check above -- mirrors circadian.py's `_add_night_run_segments` (fixed 2026-09-27) and
+        # ResidentScheduler.jsx's own `!nOnly` gate around its whole nightStintCount check: a
+        # night-only rotation's weekly recurring stint pattern is expected, not fragmentation.
+        if not resident.night_exempt:
+            segments = _runs_touching_block(payload.all_dates, flags, block_dates)
+            if segments > NIGHT_SEGMENTS_MAX:
+                failures.append(_fail("nightSegments", [resident.id], [], [], f"{segments} night-run segments"))
     return failures
 
 
