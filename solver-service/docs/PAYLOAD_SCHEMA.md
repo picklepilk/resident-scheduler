@@ -551,3 +551,96 @@ stays. This is nonetheless the best `vacationHeavy` has measured across every ro
 (previously 3/3 losses, then 3/3 losses again under pinning-without-a-working-hint) — closing the
 GR-obligation gap properly (the reified-variable approach above) is the clear next step to chase a
 true 3/3 and revisit this decision.
+
+## R9 follow-up, part 2 (2026-09-27): GR-after-night exemption decided inside the model
+
+Closes the "GR-obligation staleness" gap the section immediately above left open. Root cause
+(unchanged from that diagnosis): `ResidentScheduler.jsx`'s `isStreakWorkDay` exempts a resident's own
+Grand Rounds weekday from the 6-consecutive-work-day streak when they worked a night-type shift the
+calendar day before (they slept through GR) — but `buildSolverPayload`'s old `obligations` map baked
+that exemption in ONCE, up front, by reading `block.schedule` (empty pre-generation) as the "day
+before" fact. A fresh solve could therefore never see a night shift the warm-start hint (or the
+solver's own free choice) placed the day before a GR date, and treated every such GR day as an
+unconditional workday — manufacturing phantom 7-8-day runs `evaluate_hint` (correctly, given that
+stale input) then rejected as infeasible. The previously-tried fix (source the "day before" fact from
+the caller's `hint` schedule instead) was reverted because it's only safe for `evaluate_hint`'s
+fully-pinned clone, not the real staged solve, where the polisher is free to place something
+different the day before that same GR date and the model would still believe the old fact.
+
+**Fix: make the exemption a solver decision, not a payload fact.**
+
+- JS (`ResidentScheduler.jsx`): `isStreakWorkDay` split into a new `obligationKind(resident, ds,
+  bounds)` helper (returns `'jc'` | `'gr'` | `null`) plus the original function, now just
+  `obligationKind` + (for `'gr'`) the post-overnight night-shift check. `buildSolverPayload`'s
+  `obligations`/`obligationsExemptAfterNight` loop calls `obligationKind` directly, UNCONDITIONALLY
+  (ignoring the night-before check entirely) — `obligations[residentId]` now lists every GR-weekday/
+  JC-presenting date regardless of what's the day before, and the new `obligationsExemptAfterNight
+  [residentId]` names the subset where the exemption CAN apply at all (`'gr'` kind only — a JC
+  presenting date is never exempted; `isStreakWorkDay`'s unconditional-true branch for JC runs BEFORE
+  the exemption check, so it never even reaches it).
+- Payload (`solver/io/payload.py`): new OPTIONAL field `obligationsExemptAfterNight: {residentId:
+  [date]}`, parsed with the same `_parse_obligations` helper as `obligations`. Defaults to `{}` —
+  an older JS build that never sends it makes every `obligations` date count as worked
+  unconditionally, byte-identical to pre-this-fix behavior (never LESS strict).
+- Model (`solver/model/workday_limits.py`'s new `_obligation_term`): for a date in `obligations`, the
+  term fed into `work[r,d]`'s linking constraint is `1` if the date isn't in
+  `obligationsExemptAfterNight`, else `1 - night[r, d-1]` — a plain CP-SAT affine expression, no new
+  BoolVar needed, since `night` is already provably 0/1 (at-most-one-shift-per-day). `night[r, d-1]`
+  is the resident's own decision var for an in-block prior date (`circadian.py`'s existing link) or a
+  plain int constant for a prior-tail date (already-happened history). This can never go stale: it
+  reads whatever the model — hint-pinned clone or the real free solve — actually decided for that
+  prior date, not a fact computed once before the solve started.
+- `solver/validate.py`'s independent re-check (`_work_flags`) mirrors the same logic directly against
+  the concrete final schedule (no reification needed there — it's a fixed-schedule post-solve check).
+- `report/builder.py`'s `payload_to_raw` (verification-resolve round-trip) also carries the new field.
+
+**Tests**: `solver-service/tests/test_workday_limits.py` — `test_gr_day_after_a_night_not_counted_as_workday`,
+`test_gr_day_without_a_night_before_still_counted_as_workday`,
+`test_obligation_without_exempt_flag_counts_even_after_a_night` (JC-shaped: no exemption regardless of
+the night before), `test_exemption_lets_solver_legally_place_a_pattern_js_allows` (7-calendar-day
+shape that's infeasible without the exemption, legal with it, matching what `validateAll` already
+accepts for this exact shape). `src/lib/solverPayload.test.js`'s new `describe('obligations /
+obligationsExemptAfterNight')` block covers the JS-side payload shape (GR flagged, JC never flagged,
+vacation/approved-off suppresses both, a date with a real assigned shift is omitted from both).
+
+**Verification — `evaluate_hint` feasibility, all 4 `engineHeadToHead` fixtures** (dedicated
+throwaway script, same "dump `buildSolverPayload({..., hint})`, run the real CLI, read
+`report.hintPinning`" method the original diagnosis used):
+
+| fixture | hintFeasible (before this fix) | hintFeasible (after this fix) |
+|---|---|---|
+| standard | true | **true** |
+| understaffed | false | **true** |
+| vacationHeavy | false | **true** |
+| conferenceBlock | false | **true** |
+
+Every fixture's warm-start hint is now recognized as feasible and pinning engages on all 4 (`applied:
+true` in every case) — the diagnosed staleness gap is closed.
+
+**`engineHeadToHead.test.js`, `SOLVER_PARITY=1`, 3 sequential full runs, one at a time**:
+
+| run | standard | understaffed | vacationHeavy | conferenceBlock |
+|---|---|---|---|---|
+| 1 | win | win | win (errorCount 7→7 tie, coverageMiss 139→139 tie, shape 418.48→407.17) | win (blockingWarnCount 2→1, coverageMiss 114→110) |
+| 2 | win | win | win | win |
+| 3 | win (errorCount 3→2, coverageMiss 126→125) | win (errorCount 3→2, coverageMiss 207→205) | **loss** (errorCount 7→7 tie, coverageMiss 139→142 — solver's `n0` tier got worse despite a better shape term, 403.06 vs 418.48) | win (errorCount 1→1 tie, blockingWarnCount 2→1, coverageMiss 114→111) |
+
+(Run 2's per-variant metric breakdown wasn't preserved — only its win/tie/loss verdict, from the
+test's own summary line — due to a `tail`-truncation mistake capturing that background run's output;
+re-running a 4th time to recover it was judged not worth the ~150s and would no longer be "3
+sequential runs" as asked. The win/tie/loss verdict itself, which is what the `KNOWN_GAP_VARIANTS` bar
+below actually turns on, is unambiguous from the test's own printed summary for every run.)
+
+Net: **standard, understaffed, and conferenceBlock all won 3/3.** `vacationHeavy` won 2/3, lost 1/3 —
+the loss is the SAME pre-existing, already-documented staged-solve noise the "Known gaps" section
+above describes ("Staged solve's margin over the warm-start hint is NOISY... on multiple fixtures"),
+not a GR-obligation mismatch: `hintFeasible` is `true` and pinning is `applied: true` on
+`vacationHeavy` in every run now (confirmed via the dedicated script above), so the loss happens
+entirely inside stage 3's own coverage-vs-shape tradeoff within the time budget, an orthogonal,
+already-known source of variance this task's fix doesn't touch.
+
+**Decision: `KNOWN_GAP_VARIANTS` is left unchanged (`vacationHeavy` only)** — the task's own bar ("if
+all 4 never-worse 3/3, remove `vacationHeavy`") was not met (1 loss in 3 runs). This is nonetheless a
+real, measured improvement in what was previously flagged as unfinished work: `vacationHeavy`'s hint
+is feasible and pinned on every run now (previously never), and its remaining loss is bounded to the
+already-documented staged-solve coverage/shape noise rather than a masked hard-rule violation.

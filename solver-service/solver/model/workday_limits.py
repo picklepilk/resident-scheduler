@@ -7,6 +7,18 @@ own obligation days (GR weekday, JC presenting) per the payload's resolved
 This module owns the `work[r, d]` link for exactly that reason -- the
 obligation fact is workday-limits-specific data, not something variables.py
 or any other family needs.
+
+R9 follow-up (2026-09-27): a GR-weekday obligation (never JC -- see
+`Payload.obligations_exempt_after_night`'s own docstring) only counts as
+worked when the resident did NOT work a night-type shift the calendar day
+before (`ResidentScheduler.jsx`'s `isStreakWorkDay` post-overnight GR
+exemption). That fact is now reified against the model's own `night[r, d-1]`
+decision var (`_obligation_term` below) instead of read from a static payload
+input computed once up front -- a static input could never see a night shift
+the solver itself (via warm-start hint or its own free choice) places the day
+before, and either wrongly forced a phantom workday or, if computed from a
+hint schedule, went stale the moment the real solve diverged from that hint.
+See docs/PAYLOAD_SCHEMA.md's dated section for the full history.
 """
 
 from __future__ import annotations
@@ -40,24 +52,59 @@ def add_workday_limit_constraints(model, payload: Payload, store: VarStore, enfo
     _add_post_run6_rest(model, payload, store, enforcement)
 
 
+def _obligation_term(payload: Payload, store: VarStore, resident, date_str: str, obligations, exempt_dates):
+    """The (possibly non-constant) obligation term for `_link_work` below: 1
+    if `date_str` is one of `resident`'s own GR-weekday/JC-presenting
+    `obligations` dates -- UNLESS it's also in `exempt_dates` (GR only -- see
+    `Payload.obligations_exempt_after_night`'s own docstring for why JC dates
+    never appear there) AND the resident worked a night-type shift the
+    calendar day before, in which case it's 0. Mirrors isStreakWorkDay's own
+    post-overnight GR exemption in ResidentScheduler.jsx exactly: JC's
+    unconditional-true branch runs BEFORE that exemption check there, so a JC
+    date is never exempt.
+
+    Returns a plain python int when the date isn't obligated at all, or when
+    it IS obligated but not exemptable (JC, or an older payload that never
+    sends `obligationsExemptAfterNight` at all -- back-compat: every
+    obligation counts as worked unconditionally, same as before this fix).
+    Otherwise returns a CP-SAT affine expression `1 - night[r, d-1]` built off
+    the resident's own `night` decision var for an in-block prior date, or a
+    plain int for a prior-tail date (already-happened history, not a
+    decision) -- `night` is provably 0/1 (at-most-one-shift-per-day), so this
+    never needs its own reified BoolVar.
+    """
+    if date_str not in obligations:
+        return 0
+    if date_str not in exempt_dates:
+        return 1
+    prev_date = timing.add_days(date_str, -1)
+    if prev_date in payload.block.dates:
+        return 1 - store.night[(resident.id, prev_date)]
+    prior_shift_id = resident.prior_tail.get(prev_date)
+    was_night = bool(prior_shift_id) and prior_shift_id in payload.shifts and payload.shifts[prior_shift_id].is_night
+    return 0 if was_night else 1
+
+
 def _link_work(model, payload: Payload, store: VarStore) -> None:
     """work[r,d] == max(any shift assigned that day, obligation that day).
     `sum(x)` is provably in {0,1} thanks to the at-most-one-per-day
-    constraint, so three plain linear inequalities pin `work` exactly without
-    needing a reified AddMaxEquality:
+    constraint, and (see `_obligation_term`) so is the obligation term itself,
+    so three plain linear inequalities pin `work` exactly without needing a
+    reified AddMaxEquality:
         work >= sum(x)          (a shift forces work=1)
         work >= obligation      (an obligation forces work=1)
         work <= sum(x) + obligation   (neither present forces work=0)
     """
     for resident in payload.residents:
         obligations = payload.obligations.get(resident.id, set())
+        exempt_dates = payload.obligations_exempt_after_night.get(resident.id, set())
         for date_str in payload.block.dates:
             work_var = store.work[(resident.id, date_str)]
             x_terms = store.x_sum_for_resident_date(resident.id, date_str)
-            obligation_const = 1 if date_str in obligations else 0
+            obligation_term = _obligation_term(payload, store, resident, date_str, obligations, exempt_dates)
             model.add(work_var >= sum(x_terms))
-            model.add(work_var >= obligation_const)
-            model.add(work_var <= sum(x_terms) + obligation_const)
+            model.add(work_var >= obligation_term)
+            model.add(work_var <= sum(x_terms) + obligation_term)
 
 
 def _add_six_day_window(model, payload: Payload, store: VarStore, enforcement=None) -> None:

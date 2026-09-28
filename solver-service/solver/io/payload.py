@@ -221,6 +221,21 @@ class Payload:
     # own docstring).
     true_primary: dict = field(default_factory=dict)
 
+    # ---- R9 follow-up (2026-09-27, GR-after-night exemption as a model decision) ----
+    # Subset of each resident's own `obligations` dates where isStreakWorkDay's post-overnight GR
+    # exemption CAN apply -- i.e. it's a GR-weekday obligation, not a JC-presenting one (JC's
+    # unconditional-true branch in ResidentScheduler.jsx runs BEFORE that exemption check, so JC
+    # dates are never exempt and never appear here). `obligations` itself is now built UNCONDITIONALLY
+    # on the JS side (ignoring the night-before fact entirely) -- whether an exempt date actually
+    # counts as worked is a solver decision (workday_limits.py's `_obligation_term`, reified off
+    # `night[r, d-1]`), never a static payload fact, so a night shift the solver itself places the day
+    # before can correctly exempt a GR day without ever going stale (see the "obligations-from-hint"
+    # revert this replaces -- this file's git history / PAYLOAD_SCHEMA.md's dated section). OPTIONAL,
+    # additive: an older JS build that doesn't send this field gets an empty dict here, so every
+    # `obligations` date counts as worked unconditionally -- byte-identical to pre-this-change
+    # behavior (never LESS strict than before).
+    obligations_exempt_after_night: dict = field(default_factory=dict)  # residentId -> set[date]
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
@@ -396,6 +411,7 @@ def parse_payload(raw: dict) -> Payload:
             post_night_day_rest_h=int(raw.get("postNightDayRestH", 24) or 24),
             gr_end_h=int(raw.get("grEndH", 12) or 12),
             true_primary=raw.get("truePrimary", {}) or {},
+            obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

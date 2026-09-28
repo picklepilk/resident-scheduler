@@ -317,6 +317,44 @@ describe('buildSolverPayload', () => {
     expect(mike.obligationHours['2026-07-15']).toBe(4); // GR_DURATION_H
   });
 
+  // ── R9 follow-up (2026-09-27): GR-after-night exemption is now a solver decision, not a static
+  // fact baked into `obligations` up front (PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding).
+  describe('obligations / obligationsExemptAfterNight', () => {
+    it('sends a GR-weekday obligation unconditionally, flagged exempt-after-night, ignoring the pre-generation schedule', () => {
+      const fixture = makeFixture('standard');
+      const payload = buildSolverPayload(fixture);
+      // syn_mike: EM_HOME chief PGY-3, GR weekday Wednesday 2026-07-15, no shift assigned there
+      // (block.schedule is {} pre-generation) — must appear in BOTH maps.
+      expect(payload.obligations.syn_mike).toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike).toContain('2026-07-15');
+    });
+
+    it('sends a JC presenting-date obligation but NEVER flags it exempt-after-night (isStreakWorkDay never exempts JC)', () => {
+      const fixture = makeFixture('standard');
+      const payload = buildSolverPayload(fixture);
+      // syn_charlie: EM_HOME PGY-1, jcPresentDates: ['2026-07-07'] (syntheticRoster.js).
+      expect(payload.obligations.syn_charlie).toContain('2026-07-07');
+      expect(payload.obligationsExemptAfterNight.syn_charlie || []).not.toContain('2026-07-07');
+    });
+
+    it('never fabricates an obligation on a vacation/approved-off date, exempt-flagged or not', () => {
+      const fixture = makeFixture('standard');
+      const mike = fixture.allResidents.find(r => r.id === 'syn_mike');
+      mike.vacationDates = [...(mike.vacationDates || []), '2026-07-15'];
+      const payload = buildSolverPayload(fixture);
+      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
+    });
+
+    it('omits a date already carrying a real assigned shift from both maps (locked cells force work=1 on their own)', () => {
+      const fixture = makeFixture('standard');
+      fixture.block.schedule = { syn_mike: { '2026-07-15': 'POD-D' } };
+      const payload = buildSolverPayload(fixture);
+      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
+      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
+    });
+  });
+
   it('grEndH is sent (altitude fix, defaults to 12 — Grand Rounds\' own end hour)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);

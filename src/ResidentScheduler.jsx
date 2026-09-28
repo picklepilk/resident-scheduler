@@ -2167,20 +2167,34 @@ function grWorkDow(resident) {
 // inference. Without bounds, callers get the old unconditional behavior (every in-block caller
 // already only ever asks about in-block dates, where the fallback is intentional per chief
 // sign-off — see the comment block above grWorkDow).
+//
+// Split out of isStreakWorkDay (solver-parity fix, 2026-09-27) so buildSolverPayload can ask "is
+// `ds` this resident's own GR/JC obligation day AT ALL" independent of the post-overnight GR
+// exemption below — the exemption depends on the day-BEFORE's shift, which for a fresh solve is a
+// solver decision, not a static fact yet (see PAYLOAD_SCHEMA.md's "GR-obligation staleness"
+// finding this replaces). Returns 'jc' (JC presenting date — never exempted) or 'gr' (own GR
+// weekday — CAN be exempted by isStreakWorkDay below), or null (not an obligation day at all).
+function obligationKind(resident, ds, bounds = null) {
+  if (!resident) return null;
+  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return null;
+  if (bounds && (ds < bounds.min || ds > bounds.max)) return null;
+  if ((resident.jcPresentDates || []).includes(ds)) return 'jc';
+  const g = grWorkDow(resident);
+  if (g == null || parseDate(ds).getDay() !== g) return null;
+  return 'gr';
+}
 export function isStreakWorkDay(rs, resident, ds, prevRs = null, bounds = null) {
   if ((rs && rs[ds]) || (prevRs && prevRs[ds])) return true;
-  if (!resident) return false;
-  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return false;
-  if (bounds && (ds < bounds.min || ds > bounds.max)) return false;
-  if ((resident.jcPresentDates || []).includes(ds)) return true;
-  const g = grWorkDow(resident);
-  if (g == null || parseDate(ds).getDay() !== g) return false;
-  // Post-overnight GR exemption (chief-directed): a resident who worked a night shift the
-  // calendar day immediately before their own GR weekday sleeps through Grand Rounds — GR was
-  // never a schedule entry to begin with, so this only changes whether the day counts toward the
-  // 6-consecutive-work-day streak, not anything actually placed on the schedule. This is also the
-  // mechanism by which a BAMC resident may legitimately miss one Thursday GR per rotation when
-  // coming straight off nights (grWorkDow(EM_BAMC) = Thursday, same exemption, no extra code).
+  const kind = obligationKind(resident, ds, bounds);
+  if (kind == null) return false;
+  if (kind === 'jc') return true;
+  // kind === 'gr': post-overnight GR exemption (chief-directed): a resident who worked a night
+  // shift the calendar day immediately before their own GR weekday sleeps through Grand Rounds —
+  // GR was never a schedule entry to begin with, so this only changes whether the day counts
+  // toward the 6-consecutive-work-day streak, not anything actually placed on the schedule. This
+  // is also the mechanism by which a BAMC resident may legitimately miss one Thursday GR per
+  // rotation when coming straight off nights (grWorkDow(EM_BAMC) = Thursday, same exemption, no
+  // extra code).
   const prevDs = toDateStr(addDays(parseDate(ds), -1));
   const prevSid = (rs && rs[prevDs]) || (prevRs && prevRs[prevDs]);
   return !isNightShiftId(prevSid);
@@ -6949,40 +6963,38 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     };
   });
 
-  // ── obligations[r] — rule 19 inputs: in-block dates that count as a workday with NO shift
-  // assigned (own GR weekday, JC presenting), already excluding vacation/approved-off (
-  // isStreakWorkDay itself refuses to fabricate an obligation on those dates — see its own header).
-  // TRIED AND REJECTED (2026-09-27): sourcing `rs` from the caller's `hint` schedule instead of
-  // `block.schedule` when a hint is present. Motivation was real -- isStreakWorkDay's "worked a
-  // night shift the day before" GR exemption reads `rs[prevDs]`, and `block.schedule` (the
-  // pre-generation schedule, empty on a fresh solve) can never see a night shift the HINT itself
-  // placed, so `evaluate_hint` wrongly rejected several `engineHeadToHead` fixtures' hints as
-  // infeasible over a GR day that JS's own validateAll (checked against the real hint schedule)
-  // never flagged. But `obligations` feeds `build_model` ONCE, shared by both `evaluate_hint`'s
-  // fully-pinned clone (safe -- every x var is fixed to the hint there, so the hint-derived
-  // obligation is self-consistent by construction) AND the REAL staged solve (NOT safe -- only 3
-  // objective components are hard-pinned to the hint; the polisher is free to place a DIFFERENT
-  // shift, or none, the day before that same GR date). Baking the hint's own night-before fact in
-  // as a hard input let the polisher's real output drift from the hint at that exact spot while the
-  // model still believed the GR day could never count as a workday -- measured result:
-  // `engineHeadToHead` errorCount got WORSE, not better (e.g. standard 3->12, vacationHeavy 7->13,
-  // one run), from new `sixConsecutiveWorkDays`/`sixDayRunRest` violations validateAll caught on the
-  // solver's ACTUAL output that the solver's own (now wrongly-relaxed) hard constraint never forbade.
-  // Reverted. A correct fix needs the night-before fact reified against the model's OWN decision
-  // variables (like `night[]` elsewhere in this module), not a static payload input -- real modeling
-  // work, left for a dedicated task. Circadian eve/day + night-run-segments fixes (this same date)
-  // were kept -- they close the *actual* `engineHeadToHead` gap on their own (measured 4/4 win with
-  // this obligations change reverted), so the hint-infeasible diagnostic gap this would have closed
-  // is a known, harmless leftover (see solver-service/docs/PAYLOAD_SCHEMA.md's R9 section).
+  // ── obligations[r] / obligationsExemptAfterNight[r] — rule 19 inputs: in-block dates that count
+  // as a workday with NO shift assigned (own GR weekday, JC presenting), already excluding
+  // vacation/approved-off (obligationKind itself refuses to fabricate an obligation on those dates
+  // — see its own header). Sent UNCONDITIONALLY now (2026-09-27, GR-after-night exemption as a
+  // model decision) -- i.e. ignoring isStreakWorkDay's post-overnight GR exemption entirely, which
+  // depends on the PRECEDING day's shift. For a fresh solve that's a solver decision, not a static
+  // fact yet (`block.schedule` is empty pre-generation, so the old `isStreakWorkDay(rs, ...)` call
+  // here could never see a night shift the solver/hint itself might place the day before, and
+  // treated every GR day as an unconditional workday -- manufacturing phantom 7-8-day runs; see
+  // PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding this replaces, including the reverted
+  // "source rs from the hint" attempt). `obligationsExemptAfterNight` names the subset of each
+  // resident's own `obligations` dates where the exemption CAN apply at all (own GR weekday, per
+  // `obligationKind`'s 'gr' result) -- JC presenting dates are never exempted (JC's
+  // unconditional-true branch in isStreakWorkDay runs before the exemption check), so they only
+  // ever appear in `obligations`, never here. The solver reifies the actual exemption against its
+  // own `night[r, d-1]` decision var (`workday_limits.py`'s `_obligation_term`) instead of a static
+  // input, so it can never go stale no matter what the polisher places the day before.
   const obligations = {};
+  const obligationsExemptAfterNight = {};
   for (const r of allResidents) {
     const rs = block.schedule?.[r.id] || {};
     const obligDates = [];
+    const exemptDates = [];
     for (const ds of dates) {
       if (rs[ds]) continue;
-      if (isStreakWorkDay(rs, r, ds, prevTail[r.id] || null, streakWalkBounds)) obligDates.push(ds);
+      const kind = obligationKind(r, ds, streakWalkBounds);
+      if (kind == null) continue;
+      obligDates.push(ds);
+      if (kind === 'gr') exemptDates.push(ds);
     }
     if (obligDates.length) obligations[r.id] = obligDates;
+    if (exemptDates.length) obligationsExemptAfterNight[r.id] = exemptDates;
   }
 
   // ── locked[] — rule 14: every non-empty cell already in block.schedule (manual entries AND
@@ -7109,6 +7121,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     residents,
     eligible,
     obligations,
+    obligationsExemptAfterNight,
     locked,
     ...(hintCells.length ? { hint: hintCells } : {}),
     coverage: coverageOut,

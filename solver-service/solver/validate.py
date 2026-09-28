@@ -65,12 +65,29 @@ def _shift_on(payload: Payload, resident, date_str: str, schedule: dict):
 
 
 def _work_flags(payload: Payload, resident, schedule: dict) -> dict:
+    """`obligations` (GR weekday / JC presenting, no shift on the date itself)
+    counts as worked UNLESS the date is in `obligations_exempt_after_night`
+    (GR only -- JC presenting dates are never exempt) AND the resident worked
+    a night-type shift the calendar day before, exactly mirroring
+    isStreakWorkDay's own post-overnight GR exemption in ResidentScheduler.jsx
+    (JC's unconditional-true branch runs BEFORE that exemption check there, so
+    it never applies to JC). `night_flags` gives the concrete answer for
+    "did they actually work a night the day before" against this schedule --
+    unlike the solver model, this is a post-solve check on a fixed schedule,
+    so there's no need to reify anything.
+    """
     obligations = payload.obligations.get(resident.id, set())
+    exempt_dates = payload.obligations_exempt_after_night.get(resident.id, set())
+    night_flags = _night_flags(payload, resident, schedule)
     flags = {}
     for d in payload.tail_dates:
         flags[d] = (d in resident.prior_tail) or (d in resident.prior_tail_obligations)
     for d in payload.block.dates:
-        flags[d] = bool(schedule.get(resident.id, {}).get(d)) or (d in obligations)
+        has_shift = bool(schedule.get(resident.id, {}).get(d))
+        obligated = d in obligations
+        if obligated and d in exempt_dates:
+            obligated = not night_flags.get(timing.add_days(d, -1), False)
+        flags[d] = has_shift or obligated
     return flags
 
 

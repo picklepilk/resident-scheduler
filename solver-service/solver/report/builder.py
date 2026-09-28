@@ -355,6 +355,7 @@ def payload_to_raw(payload: Payload) -> dict:
         "residents": [_resident_to_raw(r) for r in payload.residents],
         "eligible": {rid: {d: list(sids) for d, sids in by_date.items()} for rid, by_date in payload.eligible.items()},
         "obligations": {rid: list(dates) for rid, dates in payload.obligations.items()},
+        "obligationsExemptAfterNight": {rid: list(dates) for rid, dates in payload.obligations_exempt_after_night.items()},
         "locked": [{"residentId": lc.resident_id, "date": lc.date, "shiftId": lc.shift_id} for lc in payload.locked],
         "coverage": {
             sid: {d: {"min": e.min, "max": e.max} for d, e in by_date.items()} for sid, by_date in payload.coverage.items()
