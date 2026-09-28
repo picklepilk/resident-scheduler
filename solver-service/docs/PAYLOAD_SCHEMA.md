@@ -644,3 +644,83 @@ all 4 never-worse 3/3, remove `vacationHeavy`") was not met (1 loss in 3 runs). 
 real, measured improvement in what was previously flagged as unfinished work: `vacationHeavy`'s hint
 is feasible and pinned on every run now (previously never), and its remaining loss is bounded to the
 already-documented staged-solve coverage/shape noise rather than a masked hard-rule violation.
+
+## Coverage-mapping investigation, part 3 (2026-09-27): no gap found; the loss is `TIER_QUALITY` noise
+
+Task premise: the section immediately above measured `vacationHeavy` losing to local with `errorCount`
+tied 7-7 but `qualityVector` n0 (`coverageMiss`) **139 (local) vs 142 (solver)** — since `coverageMin`
+slack is hard-pinned `<=` the hint's own achieved value (`hint_pin.py`), a 142 result implied the
+solver's own coverage accounting must disagree with JS's `coverageMiss` metric SOMEWHERE in the
+build-payload -> solve -> map-result -> rescore round trip. This section is that investigation.
+
+**Method**: a throwaway diagnostic script (`src/lib/_diagCoverageMapping.test.js`, deleted after use,
+never committed) ran the real production pipeline end to end on `vacationHeavy`, 10 times: JS
+`generateScheduleBest` -> `buildSolverPayload({..., hint})` -> the real `cli.py` subprocess -> JS
+`mapSolverResult` -> JS's own `computeQualityMetrics`/`coverageMiss` recompute on the FINAL MAPPED
+schedule. Each run compared that recompute against (a) the solver's own internal `report.unfilled`
+shortBy total (read straight off `objective.coverage_slacks` post-solve — the exact expression
+`hint_pin.py` hard-pins) and (b) `report.hintPinning.pinned.coverageMin` (the pin's own ceiling), plus
+an independent per-(shift,date) diff of `payload.coverage`'s `min` values against a live
+`getCoverageFor(shift.id, coverage, dow, twelveHourStateFor(ds, ayConf))` recompute using the identical
+inputs `buildSolverPayload` and `scheduleQuality.js`'s `coverageMiss` loop each already use.
+
+**Finding: no mapping gap exists, on HEAD.** Across all 10 diagnostic runs plus 5 full
+`engineHeadToHead.test.js` runs (below):
+- `payload.coverage` vs. the live recompute: **0 mismatches**, every run — `buildSolverPayload`'s
+  coverage-table construction (`SHIFTS` + `shiftActiveOnDow` + `getCoverageFor(shift.id, coverage,
+  dow, conf12For(ds))`) and `scheduleQuality.js`'s `coverageMiss` loop (`Object.keys(SHIFT_MAP)` +
+  the same `shiftActiveOnDow`/`getCoverageFor`) are — and remain — the exact same (shift,date) ->
+  min definition, including 12h-window resolution.
+- The solver's own `report.unfilled` shortBy total and JS's independently-recomputed `coverageMiss`
+  on the mapped schedule were **IDENTICAL in every single run** (138 or 139 — never above the pin's
+  139 ceiling). The mapped schedule's JS-measured coverage never once exceeded what the solver's own
+  model believed it had achieved.
+
+The originally-measured "139→142" result is **not reproducible on HEAD** (commit 6688ef7, "decide the
+GR-after-night work-day exemption inside the model"). Best explanation: that same commit is what
+first made `evaluate_hint` report this fixture's hint FEASIBLE on every run (previously it was
+infeasible on `vacationHeavy` in every measurement in this doc except by chance) — every run measured
+for THIS task therefore had `hintPinning.applied: true` throughout, a condition earlier "139→142"
+measurements in this doc were not guaranteed to have.
+
+**What IS still real (confirmed by re-running 5x)**: `vacationHeavy` — and, newly observed here,
+`standard` — can still lose to local. But in every observed loss, `qualityVector`'s n0/n1/n2
+(coverageMin/seniorComposition/postNightRest) **tie EXACTLY** with local; the loss is purely
+`qualityVector`'s 4th slot, `fairnessPlusShape` (`TIER_QUALITY` in solver terms). Examples from this
+run (2026-09-27): `vacationHeavy` local `[139,0,0,418.48]` vs. solver `[139,0,0,424.48]`; `standard`
+local `[126,0,0,392.98]` vs. solver `[126,0,0,393.48]`. `hint_pin.py` deliberately never pins
+`TIER_QUALITY` (its own docstring: "that's the one thing this feature still lets the solver freely
+improve") — extending the pin to it might close this permanently, but risks repeating the
+`overstaffCoverage` mistake this same module's docstring already documents (pinning something without
+first confirming an EXACT numeric correspondence to what JS's ladder actually measures made 3/4
+fixtures worse, not better). Not attempted here — genuinely new, unverified modeling work, and out of
+this task's scope (the coverage-mapping question, which is now closed).
+
+**Fix applied**: none to production code — there was no mapping gap to close.
+`src/lib/engineHeadToHead.test.js` gained one permanent regression assertion instead: whenever
+`hintPinning.applied` is true, `solverMetrics.coverageMiss` (recomputed on the real, mapped schedule)
+must be `<=` `hintPinning.pinned.coverageMin`. This turns the diagnostic finding above into a standing
+guard — every one of the 5 re-measurement runs below passed it — that will fail loudly, with the exact
+variant and numbers, if a genuine coverage-mapping regression is ever introduced.
+
+**`engineHeadToHead.test.js`, `SOLVER_PARITY=1`, 5 sequential full runs, one at a time (2026-09-27,
+final code on this branch)**:
+
+| run | standard | understaffed | vacationHeavy | conferenceBlock |
+|---|---|---|---|---|
+| 1 | win | win | win (coverageMiss 139→138) | win |
+| 2 | win | win | win (coverageMiss 139→139 tie, shape 418.48→403.12) | win |
+| 3 | win | win | win (coverageMiss 139→139 tie, shape 418.48→397.94) | win |
+| 4 | **loss** (126→126 tie, shape 392.98→393.48) | win | **loss** (139→139 tie, shape 418.48→424.48) | win |
+| 5 | win | win | win | win |
+
+**Decision: `KNOWN_GAP_VARIANTS` is left unchanged (`vacationHeavy` only)**. `vacationHeavy` won 4/5
+this round (previously 2/3, then 2/3 again) — a real improvement, but a 3-run clean-win streak (runs
+1-3) turned out to be luck, not a fixed bar: run 4 lost again, so "all 4 never-worse 3/3" still isn't
+actually met once measured past 3 runs. `standard` also lost once (1/5) — a fixture not previously in
+`KNOWN_GAP_VARIANTS` at all — matching this doc's own earlier "New finding" note (above) that
+`standard`/`conferenceBlock` can flake too under the corrected `stageSplit`. Not widening
+`KNOWN_GAP_VARIANTS` to cover `standard` here: it's the same already-documented, out-of-scope
+`TIER_QUALITY` noise as `vacationHeavy`'s, not a new regression, and this doc already flags widening
+the gate as "a real open decision left for a future round" rather than something to do reactively off
+one flaky run.

@@ -150,7 +150,7 @@ function runEngines(variant) {
   const outputPath = path.join(dir, 'result.json');
   writeFileSync(inputPath, JSON.stringify(payload), 'utf-8');
 
-  let solverStatus, solverSchedule, solverReport, solverWallMs;
+  let solverStatus, solverSchedule, solverReport, solverWallMs, hintPinning;
   try {
     const solverT0 = Date.now();
     const proc = spawnSync(PYTHON, ['cli.py', '--input', inputPath, '--output', outputPath], {
@@ -165,6 +165,11 @@ function runEngines(variant) {
     }
     const json = JSON.parse(readFileSync(outputPath, 'utf-8'));
     solverStatus = json.status;
+    // R9 "pin to hint" (solver/model/hint_pin.py) diagnostics — `mapSolverResult` never threads
+    // this through to `solverReport` (it's an internal solver diagnostic, not app-facing report
+    // shape), so it's read here, straight off the raw CLI JSON, for the coverage-pin regression
+    // check below.
+    hintPinning = json?.report?.hintPinning || { applied: false, hintFeasible: null, pinned: {} };
     const mapped = mapSolverResult(json, { block: solverFixture.block, allResidents: solverFixture.allResidents });
     solverSchedule = mapped.schedule;
     solverReport = mapped.report;
@@ -188,6 +193,28 @@ function runEngines(variant) {
   });
   const solverVector = computeQualityVector(solverMetrics, rulePriority);
   const solverRuns = nightRunsFor(solverSchedule, solverFixture.allResidents, dates);
+
+  // R9 "pin to hint" coverage-mapping regression check (task: "warm-started CP-SAT with hint
+  // pinning ... still sometimes loses to local on vacationHeavy ... coverageMiss 139 (local) vs
+  // 142 (solver)"). `hint_pin.py` hard-pins the solver's raw `coverageMin` slack sum (its own
+  // internal accounting, `report.unfilled`'s shortBy total) to at most the hint's own achieved
+  // value — this assertion is the OTHER HALF of that promise: that JS's own independent
+  // `coverageMiss` recompute on the FINAL MAPPED schedule (this exact `solverMetrics.coverageMiss`
+  // — `computeQualityMetrics`'s `n0`-tier count) never regresses past what the pin allowed either.
+  // Diagnosed by hand (throwaway script, 10 real CLI solves + 3 full engineHeadToHead runs on the
+  // `vacationHeavy` fixture, 2026-09-27): `report.unfilled`'s shortBy sum and this recomputed
+  // `coverageMiss` were IDENTICAL in every single run — no mapping gap was ever found between the
+  // solver's pinned expression and JS's own metric. This assertion turns that finding into a
+  // permanent regression guard rather than a one-off diagnostic conclusion.
+  if (hintPinning.applied) {
+    const pinnedCoverageMin = hintPinning.pinned.coverageMin;
+    expect(
+      solverMetrics.coverageMiss,
+      `"${variant}": solver's coverageMiss (${solverMetrics.coverageMiss}) exceeds the hint_pin.py ` +
+      `hard pin (coverageMin <= ${pinnedCoverageMin}) — a genuine coverage-mapping gap between the ` +
+      `solver's pinned expression and JS's own coverageMiss metric, not just staged-solve search noise.`
+    ).toBeLessThanOrEqual(pinnedCoverageMin);
+  }
 
   // R9 proof (part 4 of the CP-SAT-as-polisher plan): score both results through the EXACT SAME
   // ladder generateViaSolverOrLocal itself arbitrates with (pickEngineResult ->
@@ -213,7 +240,7 @@ function runEngines(variant) {
     },
     solver: {
       wallMs: solverWallMs, status: solverStatus, issues: solverIssues, report: solverReport,
-      metrics: solverMetrics, vector: solverVector, runs: solverRuns,
+      metrics: solverMetrics, vector: solverVector, runs: solverRuns, hintPinning,
     },
     comparison: { local: engineComparison.local, solver: engineComparison.solver, outcome },
   };
@@ -232,6 +259,7 @@ function renderVariantMarkdown(res) {
   md += `| Metric | JS (generateScheduleBest) | Solver (CP-SAT) |\n`;
   md += `|---|---|---|\n`;
   md += `| solver status | n/a | ${res.solver.status} |\n`;
+  md += `| hintPinning (applied/hintFeasible/pinned.coverageMin) | n/a | ${res.solver.hintPinning.applied}/${res.solver.hintPinning.hintFeasible}/${res.solver.hintPinning.pinned?.coverageMin ?? 'n/a'} |\n`;
   md += `| wall time (ms) | ${res.js.wallMs} | ${res.solver.wallMs} |\n`;
   md += `| validateAll errors | ${jsB.byLevel.error || 0} | ${solverB.byLevel.error || 0} |\n`;
   md += `| validateAll warnings | ${jsB.byLevel.warn || 0} | ${solverB.byLevel.warn || 0} |\n`;
@@ -366,18 +394,33 @@ function renderVariantMarkdown(res) {
     // win both pass. If this fails, the fix belongs in the objective-tier mapping (see
     // docs/PAYLOAD_SCHEMA.md's dated R9 section), not in loosening this assertion.
     //
-    // KNOWN_GAP: "vacationHeavy" is excluded from the hard gate, NOT because the assertion was
-    // weakened, but because a real, diagnosed staged-solve limitation was found and is documented
-    // in solver-service/docs/PAYLOAD_SCHEMA.md's R9 "known gaps" section: errorCount/
-    // blockingWarnCount tie EXACTLY on this fixture (unlike the other 3, where an unrelated
-    // errorCount difference already decides the outcome), so it's the one fixture where the actual
-    // coverage-optimization quality is on trial, and the margin either way is small (a few slots out
-    // of ~139) with genuine multi-worker CP-SAT search variance (documented: num_workers > 1 is
-    // non-deterministic run-to-run even at a fixed random_seed) — observed both winning (+1) and
-    // losing (-3) across repeated runs while tuning stageSplit, not a deterministic bug. Left as a
+    // KNOWN_GAP: "vacationHeavy" stays excluded from the hard gate (2026-09-27, "pin coverage to
+    // the app's own miss count" task — re-investigated, decision UNCHANGED). Investigated by hand:
+    // 10 real CLI solves via a throwaway diagnostic script plus 4 full sequential `engineHeadToHead`
+    // runs (`SOLVER_PARITY=1`, one at a time) found NO mapping gap between the solver's hard-pinned
+    // `coverageMin` expression and JS's own `coverageMiss` metric — `report.hintPinning.pinned.
+    // coverageMin` and the recomputed `solverMetrics.coverageMiss` on the final MAPPED schedule were
+    // IDENTICAL in every single run, including the runs where this fixture LOST overall (see the
+    // coverage-pin regression assertion added above, which now guards this permanently and would
+    // fail loudly if that ever stopped being true). The 3 clean-win runs that briefly looked like
+    // "bar met, remove the exclusion" were immediately followed by a 4th run with a genuine loss —
+    // so the bar ("all 4 never-worse 3/3") is NOT actually met; this fixture is still flaky.
+    // **The loss is not a coverage regression at all**: in every observed loss, `qualityVector`'s
+    // n0/n1/n2 (coverageMin/seniorComposition/postNightRest) TIE EXACTLY with local, and the solver
+    // loses purely on qualityVector's 4th slot (`fairnessPlusShape`/TIER_QUALITY) — e.g. one 2026-
+    // 09-27 run: local [139,0,0,418.48] vs solver [139,0,0,424.48]. `hint_pin.py` deliberately never
+    // pins TIER_QUALITY (its own docstring: "that's the one thing this feature still lets the solver
+    // freely improve") — pinning it too might close this permanently but is real, unverified
+    // additional work (risking a repeat of the `overstaffCoverage` mistake documented in hint_pin.py,
+    // where pinning something JS's ladder DOES measure but without confirming an exact numeric
+    // correspondence first made 3/4 fixtures worse) — out of scope for this task, which was
+    // specifically about the coverage-mapping question (now closed: there is no gap). Left as a
     // documented, tracked gap rather than a flaky hard gate: this test still PRINTS its outcome
     // every run via the `console.log` above, and any fixture OTHER than this one regressing still
-    // fails the suite.
+    // fails the suite. NOTE: the 2026-09-27 gate-check run also caught "standard" losing via the
+    // exact same shape-only mechanism (not previously in `KNOWN_GAP_VARIANTS`) — PAYLOAD_SCHEMA.md's
+    // R9 "known gaps" section already flagged this as a real, undecided widening question; not
+    // widened here since it's the same out-of-scope TIER_QUALITY issue, not a new regression.
     const KNOWN_GAP_VARIANTS = new Set(['vacationHeavy']);
     for (const res of results) {
       if (KNOWN_GAP_VARIANTS.has(res.variant)) continue;
