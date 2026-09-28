@@ -36,7 +36,9 @@ export const RULE_POLICY = {
   totalWeekly72: { tier: 'acgme', label: 'More than 72 total hours in a rolling 7 days (6.17.a.3)' },
 
   // ─── Tier: program ────────────────────────────────────────────────────────
-  dayToNextDayEve: { tier: 'program', label: 'Day shift followed by an evening shift the next day' },
+  // dayToNextDayEve REMOVED 2026-09-27: it was the SAME eve->day transition as eveToNextDayDay
+  // above, just observed from the day placement's own side — folded into one id. Day->next-day-eve
+  // (the true reverse) is a separate, ALLOWED transition (user decision 2026-09-27), not a rule.
   bamcWedNight: { tier: 'program', label: 'BAMC more than one Wednesday-night shift per block' },
   traumaPedsSplit: { tier: 'program', label: 'Trauma/Peds split sub-cap exceeded' },
   jcMaxPerAy: { tier: 'program', label: 'Journal Club worked more than 3x this academic year' },

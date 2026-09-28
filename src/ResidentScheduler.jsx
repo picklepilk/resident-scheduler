@@ -2025,8 +2025,11 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     }
   }
 
-  // Evening → day the very next day (and the reverse) is disallowed even when a hard rest-hour
-  // check would clear it — an abrupt turnaround with no gradual transition.
+  // Evening → day the very next day is disallowed even when a hard rest-hour check would clear it
+  // — an abrupt turnaround with no gradual transition. Day → next-day evening (the reverse order,
+  // ~23h off) is ALLOWED (user decision 2026-09-27) and is not checked here. The two branches below
+  // both catch the SAME eve->day transition, just from whichever placement (the eve shift or the
+  // day shift) triggers the check — both fold under rule id 'eveToNextDayDay'.
   if (newType === 'eve') {
     const nextSid = rs[toDateStr(addDays(parseDate(dateStr), 1))];
     if (SHIFT_MAP[nextSid]?.type === 'day')
@@ -2034,8 +2037,12 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
   }
   if (newType === 'day') {
     const prevSid = rs[toDateStr(addDays(parseDate(dateStr), -1))];
+    // Same eve->day transition as the 'eve' branch above, just seen from the day placement's own
+    // side (this function is called from both placement orders) — folds under the SAME rule id
+    // (eveToNextDayDay) rather than a separately-named "dayToNextDayEve", since it's one rule, not
+    // two. Day-then-eve (the OTHER direction) is allowed (user decision 2026-09-27) and has no check.
     if (SHIFT_MAP[prevSid]?.type === 'eve')
-      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: severityFor('dayToNextDayEve', 'validator'), rule: 'dayToNextDayEve' });
+      violations.push({ message: 'Day shift immediately follows an evening shift the day before', level: severityFor('eveToNextDayDay', 'validator'), rule: 'eveToNextDayDay' });
   }
 
   return violations;
