@@ -139,6 +139,21 @@ ordinary duty-hour families (`hours_cap.py`/`rest.py`/`circadian.py`/`workday_li
 has accepted as pass-2-relaxable last resorts. `solver/validate.py`'s independent re-check
 (`_check_weekly_hours_cap`) mirrors the same scope/skip logic.
 
+**Correction (2026-09-27, R7 rest-tier fix):** the paragraph above's "the chief has accepted as
+pass-2-relaxable last resorts" was WRONG for `restGap`/`circadianPair`/`nightRunMax`/`consecutiveWork`/
+`postRun6Rest`/`hours320` — it predates and directly contradicts the same day's chief-approved
+`rule-override-policy` memory and `src/lib/rulePolicy.js`, both of which put every one of those on
+tier `acgme`: "never broken, anywhere. No 'place anyway' path" — identical posture to `edWeekly60`/
+`totalWeekly72` right above. Only `nightCap`/`nightSegments` (tier `override` — "a chief may break one
+by hand") are genuinely pass-2-relaxable. `solver/model/elastic.py`'s `ALWAYS_HARD_DUTY_HOUR_FAMILIES`
+vs `RELAXABLE_DUTY_HOUR_FAMILIES` now encodes this split (`duty_enforcement` returns `None` — i.e.
+unconditionally hard — for every family in the first set); this doc's stale claim was left as its own
+struck-through paragraph rather than silently rewritten, per this repo's "every rule here is
+load-bearing" convention. Root cause of `chiefBenchmark.solver.test.js` intermittently reporting real
+`restShiftLength`/`eveToNextDayDay` structural errors on the solver's mapped schedule: whenever pass 1
+went INFEASIBLE (made measurably more likely by R9's staged solve / hint pinning / GR-obligation
+reification), pass 2 was free to relax an ACGME-hard family instead of a merely override-tier one.
+
 ### Changed rule: `restGap` (rule 17) — GR-end adjustment
 
 `solver/model/rest.py`'s `_effective_earlier_end_min` (and `solver/validate.py`'s independent

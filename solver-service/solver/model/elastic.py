@@ -93,16 +93,47 @@ from solver.model.workday_limits import add_workday_limit_constraints
 # that resident -- see the docstrings of rest.py / circadian.py /
 # workday_limits.py / hours_cap.py for exactly which constraint each family
 # name corresponds to.
-DUTY_HOUR_FAMILIES = (
+#
+# R7 fix (2026-09-27, chief policy 2026-09-26 memory `rule-override-policy` /
+# `src/lib/rulePolicy.js`): restGap/circadianPair/nightRunMax/consecutiveWork/
+# postRun6Rest/hours320 are ALL tier `acgme` on the JS side -- "accreditation-
+# required, never broken, anywhere. No 'place anyway' path" (rulePolicy.js's
+# own comment). Only nightCap ("6 nights total/block") and nightSegments
+# ("max 2 night stints/block") are tier `override` -- "the generator never
+# breaks these either, but a chief may break one by hand", which is exactly
+# what pass-2's elastic ok[...] literal buys: a last-resort, FLAGGED break.
+#
+# Before this fix, ALL 8 families shared one `duty_enforcement` callback and
+# were equally relaxable, contradicting rulePolicy.js/the chief's own written
+# policy -- confirmed live by `chiefBenchmark.solver.test.js` intermittently
+# reporting real `restShiftLength`/`eveToNextDayDay` structural errors (and
+# even literal shift-time overlaps -- rest.py's forbid_pair doesn't
+# distinguish "gap short" from "gap negative", both routed through the same
+# ok[resident,"restGap"] literal) whenever pass 1 went INFEASIBLE for any
+# reason (R9's staged solve / hint pinning / GR-obligation reification made
+# this measurably more likely) and pass 2 chose to relax an ACGME-hard rule
+# instead of a merely program/override-tier one. `docs/PAYLOAD_SCHEMA.md`'s
+# R7 section calling these "pass-2-relaxable last resorts" predates and
+# conflicts with the 2026-09-26 policy; this fix brings the code in line with
+# the policy (the newer, chief-approved source of truth), not the stale doc
+# prose. `ALWAYS_HARD_DUTY_HOUR_FAMILIES` is never wrapped by a literal at
+# all -- see `duty_enforcement` below -- so it can never show up in
+# `feasibility.violations`; a schedule that can only be found by breaking one
+# of these now correctly comes back RELAXED-mode INFEASIBLE (or plain
+# pass-1 INFEASIBLE) instead of silently shipping an illegal schedule.
+ALWAYS_HARD_DUTY_HOUR_FAMILIES = (
     "restGap",
     "circadianPair",
     "nightRunMax",
     "consecutiveWork",
     "postRun6Rest",
     "hours320",
+)
+RELAXABLE_DUTY_HOUR_FAMILIES = (
     "nightCap",
     "nightSegments",
 )
+DUTY_HOUR_FAMILIES = ALWAYS_HARD_DUTY_HOUR_FAMILIES + RELAXABLE_DUTY_HOUR_FAMILIES
 
 # One literal per (resident, capFamily) -- see count_caps.py's SPEC_TO_RULE
 # and FAMILY_TRAUMA_PEDS_SPLIT for the source of truth on these names.
@@ -181,6 +212,16 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     cap_pool = LitPool(model)
 
     def duty_enforcement(resident_id: str, family: str):
+        # ACGME-tier families (ALWAYS_HARD_DUTY_HOUR_FAMILIES, see that
+        # tuple's own comment) return None here -- every call site already
+        # treats a None literal as "add the real, unconditional hard
+        # constraint" (`lit = enforcement(...) if enforcement else None`,
+        # then `if lit is not None: c.only_enforce_if(lit)` / `forbid_pair`'s
+        # own None-means-hard branch), so this is the ONE place that decides
+        # which duty-hour families pass 2 is even ALLOWED to offer CP-SAT a
+        # way to break.
+        if family not in RELAXABLE_DUTY_HOUR_FAMILIES:
+            return None
         return duty_pool.get(family, resident_id)
 
     def coverage_enforcement(shift_id: str, date_str: str):
