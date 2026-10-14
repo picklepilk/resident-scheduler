@@ -95,13 +95,19 @@ from solver.model.workday_limits import add_workday_limit_constraints
 # name corresponds to.
 #
 # R7 fix (2026-09-27, chief policy 2026-09-26 memory `rule-override-policy` /
-# `src/lib/rulePolicy.js`): restGap/circadianPair/nightRunMax/consecutiveWork/
-# postRun6Rest/hours320 are ALL tier `acgme` on the JS side -- "accreditation-
-# required, never broken, anywhere. No 'place anyway' path" (rulePolicy.js's
-# own comment). Only nightCap ("6 nights total/block") and nightSegments
-# ("max 2 night stints/block") are tier `override` -- "the generator never
-# breaks these either, but a chief may break one by hand", which is exactly
-# what pass-2's elastic ok[...] literal buys: a last-resort, FLAGGED break.
+# `src/lib/rulePolicy.js`): restGap/circadianPair/consecutiveWork/postRun6Rest/
+# hours320 are ALL tier `acgme` on the JS side -- "accreditation-required,
+# never broken, anywhere. No 'place anyway' path" (rulePolicy.js's own
+# comment). nightRunMax is tier `program` (RETIERED 2026-10-14, user decision
+# -- the 6-night cap is a program target, not an ACGME rule; see rulePolicy.js's
+# own comment on that id) but blocks exactly as hard as `acgme` -- the two
+# tiers differ only in WHY, never in HOW HARD (rulePolicy.js's own tier
+# comment). So all 6 of these stay in ALWAYS_HARD_DUTY_HOUR_FAMILIES below,
+# unchanged by the retier. Only nightCap ("6 nights total/block") and
+# nightSegments ("max 2 night stints/block") are tier `override` -- "the
+# generator never breaks these either, but a chief may break one by hand",
+# which is exactly what pass-2's elastic ok[...] literal buys: a last-resort,
+# FLAGGED break.
 #
 # Before this fix, ALL 8 families shared one `duty_enforcement` callback and
 # were equally relaxable, contradicting rulePolicy.js/the chief's own written

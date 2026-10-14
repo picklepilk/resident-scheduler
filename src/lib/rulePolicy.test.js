@@ -20,11 +20,12 @@ describe('RULE_POLICY', () => {
 
   it('matches the chief-approved policy matrix (2026-09-26) — spot-check a few from each tier', () => {
     expect(RULE_POLICY.sixConsecutiveWorkDays.tier).toBe('acgme');
-    expect(RULE_POLICY.nightRunMax.tier).toBe('acgme');
     expect(RULE_POLICY.vacation.tier).toBe('acgme');
     expect(RULE_POLICY.bamcWedNight.tier).toBe('program');
     expect(RULE_POLICY.jcMaxPerAy.tier).toBe('program');
     expect(RULE_POLICY.traumaPedsSplit.tier).toBe('program');
+    // nightRunMax retiered 2026-10-14 (user decision): program, not acgme — see rulePolicy.js.
+    expect(RULE_POLICY.nightRunMax.tier).toBe('program');
     expect(RULE_POLICY.nightsTotalBlock.tier).toBe('override');
     expect(RULE_POLICY.podPgy3Composition.tier).toBe('override');
     expect(RULE_POLICY.approvedDayOff.tier).toBe('override');

@@ -23,7 +23,6 @@ export const RULE_POLICY = {
   // ─── Tier: acgme ──────────────────────────────────────────────────────────
   sixConsecutiveWorkDays: { tier: 'acgme', label: 'Max 6 consecutive work days, then 24h off' },
   sixDayRunRest: { tier: 'acgme', label: '24h off after a maxed 6-day work run' },
-  nightRunMax: { tier: 'acgme', label: 'Max 6 consecutive night shifts' },
   eveToNextDayDay: { tier: 'acgme', label: 'Evening shift followed by a day shift the next day' },
   rolling80h: { tier: 'acgme', label: '80h/4-week rolling average' },
   vacation: { tier: 'acgme', label: 'Shift scheduled on a vacation date' },
@@ -39,6 +38,16 @@ export const RULE_POLICY = {
   // dayToNextDayEve REMOVED 2026-09-27: it was the SAME eve->day transition as eveToNextDayDay
   // above, just observed from the day placement's own side — folded into one id. Day->next-day-eve
   // (the true reverse) is a separate, ALLOWED transition (user decision 2026-09-27), not a rule.
+  // nightRunMax RETIERED 2026-09-26 -> 2026-10-14 (user decision): the max-6-consecutive-nights cap
+  // is NOT an ACGME rule — it's a program target ("ideally what we'd like to target as a program"),
+  // with a stated preference for nights to cluster contiguously when possible. Moved from 'acgme' to
+  // 'program' here to say so honestly. Hardness is UNCHANGED — 'program' blocks everywhere exactly
+  // like 'acgme' (see this file's own tier comment above); the generator/solver pass-1 still never
+  // break it, and no "place anyway" path opens up. Only WHY it's hard changed, not HOW hard. See
+  // elastic.py's ALWAYS_HARD_DUTY_HOUR_FAMILIES (nightRunMax stays in that tuple, unmoved — tier
+  // 'program' is just as pass-2-unrelaxable as 'acgme' there) and solverTierParity.test.js (already
+  // accepts acgme OR program for always-hard families).
+  nightRunMax: { tier: 'program', label: 'Max 6 consecutive night shifts' },
   bamcWedNight: { tier: 'program', label: 'BAMC more than one Wednesday-night shift per block' },
   traumaPedsSplit: { tier: 'program', label: 'Trauma/Peds split sub-cap exceeded' },
   jcMaxPerAy: { tier: 'program', label: 'Journal Club worked more than 3x this academic year' },
