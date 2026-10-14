@@ -7813,15 +7813,29 @@ function analyzeWhatIfResult(args, res, rulePriority) {
 // valid date range (mirrors generateScheduleBest's own null return), otherwise
 // { baseSeed, base, scenario, comparison } — `base`/`scenario` are analyzeWhatIfResult's shape,
 // `comparison` is compareResults' output.
-export function runWhatIf(baseArgs, changes, { seed, attempts = 20 } = {}) {
+//
+// Async so the UI can repaint and offer Cancel between the two (each multi-second) generations —
+// same yield/isCancelled shape as runOptimizationSweep below. `onStage(1|2)` fires before each
+// run; a cancel between them resolves to `{ cancelled: true }`. The BASE side runs on a deep copy
+// too (applyScenario with no changes), not on live-state references: today's generator never
+// mutates its args, but that's an unenforced convention, and a violation here would corrupt the
+// chief's real block.
+export async function runWhatIf(baseArgs, changes, { seed, attempts = 20, isCancelled = () => false, onStage = () => {} } = {}) {
   const baseSeed = (seed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(baseArgs.appSettings?.rulePriority);
+  const baseCopy = applyScenario(baseArgs, []);
   const scenarioArgs = applyScenario(baseArgs, changes);
 
-  const baseGenArgs = { ...baseArgs, block: { ...baseArgs.block, schedule: freshWorkingScheduleHonoringLocks(baseArgs.block) }, clearFirst: false };
+  const baseGenArgs = { ...baseCopy, block: { ...baseCopy.block, schedule: freshWorkingScheduleHonoringLocks(baseCopy.block) }, clearFirst: false };
   const scenarioGenArgs = { ...scenarioArgs, block: { ...scenarioArgs.block, schedule: freshWorkingScheduleHonoringLocks(scenarioArgs.block) }, clearFirst: false };
 
+  onStage(1);
+  await sweepYieldToBrowser();
+  if (isCancelled()) return { cancelled: true };
   const baseRes = generateScheduleBest(baseGenArgs, { attempts, baseSeed, repair: true });
+  onStage(2);
+  await sweepYieldToBrowser();
+  if (isCancelled()) return { cancelled: true };
   const scenarioRes = generateScheduleBest(scenarioGenArgs, { attempts, baseSeed, repair: true });
   if (!baseRes || !scenarioRes) return null;
 
@@ -17958,8 +17972,13 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
   const [result, setResult] = useState(null);
   const [runError, setRunError] = useState('');
   const timerRef = useRef(null);
+  const cancelRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; if (timerRef.current) clearInterval(timerRef.current); };
+  }, []);
 
   function addCloneChange() {
     if (!cloneForm.templateId) return;
@@ -17992,21 +18011,27 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
     if (!changes.length || running) return;
     setRunning(true);
     setRunError('');
-    setStageLabel('Running baseline + scenario (best-of-20 each)…');
+    setStageLabel('Preparing…');
     setElapsedSec(0);
+    cancelRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000);
     try {
       await whatIfYieldToPaint();
       const baseArgs = { allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
-      const res = runWhatIf(baseArgs, changes);
-      if (!res) { setRunError('Set block dates first'); setResult(null); }
+      const res = await runWhatIf(baseArgs, changes, {
+        isCancelled: () => cancelRef.current || !mountedRef.current,
+        onStage: n => { if (mountedRef.current) setStageLabel(n === 1 ? 'Generating current roster (1 of 2)…' : 'Generating with your changes (2 of 2)…'); },
+      });
+      if (!mountedRef.current) return;
+      if (res?.cancelled) { setStageLabel(''); }
+      else if (!res) { setRunError('Set block dates first'); setResult(null); }
       else setResult(res);
     } catch (e) {
-      setRunError(e?.message || 'What-if run failed');
+      if (mountedRef.current) setRunError(e?.message || 'What-if run failed');
     } finally {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      setRunning(false);
+      if (mountedRef.current) setRunning(false);
     }
   }
 
@@ -18172,6 +18197,12 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
           {running && <RefreshCw size={13} className="animate-spin"/>}
           {running ? `Running… (${elapsedSec}s)` : 'Run what-if'}
         </button>
+        {running && (
+          <button type="button" onClick={() => { cancelRef.current = true; setStageLabel('Cancelling after the current run…'); }}
+            className="text-sm font-medium px-3 py-1.5 rounded border border-border text-card-foreground hover:bg-muted/50">
+            Cancel
+          </button>
+        )}
         <button type="button" onClick={resetWhatIf} disabled={running || (!changes.length && !result)}
           className="text-sm font-medium px-3 py-1.5 rounded border border-border text-card-foreground hover:bg-muted/50 disabled:opacity-40">
           Reset

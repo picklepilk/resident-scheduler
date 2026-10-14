@@ -10,14 +10,14 @@ import { runWhatIf } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 describe('runWhatIf (understaffed fixture)', () => {
-  it('cloning an eligible resident does not increase unfilled minimum slots, and never mutates baseArgs', () => {
+  it('cloning an eligible resident does not increase unfilled minimum slots, and never mutates baseArgs', async () => {
     const fixture = makeFixture('understaffed');
     const baselineSnapshot = JSON.parse(JSON.stringify(fixture));
 
     // syn_india: EM_HOME PGY-2, blockType 'EM' (no rotation/trauma-split quirks), broadly eligible
     // across the standard EM shift catalog — a representative "add a body" scenario.
     const changes = [{ kind: 'cloneResident', templateId: 'syn_india', count: 3 }];
-    const result = runWhatIf(fixture, changes, { seed: 42, attempts: 3 });
+    const result = await runWhatIf(fixture, changes, { seed: 42, attempts: 3 });
 
     expect(result).toBeTruthy();
     expect(result.comparison.coverageMiss.after).toBeLessThanOrEqual(result.comparison.coverageMiss.before);
@@ -31,20 +31,29 @@ describe('runWhatIf (understaffed fixture)', () => {
     expect(fixture).toEqual(baselineSnapshot);
   });
 
-  it('removing a resident for the whole block does not decrease unfilled minimum slots', () => {
+  it('removing a resident for the whole block does not decrease unfilled minimum slots', async () => {
     const fixture = makeFixture('understaffed');
     const changes = [{ kind: 'removeResident', residentId: 'syn_india' }];
-    const result = runWhatIf(fixture, changes, { seed: 7, attempts: 3 });
+    const result = await runWhatIf(fixture, changes, { seed: 7, attempts: 3 });
 
     expect(result).toBeTruthy();
     expect(result.scenario.allResidents.find(r => r.id === 'syn_india')).toBeUndefined();
     expect(result.comparison.coverageMiss.after).toBeGreaterThanOrEqual(result.comparison.coverageMiss.before);
   });
 
-  it('returns null for a block with no valid date range, same as generateScheduleBest', () => {
+  it('returns null for a block with no valid date range, same as generateScheduleBest', async () => {
     const fixture = makeFixture('understaffed');
     fixture.block = { ...fixture.block, startDate: '', endDate: '' };
-    const result = runWhatIf(fixture, [], { seed: 1, attempts: 3 });
+    const result = await runWhatIf(fixture, [], { seed: 1, attempts: 3 });
     expect(result).toBeNull();
+  });
+
+  it('stops before the scenario run when cancelled after the base run', async () => {
+    const fixture = makeFixture('understaffed');
+    let stage = 0;
+    const result = await runWhatIf(fixture, [{ kind: 'removeResident', residentId: 'syn_india' }], {
+      seed: 1, attempts: 3, onStage: n => { stage = n; }, isCancelled: () => stage === 2,
+    });
+    expect(result).toEqual({ cancelled: true });
   });
 });
