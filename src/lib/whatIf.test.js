@@ -1,6 +1,6 @@
 // src/lib/whatIf.test.js
 import { describe, it, expect } from 'vitest';
-import { applyScenario, compareResults } from './whatIf.js';
+import { applyScenario, compareResults, compareResultSets } from './whatIf.js';
 
 function baseArgsFixture() {
   return {
@@ -181,5 +181,88 @@ describe('compareResults', () => {
     expect(cmp.perShift).toEqual({});
     expect(cmp.slotsClosed).toBe(0);
     expect(cmp.slotsOpened).toBe(0);
+  });
+});
+
+describe('compareResultSets', () => {
+  function fakeResult({ coverageMiss = 0, errors = 0, underTarget = 0, tag = '' } = {}) {
+    const unfilled = [];
+    for (let i = 0; i < coverageMiss; i++) unfilled.push({ dateStr: '2026-01-01', shiftId: `SHIFT${tag}`, slotIndex: i });
+    const issues = [];
+    for (let i = 0; i < errors; i++) issues.push({ level: 'error', rule: 'someHardRule' });
+    for (let i = 0; i < underTarget; i++) issues.push({ level: 'warn', rule: 'underTarget' });
+    return { report: { unfilled }, issues, qualityVector: [coverageMiss] };
+  }
+
+  it('medians an odd run count exactly (the true middle value)', () => {
+    const base = [5, 3, 4].map(n => fakeResult({ coverageMiss: n }));
+    const scenario = [2, 1, 3].map(n => fakeResult({ coverageMiss: n }));
+    const cmp = compareResultSets(base, scenario);
+    expect(cmp.coverageMiss).toMatchObject({ before: 4, after: 2, delta: -2 });
+    // odd count: the median-representative run IS the run carrying the median value (index 2, value 4)
+    expect(cmp.representativeIndex.base).toBe(2);
+  });
+
+  it('medians an even run count by averaging the two middle values, but picks the LOWER one as the representative run', () => {
+    const base = [4, 2].map(n => fakeResult({ coverageMiss: n }));
+    const scenario = [8, 8, 2, 4].map(n => fakeResult({ coverageMiss: n }));
+    const cmp = compareResultSets(base, scenario);
+    expect(cmp.coverageMiss.before).toBe(3); // (2+4)/2 — no run actually has 3 unfilled slots
+    expect(cmp.coverageMiss.after).toBe(6); // sorted [2,4,8,8] -> (4+8)/2
+    // base=[4,2]: representative is the run with value 2 (index 1), not the averaged 3
+    expect(cmp.representativeIndex.base).toBe(1);
+  });
+
+  it('reports min-max range across runs for coverageMiss/errors/under-target independently of the median', () => {
+    const base = [
+      fakeResult({ coverageMiss: 5, errors: 1, underTarget: 0 }),
+      fakeResult({ coverageMiss: 3, errors: 3, underTarget: 2 }),
+      fakeResult({ coverageMiss: 4, errors: 0, underTarget: 1 }),
+    ];
+    const scenario = [
+      fakeResult({ coverageMiss: 2, errors: 2, underTarget: 1 }),
+      fakeResult({ coverageMiss: 1, errors: 0, underTarget: 0 }),
+      fakeResult({ coverageMiss: 3, errors: 1, underTarget: 1 }),
+    ];
+    const cmp = compareResultSets(base, scenario);
+    expect(cmp.coverageMiss.beforeRange).toEqual({ min: 3, max: 5 });
+    expect(cmp.coverageMiss.afterRange).toEqual({ min: 1, max: 3 });
+    expect(cmp.errorCount.beforeRange).toEqual({ min: 0, max: 3 });
+    expect(cmp.underTargetCount.afterRange).toEqual({ min: 0, max: 1 });
+  });
+
+  it('picks each side\'s median-representative run independently — same seed-list length never forces matching indices', () => {
+    // Same positions, mirrored distributions: base's "typical" run and scenario's "typical" run
+    // land at different array indices here, showing the pick is driven by each side's OWN sorted
+    // coverageMiss values, not by which seed index generated it (the seed pairing that makes this
+    // an apples-to-apples comparison lives upstream in runWhatIf, not in this pure function).
+    const base = [10, 1, 1].map(n => fakeResult({ coverageMiss: n }));
+    const scenario = [1, 1, 10].map(n => fakeResult({ coverageMiss: n }));
+    const cmp = compareResultSets(base, scenario);
+    expect(cmp.representativeIndex.base).toBe(2);
+    expect(cmp.representativeIndex.scenario).toBe(1);
+  });
+
+  it('derives perShift/slotsClosed/slotsOpened/qualityVector from the two median-representative runs, not an average', () => {
+    const base = [
+      fakeResult({ coverageMiss: 5, tag: 'A' }),
+      fakeResult({ coverageMiss: 3, tag: 'B' }),
+      fakeResult({ coverageMiss: 4, tag: 'C' }),
+    ];
+    const scenario = [
+      fakeResult({ coverageMiss: 1, tag: 'X' }),
+      fakeResult({ coverageMiss: 2, tag: 'Y' }),
+      fakeResult({ coverageMiss: 3, tag: 'Z' }),
+    ];
+    const cmp = compareResultSets(base, scenario);
+    const baseRepTag = `SHIFT${['A', 'B', 'C'][cmp.representativeIndex.base]}`;
+    const scenarioRepTag = `SHIFT${['X', 'Y', 'Z'][cmp.representativeIndex.scenario]}`;
+    expect(Object.keys(cmp.perShift)).toEqual(expect.arrayContaining([baseRepTag, scenarioRepTag]));
+  });
+
+  it('handles empty run lists gracefully', () => {
+    const cmp = compareResultSets([], []);
+    expect(cmp.coverageMiss).toEqual({ before: 0, after: 0, delta: 0, beforeRange: { min: 0, max: 0 }, afterRange: { min: 0, max: 0 } });
+    expect(cmp.representativeIndex).toEqual({ base: -1, scenario: -1 });
   });
 });
