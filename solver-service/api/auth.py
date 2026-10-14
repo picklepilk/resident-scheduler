@@ -18,6 +18,30 @@ either one:
   - Legacy shared-secret: HS256 via `SUPABASE_JWT_SECRET` (the project's
     legacy JWT secret, still valid on older Supabase projects).
 
+Also checked: `iss == f"{SUPABASE_URL}/auth/v1"` (trailing slash stripped) --
+this ties a token to THIS Supabase project specifically, not just "some
+project's JWKS validated the signature". Only enforced when `SUPABASE_URL` is
+configured; a legacy deployment running HS256-only with no `SUPABASE_URL` has
+no expected value to compare against, so `iss` is left unchecked there (the
+shared secret itself is already project-specific).
+
+**JWKS amplification guard**: an attacker can hand `/solve` an RS256/ES256
+token with a random, never-valid `kid` to force a JWKS fetch on every single
+request (3s timeout each) -- before any auth succeeds or fails, and before
+`ratelimit.py`'s per-subject bucket ever runs (that bucket keys off the
+*verified* subject, which doesn't exist yet). Two defenses, both inside
+`_JwksCache`:
+  1. A fetch is attempted at most once every `_MIN_REFETCH_INTERVAL_SECONDS`
+     (60s), globally, regardless of whether it succeeds -- an unknown `kid`
+     seen again inside that window is rejected immediately with no network
+     call at all.
+  2. A lock serializes concurrent fetch attempts (no thundering herd of N
+     simultaneous requests each independently hitting the JWKS endpoint).
+This guard only blunts the JWKS-specific amplification; the broader "cheap
+request before any of this expensive work runs" fix is
+`ratelimit.enforce_preauth_ip_limit`, which must run before `require_auth` is
+even invoked (see that module).
+
 The raw bearer token is never logged or included in any exception message --
 only derived claims (e.g. `sub`) are ever retained, and only in memory for
 the lifetime of one request.
@@ -26,6 +50,7 @@ the lifetime of one request.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -36,6 +61,7 @@ from fastapi import Header, HTTPException
 
 _JWKS_TIMEOUT_SECONDS = 3.0
 _JWKS_CACHE_TTL_SECONDS = 600
+_MIN_REFETCH_INTERVAL_SECONDS = 60
 _REQUIRED_AUDIENCE = "authenticated"
 _REQUIRED_ROLE = "authenticated"
 
@@ -70,14 +96,17 @@ class AuthResult:
 class _JwksCache:
     """Per-process cache of one project's JWKS, keyed by `kid`. Refetches on
     an unknown `kid` (the project rotated its signing key) or once the cache
-    is older than `_JWKS_CACHE_TTL_SECONDS` -- never on every request, which
-    would turn every /solve call into two network round trips.
+    is older than `_JWKS_CACHE_TTL_SECONDS` -- but never more than once every
+    `_MIN_REFETCH_INTERVAL_SECONDS`, and never concurrently (see the module
+    docstring's "JWKS amplification guard").
     """
 
     def __init__(self, jwks_url: str):
         self._jwks_url = jwks_url
         self._keys: dict[str, jwt.PyJWK] = {}
         self._fetched_at = 0.0
+        self._last_fetch_attempt = 0.0
+        self._lock = threading.Lock()
 
     def _fetch(self) -> None:
         resp = httpx.get(self._jwks_url, timeout=_JWKS_TIMEOUT_SECONDS)
@@ -93,12 +122,31 @@ class _JwksCache:
         self._fetched_at = time.monotonic()
 
     def get(self, kid: str) -> jwt.PyJWK:
-        stale = (time.monotonic() - self._fetched_at) > _JWKS_CACHE_TTL_SECONDS
-        if kid not in self._keys or stale:
-            self._fetch()
-        if kid not in self._keys:
-            raise jwt.InvalidTokenError("unknown signing key")
-        return self._keys[kid]
+        # Fast path: no lock needed when the cache already has a fresh answer.
+        cached = self._keys.get(kid)
+        if cached is not None and (time.monotonic() - self._fetched_at) <= _JWKS_CACHE_TTL_SECONDS:
+            return cached
+
+        with self._lock:
+            # Re-check inside the lock -- another thread may have just
+            # refreshed the cache while we were waiting for it.
+            cached = self._keys.get(kid)
+            stale = (time.monotonic() - self._fetched_at) > _JWKS_CACHE_TTL_SECONDS
+            if cached is not None and not stale:
+                return cached
+
+            now = time.monotonic()
+            if now - self._last_fetch_attempt >= _MIN_REFETCH_INTERVAL_SECONDS:
+                self._last_fetch_attempt = now
+                self._fetch()  # may raise httpx.HTTPError -- still throttled above
+
+            result = self._keys.get(kid)
+            if result is None:
+                # Either a genuinely unknown kid, or a recent fetch attempt
+                # already happened and we're inside the throttle window --
+                # either way, no network call here. Same 401 either way.
+                raise jwt.InvalidTokenError("unknown signing key")
+            return result
 
 
 # Keyed by jwks_url so a changed SUPABASE_URL (prod vs. a test monkeypatch)
@@ -122,10 +170,11 @@ def reset_jwks_cache() -> None:
 
 
 def _decode(token: str) -> dict:
-    """Verify signature + exp + aud + role. Raises `jwt.PyJWTError` (or lets
-    an `httpx.HTTPError` from a JWKS fetch propagate) on any failure --
-    `require_auth` maps all of it to a flat 401 so callers can't distinguish
-    "bad signature" from "expired" from "JWKS unreachable".
+    """Verify signature + exp + aud + role + (when SUPABASE_URL is set) iss.
+    Raises `jwt.PyJWTError` (or lets an `httpx.HTTPError` from a JWKS fetch
+    propagate) on any failure -- `require_auth` maps all of it to a flat 401
+    so callers can't distinguish "bad signature" from "expired" from "JWKS
+    unreachable" from "wrong project".
     """
     header = jwt.get_unverified_header(token)
     alg = header.get("alg")
@@ -150,6 +199,16 @@ def _decode(token: str) -> dict:
 
     if claims.get("role") != _REQUIRED_ROLE:
         raise jwt.InvalidTokenError("token role is not 'authenticated'")
+
+    # Ties the token to THIS Supabase project, not just "some project's key
+    # happened to validate the signature". Only checked when we have an
+    # expected value to check against -- see module docstring.
+    supabase_url = _supabase_url()
+    if supabase_url:
+        expected_iss = f"{supabase_url}/auth/v1"
+        if claims.get("iss") != expected_iss:
+            raise jwt.InvalidTokenError("token iss does not match SUPABASE_URL")
+
     return claims
 
 

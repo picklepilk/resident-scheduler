@@ -31,6 +31,8 @@ def _isolated_state(monkeypatch):
     monkeypatch.setenv("SOLVER_AUTH_MODE", "off")
     monkeypatch.setenv("SOLVER_RATE_PER_MIN", "600")
     monkeypatch.setenv("SOLVER_RATE_BURST", "50")
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_PER_MIN", "600")
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_BURST", "50")
     auth_module.reset_jwks_cache()
     ratelimit_module.reset_rate_limiter()
     yield
@@ -47,3 +49,17 @@ def test_oversized_body_is_rejected(monkeypatch):
     payload = make_payload(preferences=[{"residentId": "r1", "shiftId": "D", "date": "2026-01-05", "bonus": 1, "tag": "x" * 5000}])
     resp = TestClient(app).post("/solve", json=payload)
     assert resp.status_code == 413
+
+
+def test_oversized_body_rejection_still_carries_cors_headers(monkeypatch):
+    """LOW finding fix: CORS must be the OUTERMOST middleware so a browser
+    caller can actually read the 413 (and its body) instead of seeing an
+    opaque CORS failure -- see api/main.py's add_middleware ordering comment.
+    """
+    monkeypatch.setenv("SOLVER_MAX_BODY_BYTES", "1024")
+    payload = make_payload(preferences=[{"residentId": "r1", "shiftId": "D", "date": "2026-01-05", "bonus": 1, "tag": "x" * 5000}])
+    resp = TestClient(app).post(
+        "/solve", json=payload, headers={"Origin": "http://localhost:5173"}
+    )
+    assert resp.status_code == 413
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"

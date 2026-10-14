@@ -42,10 +42,12 @@ def _isolated_state(monkeypatch):
     monkeypatch.setattr("api.main.solve", lambda payload: _FAKE_RESULT)
     auth_module.reset_jwks_cache()
     ratelimit_module.reset_rate_limiter()
-    # Generous so these tests never trip the rate limiter on their own --
-    # that behavior has its own test file.
+    # Generous so these tests never trip either rate-limit layer on their
+    # own -- that behavior has its own test file.
     monkeypatch.setenv("SOLVER_RATE_PER_MIN", "600")
     monkeypatch.setenv("SOLVER_RATE_BURST", "50")
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_PER_MIN", "600")
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_BURST", "50")
     yield
     ratelimit_module.reset_rate_limiter()
 
@@ -152,6 +154,7 @@ def test_supabase_mode_accepts_valid_rs256_via_jwks(monkeypatch):
             "sub": "u-rsa",
             "aud": "authenticated",
             "role": "authenticated",
+            "iss": "https://project.supabase.co/auth/v1",
             "exp": int(time.time()) + 3600,
         },
         private_key,
@@ -177,6 +180,7 @@ def test_supabase_mode_accepts_valid_es256_via_jwks(monkeypatch):
             "sub": "u-ec",
             "aud": "authenticated",
             "role": "authenticated",
+            "iss": "https://project.supabase.co/auth/v1",
             "exp": int(time.time()) + 3600,
         },
         private_key,
@@ -192,13 +196,19 @@ def test_supabase_mode_accepts_valid_es256_via_jwks(monkeypatch):
 
 
 def test_supabase_mode_refetches_jwks_on_unknown_kid(monkeypatch):
-    """A key rotation: the cache gets populated by the first request (one
-    fetch, old key only), then a token signed with a brand new `kid` must
-    force a second fetch rather than failing against the stale cache.
+    """A key rotation, with enough real time between the two requests to
+    clear the 60s refetch throttle (see
+    test_jwks_throttles_rapid_unknown_kid_requests for the throttle itself):
+    the cache gets populated by the first request (one fetch, old key only),
+    then a token signed with a brand new `kid` forces a second fetch rather
+    than failing against the stale cache.
     """
     monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
     monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+
+    fake_now = {"t": 1_000_000.0}
+    monkeypatch.setattr(auth_module.time, "monotonic", lambda: fake_now["t"])
 
     old_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     new_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -233,6 +243,7 @@ def test_supabase_mode_refetches_jwks_on_unknown_kid(monkeypatch):
                 "sub": "u-rotated",
                 "aud": "authenticated",
                 "role": "authenticated",
+                "iss": "https://project.supabase.co/auth/v1",
                 "exp": int(time.time()) + 3600,
             },
             key,
@@ -244,6 +255,97 @@ def test_supabase_mode_refetches_jwks_on_unknown_kid(monkeypatch):
     assert resp1.status_code == 200
     assert calls["n"] == 1
 
+    # Past both the JWKS cache TTL (irrelevant here) and the 60s refetch
+    # throttle -- a real rotation, not a rapid-fire probe.
+    fake_now["t"] += 120
+
     resp2 = _post(headers={"Authorization": f"Bearer {_rsa_token(new_key, 'new-kid')}"})
     assert resp2.status_code == 200
     assert calls["n"] == 2
+
+
+def test_jwks_throttles_rapid_unknown_kid_requests(monkeypatch):
+    """HIGH finding fix: a token with alg RS256 and a never-valid `kid` must
+    not force a fresh JWKS fetch on every request -- at most one fetch
+    attempt per 60s, globally; anything beyond that is rejected with no
+    network call at all.
+    """
+    monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+
+    calls = {"n": 0}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"keys": []}  # the attacker's kid is never present
+
+    def _fake_get(url, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(auth_module.httpx, "get", _fake_get)
+
+    signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def _token_with_kid(kid: str) -> str:
+        return jwt.encode(
+            {
+                "sub": "attacker",
+                "aud": "authenticated",
+                "role": "authenticated",
+                "iss": "https://project.supabase.co/auth/v1",
+                "exp": int(time.time()) + 3600,
+            },
+            signing_key,
+            algorithm="RS256",
+            headers={"kid": kid},
+        )
+
+    # First request: genuinely unknown kid -- exactly one fetch attempt,
+    # still unknown afterwards, 401.
+    resp1 = _post(headers={"Authorization": f"Bearer {_token_with_kid('unknown-1')}"})
+    assert resp1.status_code == 401
+    assert calls["n"] == 1
+
+    # Rapid-fire follow-ups (same or different unknown kids) inside the 60s
+    # throttle window must NOT trigger another JWKS fetch -- still 401, but
+    # for free.
+    for kid in ("unknown-1", "unknown-2", "unknown-3"):
+        resp = _post(headers={"Authorization": f"Bearer {_token_with_kid(kid)}"})
+        assert resp.status_code == 401
+    assert calls["n"] == 1
+
+
+def test_supabase_mode_rejects_wrong_issuer(monkeypatch):
+    monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "s3cret")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    token = _hs256_token("s3cret", iss="https://evil-project.supabase.co/auth/v1")
+    resp = _post(headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_supabase_mode_accepts_matching_issuer(monkeypatch):
+    monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "s3cret")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    token = _hs256_token("s3cret", iss="https://project.supabase.co/auth/v1")
+    resp = _post(headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+
+
+def test_supabase_mode_ignores_issuer_when_supabase_url_unset(monkeypatch):
+    """Legacy HS256-only deployments with no SUPABASE_URL configured have no
+    expected `iss` to compare against -- the shared secret itself is already
+    project-specific, so the claim is simply not checked.
+    """
+    monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "s3cret")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    token = _hs256_token("s3cret", iss="https://anything-at-all.example.com/auth/v1")
+    resp = _post(headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
