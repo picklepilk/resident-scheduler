@@ -70,7 +70,8 @@ export function WalkthroughProvider({ steps, onNavigate, children }) {
  * step to the live tab it narrates; the app stays interactive behind it.
  *
  * z-index ladder: the scrim wrapper (`TourSpotlight`) is z-30, its ring z-10 (local to the
- * wrapper's own stacking context), this card is z-40, real modals in this app are z-50.
+ * wrapper's own stacking context), the app sidebar is z-40, this card is z-[45] — strictly above
+ * the sidebar it floats over, strictly below the app header and real modals in this app at z-50.
  *
  * Rendered through a portal to `document.body`: `position: fixed` breaks under any ancestor with
  * a `transform`/`filter` (the app shell has none today, but this stays correct if that changes).
@@ -106,8 +107,8 @@ export function Walkthrough() {
   );
 
   const cardClass = isMobile
-    ? 'fixed z-40 inset-x-0 bottom-0 w-full bg-white border-t border-gray-300 rounded-t-xl shadow-xl max-h-[80vh] overflow-y-auto'
-    : `fixed z-40 w-[380px] bg-white border border-gray-300 rounded-lg shadow-xl ${CORNER_CLASS[corner]}`;
+    ? 'fixed z-[45] inset-x-0 bottom-0 w-full bg-white border-t border-gray-300 rounded-t-xl shadow-xl max-h-[80vh] overflow-y-auto'
+    : `fixed z-[45] w-[380px] bg-white border border-gray-300 rounded-lg shadow-xl ${CORNER_CLASS[corner]}`;
 
   return createPortal(
     <>

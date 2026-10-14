@@ -61,5 +61,5 @@ export function useWalkthroughSeen(session) {
     });
   }, [session]);
 
-  return [seen, markSeen];
+  return { seen, markSeen };
 }

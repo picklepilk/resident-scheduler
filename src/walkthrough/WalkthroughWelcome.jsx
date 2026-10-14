@@ -9,7 +9,7 @@ import { useWalkthroughSeen } from './useWalkthroughSeen';
  * seen-flag immediately (see useWalkthroughSeen); this app never re-prompts.
  */
 export function WalkthroughWelcome({ session }) {
-  const [seen, markSeen] = useWalkthroughSeen(session);
+  const { seen, markSeen } = useWalkthroughSeen(session);
   const { start } = useWalkthroughContext();
 
   if (seen) return null;
