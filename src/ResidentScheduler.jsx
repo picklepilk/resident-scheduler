@@ -3996,7 +3996,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           ? ` (target ${target} = ${target - d} ${d < 0 ? '-' : '+'} ${Math.abs(d)}, ${resident.targetIsBuyDown ? 'buy-down' : (d < 0 ? 'reduction' : 'increase')})`
           : '';
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Over target: ${count}/${target} shifts${overrideNote}`, level: 'warn' });
+          message: `Over target: ${count}/${target} shifts${overrideNote}`, level: 'warn', rule: 'overTarget' });
       } else if (count < target) {
         // Under-target is expected on an in-progress (still-being-built) schedule — that's fine
         // while editing, but it's chief-desired that it BLOCKS EXPORT for EM Home/BAMC (their
@@ -9239,7 +9239,9 @@ function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings
         <p className="text-xs text-gray-400">
           Log every sick call and jeopardy activation here. Each activation earns the activated resident a
           buy-down credit, tracked below — spend it later on the EM Residents tab's <strong>Target Δ</strong> field,
-          checked <strong>buy-down</strong>. Nothing here auto-applies to any target or schedule.
+          checked <strong>buy-down</strong>. Each sick call also owes the SICK resident a payback — applied the
+          same way, with a positive Target Δ checked <strong>payback</strong> (manually, by the chief; not
+          necessarily tied to whoever covered). Nothing here auto-applies to any target or schedule.
         </p>
 
         {/* Add-incident form */}
@@ -9320,12 +9322,21 @@ function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings
             <p className="text-xs text-gray-400 italic">Nothing logged yet.</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
-              {ledgerRows.map(([rid, l]) => (
-                <span key={rid} className="text-[10px] font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600"
-                  title={`Sick calls ${l.sickCalls} · Activations ${l.activations} · Buy-downs applied ${l.applied} · Remaining ${l.remaining}`}>
-                  {residentLabel(rid)} · sick {l.sickCalls} · act {l.activations} · applied {l.applied} · remaining {l.remaining}
-                </span>
-              ))}
+              {ledgerRows.map(([rid, l]) => {
+                // Owed/paid-back/payback-remaining only earn their own segment when this
+                // resident actually has a sick call or a payback applied — a resident who's
+                // only ever been an activated-credit earner (owed === 0, paybackApplied === 0)
+                // keeps the plain sick/act/applied/remaining pill unchanged.
+                const showPayback = l.owed > 0 || l.paybackApplied !== 0;
+                return (
+                  <span key={rid} className="text-[10px] font-medium px-2 py-1 rounded-full bg-gray-100 text-gray-600"
+                    title={`Sick calls ${l.sickCalls} · Activations ${l.activations} · Buy-downs applied ${l.applied} · Remaining ${l.remaining}`
+                      + (showPayback ? ` · Owed ${l.owed} · Paid back ${l.paybackApplied} · Payback remaining ${l.paybackRemaining}` : '')}>
+                    {residentLabel(rid)} · sick {l.sickCalls} · act {l.activations} · applied {l.applied} · remaining {l.remaining}
+                    {showPayback && <> · owed {l.owed} · paid back {l.paybackApplied} · payback rem {l.paybackRemaining}</>}
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>
@@ -12111,6 +12122,36 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
     }));
   }
 
+  // targetDelta's sign is the only thing that decides which of buy-down/payback can be true —
+  // buy-down only makes sense for a negative delta (reduces the target), payback only for a
+  // positive one (raises it; USER DECISION 2026-10-14 — payback is chief-applied, mirrors the
+  // buy-down mechanism, and is a debt the sick resident owes the program, not tied to whoever
+  // covered). A sign flip (or clearing the field) must clear whichever flag no longer matches,
+  // in the SAME updateBlock call as the delta write — two separate setBA calls here would let a
+  // positive-tagged buy-down or negative-tagged payback survive for one render.
+  function setTargetDelta(id, rawValue) {
+    const v = rawValue === '' ? undefined : Number(rawValue);
+    updateBlock(b => {
+      const existing = b.emBlockAssignments[id] || {};
+      const next = { ...existing, targetDelta: v };
+      if (!(Number.isFinite(v) && v < 0)) next.targetIsBuyDown = false;
+      if (!(Number.isFinite(v) && v > 0)) next.targetIsPayback = false;
+      return { ...b, emBlockAssignments: { ...b.emBlockAssignments, [id]: next } };
+    });
+  }
+
+  // Buy-down and payback are mutually exclusive by construction — checking one always clears
+  // the other in the same write, so a stale flag from before a sign flip can never linger.
+  function setTargetFlag(id, field, checked) {
+    const other = field === 'targetIsBuyDown' ? 'targetIsPayback' : 'targetIsBuyDown';
+    updateBlock(b => {
+      const existing = b.emBlockAssignments[id] || {};
+      const next = { ...existing, [field]: checked };
+      if (checked) next[other] = false;
+      return { ...b, emBlockAssignments: { ...b.emBlockAssignments, [id]: next } };
+    });
+  }
+
   function shiftCount(id) { return Object.values(sched[id] || {}).filter(Boolean).length; }
   function target(r) { const ba = assign[r.id] || {}; return getShiftTarget({ ...r, isChief: !!ba.isChief, blockType: ba.blockType ?? 'EM', targetDelta: ba.targetDelta }, appSettings); }
 
@@ -12339,14 +12380,16 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                         </span>
                       </div>
                     )}
-                    {/* One-block target adjustment ("buy-down"/"buy-up") — a delta + reason note,
+                    {/* One-block target adjustment ("buy-down"/"payback") — a delta + reason note,
                         never an absolute number, so it survives a future SHIFT_TARGETS change and
-                        stays self-documenting. Written via setBA, same merge-on-write path as
-                        blockType/isChief above. */}
+                        stays self-documenting. Written via setTargetDelta, which (unlike plain
+                        setBA) clears whichever of buy-down/payback no longer matches the new
+                        sign in the same write — buy-down only applies to delta < 0, payback only
+                        to delta > 0, mutually exclusive by construction (setTargetFlag). */}
                     <div className="flex items-center gap-1.5">
-                      <label className="text-xs text-gray-500 shrink-0" title="One-block shift-target adjustment, e.g. a buy-down earned by covering jeopardy — expressed as a delta so it survives future target changes">Target Δ:</label>
+                      <label className="text-xs text-gray-500 shrink-0" title="One-block shift-target adjustment, e.g. a buy-down earned by covering jeopardy, or a payback owed for a sick call — expressed as a delta so it survives future target changes">Target Δ:</label>
                       <input type="number" step="1" value={ba.targetDelta ?? ''}
-                        onChange={e => { const v = e.target.value; setBA(res.id, 'targetDelta', v === '' ? undefined : Number(v)); }}
+                        onChange={e => setTargetDelta(res.id, e.target.value)}
                         placeholder="0"
                         className="w-14 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
                       {hasDelta && (
@@ -12354,19 +12397,32 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                           <input type="text" value={ba.targetNote ?? ''} onChange={e => setBA(res.id, 'targetNote', e.target.value)}
                             placeholder="Reason (e.g. covered jeopardy 3x)"
                             className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary flex-1 min-w-[9rem]"/>
-                          <label className="flex items-center gap-1 text-xs text-gray-500 shrink-0" title="Marks this as a buy-down — the jeopardy ledger reads this flag">
-                            <input type="checkbox" checked={!!ba.targetIsBuyDown} onChange={e => setBA(res.id, 'targetIsBuyDown', e.target.checked)}/>
-                            buy-down
-                          </label>
+                          {delta < 0 && (
+                            <label className="flex items-center gap-1 text-xs text-gray-500 shrink-0" title="Marks this as a buy-down — the jeopardy ledger reads this flag">
+                              <input type="checkbox" checked={!!ba.targetIsBuyDown} onChange={e => setTargetFlag(res.id, 'targetIsBuyDown', e.target.checked)}/>
+                              buy-down
+                            </label>
+                          )}
+                          {delta > 0 && (
+                            <label className="flex items-center gap-1 text-xs text-gray-500 shrink-0" title="Extra shift(s) this resident owes for a sick call — counts against their payback balance in the jeopardy ledger.">
+                              <input type="checkbox" checked={!!ba.targetIsPayback} onChange={e => setTargetFlag(res.id, 'targetIsPayback', e.target.checked)}/>
+                              payback
+                              {jeopardyLedger[res.id] && (
+                                <span className="text-gray-400">
+                                  (owes {jeopardyLedger[res.id].paybackRemaining})
+                                </span>
+                              )}
+                            </label>
+                          )}
                         </>
                       )}
                     </div>
                     {tgt != null && sched_ok && (
                       <div className="flex items-center gap-1.5 ml-auto">
                         {hasDelta && (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${ba.targetIsBuyDown ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-indigo-100 text-indigo-700 border border-indigo-200'}`}
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${ba.targetIsBuyDown ? 'bg-teal-100 text-teal-700 border border-teal-200' : ba.targetIsPayback ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-indigo-100 text-indigo-700 border border-indigo-200'}`}
                             title={ba.targetNote || (delta < 0 ? 'Target reduced this block' : 'Target increased this block')}>
-                            {delta > 0 ? `+${delta}` : delta}{ba.targetIsBuyDown ? ' buy-down' : ''}
+                            {delta > 0 ? `+${delta}` : delta}{ba.targetIsBuyDown ? ' buy-down' : ba.targetIsPayback ? ' payback' : ''}
                           </span>
                         )}
                         <span className={`text-xs font-medium ${over ? 'text-red-500' : 'text-gray-400'}`}>{cnt}/{tgt}</span>
