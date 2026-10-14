@@ -13,9 +13,12 @@ import os
 
 from importlib.metadata import version as _pkg_version
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.auth import AuthResult
+from api.limits import MaxBodySizeMiddleware
+from api.ratelimit import enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
 from solver.io.payload import PayloadError, parse_payload
 from solver.io.result import build_response
@@ -44,17 +47,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+# Caps real request body bytes before they reach Pydantic parsing (see
+# api/limits.py). /health has no body worth capping, but this runs ahead of
+# routing so it applies uniformly -- harmless there.
+app.add_middleware(MaxBodySizeMiddleware)
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> dict:
+    # Deliberately open: no auth, no rate limit -- Fly's health check (and
+    # anyone else) must always be able to reach this.
     return {"status": "ok", "ortools": ORTOOLS_VERSION}
 
 
 @app.post("/solve", response_model=SolveResponse)
-def solve_endpoint(request: SolveRequest) -> dict:
+def solve_endpoint(request: SolveRequest, auth: AuthResult = Depends(enforce_rate_limit)) -> dict:
     raw = request.model_dump(mode="python")
 
     try:
