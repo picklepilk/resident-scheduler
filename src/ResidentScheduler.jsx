@@ -55,6 +55,7 @@ import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyC
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
+import { offServiceStraddle } from './lib/offServiceWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -3214,6 +3215,57 @@ export function offServiceWindowSummary(status) {
   return foundHistory
     ? `Window quota: ${alreadyWorked} of ${base} worked in prior blocks · ${effectiveTarget} remaining here`
     : `Window quota: ~${effectiveTarget} of ${base} this block (pro-rated, no prior block found)`;
+}
+
+// Master Matrix import commit's off-service-residents builder, extracted so the real-vs-clamped
+// window fix (2026-10-14) has one call site a test can drive directly. `b` is a home.blocks entry
+// ({start, end} — NOT startDate/endDate, see parseHomeResidentMatrix). Pure given a fresh-uuid
+// generator; exported for src/lib/offServiceMatrixImport.test.js.
+//
+// availableRanges stores the resident's REAL rotation window — o.start/o.end exactly as parsed from
+// the off-service sheet, never clamped to this one block's [b.start, b.end]. Clamping here was the
+// bug: it forced totalWindowDays === overlapDays in offServiceWindowStatus, so the straddle
+// pro-rate/measure math (see that function's own header) could never fire on a real Master-Matrix
+// import — every off-service resident whose rotation crosses a block boundary silently got the FULL
+// category target in BOTH blocks instead of a split one. isAvailableOnDate (the only other
+// availableRanges consumer) is always queried with dates drawn from the currently-open block's own
+// date list, so a wider range here can never make a resident eligible on an out-of-block date.
+export function buildOffServiceResidentsForBlock(offRows, b) {
+  return (offRows || [])
+    .filter(o => o.start <= b.end && o.end >= b.start)
+    .map(o => ({
+      // No jeopardyDates — off-service residents never read it any more (see isJeopardyDate's
+      // category guard), so an imported record shouldn't carry the dead field.
+      id: uuid(), firstName: o.firstName, lastName: o.lastName, category: o.category, pgy: o.pgy,
+      blockType: 'EM', isCCUNights: false, approvedDatesOff: [],
+      availabilityMode: 'ranges',
+      availableRanges: [{ start: o.start, end: o.end }],
+      canWorkDates: [],
+    }));
+}
+
+// Shared chip for the 3 offServiceWindowStatus call sites (Off-Service tab tile, Schedule grid row,
+// ResidentCard) so a straddling ER rotation window reads identically everywhere and can't drift —
+// see src/lib/offServiceWindow.js for the pure day-math. Distinct from the existing sky badge next
+// to it at two of those sites (that one shows the WINDOW-QUOTA number this block owes; this one
+// flags the window itself crossing a block boundary — new information the quota number alone
+// doesn't convey, and the whole point of this feature: a chief staring at one block can't otherwise
+// tell that an off-service resident's real ER obligation keeps going past it). Renders nothing when
+// the window doesn't straddle (the common case).
+function OffServiceStraddleBadge({ status, block }) {
+  const straddle = status && offServiceStraddle(status.ranges, block?.startDate, block?.endDate);
+  if (!straddle) return null;
+  const windowDates = (status.ranges || [])
+    .filter(rg => rg.start && rg.end)
+    .map(rg => `${prettyDate(rg.start)}–${prettyDate(rg.end)}`)
+    .join(', ');
+  const tooltip = [`ER rotation window: ${windowDates}`, offServiceWindowSummary(status)].filter(Boolean).join(' · ');
+  return (
+    <span title={tooltip}
+      className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-700 whitespace-nowrap">
+      {straddle.label}
+    </span>
+  );
 }
 
 // Resolve the eligibility list for a resident, most specific key first:
@@ -10297,17 +10349,7 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         const rid = findResidentId(a.firstName, a.lastName);
         if (rid) emBlockAssignments[rid] = { ...(existingAssignments[rid] || {}), blockType: a.blockTypeId };
       }
-      const offServiceResidents = off.rows
-        .filter(o => o.start <= b.end && o.end >= b.start)
-        .map(o => ({
-          // No jeopardyDates — off-service residents never read it any more (see isJeopardyDate's
-          // category guard), so an imported record shouldn't carry the dead field.
-          id: uuid(), firstName: o.firstName, lastName: o.lastName, category: o.category, pgy: o.pgy,
-          blockType: 'EM', isCCUNights: false, approvedDatesOff: [],
-          availabilityMode: 'ranges',
-          availableRanges: [{ start: o.start > b.start ? o.start : b.start, end: o.end < b.end ? o.end : b.end }],
-          canWorkDates: [],
-        }));
+      const offServiceResidents = buildOffServiceResidentsForBlock(off.rows, b);
       return {
         id: `blk_import_${b.start}`, name, academicYear,
         startDate: b.start, endDate: b.end, savedAt: new Date().toISOString(),
@@ -12558,6 +12600,7 @@ function OffServiceTab({ block, updateBlock, appSettings, allResidents, blocksHi
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold text-gray-900 text-sm">{res.firstName} {res.lastName}</span>
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cat.badge}`}>{cat.shortLabel} PGY-{res.pgy}</span>
+                            <OffServiceStraddleBadge status={offStatus} block={block}/>
                           </div>
                           {res.isCCUNights && <p className="text-xs text-orange-600 mt-0.5 font-medium">CCU nights</p>}
                           {/* Jeopardy is an EM-rotation obligation only (see isJeopardyDate's
@@ -15117,6 +15160,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // off-service resident whose window doesn't straddle this block, i.e. the common case.
     const offStatus=offServiceWindowStatus(res, block, blocksHistory);
     const offSummary=offServiceWindowSummary(offStatus);
+    // Straddle day-math for the row's own title (narrow name column has no room for the chip, but
+    // the full hover/tap title should still say so) — see OffServiceStraddleBadge's header comment.
+    const offStraddle = offStatus && offServiceStraddle(offStatus.ranges, block?.startDate, block?.endDate);
+    const rowTitle = [offSummary, offStraddle?.label].filter(Boolean).join(' · ') || undefined;
     // Wellness Wednesday ordinal depends only on res.category/res.pgy/dayRules — not on the date —
     // so it's hoisted here instead of being recomputed inside the per-date dates.map loop below.
     const wwOrdinal = res.category==='EM_HOME'
@@ -15125,7 +15172,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     return (
       <div key={res.id} className={`flex border-b border-gray-100 ${!sched_ok?'opacity-50':''} ${cat.rowBg}`}>
         <div ref={el=>{ if(el) rowRefs.current.set(res.id, el); else rowRefs.current.delete(res.id); }}
-          className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 transition-colors ${highlightedRow===res.id?'bg-primary/20':cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={offSummary || undefined}>
+          className={`grid-sticky group border-r border-gray-200 flex items-center gap-1 px-3 py-1 transition-colors ${highlightedRow===res.id?'bg-primary/20':cat.rowBg}`} style={{width:NAME_W,minWidth:NAME_W}} title={rowTitle}>
           <div className="flex-1 min-w-0">
             {narrowNameCol ? (
               // Mobile fix: compact single-line "First L. · PGY-N" instead of the two-row
@@ -15155,6 +15202,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
                       {rowDelta>0?`+${rowDelta}`:rowDelta}
                     </span>
                   )}
+                  <OffServiceStraddleBadge status={offStatus} block={block}/>
                 </div>
               </>
             )}
@@ -16763,6 +16811,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
                 {offStatus.foundHistory ? `${offStatus.alreadyWorked}/${offStatus.base} prior` : `~${offStatus.effectiveTarget}/${offStatus.base} pro-rated`}
               </span>
             )}
+            <OffServiceStraddleBadge status={offStatus} block={block}/>
             {cardHasDelta && (
               <span title={res.targetNote || (cardDelta<0?'Target reduced this block':'Target increased this block')}
                 className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
