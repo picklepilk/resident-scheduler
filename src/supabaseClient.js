@@ -23,6 +23,27 @@ export const supabase = AUTH_ENABLED
   ? createClient(SUPABASE_URL, SUPABASE_ANON)
   : null;
 
+// The current session's access token, or null (unconfigured, or no session yet/signed out).
+// ResidentScheduler.jsx's sbFetch (SUPABASE SYNC section) calls this fresh on EVERY request rather
+// than caching a token at mount — supabase-js auto-refreshes the session in the background, and
+// getSession() always returns the live, non-expired token (refreshing it first if needed) rather
+// than a snapshot that could go stale mid-session. Security boundary is RLS, not this call: a
+// stale/expired token just makes requests fail (401), it never grants access by itself.
+export async function getAccessToken() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token ?? null;
+}
+
+// Pure, so it's unit-testable without a supabase-js session: the fallback used whenever no live
+// session token is available — unconfigured auth, signed out, or (dev-only, see AUTH_ENABLED's
+// asymmetry note in CLAUDE.md) AUTH_ENABLED false with cloud sync still configured. Falling back
+// to the anon key (never to an empty/undefined Authorization header) keeps sbFetch's request shape
+// valid in every case; RLS alone decides whether the anon key can actually see anything.
+export function resolveAuthToken(accessToken, anonKey) {
+  return accessToken ?? anonKey;
+}
+
 // The three profiles.role values, mirroring the CHECK constraint in supabase/day_off_requests.sql.
 // Shared so the four files that branch on role (AppGate, RequestsTab, ResidentRequestsApp,
 // ResidentScheduler) can't drift on a bare string — a typo'd 'Admin' would silently fail closed

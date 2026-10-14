@@ -2,8 +2,10 @@
 -- feature. Same "run by hand, no migration tooling" pattern as the res_state table documented
 -- in src/ResidentScheduler.jsx's SUPABASE SYNC section.
 --
--- Unlike res_state's wide-open RLS, these two tables carry per-resident data, so they use real
--- row-level security scoped by the authenticated user (auth.uid()).
+-- These two tables carry per-resident data, so they use real row-level security scoped by the
+-- authenticated user (auth.uid()). res_state (the shared department document — full schedule,
+-- full roster) was wide-open until migrate_res_state_admin_only.sql locked it to admins only; see
+-- that file and ResidentScheduler.jsx's updated SUPABASE SYNC comment for the current state.
 
 create table profiles (
   id          uuid primary key references auth.users(id) on delete cascade,

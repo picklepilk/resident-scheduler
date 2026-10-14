@@ -1,12 +1,20 @@
 // Pure helpers for matching a resident's requested date against known scheduling blocks, and for
-// reading those blocks read-only from the shared res_state cloud row (same wide-open-RLS row the
-// main app's cloud sync already uses — see ResidentScheduler.jsx's SUPABASE SYNC section). This
-// file intentionally does NOT import from ResidentScheduler.jsx — the resident-facing app is a
-// separate surface with no access to that file's local component state. It does import the small
-// isUnresolvedToken guard from supabaseClient.js, since that's this app's own auth surface, not
-// ResidentScheduler.jsx.
+// reading those blocks read-only via public.resident_block_lookup() (supabase/
+// migrate_res_state_admin_only.sql) — a SECURITY DEFINER RPC scoped to exactly the fields this
+// surface needs. This file intentionally does NOT import from ResidentScheduler.jsx — the
+// resident-facing app is a separate surface with no access to that file's local component state.
+// It does import `supabase` from supabaseClient.js, since that's this app's own auth surface (the
+// RPC call rides the signed-in resident's own session JWT via supabase-js, same as every other
+// authenticated read/write in residentRequests/*).
+//
+// Until 2026-10-14 this read the WHOLE shared res_state row directly (wide-open RLS, no session
+// needed) and narrowed it down client-side — a confirmed data-exposure gap: it pulled every
+// resident's name and the full generated schedule to the resident's browser before narrowing
+// anything. res_state is admin-only now; resident_block_lookup() does the narrowing server-side
+// instead, and requires an approved (non-'pending') caller — same gate
+// migrate_block_pending_account_access.sql already enforces for day_off_requests.
 
-import { isUnresolvedToken } from '../supabaseClient';
+import { supabase } from '../supabaseClient';
 
 export function findBlockForDate(dateStr, blocks) {
   return blocks.find(b => b.startDate && b.endDate && dateStr >= b.startDate && dateStr <= b.endDate) || null;
@@ -57,79 +65,59 @@ export function weeksUntil(fromDateStr, toDateStr) {
   return Math.floor((to.getTime() - from.getTime()) / (7 * 24 * 60 * 60 * 1000));
 }
 
-const RES_STATE_URL_KEY = '__SUPABASE_URL__';
-const RES_STATE_ANON_KEY = '__SUPABASE_ANON__';
-
-// Shared read-only fetch of the shared res_state row's `data` blob — the single place the
-// URL/anon-key-reading and error handling live for every read this resident-facing app needs
-// (Task 6's fetchRosterForPicker reuses this instead of duplicating it). No Supabase Auth session
-// needed, since that table's RLS policy is intentionally wide-open (public_read_write). Returns
-// null on any failure (unconfigured, network error, empty row) rather than throwing, since every
-// caller only uses this for informational display (cutoff warning, block-grouping label, name
-// picker) — never a hard gate.
-//
-// KNOWN LIMITATION (accepted, not a regression — res_state has been wide-open by design since
-// before this feature; see ResidentScheduler.jsx's SUPABASE SYNC section): this pulls the WHOLE
-// shared document — the full generated schedule, every resident's shifts — to the resident's
-// browser before the caller narrows it down to just block dates or roster names. "Residents never
-// see the schedule" is enforced by this app's UI only, not by RLS/data-layer scoping; a resident
-// who inspects network traffic (or who simply navigates to the unauthenticated main `/` route on
-// the same origin) can already see the full schedule today, with or without this feature. Closing
-// this for real would mean serving `/requests` a narrow, RLS-scoped view (or Edge Function) instead
-// of this blob, and gating `/` itself — both out of scope here; left as a documented tradeoff.
-export async function fetchResState() {
-  const url = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_URL_KEY]) || '';
-  const anon = (typeof globalThis !== 'undefined' && globalThis[RES_STATE_ANON_KEY]) || '';
-  if (!url || isUnresolvedToken(url) || !anon || isUnresolvedToken(anon)) return null;
-  // Same 15s bound as ResidentScheduler.jsx's sbFetch, for the same reason: a stalled (not
-  // failed) network shouldn't hang this form/list forever with no recovery.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+// Shared RPC call backing every read below — the single place the supabase.rpc() call and error
+// handling live (fetchRosterForPicker reuses this instead of duplicating it, same as before).
+// Returns null on any failure (unconfigured, not signed in, denied, network error) rather than
+// throwing, since every caller only uses this for informational display (cutoff warning,
+// block-grouping label, name picker) — never a hard gate. Each exported function below calls this
+// independently (one RPC round-trip per mounted consumer) — same duplication the old
+// fetchResState had when both RequestForm and RequestList were mounted together; not solved here,
+// out of scope for this change.
+async function fetchLookup() {
+  if (!supabase) return null;
   try {
-    const res = await fetch(`${url}/rest/v1/res_state?id=eq.main&select=data`, {
-      headers: { apikey: anon, Authorization: `Bearer ${anon}` },
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return rows && rows[0] && rows[0].data ? rows[0].data : null;
+    const { data, error } = await supabase.rpc('resident_block_lookup');
+    if (error) return null;
+    return data || null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
-export async function fetchBlocksForLookup() {
-  const data = await fetchResState();
-  if (!data) return [];
-  const current = data.res_current_block;
-  const history = Array.isArray(data.res_blocks_history) ? data.res_blocks_history : [];
-  const all = [...history, ...(current ? [current] : [])];
-  return all
-    .filter(b => b && b.startDate && b.endDate)
-    .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
+// Pure mappings, split out from fetchBlocksForLookup/fetchAyDataForLookup/fetchRosterForPicker so
+// they're unit-testable without mocking supabase.rpc — exported for blockLookup.test.js. Every
+// input is untrusted shape (the RPC's jsonb result, same "guard like normalizeCoverageEntry"
+// posture CLAUDE.md asks for everywhere else this app reads cloud data).
+export function normalizeLookupBlocks(data) {
+  return Array.isArray(data?.blocks) ? data.blocks : [];
+}
+export function normalizeLookupAyData(data) {
+  return data && typeof data.ayData === 'object' && data.ayData ? data.ayData : {};
+}
+export function normalizeLookupRoster(data) {
+  const roster = Array.isArray(data?.roster) ? data.roster : [];
+  return roster.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName }))
+    .sort((a, b) => a.lastName.localeCompare(b.lastName));
 }
 
-// Read-only per-AY config fetch (the `res_ay_data` key of the same shared res_state document), so
+export async function fetchBlocksForLookup() {
+  return normalizeLookupBlocks(await fetchLookup());
+}
+
+// Per-AY config fetch (the RPC's `ayData` field, mirroring res_state's old res_ay_data key), so
 // the resident-facing request form can tell someone that the date they're about to request is
 // Thanksgiving. Returns {} on any failure — every caller uses this only to ADD an informational
 // note, never to gate or validate a submission, so a failed fetch degrades to "no note" rather
 // than to a broken form. Importing src/lib/holidays.js from here is fine and intended: the rule
 // this directory honors is "never import from ResidentScheduler.jsx", and lib/* is pure.
 export async function fetchAyDataForLookup() {
-  const data = await fetchResState();
-  const ayData = data && data.res_ay_data;
-  return ayData && typeof ayData === 'object' ? ayData : {};
+  return normalizeLookupAyData(await fetchLookup());
 }
 
-// Read-only roster fetch, same res_state row as fetchBlocksForLookup — only RENDERS the fields
-// needed to let a resident identify themselves. See fetchResState's own comment above: the
-// underlying fetch still pulls the whole shared document (including the full schedule) to the
-// browser first; this function just narrows what's returned/displayed, not what crossed the wire.
+// Roster fetch — only RENDERS the fields needed to let a resident identify themselves. Unlike the
+// old fetchResState path, resident_block_lookup() already narrows this server-side to
+// id/firstName/lastName before it ever crosses the wire; normalizeLookupRoster re-narrows anyway
+// (never trust remote shape fully, same convention as everywhere else cloud data is read).
 export async function fetchRosterForPicker() {
-  const data = await fetchResState();
-  const roster = data && Array.isArray(data.res_em_roster) ? data.res_em_roster : [];
-  return roster.map(r => ({ id: r.id, firstName: r.firstName, lastName: r.lastName }))
-    .sort((a, b) => a.lastName.localeCompare(b.lastName));
+  return normalizeLookupRoster(await fetchLookup());
 }
