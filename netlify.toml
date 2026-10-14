@@ -29,3 +29,56 @@
   for = "/manifest.webmanifest"
   [headers.values]
     Content-Type = "application/manifest+json"
+
+# Security headers, all paths. Netlify merges overlapping [[headers]] blocks (additive, not
+# override) — these apply ON TOP OF the /sw.js and /manifest.webmanifest blocks above, which keep
+# their own Cache-Control/Content-Type untouched since neither key is set again here.
+#
+# CSP ships Report-Only for now (see docs/security-headers.md for the flip-to-enforcing rollout).
+# Audit behind this policy (2026-10-14, npm run build + grep, see commit for full notes):
+#   - index.html has exactly one inline <script> (sets window.__SUPABASE_URL__ / __SUPABASE_ANON__
+#     / __ALLOWED_EMAIL_DOMAIN__ / __SOLVER_URL__ from %VITE_*% tokens). These tokens are NOT
+#     resolved by `vite build` (dist/index.html still has the literal "%VITE_SUPABASE_URL%" etc.
+#     text) — Netlify's own HTML snippet-injection substitutes them post-build, per deploy
+#     context. That means this script's content (and therefore its sha256 hash) differs between
+#     production and deploy-preview contexts and changes any time a chief rotates an env var —
+#     a committed hash would go stale silently and start blocking the app under enforcing CSP.
+#     Using 'unsafe-inline' for script-src here is the pragmatic call for a config-only inline
+#     block; see docs/security-headers.md for the alternative (move these to vite.config.js
+#     `define` constants, same pattern already used for __APP_VERSION__, which would let
+#     script-src drop 'unsafe-inline' entirely).
+#   - React sets ~46 inline `style={{...}}` props across the app (grid zoom, DAY_MARKERS colors,
+#     drag-and-drop, etc.) — these mutate the DOM `style` attribute under the hood, same as
+#     `style="..."` in markup, so style-src needs 'unsafe-inline' too (no hash/nonce path for
+#     dynamic per-render inline styles).
+#   - PDF export (jsPDF, src/ResidentScheduler.jsx pdfSave()), CSV/.ics export, and the raw-text
+#     log-entry export all build `blob:` URLs via `new Blob()` + `URL.createObjectURL()` — hence
+#     img-src/worker-src blob:. No `new Worker(...)` anywhere in src/ (grep confirmed), so
+#     worker-src is just 'self' plus blob: for forward-compat with jsPDF/xlsx internals.
+#   - Fonts (Barlow, Barlow Condensed, JetBrains Mono) are bundled by Vite into dist/assets/*.woff2
+#     — no Google Fonts or other font CDN at runtime, so font-src needs nothing but 'self'.
+#   - Cloud sync (hand-rolled sbFetch) and Auth (@supabase/supabase-js in src/supabaseClient.js)
+#     both talk to `${VITE_SUPABASE_URL}/rest/v1` and `/auth/v1` on *.supabase.co; supabase-js
+#     also carries a Realtime client capable of wss:// even though no `.channel()` call exists in
+#     src/ today (grep confirmed) — connect-src allows both defensively.
+#   - Optional CP-SAT solver (src/lib/solverClient.js, gated by VITE_SOLVER_URL/SOLVER_ENABLED)
+#     posts to `${VITE_SOLVER_URL}/solve`. No solver hostname is committed anywhere in this repo
+#     (it's Netlify-env-only) — connect-src allows *.fly.dev as the documented hosting platform;
+#     narrow this to the exact solver hostname once pulled from the Netlify dashboard's env vars.
+#   - FRAMING DECISION NEEDED: pdfSave() (src/ResidentScheduler.jsx) branches on
+#     `window.self !== window.top` with a comment "iframe embeds (e.g. Teams)" — i.e. the app is
+#     written to expect being embedded as a Teams tab, but no Teams app manifest or Teams SDK
+#     import exists in this repo, so it's unconfirmed whether that's live today or just
+#     defensive/future-proofing. frame-ancestors below allows 'self' plus Teams/Office origins so
+#     this doesn't regress a Teams embed if one exists; if this app is NEVER framed, tighten
+#     frame-ancestors to 'self' (and consider adding X-Frame-Options: SAMEORIGIN once enforcing).
+#     X-Frame-Options is deliberately NOT set below — it's enforced immediately (no report-only
+#     mode) and would risk breaking a live Teams embed before this question is answered.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.fly.dev; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.office.com"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
