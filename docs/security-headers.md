@@ -35,15 +35,8 @@ framing question).
   `VITE_SOLVER_URL` value is committed anywhere in this repo (it's a Netlify dashboard env var).
   Pull the real value from Netlify (Site settings → Environment variables) and narrow
   `connect-src` to that exact origin before enforcing.
-- **Teams framing**: `frame-ancestors` allows `'self'`, `https://teams.microsoft.com`,
-  `https://*.teams.microsoft.com`, and `https://*.office.com` because `pdfSave()` in
-  `src/ResidentScheduler.jsx` has iframe-embed handling commented "e.g. Teams" — but no Teams
-  app manifest or Teams SDK exists in this repo, so it's unconfirmed whether this app is
-  actually live inside a Teams tab today. **Confirm with the chief/IT admin** whether this app
-  is (or will be) embedded in Teams:
-  - If yes: keep the allowlist (or narrow it to the exact tenant's Teams/Office origins).
-  - If no: tighten `frame-ancestors` to `'self'` only, and consider adding
-    `X-Frame-Options: SAMEORIGIN` as defense-in-depth for browsers that ignore CSP somehow.
+- **Framing**: decided 2026-10-14 — the app is never embedded. `frame-ancestors 'none'` in the CSP
+  plus `X-Frame-Options: DENY`, which is enforced immediately (it has no report-only mode).
 - **Inline script `'unsafe-inline'`**: the one inline `<script>` in `index.html` sets
   `window.__SUPABASE_URL__`/`__SUPABASE_ANON__`/`__ALLOWED_EMAIL_DOMAIN__`/`__SOLVER_URL__` from
   `%VITE_*%` tokens that Netlify's HTML snippet-injection substitutes post-build — so its content

@@ -65,19 +65,14 @@
 #     posts to `${VITE_SOLVER_URL}/solve`. No solver hostname is committed anywhere in this repo
 #     (it's Netlify-env-only) — connect-src allows *.fly.dev as the documented hosting platform;
 #     narrow this to the exact solver hostname once pulled from the Netlify dashboard's env vars.
-#   - FRAMING DECISION NEEDED: pdfSave() (src/ResidentScheduler.jsx) branches on
-#     `window.self !== window.top` with a comment "iframe embeds (e.g. Teams)" — i.e. the app is
-#     written to expect being embedded as a Teams tab, but no Teams app manifest or Teams SDK
-#     import exists in this repo, so it's unconfirmed whether that's live today or just
-#     defensive/future-proofing. frame-ancestors below allows 'self' plus Teams/Office origins so
-#     this doesn't regress a Teams embed if one exists; if this app is NEVER framed, tighten
-#     frame-ancestors to 'self' (and consider adding X-Frame-Options: SAMEORIGIN once enforcing).
-#     X-Frame-Options is deliberately NOT set below — it's enforced immediately (no report-only
-#     mode) and would risk breaking a live Teams embed before this question is answered.
+#   - Framing: the app is never embedded (user-confirmed 2026-10-14), so frame-ancestors 'none'
+#     and X-Frame-Options DENY (enforced now — XFO has no report-only mode, and nothing frames the
+#     app). pdfSave()'s iframe branch is dead in production as a result; harmless to keep.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.fly.dev; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.office.com"
+    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.fly.dev; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
