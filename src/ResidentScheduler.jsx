@@ -53,6 +53,7 @@ import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
+import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -5078,12 +5079,20 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     return freeCount === 1;
   }
 
-  // Candidate pool; the filter that empties it names the unfilled reason.
-  function candidatePool(shift, ds) {
-    let pool = allResidents.filter(r => eligCache[r.id][ds].has(shift.id));
-    if (!pool.length) return { candidates: [], reason: 'noEligible' };
-    pool = pool.filter(r => !schedule[r.id][ds]);
-    if (!pool.length) return { candidates: [], reason: 'allWorking' };
+  // Candidate pool, as an ORDERED STAGE LIST. Each stage is `{ reason, applies(shift,ds), keep(r,
+  // shift,ds), restFallbackEmpty? }` — `applies` gates a conditional stage (skipped entirely when
+  // false, same as the old `if (...) { pool = pool.filter(...) }` blocks), `keep` is the actual
+  // per-resident predicate (same body as the old inline filter callback), and `restFallbackEmpty`
+  // marks the stages whose early-return also carries `restFallback: []` (every stage from
+  // `allRestBlocked` on, matching the original). `candidatePool` below runs every stage against the
+  // live pool, narrowing it exactly as the old sequential filters did; `firstBlockingReason` runs
+  // the SAME stage list against a single resident with no pool at all (every stage predicate is
+  // already pure in `r`, never in "who else is in the pool", so this is behavior-identical to
+  // candidatePool's own narrowing). Reusing one list is what keeps the two from drifting — a new
+  // hard rule only ever needs one new stage object, read by both functions.
+  const CANDIDATE_POOL_STAGES = [
+    { reason: 'noEligible', keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
+    { reason: 'allWorking', keep: (r, shift, ds) => !schedule[r.id][ds] },
     // A jeopardy call may never land on a date the resident already works clinically (see
     // CLAUDE.md) — under any policy except 'off' this is now a hard exclusion, not a score()
     // preference (which would let a hard validateAll error slip into generateScheduleBest's
@@ -5092,14 +5101,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // overnight STARTING ds that runs past 07:00 into D when ds+1 is the resident's jeopardy date
     // (chief-decided 2026-09-26 policy — see lib/jeopardyWindow.js). Same reason id as before
     // ('jeopardyConflict') — the reason is now just wider, not renamed.
-    if (jeoPolicy !== 'off') {
-      pool = pool.filter(r => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule));
-      if (!pool.length) return { candidates: [], reason: 'jeopardyConflict' };
-    }
-    pool = pool.filter(r => target[r.id] != null);
-    if (!pool.length) return { candidates: [], reason: 'selfCoverOnly' };
-    pool = pool.filter(r => assigned[r.id] < target[r.id]);
-    if (!pool.length) return { candidates: [], reason: 'allAtTarget' };
+    {
+      reason: 'jeopardyConflict',
+      applies: () => jeoPolicy !== 'off',
+      keep: (r, shift, ds) => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule),
+    },
+    { reason: 'selfCoverOnly', keep: r => target[r.id] != null },
+    { reason: 'allAtTarget', keep: r => assigned[r.id] < target[r.id] },
     // ACGME 80-hour rolling 4-week average — the EXACT rolling-window computation validateAll's
     // weeklyHourStats uses (item 3), via the shared maxRollingWindowHoursFor core, not the old flat
     // block-length approximation (80/7 * block days). That approximation could pass a resident who
@@ -5107,116 +5115,185 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // divergence validateAll's own retrospective check exists to catch. cachedTimedFor reuses the
     // scheduleVersion-keyed caching idiom cachedNightRunSegments/cachedSixDayRunAnchor already use
     // above, so this stays O(k) per candidate instead of rebuilding each resident's whole timed
-    // assignment list on every slot.
+    // assignment list on every slot. dsMs/shiftDurationH are cheap pure functions of (shift, ds) —
+    // recomputed per `keep` call rather than hoisted once per candidatePool call, same cost as
+    // before since parseDate/the SHIFT_TIMING lookup were never the expensive part here.
     {
-      const shiftDurationH = SHIFT_TIMING[shift.id]?.durationH || 0;
-      const dsMs = parseDate(ds).getTime();
-      pool = pool.filter(r => maxRollingWindowHoursFor(cachedTimedFor(r.id), { dateMs: dsMs, durationH: shiftDurationH }) <= ROLLING_WINDOW_CAP_H);
-    }
-    if (!pool.length) return { candidates: [], reason: 'hoursCapped' };
+      reason: 'hoursCapped',
+      keep: (r, shift, ds) => {
+        const shiftDurationH = SHIFT_TIMING[shift.id]?.durationH || 0;
+        const dsMs = parseDate(ds).getTime();
+        return maxRollingWindowHoursFor(cachedTimedFor(r.id), { dateMs: dsMs, durationH: shiftDurationH }) <= ROLLING_WINDOW_CAP_H;
+      },
+    },
     // ACGME EM 6.17.a.3 weekly caps (60 scheduled ED h / 72 total h per rolling 7 days) — EM
     // Home/BAMC residents on a schedulable EM rotation only, always hard (memory
     // acgme-em-work-hours). Off-service residents keep only the 80h/4wk rule above, so they're
     // never excluded by this pair of filters (isEmResident/isSchedulable short-circuits false).
-    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).edBreach));
-    if (!pool.length) return { candidates: [], reason: 'edHoursCapped' };
-    pool = pool.filter(r => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).totalBreach));
-    if (!pool.length) return { candidates: [], reason: 'totalHoursCapped' };
-    if (isJcDay(ds) && shiftOverlapsJC(shift.id)) {
-      pool = pool.filter(r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY);
-      if (!pool.length) return { candidates: [], reason: 'jcCapped' };
-    }
-    if (shift.area === 'TRAUMA' && traumaCap > 0) {
-      pool = pool.filter(r => !(isTraumaCapSubject(r) && traumaCount[r.id] >= traumaCap));
-      if (!pool.length) return { candidates: [], reason: 'traumaCapped' };
-    }
+    {
+      reason: 'edHoursCapped',
+      keep: (r, shift, ds) => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).edBreach),
+    },
+    {
+      reason: 'totalHoursCapped',
+      keep: (r, shift, ds) => !(isEmResident(r) && isSchedulable(r) && cachedWeeklyCapsBreach(r, ds, shift.id).totalBreach),
+    },
+    {
+      reason: 'jcCapped',
+      applies: (shift, ds) => isJcDay(ds) && shiftOverlapsJC(shift.id),
+      keep: r => r.category !== 'EM_HOME' || jcCount[r.id] < JC_MAX_PER_AY,
+    },
+    {
+      reason: 'traumaCapped',
+      applies: shift => shift.area === 'TRAUMA' && traumaCap > 0,
+      keep: r => !(isTraumaCapSubject(r) && traumaCount[r.id] >= traumaCap),
+    },
     // Protect the 8-trauma/11-peds split: a Trauma/Peds rotator can't consume the other half's
     // budget even though both halves share one combined 19-shift target.
-    if (shift.area === 'TRAUMA') {
-      pool = pool.filter(r => !(isTraumaPedsSplitResident(r, traumaBlocks) && traumaCount[r.id] >= TRAUMA_PEDS_SPLIT.trauma));
-      if (!pool.length) return { candidates: [], reason: 'halfTargetMet' };
-    }
-    if (shift.area === 'PED') {
-      pool = pool.filter(r => !(isTraumaPedsSplitResident(r, traumaBlocks) && pedsCount[r.id] >= TRAUMA_PEDS_SPLIT.peds));
-      if (!pool.length) return { candidates: [], reason: 'halfTargetMet' };
-    }
+    {
+      reason: 'halfTargetMet',
+      applies: shift => shift.area === 'TRAUMA',
+      keep: r => !(isTraumaPedsSplitResident(r, traumaBlocks) && traumaCount[r.id] >= TRAUMA_PEDS_SPLIT.trauma),
+    },
+    {
+      reason: 'halfTargetMet',
+      applies: shift => shift.area === 'PED',
+      keep: r => !(isTraumaPedsSplitResident(r, traumaBlocks) && pedsCount[r.id] >= TRAUMA_PEDS_SPLIT.peds),
+    },
     // HARD: at most 2 TRAUMA-N shifts within one contiguous night run (chief-directed — the
     // benchmark hand-built schedule never crams a 3rd trauma night into a run). Correctness rule,
     // not a tie-break, so it's a candidatePool exclusion rather than a score() preference — see
     // the mirrored soft traumaSecondInRun/traumaMidRun terms in score() for the tie-break side of
     // this same rule, and validateAll's own retrospective walk for the hard error/warning pair.
-    if (shift.id === 'TRAUMA-N') {
-      pool = pool.filter(r =>
-        (traumaNightRunCount(schedule[r.id], ds, -1) + traumaNightRunCount(schedule[r.id], ds, 1)) < 2);
-      if (!pool.length) return { candidates: [], reason: 'traumaRunCapped' };
-    }
+    {
+      reason: 'traumaRunCapped',
+      applies: shift => shift.id === 'TRAUMA-N',
+      keep: (r, shift, ds) => (traumaNightRunCount(schedule[r.id], ds, -1) + traumaNightRunCount(schedule[r.id], ds, 1)) < 2,
+    },
     // BAMC Wednesday-night hard cap (item 1): validateAll warns when an EM_BAMC resident works
     // more than one Wednesday-night shift per block ("BAMC allows at most one — runs into
     // Thursday GR") but candidatePool had no matching filter — same traumaCapped/jcCapped pattern,
     // now applied here so the generator can't produce what Validation already flags.
-    if (shift.type === 'night' && parseDate(ds).getDay() === 3) {
-      pool = pool.filter(r => !(r.category === 'EM_BAMC' && bamcWedNightCount[r.id] >= 1));
-      if (!pool.length) return { candidates: [], reason: 'bamcWedNightCapped' };
-    }
+    {
+      reason: 'bamcWedNightCapped',
+      applies: (shift, ds) => shift.type === 'night' && parseDate(ds).getDay() === 3,
+      keep: r => !(r.category === 'EM_BAMC' && bamcWedNightCount[r.id] >= 1),
+    },
     // Rest >= shift-length (ACGME 6.17.a.2) is now ALWAYS enforced — no more appSettings.enforceRest
     // gate (memory acgme-em-work-hours: "rest >= shift length between shifts, always"). The old
     // toggle key is still read (harmlessly ignored) so an old backup with enforceRest:false doesn't
     // throw; see DEFAULT_APP_SETTINGS.
-    pool = pool.filter(r => cachedRestViolations(r, ds, shift.id).length === 0);
-    if (!pool.length) return { candidates: [], restFallback: [], reason: 'allRestBlocked' };
+    {
+      reason: 'allRestBlocked', restFallbackEmpty: true,
+      keep: (r, shift, ds) => cachedRestViolations(r, ds, shift.id).length === 0,
+    },
     // Hard circadian rules only exclude here: >6-night run, eve→day-next-day (or reverse). The
     // 24h post-night rest preference (rule: 'postNightRest') is a ranked soft rule — violators
     // stay in the pool as `restFallback` rather than being excluded; fillDayPass decides whether
-    // to use them, based on the chief's Soft Rule Priority order. Kept as a resident→violations
-    // Map (not just an array) so both the O(n) re-lookup below and fillDayPass's restGapH tie-
-    // break can reuse this one checkCircadianViolations pass per candidate instead of each
-    // re-deriving it themselves.
-    const circadianByResident = new Map(pool.map(r => [r, cachedCircadianViolations(r, ds, shift.id)]));
-    pool = pool.filter(r => circadianByResident.get(r).every(v => v.level !== 'error'));
-    if (!pool.length) return { candidates: [], restFallback: [], reason: 'circadianBlocked' };
+    // to use them, based on the chief's Soft Rule Priority order. cachedCircadianViolations is
+    // itself memoized per (resident, ds, shiftId), so calling it again below (building
+    // `circadianByResident` from the final pool, and in the postNightRest check) is a cache hit,
+    // not a recompute.
+    {
+      reason: 'circadianBlocked', restFallbackEmpty: true,
+      keep: (r, shift, ds) => cachedCircadianViolations(r, ds, shift.id).every(v => v.level !== 'error'),
+    },
     // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest).
-    if (SHIFT_MAP[shift.id]?.type === 'night') {
-      pool = pool.filter(r => nightOnly[r.id] || nightCount[r.id] < NIGHT_RULES.maxPerBlock);
-      if (!pool.length) return { candidates: [], restFallback: [], reason: 'nightCapped' };
-      // Hard cap on separate night-run segments (chief-directed, 1.7): nights should land in ONE
-      // run per block; a 2nd separate stint is tolerated (score()'s nightCluster discourages it,
-      // validateAll warns) but a 3rd+ is now a hard validateAll error, so it must be excluded here
-      // too — a soft discourage alone can't guarantee the generator never produces it. Extending an
-      // existing run, or bridging two adjacent runs into one, never increases the segment count
-      // (nightRunBefore/After cover both), so only a candidate who'd START a brand-new isolated
-      // segment while already at 2 is excluded.
-      pool = pool.filter(r => {
+    {
+      reason: 'nightCapped', restFallbackEmpty: true,
+      applies: shift => SHIFT_MAP[shift.id]?.type === 'night',
+      keep: r => nightOnly[r.id] || nightCount[r.id] < NIGHT_RULES.maxPerBlock,
+    },
+    // Hard cap on separate night-run segments (chief-directed, 1.7): nights should land in ONE
+    // run per block; a 2nd separate stint is tolerated (score()'s nightCluster discourages it,
+    // validateAll warns) but a 3rd+ is now a hard validateAll error, so it must be excluded here
+    // too — a soft discourage alone can't guarantee the generator never produces it. Extending an
+    // existing run, or bridging two adjacent runs into one, never increases the segment count
+    // (nightRunBefore/After cover both), so only a candidate who'd START a brand-new isolated
+    // segment while already at 2 is excluded.
+    {
+      reason: 'nightStintCapped', restFallbackEmpty: true,
+      applies: shift => SHIFT_MAP[shift.id]?.type === 'night',
+      keep: (r, shift, ds) => {
         if (nightOnly[r.id]) return true;
         if (nightRunBefore(schedule[r.id], ds) > 0 || nightRunAfter(schedule[r.id], ds) > 0) return true;
         return cachedNightRunSegments(r.id).length < 2;
-      });
-      if (!pool.length) return { candidates: [], restFallback: [], reason: 'nightStintCapped' };
-    }
-    if (shift.area === 'PED') {
-      pool = pool.filter(r => !(isPedsEmMix(r) && pedsCount[r.id] >= PEDS_EM_MIX.max));
-      if (!pool.length) return { candidates: [], restFallback: [], reason: 'pedsMixCapped' };
-    }
+      },
+    },
+    {
+      reason: 'pedsMixCapped', restFallbackEmpty: true,
+      applies: shift => shift.area === 'PED',
+      keep: r => !(isPedsEmMix(r) && pedsCount[r.id] >= PEDS_EM_MIX.max),
+    },
     // Hard 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as
     // worked; prevTail lets the walk see a run continuing from the previous saved block.
-    pool = pool.filter(r => cachedRunLengthIfWorked(r, ds) <= MAX_CONSECUTIVE_WORK_DAYS);
-    if (!pool.length) return { candidates: [], restFallback: [], reason: 'streakBlocked' };
+    {
+      reason: 'streakBlocked', restFallbackEmpty: true,
+      keep: (r, shift, ds) => cachedRunLengthIfWorked(r, ds) <= MAX_CONSECUTIVE_WORK_DAYS,
+    },
     // Hard 24h-rest requirement after completing a maxed 6-day work run (ACGME) — distinct from
     // the postNightRest soft rule below (keyed off a night run specifically); this one applies
     // regardless of shift type and is never a fallback-eligible compromise. See
     // sixDayRunRestViolation.
-    pool = pool.filter(r => !cachedSixDayRunRestViolation(r, ds, shift.id));
-    if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
+    {
+      reason: 'sixDayRunRestBlocked', restFallbackEmpty: true,
+      keep: (r, shift, ds) => !cachedSixDayRunRestViolation(r, ds, shift.id),
+    },
     // Forward mirror of the check above: placing shift.id on ds can COMPLETE a maxed 6-day run
     // that an already-scheduled LATER shift then follows too closely behind — a violation
     // sixDayRunRestViolation itself can't see, since it only looks backward from ds. See
     // sixDayRunRestViolationAhead.
-    pool = pool.filter(r => !cachedSixDayRunRestViolationAhead(r, ds, shift.id));
-    if (!pool.length) return { candidates: [], restFallback: [], reason: 'sixDayRunRestBlocked' };
-    // Final split: candidates = clean of the postNightRest preference; restFallback = the same
-    // survivors including rest-preference violators, for fillDayPass's priority-aware fallback.
+    {
+      reason: 'sixDayRunRestBlocked', restFallbackEmpty: true,
+      keep: (r, shift, ds) => !cachedSixDayRunRestViolationAhead(r, ds, shift.id),
+    },
+  ];
+
+  // Candidate pool; the filter that empties it names the unfilled reason. Recomputed fresh on
+  // every call (CLAUDE.md: the fill decision path must never go through a cache) by walking
+  // CANDIDATE_POOL_STAGES in order, narrowing `pool` exactly as the old sequential filters did.
+  function candidatePool(shift, ds) {
+    let pool = allResidents;
+    for (const stage of CANDIDATE_POOL_STAGES) {
+      if (stage.applies && !stage.applies(shift, ds)) continue;
+      pool = pool.filter(r => stage.keep(r, shift, ds));
+      if (!pool.length) {
+        return stage.restFallbackEmpty
+          ? { candidates: [], restFallback: [], reason: stage.reason }
+          : { candidates: [], reason: stage.reason };
+      }
+    }
+    // Final split: candidates = clean of the postNightRest preference; restFallback = every
+    // survivor including rest-preference violators, for fillDayPass's priority-aware fallback.
+    // circadianByResident is built from this FINAL pool (not resnapshotted mid-walk) — cheap,
+    // since cachedCircadianViolations is memoized per (resident, ds, shiftId) and every reader of
+    // this map (below, and fillDayPass's restGapH) only ever looks up a resident who made it into
+    // `restFallback`, so a narrower-than-before key set changes nothing observable.
     const restFallback = pool;
-    const candidates = pool.filter(r => circadianByResident.get(r).every(x => x.rule !== 'postNightRest'));
+    const circadianByResident = new Map(restFallback.map(r => [r, cachedCircadianViolations(r, ds, shift.id)]));
+    const candidates = restFallback.filter(r => circadianByResident.get(r).every(x => x.rule !== 'postNightRest'));
     return { candidates, restFallback, reason: null, circadianByResident };
+  }
+
+  // Per-resident mirror of candidatePool: walks the SAME stage list but against one resident with
+  // no pool to narrow, so it can answer "why is THIS resident not a legal candidate" even when the
+  // pool as a whole never emptied (candidatePool's own `reason` only ever names the LAST filter
+  // that ran out of survivors, which may have nothing to do with why any ONE excluded resident
+  // dropped out earlier). Used by computeUnderTargetDiagnostics/computeUnfilledDiagnostics below,
+  // which need a per-resident reason rather than a per-pool one. Reason ids are the exact
+  // CANDIDATE_POOL_STAGES reason strings (so stage 1 -> 'noEligible', stage 2 -> 'allWorking', ...,
+  // matching KNOWN_UNFILLED_REASONS/UNDER_TARGET_BLOCK_LABELS) plus one extra outcome the stage
+  // list itself can't express: a resident who clears every hard stage but still carries a
+  // postNightRest circadian violation (a soft rule, not a candidatePool exclusion) returns
+  // 'restPreference'. Returns null only for a resident who is a fully legal candidate — simply not
+  // the one fillDayPass/repairPass happened to pick.
+  function firstBlockingReason(r, shift, ds) {
+    for (const stage of CANDIDATE_POOL_STAGES) {
+      if (stage.applies && !stage.applies(shift, ds)) continue;
+      if (!stage.keep(r, shift, ds)) return stage.reason;
+    }
+    if (!cachedCircadianViolations(r, ds, shift.id).every(x => x.rule !== 'postNightRest')) return 'restPreference';
+    return null;
   }
 
   // Weights are ordered by priority, each comfortably larger than the sum below it so a
@@ -6623,14 +6700,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // "17/19". Reasons come from candidatePool's own vocabulary (KNOWN_UNFILLED_REASONS) rather than a
   // second hand-written list, so the two can't drift.
   //
-  // ACCURACY LIMIT, deliberate: candidatePool only names a reason when the pool empties COMPLETELY,
-  // which is what happens in every measured case here (the rules involved are per-resident, and
-  // these are the last few unfilled slots, so the pool is down to this one resident anyway). When
-  // the pool is non-empty but excludes this resident, the specific filter isn't recoverable without
-  // threading per-resident tracing through all 19 filters — that case is labelled 'ruleBlocked'
-  // rather than guessed at.
+  // ACCURACY, fixed (was a deliberate limit): candidatePool's own `reason` only ever names the LAST
+  // filter that ran the pool to zero, which used to mean a resident excluded while the pool was
+  // still non-empty for OTHER residents got the catch-all 'ruleBlocked' instead of their real
+  // blocker. firstBlockingReason (next to candidatePool, same CANDIDATE_POOL_STAGES list) walks the
+  // stages against this ONE resident directly, so it always names the actual stage that excluded
+  // them — no pool-emptying required. 'ruleBlocked' can no longer be produced by this scan; it stays
+  // in UNDER_TARGET_BLOCK_LABELS/KNOWN_UNFILLED_REASONS only so an old persisted report that already
+  // carries it still renders a readable label.
   //
-  // COST, and why generateScheduleBest defers it: the scan calls candidatePool() once per open
+  // COST, and why generateScheduleBest defers it: the scan calls firstBlockingReason() once per open
   // slot, and generateScheduleBest throws away 20 of its 21 generateSchedule results. Computing it
   // eagerly inside every attempt spends ~95% of that work on schedules nobody ever reads. Nothing
   // in scoring reads openSlots/blockedBy (only GenerationReportCard does), so with
@@ -6658,9 +6737,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           for (const x of allResidents) if (schedule[x.id][ds] === shift.id) filled++;
           if (filled >= cov.max) continue;            // no headroom — not a missed opportunity
           openSlots++;
-          const pool = candidatePool(shift, ds);
-          if (pool.candidates.includes(r)) continue;  // legal but simply not chosen
-          const why = pool.reason || 'ruleBlocked';
+          const why = firstBlockingReason(r, shift, ds);
+          if (why === null) continue;                 // legal but simply not chosen
           blockedBy[why] = (blockedBy[why] || 0) + 1;
         }
       }
@@ -6671,6 +6749,47 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   if (report.underTarget.length > 0) {
     if (deferUnderTargetDiagnostics) report.computeUnderTargetDiagnostics = computeUnderTargetDiagnostics;
     else computeUnderTargetDiagnostics();
+  }
+
+  // Per-unfilled-slot diagnostics (companion to computeUnderTargetDiagnostics just above, same
+  // defer/cost rationale, same `deferUnderTargetDiagnostics` gate — not a separate flag, since
+  // generateScheduleBest already runs both scans at the identical point, once on the winner).
+  // Where computeUnderTargetDiagnostics asks "why is this RESIDENT short", this asks "why didn't
+  // ANYONE fill this SLOT" — for every report.unfilled entry, firstBlockingReason over every
+  // resident gives a full {reasonId: count} histogram (not just the one reason that happened to
+  // empty the pool last), plus a short "closest to legal" shortlist for the chief to hand-place
+  // from. `blockers`/`nearMiss` are plain JSON (numbers/strings/arrays only) — this report is
+  // persisted, so nothing here may ever hold a function or a resident object.
+  function computeUnfilledDiagnostics() {
+    for (const u of report.unfilled) {
+      const shift = SHIFT_MAP[u.shiftId];
+      if (!shift) continue; // defensive — every real unfilled entry names a real shift id
+      const blockers = {};
+      const nearMiss = [];
+      for (const r of allResidents) {
+        const reason = firstBlockingReason(r, shift, u.dateStr);
+        // null means r passed every hard stage and the soft postNightRest check — legal, just not
+        // the one fillDayPass/repairPass picked. Should normally be 0 for an unfilled MIN slot (if
+        // a legal candidate existed, the fill pass would have used them); a nonzero count here is
+        // itself a useful signal that something OTHER than candidatePool kept the slot open.
+        const key = reason === null ? 'legalNotChosen' : reason;
+        blockers[key] = (blockers[key] || 0) + 1;
+        if (reason !== 'noEligible' && reason !== 'allWorking') {
+          nearMiss.push({ residentId: r.id, reason: key });
+        }
+      }
+      // "Softest blocker first" — a resident stopped only by a count/cap (could be freed by a
+      // target/cap tweak, or is simply legal-but-unchosen) is a far more actionable near-miss than
+      // one stopped by a hard rest/streak/circadian rule, so those sort first; everything else
+      // (including the rest/streak/circadian family) follows in no particular further order.
+      nearMiss.sort((a, b) => NEAR_MISS_SOFT_RANK(a.reason) - NEAR_MISS_SOFT_RANK(b.reason));
+      u.blockers = blockers;
+      u.nearMiss = nearMiss.slice(0, 5);
+    }
+  }
+  if (report.unfilled.length > 0) {
+    if (deferUnderTargetDiagnostics) report.computeUnfilledDiagnostics = computeUnfilledDiagnostics;
+    else computeUnfilledDiagnostics();
   }
 
   // Supply-vs-demand diagnostic (item 6): only worth computing when residents were actually left
@@ -7469,6 +7588,13 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
           // report.underTarget array by reference; taking best.result's own closure here would
           // silently compute openSlots/blockedBy onto the wrong (now-orphaned) array below.
           computeUnderTargetDiagnostics: fixAttempt.report.computeUnderTargetDiagnostics,
+          // Same array/closure-pairing reasoning as underTarget just above, applied to the
+          // unfilled-slot diagnostics: fixAttempt.report.unfilled is a DIFFERENT array instance
+          // than best.result.report.unfilled even though Phase 3b's composition swap never
+          // changes which slots are unfilled, so unfilled and its deferred closure must be
+          // threaded from the SAME attempt (fixAttempt) together, not mixed from two sources.
+          unfilled: fixAttempt.report.unfilled,
+          computeUnfilledDiagnostics: fixAttempt.report.computeUnfilledDiagnostics,
           repairs: [...best.result.report.repairs, ...fixAttempt.report.repairs],
           truePrimaryFixApplied: true,
         },
@@ -7492,6 +7618,12 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   if (best.result.report.computeUnderTargetDiagnostics) {
     best.result.report.computeUnderTargetDiagnostics();
     delete best.result.report.computeUnderTargetDiagnostics;
+  }
+  // Same defer/run-once/delete treatment as computeUnderTargetDiagnostics just above, for the
+  // per-unfilled-slot blockers/nearMiss scan (see its own definition in generateSchedule).
+  if (best.result.report.computeUnfilledDiagnostics) {
+    best.result.report.computeUnfilledDiagnostics();
+    delete best.result.report.computeUnfilledDiagnostics;
   }
 
   best.result.report.attempts = attempts;
@@ -7740,7 +7872,25 @@ const UNDER_TARGET_BLOCK_LABELS = {
   allWorking:           'already working that day',
   allAtTarget:          'everyone else already at target',
   ruleBlocked:          'a scheduling rule',
+  // Added for computeUnfilledDiagnostics/firstBlockingReason (per-slot blockers/nearMiss) — same
+  // sparse/fallback-to-raw-id contract as every entry above.
+  noEligible:           'not eligible',
+  restPreference:       '24h post-night rest preference',
+  legalNotChosen:       'legal but unchosen',
 };
+// Softness ranking for computeUnfilledDiagnostics' nearMiss sort (see that function's own
+// comment): lower rank sorts first. 'legalNotChosen' (nothing blocked them, they just weren't
+// picked) is softest of all; the named count/cap reasons are next (plausibly fixed by a
+// target/coverage tweak); every rest/streak/circadian/jeopardy/etc. reason falls through to the
+// same lowest priority, since none of those is more "fixable" than another from this list alone.
+const NEAR_MISS_SOFT_ORDER = [
+  'legalNotChosen', 'allAtTarget', 'hoursCapped', 'edHoursCapped', 'totalHoursCapped',
+  'nightCapped', 'traumaCapped', 'halfTargetMet', 'pedsMixCapped', 'jcCapped',
+];
+function NEAR_MISS_SOFT_RANK(reason) {
+  const idx = NEAR_MISS_SOFT_ORDER.indexOf(reason);
+  return idx === -1 ? NEAR_MISS_SOFT_ORDER.length : idx;
+}
 const KNOWN_UNFILLED_REASONS = new Set([
   'noEligible', 'allAtTarget', 'allRestBlocked', 'allWorking', 'selfCoverOnly', 'traumaCapped',
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
@@ -15637,7 +15787,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {reviewPanelOpen && (
         <div ref={reviewPanelMobileRef} className="no-print lg:hidden mt-4">
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}
+            blockStart={block.startDate} allResidents={allResidents} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
@@ -15660,7 +15810,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       {reviewPanelOpen && (
         <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, height:`calc(100vh - ${fullscreen ? '3rem' : '8rem'})`}}>
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
-            blockStart={block.startDate} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}
+            blockStart={block.startDate} allResidents={allResidents} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
@@ -16745,11 +16895,28 @@ function ReportSubsection({ compact, title, count, children }) {
   );
 }
 
-function GenerationReportCard({ report, appSettings, blockStart, compact = false }) {
+function GenerationReportCard({ report, appSettings, blockStart, allResidents, compact = false }) {
   const summary = useMemo(()=>summarizeGenerationReport(report, appSettings, blockStart),[report,appSettings,blockStart]);
   const realGapGroups = summary.filter(s=>!s.structural);
   const structuralGroups = summary.filter(s=>s.structural);
   const structuralCount = structuralGroups.length;
+  // Per-shift blockers/near-miss summary (computeUnfilledDiagnostics in ResidentScheduler.jsx
+  // populates `blockers`/`nearMiss` on each report.unfilled entry; summarizeSlotBlockers, a pure
+  // lib/ helper, groups those by shiftId). Old persisted reports (generated before this feature,
+  // or a solver-service result) carry neither field — every per-shift entry then has an empty
+  // blockerTotals/{} and a null topBlocker, and the render guards below skip them, so nothing new
+  // appears for those reports (CLAUDE.md: handle untrusted/legacy shape, render nothing instead of
+  // guessing).
+  const blockerSummary = useMemo(()=>summarizeSlotBlockers(report.unfilled),[report.unfilled]);
+  // Resident names for the "Closest" line — threaded down from whichever call site has them
+  // (ValidationTab already has `allResidents`; ReviewPanel's callers thread it one level further,
+  // see ScheduleGrid). Falls back to the raw id if a name truly isn't available anywhere, rather
+  // than inventing one.
+  const nameById = useMemo(() => {
+    const m = {};
+    for (const r of (allResidents || [])) m[r.id] = `${r.firstName} ${r.lastName}`;
+    return m;
+  }, [allResidents]);
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
@@ -16803,6 +16970,37 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
                     <p className="text-xs text-gray-700">→ {r.text}</p>
                   </div>
                 ))}
+                {/* Per-resident "why" (see computeUnfilledDiagnostics/summarizeSlotBlockers) — a
+                    compact tally of every resident's blocker for this shift's unfilled slots,
+                    plus the handful closest to being legal. Renders nothing for an old persisted
+                    report with no blockers data (blockerTotals stays {} — see blockerSummary's own
+                    comment above). */}
+                {(() => {
+                  const bs = blockerSummary[g.shiftId];
+                  if (!bs || Object.keys(bs.blockerTotals).length === 0) return null;
+                  const seen = new Map();
+                  for (const s of g.slots) {
+                    for (const nm of (s.nearMiss || [])) {
+                      if (!seen.has(nm.residentId)) seen.set(nm.residentId, nm.reason);
+                    }
+                  }
+                  const closest = [...seen.entries()].slice(0, 5);
+                  return (
+                    <div className="mt-1.5 pt-1.5 border-t border-amber-200/60">
+                      <p className="text-xs text-gray-500">
+                        Blocked: {Object.entries(bs.blockerTotals)
+                          .sort((a,b)=>b[1]-a[1])
+                          .map(([why,n]) => `${n} ${UNDER_TARGET_BLOCK_LABELS[why] || why}`)
+                          .join(' · ')}
+                      </p>
+                      {closest.length > 0 && (
+                        <p className="text-xs text-gray-500">
+                          Closest: {closest.map(([rid,reason]) => `${nameById[rid] || rid} (${UNDER_TARGET_BLOCK_LABELS[reason] || reason})`).join(', ')}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </ReportSubsection>
@@ -16949,7 +17147,7 @@ function GenerationReportCard({ report, appSettings, blockStart, compact = false
 // `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
-function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCell, onJumpToRow, onClose,
+function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
   selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
   const { mustFix, orderedWarns } = panelIssues;
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
@@ -17037,7 +17235,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, onJumpToCel
         {report && (
           <section>
             <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Generation notes</h3>
-            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} compact/>
+            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} allResidents={allResidents} compact/>
           </section>
         )}
       </div>
@@ -17436,7 +17634,7 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
   if(!issues.length) return (
     <div className="space-y-4">
       {report && <FeasibilityReportCard feasibility={report.feasibility} allResidents={allResidents}/>}
-      {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate}/>}
+      {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate} allResidents={allResidents}/>}
       <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="text-center py-16">
@@ -17450,7 +17648,7 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
   return (
     <div className="space-y-4">
       {report && <FeasibilityReportCard feasibility={report.feasibility} allResidents={allResidents}/>}
-      {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate}/>}
+      {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate} allResidents={allResidents}/>}
       <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="flex gap-3 flex-wrap">
