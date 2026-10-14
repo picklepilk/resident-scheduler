@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './jeopardyLedger.js';
+import { computeJeopardyTotals, computeBuyDownsApplied, computePaybacksApplied, computeLedger } from './jeopardyLedger.js';
 
 const AY = 'AY26/27';
 
 function assignment(overrides = {}) {
-  return { blockType: 'EM', isChief: false, targetDelta: 0, targetNote: '', targetIsBuyDown: false, ...overrides };
+  return { blockType: 'EM', isChief: false, targetDelta: 0, targetNote: '', targetIsBuyDown: false, targetIsPayback: false, ...overrides };
 }
 
 describe('computeJeopardyTotals', () => {
@@ -133,6 +133,77 @@ describe('computeBuyDownsApplied', () => {
   });
 });
 
+describe('computePaybacksApplied', () => {
+  it('sums applied paybacks across multiple snapshots plus the live block', () => {
+    const block = { id: 'live', academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 1, targetIsPayback: true }) } };
+    const blocksHistory = [
+      { id: 'blkA', academicYear: AY, data: { emBlockAssignments: { r1: assignment({ targetDelta: 2, targetIsPayback: true }) } } },
+      { id: 'blkB', data: { academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 3, targetIsPayback: true }) } } },
+    ];
+    const applied = computePaybacksApplied(AY, block, blocksHistory);
+    expect(applied.r1).toBe(1 + 2 + 3);
+  });
+
+  it('does not double-count the live block when a snapshot with the same id exists', () => {
+    const block = { id: 'blkA', academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 5, targetIsPayback: true }) } };
+    const blocksHistory = [
+      { id: 'blkA', academicYear: AY, data: { emBlockAssignments: { r1: assignment({ targetDelta: 5, targetIsPayback: true }) } } },
+    ];
+    const applied = computePaybacksApplied(AY, block, blocksHistory);
+    expect(applied.r1).toBe(5);
+  });
+
+  it('counts unpublished snapshots (same deliberate divergence as computeBuyDownsApplied)', () => {
+    const blocksHistory = [
+      { id: 'draft', academicYear: AY, published: false, data: { emBlockAssignments: { r1: assignment({ targetDelta: 4, targetIsPayback: true }) } } },
+    ];
+    const applied = computePaybacksApplied(AY, null, blocksHistory);
+    expect(applied.r1).toBe(4);
+  });
+
+  it('contributes nothing when targetIsPayback is false, even with a positive targetDelta', () => {
+    const blocksHistory = [
+      { id: 'blkA', academicYear: AY, data: { emBlockAssignments: { r1: assignment({ targetDelta: 3, targetIsPayback: false }) } } },
+    ];
+    expect(computePaybacksApplied(AY, null, blocksHistory)).toEqual({});
+  });
+
+  it('contributes nothing for a negative or zero targetDelta, even when targetIsPayback is true', () => {
+    const blocksHistory = [
+      { id: 'blkA', academicYear: AY, data: { emBlockAssignments: {
+        r1: assignment({ targetDelta: -3, targetIsPayback: true }),
+        r2: assignment({ targetDelta: 0, targetIsPayback: true }),
+      } } },
+    ];
+    expect(computePaybacksApplied(AY, null, blocksHistory)).toEqual({});
+  });
+
+  it('derives the live block AY from startDate when academicYear is absent', () => {
+    const block = { id: 'live', startDate: '2026-08-01', emBlockAssignments: { r1: assignment({ targetDelta: 1, targetIsPayback: true }) } };
+    expect(computePaybacksApplied(AY, block, [])).toEqual({ r1: 1 });
+    expect(computePaybacksApplied('AY25/26', block, [])).toEqual({});
+  });
+
+  it('does not throw on malformed, empty, or null input, including a null/undefined live block', () => {
+    expect(() => computePaybacksApplied(AY, null, null)).not.toThrow();
+    expect(computePaybacksApplied(AY, null, null)).toEqual({});
+    expect(computePaybacksApplied(AY, undefined, undefined)).toEqual({});
+    const junkHistory = [
+      null,
+      undefined,
+      42,
+      { id: 'x' },
+      { id: 'y', academicYear: AY, data: {} },
+      { id: 'z', academicYear: AY, data: { emBlockAssignments: null } },
+      { id: 'w', academicYear: AY, data: { emBlockAssignments: { r1: null } } },
+      { id: 'v', academicYear: AY, data: { emBlockAssignments: { r1: { targetIsPayback: true, targetDelta: 'not-a-number' } } } },
+      { id: 'u', academicYear: AY, data: { emBlockAssignments: { r1: { targetIsPayback: true, targetDelta: NaN } } } },
+    ];
+    expect(() => computePaybacksApplied(AY, {}, junkHistory)).not.toThrow();
+    expect(computePaybacksApplied(AY, {}, junkHistory)).toEqual({});
+  });
+});
+
 describe('computeLedger', () => {
   it('combines totals and applied into sickCalls/activations/applied/remaining', () => {
     const log = [
@@ -142,8 +213,8 @@ describe('computeLedger', () => {
     const block = { id: 'live', academicYear: AY, emBlockAssignments: { r2: assignment({ targetDelta: -1, targetIsBuyDown: true }) } };
     const blocksHistory = [];
     const ledger = computeLedger(AY, log, block, blocksHistory);
-    expect(ledger.r2).toEqual({ sickCalls: 0, activations: 2, applied: 1, remaining: 1 });
-    expect(ledger.r1).toEqual({ sickCalls: 1, activations: 0, applied: 0, remaining: 0 });
+    expect(ledger.r2).toEqual({ sickCalls: 0, activations: 2, applied: 1, remaining: 1, owed: 0, paybackApplied: 0, paybackRemaining: 0 });
+    expect(ledger.r1).toEqual({ sickCalls: 1, activations: 0, applied: 0, remaining: 0, owed: 1, paybackApplied: 0, paybackRemaining: 1 });
   });
 
   it('lets remaining go negative when applied exceeds activations, without clamping', () => {
@@ -152,13 +223,40 @@ describe('computeLedger', () => {
     ];
     const block = { id: 'live', academicYear: AY, emBlockAssignments: { r2: assignment({ targetDelta: -3, targetIsBuyDown: true }) } };
     const ledger = computeLedger(AY, log, block, []);
-    expect(ledger.r2).toEqual({ sickCalls: 0, activations: 1, applied: 3, remaining: -2 });
+    expect(ledger.r2).toEqual({ sickCalls: 0, activations: 1, applied: 3, remaining: -2, owed: 0, paybackApplied: 0, paybackRemaining: 0 });
   });
 
   it('includes a resident with applied buy-downs but no incident-log entries', () => {
     const block = { id: 'live', academicYear: AY, emBlockAssignments: { r9: assignment({ targetDelta: -2, targetIsBuyDown: true }) } };
     const ledger = computeLedger(AY, [], block, []);
-    expect(ledger.r9).toEqual({ sickCalls: 0, activations: 0, applied: 2, remaining: -2 });
+    expect(ledger.r9).toEqual({ sickCalls: 0, activations: 0, applied: 2, remaining: -2, owed: 0, paybackApplied: 0, paybackRemaining: 0 });
+  });
+
+  it('computes owed/paybackApplied/paybackRemaining alongside the existing buy-down fields, AY-scoped like the rest of the ledger', () => {
+    const log = [
+      { id: '1', date: '2026-08-01', sickResidentId: 'r1', activatedResidentId: 'r2' },
+    ];
+    const block = { id: 'live', academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 1, targetIsPayback: true }) } };
+    const ledger = computeLedger(AY, log, block, []);
+    expect(ledger.r1).toEqual({ sickCalls: 1, activations: 0, applied: 0, remaining: 0, owed: 1, paybackApplied: 1, paybackRemaining: 0 });
+  });
+
+  it('lets paybackRemaining go negative when paybackApplied exceeds owed, without clamping', () => {
+    const log = [
+      { id: '1', date: '2026-08-01', sickResidentId: 'r1', activatedResidentId: 'r2' },
+    ];
+    const block = { id: 'live', academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 2, targetIsPayback: true }) } };
+    const ledger = computeLedger(AY, log, block, []);
+    expect(ledger.r1).toEqual({ sickCalls: 1, activations: 0, applied: 0, remaining: 0, owed: 1, paybackApplied: 2, paybackRemaining: -1 });
+  });
+
+  it('de-dups the live block vs a same-id history snapshot for paybacks exactly like it does for buy-downs', () => {
+    const block = { id: 'blkA', academicYear: AY, emBlockAssignments: { r1: assignment({ targetDelta: 2, targetIsPayback: true }) } };
+    const blocksHistory = [
+      { id: 'blkA', academicYear: AY, data: { emBlockAssignments: { r1: assignment({ targetDelta: 2, targetIsPayback: true }) } } },
+    ];
+    const ledger = computeLedger(AY, [], block, blocksHistory);
+    expect(ledger.r1).toEqual({ sickCalls: 0, activations: 0, applied: 0, remaining: 0, owed: 0, paybackApplied: 2, paybackRemaining: -2 });
   });
 
   it('does not throw on malformed, empty, or null input', () => {

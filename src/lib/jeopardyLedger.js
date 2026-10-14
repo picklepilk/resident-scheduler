@@ -104,24 +104,77 @@ export function computeBuyDownsApplied(ay, block, blocksHistory = []) {
   return out;
 }
 
-// -> { [residentId]: { sickCalls, activations, applied, remaining } }
+// -> { [residentId]: number }   (total payback shifts applied this AY)
+//
+// Mirror of computeBuyDownsApplied, for the OTHER direction of the same mechanism: a sick-call
+// payback is applied manually by the chief (USER DECISION 2026-10-14), exactly like a buy-down —
+// just a POSITIVE targetDelta tagged targetIsPayback instead of a negative one tagged
+// targetIsBuyDown. Same AY scoping, same live-block/history de-dup (skip a blocksHistory
+// snapshot sharing the live block's id, then add the live block separately), same
+// published-and-unpublished counting (an administrative promise is real the moment the chief
+// types it, draft or not — see computeBuyDownsApplied's own header for why).
+export function computePaybacksApplied(ay, block, blocksHistory = []) {
+  const out = {};
+
+  const addAssignments = (assignments) => {
+    if (!assignments || typeof assignments !== 'object') return;
+    for (const [rid, a] of Object.entries(assignments)) {
+      if (!a || typeof a !== 'object') continue;
+      if (a.targetIsPayback !== true) continue;
+      const delta = a.targetDelta;
+      if (!Number.isFinite(delta) || delta <= 0) continue;
+      out[rid] = (out[rid] || 0) + delta;
+    }
+  };
+
+  if (Array.isArray(blocksHistory)) {
+    for (const snap of blocksHistory) {
+      if (!snap || typeof snap !== 'object') continue;
+      if (block && block.id != null && snap.id === block.id) continue;
+      const snapAy = snap.academicYear || snap.data?.academicYear;
+      if (snapAy !== ay) continue;
+      addAssignments(snap.data?.emBlockAssignments);
+    }
+  }
+
+  if (block && typeof block === 'object') {
+    let blockAy = block.academicYear;
+    if (!blockAy && typeof block.startDate === 'string' && block.startDate) {
+      try { blockAy = getAcademicYearFor(block.startDate); } catch { blockAy = undefined; }
+    }
+    if (blockAy === ay) addAssignments(block.emBlockAssignments);
+  }
+
+  return out;
+}
+
+// -> { [residentId]: { sickCalls, activations, applied, remaining, owed, paybackApplied, paybackRemaining } }
 // remaining = activations - applied, NOT clamped at zero — a negative remaining means the
 // chief has over-spent this resident's buy-downs, which is exactly the thing the chief needs
 // to see, not have silently hidden by a floor.
+// owed = sickCalls (the payback side of the same ledger, named for its own context); paybackRemaining
+// = owed - paybackApplied, likewise unclamped — a negative paybackRemaining means the chief has
+// assigned MORE payback shifts than this resident owes, which should be just as visible as an
+// over-spent buy-down.
 export function computeLedger(ay, log, block, blocksHistory) {
   const totals = computeJeopardyTotals(ay, log);
   const applied = computeBuyDownsApplied(ay, block, blocksHistory);
+  const paybackApplied = computePaybacksApplied(ay, block, blocksHistory);
 
-  const ids = new Set([...Object.keys(totals), ...Object.keys(applied)]);
+  const ids = new Set([...Object.keys(totals), ...Object.keys(applied), ...Object.keys(paybackApplied)]);
   const out = {};
   for (const rid of ids) {
     const t = totals[rid] || { sickCalls: 0, activations: 0 };
     const a = applied[rid] || 0;
+    const p = paybackApplied[rid] || 0;
     out[rid] = {
       sickCalls: t.sickCalls,
       activations: t.activations,
       applied: a,
       remaining: t.activations - a,
+      owed: t.sickCalls,
+      paybackApplied: p,
+      paybackRemaining: t.sickCalls - p,
     };
   }
   return out;
