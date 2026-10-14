@@ -39,6 +39,7 @@ import {
 } from './lib/qgenda.js';
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
+import { diffState } from './lib/stateDiff.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
@@ -3016,9 +3017,9 @@ const DEFAULT_APP_SETTINGS = {
   enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
   wellnessWednesdaysEnabled: true, // program-wide toggle for EM Home's Wellness Wednesdays (see effectiveWellnessWednesdayDate) — false disables the feature entirely; normalized as `=== false`, so an old backup with no such key still behaves as enabled
   // Jeopardy/sick-call incident log — one record per real-world sick-call/activation event, see
-  // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: sbSaveState's
-  // cloud write is a whole-column replace built fresh from THAT BUILD's own LS_BACKUP_KEYS, so a
-  // device still running an older bundle (with no 10th key) would upload a document missing the
+  // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: every cloud save
+  // (saveCloudNow/sbCreateState) writes a whole-column replace built fresh from THAT BUILD's own
+  // LS_BACKUP_KEYS, so a device still running an older bundle (with no 10th key) would upload a document missing the
   // ledger entirely and silently wipe it from the shared cloud row — the exact record the
   // buy-downs in emBlockAssignments are audited against. Living inside res_app_settings means
   // setAppSettings(p => ({...p, ...})) spreads it through untouched even from an old bundle that
@@ -17877,21 +17878,28 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 // keyed by RES_STATE_ROW_ID holding the whole LS_BACKUP_KEYS-shaped object as one jsonb blob is
 // the minimal-impedance-mismatch choice — no per-block rows to keep in sync.
 //
-// Database schema (fresh install: run supabase/day_off_requests.sql first, then this table —
-// already-provisioned DBs instead run supabase/migrate_res_state_admin_only.sql; see that file's
-// own DEPLOY ORDER note before running it):
+// Database schema (fresh install: run supabase/day_off_requests.sql, migrate_res_state_admin_only.sql
+// and migrate_res_state_history.sql, in that order — already-provisioned DBs run the two migrate_*
+// files in that order instead; see each file's own DEPLOY ORDER note, they're NOT interchangeable):
 //   create table res_state (
-//     id       text primary key,
-//     data     jsonb not null,   -- the whole LS_BACKUP_KEYS-shaped document — a new res_* key
-//                                -- never needs a schema migration here, only an LS_BACKUP_KEYS
-//                                -- addition, same philosophy as em-scheduler's own data jsonb column
-//     saved_at timestamptz default now()
+//     id         text primary key,
+//     data       jsonb not null,  -- the whole LS_BACKUP_KEYS-shaped document — a new res_* key
+//                                 -- never needs a schema migration here, only an LS_BACKUP_KEYS
+//                                 -- addition, same philosophy as em-scheduler's own data jsonb column
+//     saved_at   timestamptz default now(),  -- vestigial: predates version/updated_at below,
+//                                 -- kept only so an old client's INSERT body (which still sends
+//                                 -- it) doesn't fail on an unknown column; no longer read anywhere
+//     version    bigint not null default 0,  -- bumped by a BEFORE UPDATE trigger, never the client
+//     updated_by uuid,            -- set by a BEFORE INSERT OR UPDATE trigger from auth.uid()
+//     updated_at timestamptz not null default now()  -- same trigger, from now()
 //   );
 //   alter table res_state enable row level security;
 //   revoke all on res_state from anon;
 //   grant select, insert, update, delete on res_state to authenticated;  -- RLS narrows further
 //   create policy "res_state_admin_all" on res_state for all
 //     to authenticated using (is_admin()) with check (is_admin());
+//   -- + migrate_res_state_history.sql's res_state_audit_fields/res_state_archive_history triggers
+//   -- and the res_state_history table (one archived row per overwritten version, admin-read-only).
 // (res_state holds every resident's name and full generated schedule — admin-only per RLS, NOT
 // the wide-open-by-design policy this comment described before 2026-10-14. That policy was a
 // confirmed data-exposure gap: the anon key is meant to be safe to expose client-side, but it was
@@ -17899,6 +17907,16 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 // the full writeup. Residents still need a few non-schedule fields read-only (scheduling-block
 // dates, roster first/last names) — that's public.resident_block_lookup(), a SECURITY DEFINER
 // function scoped to exactly those fields, called from src/residentRequests/blockLookup.js.)
+//
+// Concurrency (2026-10-14, migrate_res_state_history.sql): a normal save is no longer blind
+// "last write wins" — sbSaveStateVersioned PATCHes `?version=eq.N` for the version this device
+// last loaded/saved; if another admin saved in between, the trigger-bumped server version no
+// longer matches, the PATCH matches 0 rows, and the save surfaces as a conflict (see the root
+// component's cloudConflict state) instead of silently overwriting their save. The only
+// unconditional-overwrite path left is sbCreateState (seeding a row for the first time ever, and
+// explicit admin actions that are ALREADY a deliberate full replace — Import Backup, Version
+// History's Restore — which bypass the version check on purpose, the same way they always
+// overwrote everything before this feature existed).
 //
 // Set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (see .env.example) to enable; absent, the app
 // is unchanged from before this feature existed.
@@ -18015,20 +18033,49 @@ const sbFetch = async (path, opts = {}) => {
   return text ? JSON.parse(text) : null;
 };
 
-// Upsert the whole department document — POST with Prefer: resolution=merge-duplicates is an
-// upsert keyed on the table's PK, same pattern em-scheduler uses (no ON CONFLICT SQL needed).
-// rowId defaults to the real row; the Demo Sandbox passes RES_STATE_DEMO_ROW_ID so demo I/O never
-// touches the real document.
-const sbSaveState = async (data, rowId = RES_STATE_ROW_ID) => {
-  if (!SUPABASE_ENABLED) return;
-  await sbFetch('/res_state', {
+// Unconditional upsert of the whole department document — POST with Prefer:
+// resolution=merge-duplicates is an upsert keyed on the table's PK, same pattern em-scheduler
+// uses (no ON CONFLICT SQL needed). rowId defaults to the real row; the Demo Sandbox passes
+// RES_STATE_DEMO_ROW_ID so demo I/O never touches the real document.
+//
+// DELIBERATELY bypasses optimistic concurrency (see sbSaveStateVersioned below for the save path
+// that doesn't) — only for call sites where an unconditional full replace is already the intended,
+// explicit behavior: seeding a row that's never existed (saveCloudNow's first save, confirmed safe
+// by the mount effect's is_admin() check), and admin actions that were ALREADY a deliberate full
+// overwrite before this feature existed (Import Backup, Version History's Restore, the Demo
+// Sandbox's "start fresh"). `return=representation` (not the old return=minimal) so every caller
+// can learn the row's real, trigger-computed version/updated_at — needed to keep
+// cloudBaselineRef's version in sync with what the server actually stored.
+const sbCreateState = async (data, rowId = RES_STATE_ROW_ID) => {
+  if (!SUPABASE_ENABLED) return null;
+  const rows = await sbFetch('/res_state', {
     method: 'POST',
-    prefer: 'resolution=merge-duplicates,return=minimal',
-    body: { id: rowId, data, saved_at: new Date().toISOString() },
+    prefer: 'resolution=merge-duplicates,return=representation',
+    body: { id: rowId, data },
   });
+  return rows && rows[0] ? rows[0] : null;
 };
 
-// Loads a shared row — null if never saved yet (or unconfigured).
+// Save over an EXISTING row this device already knows the version of — the normal autosave path.
+// PATCHes `?version=eq.N`: migrate_res_state_history.sql's BEFORE UPDATE trigger unconditionally
+// bumps the server's version on every successful write, so if another admin saved since this
+// device last loaded/saved, `N` no longer matches anything and the filter matches 0 rows —
+// PostgREST returns `[]` (not an error), which is exactly how the caller (saveCloudNow) detects a
+// conflict instead of silently overwriting the other admin's save. `return=representation` so a
+// successful save's new version/updated_at can be folded back into cloudBaselineRef.
+const sbSaveStateVersioned = async (data, version, rowId = RES_STATE_ROW_ID) => {
+  if (!SUPABASE_ENABLED) return null;
+  const rows = await sbFetch(`/res_state?id=eq.${rowId}&version=eq.${version}`, {
+    method: 'PATCH',
+    prefer: 'return=representation',
+    body: { data },
+  });
+  return rows && rows[0] ? rows[0] : null; // null/[] = conflict: the version filter matched nothing
+};
+
+// Loads a shared row — null if never saved yet (or unconfigured). Includes the audit columns
+// (migrate_res_state_history.sql) every save-path and the conflict modal need: version (the
+// optimistic-concurrency token), updated_at/updated_by (who to blame a conflict on).
 //
 // AMBIGUITY (load-bearing for the mount-time effect below): res_state's RLS is admin-only
 // (migrate_res_state_admin_only.sql). PostgREST returns the exact same 200 `[]` whether the row
@@ -18037,8 +18084,34 @@ const sbSaveState = async (data, rowId = RES_STATE_ROW_ID) => {
 // function can't tell those apart; sbIsAdmin() below is what resolves it.
 const sbLoadState = async (rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return null;
-  const rows = await sbFetch(`/res_state?id=eq.${rowId}&select=data,saved_at`);
+  const rows = await sbFetch(`/res_state?id=eq.${rowId}&select=data,version,updated_at,updated_by`);
   return rows && rows[0] ? rows[0] : null;
+};
+
+// Last `limit` archived snapshots for a row, newest first — Settings' Version History list.
+// Fetches each snapshot's full `data` alongside its metadata in one round trip (rather than a
+// lightweight list + a second fetch per row) so Preview/Restore need no further network call; this
+// is an explicit, infrequent admin action (not something rendered by default), so the extra bytes
+// are an acceptable trade for one simpler round trip. `size` is derived client-side (JSON byte
+// length), not stored — res_state_history has no generated column for it.
+const sbFetchHistory = async (rowId = RES_STATE_ROW_ID, limit = 50) => {
+  if (!SUPABASE_ENABLED) return [];
+  const rows = await sbFetch(`/res_state_history?row_id=eq.${rowId}&select=id,version,saved_by,saved_at,data&order=id.desc&limit=${limit}`);
+  return (rows || []).map(r => ({ ...r, size: r.data ? JSON.stringify(r.data).length : 0 }));
+};
+
+// uuid -> email, for attributing a history row or a save conflict to an admin by name instead of a
+// bare id. Reachable only because `profiles_admin_select_all` (day_off_requests.sql) lets an admin
+// SELECT every profiles row — the only caller of this is admin-gated UI (SettingsTab, the root
+// component's conflict modal), so that's always satisfied in practice. Best-effort: a failed/empty
+// lookup just means the caller falls back to a generic "another admin" label.
+const sbProfileEmails = async (ids) => {
+  const uniq = [...new Set((ids || []).filter(Boolean))];
+  if (!SUPABASE_ENABLED || uniq.length === 0) return {};
+  const rows = await sbFetch(`/profiles?id=in.(${uniq.join(',')})&select=id,email`);
+  const map = {};
+  (rows || []).forEach(r => { map[r.id] = r.email; });
+  return map;
 };
 
 // Resolves sbLoadState's null-result ambiguity (see its own comment): is_admin() is a SECURITY
@@ -18059,6 +18132,27 @@ const sbDeleteState = async (rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return;
   await sbFetch(`/res_state?id=eq.${rowId}`, { method: 'DELETE', prefer: 'return=minimal' });
 };
+
+// Shared by SettingsTab.exportData and the save-conflict modal's "Download my copy" action — same
+// file shape as a real backup (importData/exportData's own `{ app, exportedAt, demo, data }`
+// envelope), so either download can be re-imported later exactly like a normal backup.
+function downloadBackupBlob(data, demoMode) {
+  const payload = { app: 'resident-scheduler', exportedAt: new Date().toISOString(), demo: demoMode, data };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `resident-scheduler-backup${demoFilenameSuffix(demoMode)}-${toDateStr(new Date())}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Settings' Version History list — a history row's `size` is a raw JSON byte count (see
+// sbFetchHistory), not pre-rounded; this is purely a display nicety.
+function formatBytes(n) {
+  if (n == null) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
 
 // ─── FEEDBACK ─────────────────────────────────────────────────────────────────
 // A brand-new table, structurally unrelated to the single-row res_state document — it needs
@@ -18263,12 +18357,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       const physKey = demoMode ? k.replace(/^res_/, 'res_demo_') : k;
       try { data[k] = JSON.parse(localStorage.getItem(physKey)); } catch { data[k] = null; }
     }
-    const payload = { app: 'resident-scheduler', exportedAt: new Date().toISOString(), demo: demoMode, data };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `resident-scheduler-backup${demoFilenameSuffix(demoMode)}-${toDateStr(new Date())}.json`; a.click();
-    URL.revokeObjectURL(url);
+    downloadBackupBlob(data, demoMode);
     showToast('Backup downloaded', 'green');
   }
 
@@ -18297,7 +18386,11 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           syncSuspended = true;
           showToast('Syncing import to the cloud…', 'amber');
           try {
-            await sbSaveState(clean);
+            // Unconditional overwrite, same as before this feature existed — importing a backup
+            // IS the deliberate full replace (sbCreateState), not a normal versioned save; the
+            // trigger still bumps the row's version, so the next normal autosave's conflict check
+            // is based on the fresh version this creates, not whatever this device saw before.
+            await sbCreateState(clean);
           } catch (err) {
             syncSuspended = false;
             showToast('Import could not sync to the cloud — nothing changed. Try again when online.', 'red');
@@ -18338,6 +18431,69 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
     }
     localStorage.removeItem(DEMO_MODE_KEY);
+    window.location.reload();
+  }
+
+  // ── Version History (migrate_res_state_history.sql) ────────────────────────────────────────────
+  // Lazy: nothing is fetched until the admin explicitly opens the list (historyRows stays null) —
+  // this is an infrequent, deliberate lookup, not something to run on every Settings-tab visit.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState(null); // null = not loaded; [] = loaded, empty
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [profileEmails, setProfileEmails] = useState({}); // saved_by uuid -> email, best-effort
+  const [previewFor, setPreviewFor] = useState(null);     // history row being diffed against current
+  const [restoreFor, setRestoreFor] = useState(null);     // history row pending restore confirmation
+  const [restoring, setRestoring] = useState(false);
+
+  const historyRowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
+
+  async function loadHistory() {
+    setHistoryOpen(true); setHistoryLoading(true); setHistoryError(null);
+    try {
+      const rows = await sbFetchHistory(historyRowId, 50);
+      setHistoryRows(rows);
+      // Best-effort: a failed email lookup just leaves profileEmails empty, and the list falls
+      // back to "Unknown admin" per row rather than blocking the list itself.
+      try { setProfileEmails(await sbProfileEmails(rows.map(r => r.saved_by))); } catch { /* ignore */ }
+    } catch (e) {
+      setHistoryError(e.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // The current live document, read straight from localStorage (same technique as exportData) —
+  // not a prop, since the root's React state and localStorage are always in sync (useLocalStorage
+  // persists synchronously) and plumbing all nine synced values down here would duplicate
+  // syncBindings for no benefit.
+  function currentLiveDoc() {
+    const doc = {};
+    for (const k of LS_BACKUP_KEYS) {
+      const physKey = demoMode ? k.replace(/^res_/, 'res_demo_') : k;
+      try { doc[k] = JSON.parse(localStorage.getItem(physKey)); } catch { doc[k] = null; }
+    }
+    return doc;
+  }
+
+  // Restore = a normal save of the historical snapshot's data as a NEW save (itself undoable by
+  // restoring a later version again afterward) — same cloud-op-first-then-reload path and the same
+  // demo-mode refusal as importData, since this is also a deliberate full replace of live data.
+  async function doRestore(row) {
+    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); setRestoreFor(null); return; }
+    setRestoring(true);
+    const clean = {};
+    for (const k of LS_BACKUP_KEYS) { if (row.data[k] !== undefined && row.data[k] !== null) clean[k] = row.data[k]; }
+    syncSuspended = true;
+    try {
+      await sbCreateState(clean, RES_STATE_ROW_ID);
+    } catch (err) {
+      syncSuspended = false;
+      setRestoring(false);
+      showToast('Restore could not sync to the cloud — nothing changed. Try again when online.', 'red');
+      return;
+    }
+    for (const k of LS_BACKUP_KEYS) { if (clean[k] !== undefined) localStorage.setItem(k, JSON.stringify(clean[k])); }
     window.location.reload();
   }
 
@@ -18641,6 +18797,72 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
         </div>
         <p className="text-xs text-gray-400 mt-2">Importing replaces ALL current data (rosters, blocks, matrix, settings) with the backup's contents, then reloads the app.</p>
       </CollapsibleCard>
+
+      {/* Version History (migrate_res_state_history.sql) — every save of the shared cloud document,
+          server-archived automatically; admin-only read, capped at the last 200 (last 50 shown
+          here). Only meaningful with cloud sync configured — a local-only install has no history. */}
+      {SUPABASE_ENABLED && (
+        <CollapsibleCard title="Version History" prefId="settings-version-history" subtitle="Every cloud save, newest first — preview what a version would change, or restore it as a new save.">
+          {!historyOpen ? (
+            <Button variant="secondary" size="sm" onClick={loadHistory}>Load version history</Button>
+          ) : historyLoading ? (
+            <p className="text-xs text-gray-400">Loading…</p>
+          ) : historyError ? (
+            <p className="text-xs text-destructive">Could not load history: {historyError} <button className="underline font-medium" onClick={loadHistory}>Retry</button></p>
+          ) : historyRows.length === 0 ? (
+            <p className="text-xs text-gray-400">No saved history yet.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-96 overflow-y-auto">
+              {historyRows.map(row => (
+                <div key={row.id} className="flex items-center justify-between gap-2 text-xs border border-gray-100 rounded-lg px-2.5 py-1.5">
+                  <div className="min-w-0">
+                    <div className="font-medium text-gray-700 truncate">{new Date(row.saved_at).toLocaleString()}</div>
+                    <div className="text-gray-400 truncate">{profileEmails[row.saved_by] || (row.saved_by ? 'Unknown admin' : 'Unknown')} · v{row.version} · {formatBytes(row.size)}</div>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    <Button variant="ghost" size="sm" onClick={()=>setPreviewFor(row)}>Preview diff</Button>
+                    <Button variant="secondary" size="sm" onClick={()=>setRestoreFor(row)}>Restore</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {previewFor && (
+            <Modal title="Preview diff" onClose={()=>setPreviewFor(null)}>
+              {(() => {
+                const diff = diffState(currentLiveDoc(), previewFor.data);
+                return (
+                  <div className="space-y-3 text-sm text-gray-600">
+                    <p>Restoring the version saved {new Date(previewFor.saved_at).toLocaleString()} (v{previewFor.version}) would change, relative to what's live now:</p>
+                    <ul className="list-disc pl-5 space-y-1">
+                      <li>{diff.blocksChanged} block{diff.blocksChanged===1?'':'s'} changed</li>
+                      <li>{diff.residentsAdded} resident{diff.residentsAdded===1?'':'s'} added, {diff.residentsRemoved} removed</li>
+                      <li>{diff.scheduleCellsChanged} schedule cell{diff.scheduleCellsChanged===1?'':'s'} changed</li>
+                    </ul>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Button variant="secondary" size="sm" onClick={()=>setPreviewFor(null)}>Close</Button>
+                      <Button variant="primary" size="sm" onClick={()=>{const row=previewFor; setPreviewFor(null); setRestoreFor(row);}}>Restore this version</Button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </Modal>
+          )}
+
+          {restoreFor && (
+            <ConfirmDialog icon={RefreshCw} tone="warn" title="Restore this version?"
+              actions={
+                <>
+                  <Button variant="ghost" size="sm" disabled={restoring} onClick={()=>setRestoreFor(null)}>Cancel</Button>
+                  <Button variant="primary" size="sm" disabled={restoring} onClick={()=>doRestore(restoreFor)}>{restoring ? 'Restoring…' : 'Restore'}</Button>
+                </>
+              }>
+              <p>Restores the version saved {new Date(restoreFor.saved_at).toLocaleString()} (v{restoreFor.version}) as a new save — nothing is lost; you can restore a later version again afterward. The app reloads once this completes.</p>
+            </ConfirmDialog>
+          )}
+        </CollapsibleCard>
+      )}
 
       {/* Import History — see ImportHistoryPanel above and the four importers' commit points
           (ImportRosterModal/ImportMatrixModal/ImportVacationModal/ImportLecturesModal). */}
@@ -20227,8 +20449,17 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [dbReady, setDbReady] = useState(false);
   const [dbStatus, setDbStatus] = useState('idle'); // 'idle' | 'loading' | 'saving' | 'error'
   const [dbError, setDbError] = useState(null);
+  // A save lost the optimistic-concurrency race (sbSaveStateVersioned got 0 rows back — see
+  // saveCloudNow/openConflict below): null normally, or
+  // { rowId, remote: {data,version,updated_at,updated_by}, email } while the conflict banner is
+  // up. Mirrored into a ref (checked synchronously by saveCloudNow, which closures in an already-
+  // scheduled debounce timer or in-flight flush could otherwise read stale) — same reason
+  // saveTimerRef/savePromiseRef below are refs, not state.
+  const [cloudConflict, setCloudConflict] = useState(null);
+  const cloudConflictRef = useRef(null);
+  const setConflict = (info) => { cloudConflictRef.current = info; setCloudConflict(info); };
   const saveTimerRef = useRef(null);
-  // The in-flight sbSaveState promise once the debounce timer has fired (null before/after). Lets
+  // The in-flight saveCloudNow() promise once the debounce timer has fired (null before/after). Lets
   // flushPendingCloudSave rescue a save that's already mid-network-call, not just one still waiting
   // on the timer — a fired-but-unresolved save is otherwise invisible to the flush and gets aborted
   // by a demo-transition reload right underneath it.
@@ -20284,10 +20515,12 @@ export default function ResidentScheduler({ viewer } = {}) {
       .filter(b => b && b.startDate && b.endDate)
       .map(b => ({ id: b.id, name: b.name || b.startDate, startDate: b.startDate, endDate: b.endDate }));
   }, [blocksHistory, block]);
-  // The nine synced values that the cloud row is currently known to hold (by reference). null
-  // until the first sync decision: `null` means "push local up" (empty cloud → seed it), a value
-  // array means "already matches the cloud" (just loaded it → don't re-upload). Updated after
-  // every successful save. Single source of the key list is LS_BACKUP_KEYS via `syncBindings`.
+  // What the cloud row is currently known to hold: null until the first sync decision (`null`
+  // means "push local up" — empty cloud, confirmed safe to seed — see the mount effect below), else
+  // { values, version } — `values` the nine synced values BY REFERENCE ("already matches the
+  // cloud, don't re-upload"), `version` the optimistic-concurrency token sbSaveStateVersioned
+  // filters on (migrate_res_state_history.sql). Updated after every successful load/save/conflict
+  // resolution. Single source of the key list is LS_BACKUP_KEYS via `syncBindings`.
   const cloudBaselineRef = useRef(null);
 
   // One place mapping each synced key → [current value, setter]. The cloud payload, the overlay,
@@ -20333,8 +20566,12 @@ export default function ResidentScheduler({ viewer } = {}) {
         LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
         // Baseline = the document now in sync with the cloud (applied value where present, else
         // the local value we left untouched) — so the save effect below won't re-upload what we
-        // just downloaded on every page open.
-        cloudBaselineRef.current = LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0]));
+        // just downloaded on every page open. version is the row's real, trigger-computed value
+        // (migrate_res_state_history.sql) — the token the first normal save will PATCH against.
+        cloudBaselineRef.current = {
+          values: LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0])),
+          version: row.version,
+        };
         setDbReady(true); setDbStatus('idle');
         return;
       }
@@ -20397,27 +20634,120 @@ export default function ResidentScheduler({ viewer } = {}) {
   // on what "save the cloud row" means. Never throws: a failed upload is recorded via
   // dbStatus/dbError (the pill goes "Sync error") rather than surfaced to the caller, since both
   // callers treat a save as best-effort.
+  //
+  // Two distinct write paths, chosen by whether cloudBaselineRef already has a confirmed version:
+  //  - base === null: this row has never been confirmed to exist (the mount effect's
+  //    admin-confirmed-empty path) — seed it with an unconditional upsert (sbCreateState); there is
+  //    no prior version to check against yet.
+  //  - base set: the normal path — PATCH filtered on base.version (sbSaveStateVersioned). A `null`
+  //    result means the filter matched 0 rows: another admin saved since we last loaded/saved, so
+  //    the server's version moved out from under us. Don't overwrite — hand off to openConflict,
+  //    which surfaces the cloudConflict banner instead of silently clobbering their save.
   async function saveCloudNow() {
+    if (cloudConflictRef.current) return; // already surfaced; let the admin resolve it first
     const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
     const base = cloudBaselineRef.current;
-    if (base && current.every((v, i) => v === base[i])) return; // already matches the cloud row
+    if (base && current.every((v, i) => v === base.values[i])) return; // already matches the cloud row
     setDbStatus('saving');
     const payload = {};
     LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+    const rowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
     try {
-      await sbSaveState(payload, demoMode ? RES_STATE_DEMO_ROW_ID : undefined);
-      cloudBaselineRef.current = current;
+      if (!base) {
+        const row = await sbCreateState(payload, rowId);
+        cloudBaselineRef.current = { values: current, version: row ? row.version : 0 };
+        setDbStatus('idle');
+        return;
+      }
+      const row = await sbSaveStateVersioned(payload, base.version, rowId);
+      if (!row) {
+        await openConflict(rowId);
+        return;
+      }
+      cloudBaselineRef.current = { values: current, version: row.version };
       setDbStatus('idle');
     } catch (e) {
       setDbError(e.message); setDbStatus('error');
     }
   }
 
+  // A normal save's version filter matched 0 rows — someone else saved first. Loads what's
+  // actually on the server now (the conflicting version) plus, best-effort, who saved it, and
+  // surfaces the cloudConflict banner/modal instead of retrying or overwriting. Re-entrant: the
+  // modal's "Overwrite with mine" path calls this again if ITS attempt also loses the race.
+  async function openConflict(rowId) {
+    let remote;
+    try {
+      remote = await sbLoadState(rowId);
+    } catch (e) {
+      // Couldn't even confirm what the server holds now — that's a harder failure than a
+      // conflict we can show honestly; fall back to the generic sync-error pill instead of a
+      // conflict modal with no real data to offer.
+      setDbError(e.message); setDbStatus('error');
+      return;
+    }
+    let email = null;
+    if (remote?.updated_by) {
+      try {
+        const emails = await sbProfileEmails([remote.updated_by]);
+        email = emails[remote.updated_by] || null;
+      } catch { /* best-effort — modal falls back to "another admin" */ }
+    }
+    setConflict({ rowId, remote, email });
+    setDbStatus('idle'); // handled by the conflict modal, not the generic error pill
+  }
+
+  // "Reload theirs": take the conflicting server copy as-is, same per-key overlay the mount effect
+  // uses (skip null/undefined so a field missing from an older save doesn't wipe a newer local one).
+  function conflictReloadTheirs() {
+    const { remote } = cloudConflict;
+    const d = remote.data || {};
+    LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
+    cloudBaselineRef.current = {
+      values: LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0])),
+      version: remote.version,
+    };
+    setConflict(null);
+    showToast("Loaded the other admin's version.", 'amber');
+  }
+
+  // "Overwrite with mine": re-save against the version we JUST confirmed (not the stale baseline
+  // that caused the conflict). A second loss here (another save landing in the gap between
+  // openConflict's load and this PATCH) re-opens the conflict with fresh data rather than looping
+  // silently or giving up.
+  async function conflictOverwriteMine() {
+    const { rowId, remote } = cloudConflict;
+    const payload = {};
+    LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+    try {
+      const row = await sbSaveStateVersioned(payload, remote.version, rowId);
+      if (!row) {
+        showToast('Someone saved again just now — showing the latest conflict.', 'red');
+        await openConflict(rowId);
+        return;
+      }
+      cloudBaselineRef.current = { values: LS_BACKUP_KEYS.map(k => syncBindings[k][0]), version: row.version };
+      setConflict(null);
+      showToast('Your version saved over theirs.', 'green');
+    } catch (e) {
+      showToast('Could not overwrite — try again: ' + e.message, 'red');
+    }
+  }
+
+  // "Download my copy as JSON backup": a safety net, not a resolution — deliberately does NOT
+  // clear cloudConflict, so the admin can still pick Reload/Overwrite afterward.
+  function conflictDownloadMine() {
+    const doc = {};
+    LS_BACKUP_KEYS.forEach(k => { doc[k] = syncBindings[k][0]; });
+    downloadBackupBlob(doc, demoMode);
+    showToast('Backup downloaded.', 'green');
+  }
+
   useEffect(() => {
     if (!dbReady || !SUPABASE_ENABLED) return;
     const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
     const base = cloudBaselineRef.current;
-    if (base && current.every((v, i) => v === base[i])) return; // already matches the cloud row
+    if (base && current.every((v, i) => v === base.values[i])) return; // already matches the cloud row
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
@@ -20518,7 +20848,9 @@ export default function ResidentScheduler({ viewer } = {}) {
       }
       const doc = {};
       for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
-      if (SUPABASE_ENABLED) await sbSaveState(doc, RES_STATE_DEMO_ROW_ID);
+      // Unconditional overwrite (sbCreateState), like Import Backup — "start fresh" always means
+      // replace whatever demo row exists, not negotiate with it.
+      if (SUPABASE_ENABLED) await sbCreateState(doc, RES_STATE_DEMO_ROW_ID);
       for (const k of LS_BACKUP_KEYS) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
       localStorage.setItem(DEMO_MODE_KEY, 'true');
       window.location.reload();
@@ -21327,6 +21659,31 @@ export default function ResidentScheduler({ viewer } = {}) {
             {SUPABASE_ENABLED && <p className="text-xs text-gray-400">The demo is shared across your devices, in one slot — another admin's demo edits will be lost if overwritten.</p>}
           </div>
         </Modal>
+      )}
+
+      {/* Cloud save conflict (migrate_res_state_history.sql's optimistic concurrency) — another
+          admin saved first. No onClose/backdrop dismiss on purpose: one of the three actions below
+          must be taken before autosave can resume (saveCloudNow short-circuits while this is up). */}
+      {cloudConflict && (
+        <ConfirmDialog icon={AlertTriangle} tone="warn" title="Another admin saved changes"
+          actions={
+            <>
+              <Button variant="secondary" size="sm" onClick={conflictDownloadMine}>Download my copy as JSON backup</Button>
+              <Button variant="secondary" size="sm" onClick={conflictReloadTheirs}>Reload theirs</Button>
+              <Button variant="danger" size="sm" onClick={conflictOverwriteMine}>Overwrite with mine</Button>
+            </>
+          }>
+          <p>
+            {cloudConflict.email ? <>Saved by <span className="font-medium text-foreground">{cloudConflict.email}</span></> : 'Saved by another admin'}
+            {cloudConflict.remote?.updated_at && <> at {new Date(cloudConflict.remote.updated_at).toLocaleString()}</>}
+            , after this device last synced. Your own edits since then are still here (nothing is lost yet) — pick how to proceed:
+          </p>
+          <ul className="list-disc pl-5 mt-2 space-y-1 text-xs">
+            <li><strong>Reload theirs</strong> — discard your unsaved edits, take their version.</li>
+            <li><strong>Overwrite with mine</strong> — your version replaces theirs in the cloud.</li>
+            <li><strong>Download my copy</strong> — save a backup first; doesn't resolve the conflict by itself.</li>
+          </ul>
+        </ConfirmDialog>
       )}
 
       {BLOCK_SCOPED_TABS.has(tab) && (
