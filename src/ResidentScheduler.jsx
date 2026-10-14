@@ -55,6 +55,7 @@ import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePoli
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
+import { applyScenario, compareResults } from './lib/whatIf.js';
 import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
@@ -3367,6 +3368,20 @@ const CHANGELOG = [
       'A filled cell now offers **"Give to"** (other residents free that day who could legally take the shift, ranked by who\'s furthest under target) and **"Swap with"** (a resident working a different shift that day you could cleanly trade with) — one click applies it. An empty cell offers **"Assign"** (eligible shifts with coverage room, shifts below their minimum first).',
       'The shift picker is still one click away via **"Change shift…"** in the inspector, and **double-clicking a cell** opens it directly, same as before. Locked cells show only their lock state — unlock first to edit.',
       'Press **Enter** on a focused cell to select it, **Esc** to clear the selection and go back to the issue lists.',
+    ],
+  },
+  // Inserted as the SECOND entry, not the first — see CLAUDE.md's What's New rule ("change
+  // CHANGELOG id only for interruption-worthy releases"). CHANGELOG[0] is the id markChangelogSeen
+  // writes and unseenChangelogFor walks from, so adding this entry here (rather than at the front)
+  // keeps CHANGELOG[0] exactly as it was: no interrupting "What's New" banner for anyone who's
+  // already dismissed it, while the entry still shows up in the full What's New archive tab.
+  {
+    id: '2026-10-14-whatif-staffing',
+    date: '2026-10-14',
+    title: 'A "what-if staffing" simulator on the Violations tab',
+    items: [
+      'The Violations tab now has a **What-if staffing** card (below the Generation Report) for testing staffing changes before they happen: add hypothetical resident(s) cloned from an existing one, remove a resident (for the whole block or just a date range), or raise a shift\'s coverage minimum — then **Run what-if** re-generates the schedule twice (today\'s roster vs. your changes, same random seed) and shows how many unfilled minimum slots close, the error/under-target deltas, a per-shift before/after table, and who is still short.',
+      'Nothing here touches the real schedule — hypothetical residents and the comparison results live only in this card for the session; closing or resetting it discards them.',
     ],
   },
   {
@@ -7733,6 +7748,88 @@ export function pickEngineResult(solverRes, localRes, args) {
     winner,
     engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore) },
   };
+}
+
+// ─── WHAT-IF STAFFING SIMULATOR (chief decision support, Violations tab) ──────────────────────
+// Answers "if I add/remove staff or change coverage, how many unfilled MINIMUM slots close, and
+// who is still short?" — see src/lib/whatIf.js (applyScenario/compareResults) for the pure
+// scenario-building/diff math this wraps; this function supplies the pieces that module may never
+// import (generateScheduleBest/validateAll/the quality scorer). Not to be confused with the
+// WHAT-IF OPTIMIZATION SWEEP above — that one re-arranges the CURRENT roster under alternate rule
+// orders/seeds; this one changes WHO is on the roster (or a coverage minimum) and re-generates.
+//
+// Runs generateScheduleBest TWICE with the SAME baseSeed (base vs scenario, same attempts budget
+// each) so neither side gets a random-restart advantage the other didn't — the only difference
+// between the two runs is `changes` itself.
+//
+// Both runs start from a FRESH working schedule that keeps ONLY currently-locked cells — the same
+// lockedCells-preserving clear runPartialRegenerate's "Regenerate Unlocked" already builds (see
+// that function's own `workingSchedule` construction just above runGenerate). A what-if answers
+// "what would a full regenerate look like under this scenario", not "patch today's hand-edited
+// schedule": every UNLOCKED manual edit in the live schedule is ignored by both runs (ensures an
+// apples-to-apples comparison — neither side is biased by whatever partial schedule happens to be
+// on screen), while a lock the chief explicitly set is honored in both runs, exactly how a normal
+// Generate honors it (a non-empty cell is never overwritten by any fill pass).
+//
+// Hypothetical residents (cloneResident) exist ONLY inside this function's own args objects and
+// its returned result — callers must never fold them into emRoster/offServiceResidents/block
+// state, localStorage, cloud sync, undo history, or any export path.
+function freshWorkingScheduleHonoringLocks(block) {
+  const locked = block.lockedCells || {};
+  const schedule = block.schedule || {};
+  const working = {};
+  for (const resId of Object.keys(schedule)) {
+    const row = schedule[resId] || {};
+    const newRow = {};
+    for (const ds of Object.keys(row)) {
+      if (locked[resId]?.[ds] && row[ds]) newRow[ds] = row[ds];
+    }
+    working[resId] = newRow;
+  }
+  return working;
+}
+
+// Builds the {schedule, report, issues, qualityVector, allResidents} shape src/lib/whatIf.js's
+// compareResults expects for one side (base or scenario) of a what-if run. `issues` is a fresh
+// validateAll() pass (needed for underTargetCount, which scoreGenerationResult doesn't expose —
+// it only returns counts); `qualityVector` reuses scoreGenerationResult itself (the exact function
+// generateScheduleBest's own best-of-N selection scores every attempt with) rather than
+// re-deriving buildQualityInput/computeQualityMetrics/computeQualityVector by hand, so this can
+// never silently drift from what "better" means elsewhere in the generator.
+function analyzeWhatIfResult(args, res, rulePriority) {
+  const issues = validateAll(
+    args.allResidents, res.schedule, args.block, args.eligOverrides,
+    args.appSettings, args.dayRules, args.coverage, args.blocksHistory, args.ayConf
+  );
+  const score = scoreGenerationResult(res, args, rulePriority);
+  return { schedule: res.schedule, report: res.report, issues, qualityVector: score.qualityVector, allResidents: args.allResidents };
+}
+
+// `baseArgs`: the same arg object the app passes generateScheduleBest (allResidents, block,
+// coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf). `changes`: see
+// src/lib/whatIf.js's header for the three supported change kinds. `attempts` defaults to 20 (a
+// real Generate's best-of-N budget); tests pass a smaller number for speed — scoring correctness
+// doesn't depend on attempt count, only solution quality does. Returns null when the block has no
+// valid date range (mirrors generateScheduleBest's own null return), otherwise
+// { baseSeed, base, scenario, comparison } — `base`/`scenario` are analyzeWhatIfResult's shape,
+// `comparison` is compareResults' output.
+export function runWhatIf(baseArgs, changes, { seed, attempts = 20 } = {}) {
+  const baseSeed = (seed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
+  const rulePriority = normalizeRulePriority(baseArgs.appSettings?.rulePriority);
+  const scenarioArgs = applyScenario(baseArgs, changes);
+
+  const baseGenArgs = { ...baseArgs, block: { ...baseArgs.block, schedule: freshWorkingScheduleHonoringLocks(baseArgs.block) }, clearFirst: false };
+  const scenarioGenArgs = { ...scenarioArgs, block: { ...scenarioArgs.block, schedule: freshWorkingScheduleHonoringLocks(scenarioArgs.block) }, clearFirst: false };
+
+  const baseRes = generateScheduleBest(baseGenArgs, { attempts, baseSeed, repair: true });
+  const scenarioRes = generateScheduleBest(scenarioGenArgs, { attempts, baseSeed, repair: true });
+  if (!baseRes || !scenarioRes) return null;
+
+  const base = analyzeWhatIfResult(baseGenArgs, baseRes, rulePriority);
+  const scenario = analyzeWhatIfResult(scenarioGenArgs, scenarioRes, rulePriority);
+  const comparison = compareResults(base, scenario);
+
+  return { baseSeed, base, scenario, comparison };
 }
 
 // ─── WHAT-IF OPTIMIZATION SWEEP ────────────────────────────────────────────────────────────
@@ -17807,7 +17904,350 @@ function HolidayEquityCard({ block, allResidents, blocksHistory, ayConf }) {
   );
 }
 
-function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {} }) {
+// Local to WhatIfCard (its owning component, ValidationTab, sits in a different sibling tab than
+// ScheduleGrid — the component that owns the shared genActive/genStageLabel progress overlay for
+// Generate/Regenerate — so this card can't reach that overlay's state). Same yield-before-the-
+// heavy-synchronous-call pattern as the root's own `yieldToPaint`: lets React paint the "Running…"
+// label before generateScheduleBest (x2, inside runWhatIf) blocks the main thread.
+const whatIfYieldToPaint = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+// One line per change already added to a pending what-if scenario — human-readable, no change
+// object internals leak into the UI copy itself.
+function describeWhatIfChange(change, nameById) {
+  const name = id => nameById[id] || id;
+  if (change.kind === 'cloneResident') {
+    const range = change.start && change.end ? ` (available ${formatDisplayDate(change.start)}–${formatDisplayDate(change.end)})` : '';
+    return `Add ${change.count} clone${change.count !== 1 ? 's' : ''} of ${name(change.templateId)}${range}`;
+  }
+  if (change.kind === 'removeResident') {
+    const range = change.start && change.end ? ` from ${formatDisplayDate(change.start)}–${formatDisplayDate(change.end)}` : ' for the whole block';
+    return `Remove ${name(change.residentId)}${range}`;
+  }
+  if (change.kind === 'coverageMin') {
+    return `Set ${SHIFT_MAP[change.shiftId]?.label || change.shiftId} minimum to ${change.min}`;
+  }
+  return 'Unknown change';
+}
+
+// "What-if staffing" simulator — chief decision support, placed on the Violations tab right below
+// the Generation Report card (not the Coverage tab): both of this card's core questions — how many
+// unfilled MINIMUM slots close, and who is still under target afterward — are exactly what the
+// Generation Report/ValidationTab already surface for the REAL schedule, so putting the
+// hypothetical version right next to it lets the chief compare "what I have" vs "what if" without
+// switching tabs. The Coverage tab is about configuring min/max numbers and viewing them by date,
+// not about re-running the generator, so a staffing-change simulator fits less naturally there.
+// All results (`result`) live in this component's own state only (see runWhatIf's own header on
+// this file) — nothing here ever reaches block state, localStorage, cloud sync, undo history, or
+// an export.
+function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf }) {
+  const schedulable = useMemo(() => allResidents.filter(isSchedulable), [allResidents]);
+  const nameById = useMemo(() => {
+    const m = {};
+    for (const r of allResidents) m[r.id] = `${r.firstName} ${r.lastName}`;
+    return m;
+  }, [allResidents]);
+
+  const [changes, setChanges] = useState([]);
+  const [cloneForm, setCloneForm] = useState({ templateId: '', count: 1, start: '', end: '' });
+  const [removeForm, setRemoveForm] = useState({ residentId: '', start: '', end: '' });
+  const [covForm, setCovForm] = useState({ shiftId: '', min: '' });
+
+  const [running, setRunning] = useState(false);
+  const [stageLabel, setStageLabel] = useState('');
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [result, setResult] = useState(null);
+  const [runError, setRunError] = useState('');
+  const timerRef = useRef(null);
+
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+
+  function addCloneChange() {
+    if (!cloneForm.templateId) return;
+    const count = Math.max(1, Math.floor(Number(cloneForm.count)) || 1);
+    const hasRange = !!(cloneForm.start && cloneForm.end);
+    setChanges(cs => [...cs, {
+      uiKey: uuid(), kind: 'cloneResident', templateId: cloneForm.templateId, count,
+      start: hasRange ? cloneForm.start : undefined, end: hasRange ? cloneForm.end : undefined,
+    }]);
+    setCloneForm({ templateId: '', count: 1, start: '', end: '' });
+  }
+  function addRemoveChange() {
+    if (!removeForm.residentId) return;
+    const hasRange = !!(removeForm.start && removeForm.end);
+    setChanges(cs => [...cs, {
+      uiKey: uuid(), kind: 'removeResident', residentId: removeForm.residentId,
+      start: hasRange ? removeForm.start : undefined, end: hasRange ? removeForm.end : undefined,
+    }]);
+    setRemoveForm({ residentId: '', start: '', end: '' });
+  }
+  function addCoverageChange() {
+    if (!covForm.shiftId || covForm.min === '') return;
+    setChanges(cs => [...cs, { uiKey: uuid(), kind: 'coverageMin', shiftId: covForm.shiftId, min: Math.max(0, Math.floor(Number(covForm.min)) || 0) }]);
+    setCovForm({ shiftId: '', min: '' });
+  }
+  function removeChange(uiKey) { setChanges(cs => cs.filter(c => c.uiKey !== uiKey)); }
+  function resetWhatIf() { setChanges([]); setResult(null); setRunError(''); }
+
+  async function runScenario() {
+    if (!changes.length || running) return;
+    setRunning(true);
+    setRunError('');
+    setStageLabel('Running baseline + scenario (best-of-20 each)…');
+    setElapsedSec(0);
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000);
+    try {
+      await whatIfYieldToPaint();
+      const baseArgs = { allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
+      const res = runWhatIf(baseArgs, changes);
+      if (!res) { setRunError('Set block dates first'); setResult(null); }
+      else setResult(res);
+    } catch (e) {
+      setRunError(e?.message || 'What-if run failed');
+    } finally {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setRunning(false);
+    }
+  }
+
+  // Scenario-only name lookup (includes hypothetical whatif_* residents, which never appear in
+  // the real roster's nameById above) and the aggregated "Blocked:" explainer for the scenario's
+  // own unfilled slots — same summarizer/label map the Generation Report card uses.
+  const scenarioNameById = useMemo(() => {
+    if (!result) return nameById;
+    const m = { ...nameById };
+    for (const r of result.scenario.allResidents) m[r.id] = `${r.firstName} ${r.lastName}`;
+    return m;
+  }, [result, nameById]);
+  const scenarioBlockerTotals = useMemo(() => {
+    if (!result) return {};
+    const byShift = summarizeSlotBlockers(result.scenario.report.unfilled, NEAR_MISS_SOFT_RANK);
+    const combined = {};
+    for (const entry of Object.values(byShift)) {
+      for (const [reason, count] of Object.entries(entry.blockerTotals)) combined[reason] = (combined[reason] || 0) + count;
+    }
+    return combined;
+  }, [result]);
+  const scenarioUnderTarget = useMemo(() => {
+    if (!result) return [];
+    return result.scenario.issues.filter(i => i.rule === 'underTarget');
+  }, [result]);
+  const perShiftRows = useMemo(() => {
+    if (!result) return [];
+    return Object.entries(result.comparison.perShift)
+      .map(([shiftId, v]) => ({ shiftId, ...v }))
+      .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.shiftId.localeCompare(b.shiftId));
+  }, [result]);
+
+  const fmtDelta = n => (n > 0 ? `+${n}` : `${n}`);
+
+  return (
+    <CollapsibleCard title="What-if staffing" prefId="validation-whatif"
+      subtitle="Simulate adding/removing staff or raising a coverage minimum — nothing here touches the real schedule."
+      defaultOpen={false}>
+      <p className="text-xs text-muted-foreground mb-3">
+        Runs the built-in generator twice (same random seed, best-of-20 each) — once on today's
+        roster, once with your changes applied — then compares unfilled minimum slots. Unlocked
+        manual edits in the live schedule are ignored by both runs (locked cells are honored in
+        both, same as a normal Generate); hypothetical residents never leave this card.
+      </p>
+
+      {/* Clone-resident row */}
+      <div className="border border-border rounded-lg p-3 mb-2">
+        <p className="text-xs font-semibold text-card-foreground mb-1.5">Add hypothetical resident(s)</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Template resident
+            <select aria-label="Template resident to clone" value={cloneForm.templateId}
+              onChange={e => setCloneForm(f => ({ ...f, templateId: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background min-w-[10rem]">
+              <option value="">Choose…</option>
+              {schedulable.map(r => <option key={r.id} value={r.id}>{r.firstName} {r.lastName} ({r.category} PGY{r.pgy})</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Count
+            <input aria-label="Number of clones" type="number" min={1} value={cloneForm.count}
+              onChange={e => setCloneForm(f => ({ ...f, count: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background w-16"/>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Available from (optional)
+            <input aria-label="Clone available from date" type="date" value={cloneForm.start}
+              onChange={e => setCloneForm(f => ({ ...f, start: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background"/>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Available to (optional)
+            <input aria-label="Clone available to date" type="date" value={cloneForm.end}
+              onChange={e => setCloneForm(f => ({ ...f, end: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background"/>
+          </label>
+          <button type="button" onClick={addCloneChange} disabled={!cloneForm.templateId}
+            className="text-xs font-medium px-2.5 py-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40">
+            Add
+          </button>
+        </div>
+      </div>
+
+      {/* Remove-resident row */}
+      <div className="border border-border rounded-lg p-3 mb-2">
+        <p className="text-xs font-semibold text-card-foreground mb-1.5">Remove a resident</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Resident
+            <select aria-label="Resident to remove" value={removeForm.residentId}
+              onChange={e => setRemoveForm(f => ({ ...f, residentId: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background min-w-[10rem]">
+              <option value="">Choose…</option>
+              {schedulable.map(r => <option key={r.id} value={r.id}>{r.firstName} {r.lastName} ({r.category} PGY{r.pgy})</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Unavailable from (optional)
+            <input aria-label="Resident unavailable from date" type="date" value={removeForm.start}
+              onChange={e => setRemoveForm(f => ({ ...f, start: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background"/>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Unavailable to (optional)
+            <input aria-label="Resident unavailable to date" type="date" value={removeForm.end}
+              onChange={e => setRemoveForm(f => ({ ...f, end: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background"/>
+          </label>
+          <button type="button" onClick={addRemoveChange} disabled={!removeForm.residentId}
+            className="text-xs font-medium px-2.5 py-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40">
+            Add
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">Leave both dates blank to remove for the whole block.</p>
+      </div>
+
+      {/* Coverage-minimum row */}
+      <div className="border border-border rounded-lg p-3 mb-3">
+        <p className="text-xs font-semibold text-card-foreground mb-1.5">Raise a coverage minimum</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            Shift
+            <select aria-label="Shift to change coverage minimum for" value={covForm.shiftId}
+              onChange={e => setCovForm(f => ({ ...f, shiftId: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background min-w-[8rem]">
+              <option value="">Choose…</option>
+              {SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label || s.id}</option>)}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground flex flex-col gap-0.5">
+            New minimum
+            <input aria-label="New coverage minimum" type="number" min={0} value={covForm.min}
+              onChange={e => setCovForm(f => ({ ...f, min: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-xs bg-background w-16"/>
+          </label>
+          <button type="button" onClick={addCoverageChange} disabled={!covForm.shiftId || covForm.min === ''}
+            className="text-xs font-medium px-2.5 py-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40">
+            Add
+          </button>
+        </div>
+      </div>
+
+      {changes.length > 0 && (
+        <div className="mb-3">
+          <p className="text-xs font-semibold text-card-foreground mb-1">Planned changes</p>
+          <ul className="space-y-1">
+            {changes.map(c => (
+              <li key={c.uiKey} className="flex items-center gap-2 text-xs text-card-foreground bg-muted/50 rounded px-2 py-1">
+                <span className="flex-1">{describeWhatIfChange(c, nameById)}</span>
+                <button type="button" aria-label="Remove this change" onClick={() => removeChange(c.uiKey)}
+                  className="text-muted-foreground hover:text-destructive">
+                  <X size={12}/>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button type="button" onClick={runScenario} disabled={!changes.length || running}
+          className="text-sm font-medium px-3 py-1.5 rounded bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40 flex items-center gap-1.5">
+          {running && <RefreshCw size={13} className="animate-spin"/>}
+          {running ? `Running… (${elapsedSec}s)` : 'Run what-if'}
+        </button>
+        <button type="button" onClick={resetWhatIf} disabled={running || (!changes.length && !result)}
+          className="text-sm font-medium px-3 py-1.5 rounded border border-border text-card-foreground hover:bg-muted/50 disabled:opacity-40">
+          Reset
+        </button>
+        {running && <span role="status" aria-live="polite" className="text-xs text-muted-foreground">{stageLabel}</span>}
+      </div>
+
+      {runError && <p className="text-xs text-destructive mt-2">{runError}</p>}
+
+      {result && (
+        <div className="mt-4 pt-3 border-t border-border space-y-3">
+          <p className="text-sm font-semibold text-card-foreground">
+            Unfilled minimum slots: {result.comparison.coverageMiss.before} → {result.comparison.coverageMiss.after}
+            {' '}({fmtDelta(result.comparison.coverageMiss.delta)})
+          </p>
+          <div className="flex gap-4 flex-wrap text-xs text-muted-foreground">
+            <span>Errors: {result.comparison.errorCount.before} → {result.comparison.errorCount.after} ({fmtDelta(result.comparison.errorCount.delta)})</span>
+            <span>Under target: {result.comparison.underTargetCount.before} → {result.comparison.underTargetCount.after} ({fmtDelta(result.comparison.underTargetCount.delta)})</span>
+            <span>Slots closed: {result.comparison.slotsClosed}</span>
+            <span>Slots newly opened: {result.comparison.slotsOpened}</span>
+          </div>
+
+          {perShiftRows.length > 0 && (
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-left text-muted-foreground border-b border-border">
+                  <th className="py-1 pr-2 font-medium">Shift</th>
+                  <th className="py-1 px-2 font-medium text-right">Before</th>
+                  <th className="py-1 px-2 font-medium text-right">After</th>
+                  <th className="py-1 pl-2 font-medium text-right">Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perShiftRows.map(row => (
+                  <tr key={row.shiftId} className="border-b border-border/50">
+                    <td className="py-1 pr-2 text-card-foreground">
+                      <span className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${SHIFT_MAP[row.shiftId]?.chip || ''}`}>{row.shiftId}</span>
+                    </td>
+                    <td className="py-1 px-2 text-right text-card-foreground">{row.before}</td>
+                    <td className="py-1 px-2 text-right text-card-foreground">{row.after}</td>
+                    <td className={`py-1 pl-2 text-right font-medium ${row.delta < 0 ? 'text-green-600' : row.delta > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {fmtDelta(row.delta)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {Object.keys(scenarioBlockerTotals).length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Blocked: {Object.entries(scenarioBlockerTotals)
+                .sort((a, b) => b[1] - a[1])
+                .map(([why, n]) => `${n} ${UNDER_TARGET_BLOCK_LABELS[why] || why}`)
+                .join(' · ')}
+            </p>
+          )}
+
+          {scenarioUnderTarget.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-card-foreground mb-1">Still short of target in this scenario</p>
+              <ul className="text-xs text-muted-foreground space-y-0.5">
+                {scenarioUnderTarget.slice(0, 10).map((i, idx) => (
+                  <li key={idx}>{scenarioNameById[i.residentId] || i.residentId}: {i.message}</li>
+                ))}
+                {scenarioUnderTarget.length > 10 && <li>+{scenarioUnderTarget.length - 10} more</li>}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </CollapsibleCard>
+  );
+}
+
+function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {}, coverage = {}, eligOverrides = {}, dayRules = {} }) {
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
@@ -17821,6 +18261,7 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
     <div className="space-y-4">
       {report && <FeasibilityReportCard feasibility={report.feasibility} allResidents={allResidents}/>}
       {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate} allResidents={allResidents}/>}
+      <WhatIfCard block={block} allResidents={allResidents} coverage={coverage} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="text-center py-16">
@@ -17835,6 +18276,7 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
     <div className="space-y-4">
       {report && <FeasibilityReportCard feasibility={report.feasibility} allResidents={allResidents}/>}
       {report && <GenerationReportCard report={report} appSettings={appSettings} blockStart={block.startDate} allResidents={allResidents}/>}
+      <WhatIfCard block={block} allResidents={allResidents} coverage={coverage} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <HolidayEquityCard block={block} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={ayConf}/>
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="flex gap-3 flex-wrap">
@@ -21827,7 +22269,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
-          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf}/>}
+          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
