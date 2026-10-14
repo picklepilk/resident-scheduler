@@ -49,14 +49,23 @@ drop policy if exists "public_read_write" on res_state;
 
 -- Belt-and-suspenders: Supabase's default project template grants table-level privileges to anon
 -- directly (separate from RLS policies) — revoke them so even a future RLS misconfiguration can't
--- hand anon anything. authenticated keeps its default table-level grants; the policy below is what
--- actually restricts rows for it.
+-- hand anon anything.
 revoke all on res_state from anon;
+
+-- Explicit, not assumed: a fresh-install res_state (the `create table if not exists` above) has
+-- NO table-level grant for `authenticated` at all until this runs, and RLS policies are only ever
+-- reachable on top of an underlying table-level grant — a policy can narrow access, it can never
+-- substitute for the GRANT. Harmless to (re)run against an already-provisioned DB that still has
+-- its original default template grant.
+grant select, insert, update, delete on res_state to authenticated;
 
 -- Every operation gated on is_admin() (day_off_requests.sql) — same helper the day_off_requests
 -- admin policies already use, so there's exactly one definition of "is the caller an admin"
 -- in this schema. A pending or resident-role caller gets zero rows from res_state entirely, not
 -- even their own; there is no "own row" concept here, it's one shared department document.
+-- Dropped first so this migration is idempotent (re-running it, or running it against a DB that
+-- partially applied it before, doesn't error on a duplicate policy name).
+drop policy if exists "res_state_admin_all" on res_state;
 create policy "res_state_admin_all" on res_state for all
   to authenticated
   using (is_admin())

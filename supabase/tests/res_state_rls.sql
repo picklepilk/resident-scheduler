@@ -4,18 +4,24 @@
 -- afford to test against (it inserts throwaway auth.users/profiles/res_state rows, but everything
 -- is inside one transaction rolled back at the end — nothing here is left behind either way).
 --
--- What it checks, one role at a time (anon, pending, resident, admin):
---   1. Can that role SELECT the res_state 'main' row directly?
---   2. Can that role call public.resident_block_lookup()?
--- Expected results:
---   anon      — res_state: no.  RPC: no (not authenticated at all, not even a pending profile).
---   pending   — res_state: no.  RPC: no (role = 'pending' — same gate day_off_requests uses).
---   resident  — res_state: no.  RPC: yes, narrowed shape (blocks/ayData/roster only).
---   admin     — res_state: yes. RPC: yes.
+-- Every check prints a PASS/FAIL line via RAISE NOTICE (visible in the SQL editor's "Results" /
+-- "Messages" output) — read those lines for the verdict, not the (mostly empty/void) query output.
 --
--- Each `\echo` is just a marker in the SQL editor's output so you can see which block a result
--- belongs to — delete the `\echo` lines if running somewhere that doesn't support psql
--- backslash-commands (the Supabase SQL editor does; a plain psql session does too).
+-- Each of the four role blocks (anon, pending, resident, admin) runs inside its own SAVEPOINT,
+-- released with ROLLBACK TO SAVEPOINT immediately after — this is what makes the later blocks run
+-- at all: anon's checks are EXPECTED to raise a real Postgres error (`permission denied`, since
+-- migrate_res_state_admin_only.sql revokes table/function grants from anon outright, not just row
+-- visibility), and an uncaught error anywhere in a transaction aborts the WHOLE transaction, not
+-- just the statement that raised it — every statement after it, pending/resident/admin included,
+-- would otherwise silently no-op until the next ROLLBACK. Each check is ALSO wrapped in its own DO
+-- block with an EXCEPTION handler, so the expected-vs-actual comparison happens and prints
+-- PASS/FAIL even for the anon case where the bare SQL underneath it would itself abort.
+--
+-- Expected results:
+--   anon      — res_state select: permission denied.      RPC: permission denied.
+--   pending   — res_state select: 0 rows (RLS, no error).  RPC: denied ("not authorized" exception).
+--   resident  — res_state select: 0 rows (RLS, no error).  RPC: succeeds, narrowed shape.
+--   admin     — res_state select: 1 row.                  RPC: succeeds, narrowed shape.
 
 begin;
 
@@ -52,55 +58,125 @@ values ('main', jsonb_build_object(
 on conflict (id) do update set data = excluded.data;
 
 -- ── anon ───────────────────────────────────────────────────────────────────────────────────────
-\echo '--- anon: res_state select (expect 0 rows) ---'
+savepoint sp_anon;
 set local role anon;
-select * from public.res_state where id = 'main';
-reset role;
 
-\echo '--- anon: resident_block_lookup() (expect error: not authorized, or permission denied) ---'
-set local role anon;
-select public.resident_block_lookup();
-reset role;
+do $$
+begin
+  perform 1 from public.res_state where id = 'main';
+  raise notice 'anon / res_state select: FAIL (expected permission denied, the query succeeded)';
+exception when insufficient_privilege then
+  raise notice 'anon / res_state select: PASS (permission denied, as expected — %)', sqlerrm;
+end $$;
+
+do $$
+begin
+  perform public.resident_block_lookup();
+  raise notice 'anon / resident_block_lookup(): FAIL (expected permission denied, the call succeeded)';
+exception when insufficient_privilege then
+  raise notice 'anon / resident_block_lookup(): PASS (permission denied, as expected — %)', sqlerrm;
+end $$;
+
+rollback to savepoint sp_anon;
 
 -- ── pending ────────────────────────────────────────────────────────────────────────────────────
-\echo '--- pending: res_state select (expect 0 rows) ---'
+savepoint sp_pending;
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000001","email":"rls-test-pending@example.test","role":"authenticated"}';
-select * from public.res_state where id = 'main';
-reset role;
 
-\echo '--- pending: resident_block_lookup() (expect error: not authorized) ---'
-set local role authenticated;
-set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000001","email":"rls-test-pending@example.test","role":"authenticated"}';
-select public.resident_block_lookup();
-reset role;
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state where id = 'main';
+  if cnt = 0 then
+    raise notice 'pending / res_state select: PASS (0 rows, RLS denied as expected)';
+  else
+    raise notice 'pending / res_state select: FAIL (expected 0 rows, got %)', cnt;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'pending / res_state select: FAIL (got permission denied — expected a silent 0-row result, not an error)';
+end $$;
+
+do $$
+begin
+  perform public.resident_block_lookup();
+  raise notice 'pending / resident_block_lookup(): FAIL (expected "not authorized" denial, the call succeeded)';
+exception when others then
+  if sqlerrm = 'not authorized' then
+    raise notice 'pending / resident_block_lookup(): PASS (denied as expected — %)', sqlerrm;
+  else
+    raise notice 'pending / resident_block_lookup(): FAIL (unexpected error: %)', sqlerrm;
+  end if;
+end $$;
+
+rollback to savepoint sp_pending;
 
 -- ── resident ───────────────────────────────────────────────────────────────────────────────────
-\echo '--- resident: res_state select (expect 0 rows) ---'
+savepoint sp_resident;
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000002","email":"rls-test-resident@example.test","role":"authenticated"}';
-select * from public.res_state where id = 'main';
-reset role;
 
-\echo '--- resident: resident_block_lookup() (expect blocks/ayData/roster jsonb, NOT the full res_state row) ---'
-set local role authenticated;
-set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000002","email":"rls-test-resident@example.test","role":"authenticated"}';
-select public.resident_block_lookup();
-reset role;
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state where id = 'main';
+  if cnt = 0 then
+    raise notice 'resident / res_state select: PASS (0 rows, RLS denied as expected — residents never see res_state directly)';
+  else
+    raise notice 'resident / res_state select: FAIL (expected 0 rows, got %)', cnt;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'resident / res_state select: FAIL (got permission denied — expected a silent 0-row result, not an error)';
+end $$;
+
+do $$
+declare result jsonb;
+begin
+  select public.resident_block_lookup() into result;
+  if (result ? 'blocks') and (result ? 'ayData') and (result ? 'roster') then
+    raise notice 'resident / resident_block_lookup(): PASS (got the narrowed {blocks, ayData, roster} shape: %)', result;
+  else
+    raise notice 'resident / resident_block_lookup(): FAIL (missing an expected key: %)', result;
+  end if;
+exception when others then
+  raise notice 'resident / resident_block_lookup(): FAIL (expected success, got error: %)', sqlerrm;
+end $$;
+
+rollback to savepoint sp_resident;
 
 -- ── admin ──────────────────────────────────────────────────────────────────────────────────────
-\echo '--- admin: res_state select (expect 1 row) ---'
+savepoint sp_admin;
 set local role authenticated;
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000003","email":"rls-test-admin@example.test","role":"authenticated"}';
-select * from public.res_state where id = 'main';
-reset role;
 
-\echo '--- admin: resident_block_lookup() (expect the same narrowed jsonb as resident) ---'
-set local role authenticated;
-set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000003","email":"rls-test-admin@example.test","role":"authenticated"}';
-select public.resident_block_lookup();
-reset role;
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state where id = 'main';
+  if cnt = 1 then
+    raise notice 'admin / res_state select: PASS (1 row visible)';
+  else
+    raise notice 'admin / res_state select: FAIL (expected 1 row, got %)', cnt;
+  end if;
+exception when others then
+  raise notice 'admin / res_state select: FAIL (expected success, got error: %)', sqlerrm;
+end $$;
+
+do $$
+declare result jsonb;
+begin
+  select public.resident_block_lookup() into result;
+  if (result ? 'blocks') and (result ? 'ayData') and (result ? 'roster') then
+    raise notice 'admin / resident_block_lookup(): PASS (got the narrowed {blocks, ayData, roster} shape: %)', result;
+  else
+    raise notice 'admin / resident_block_lookup(): FAIL (missing an expected key: %)', result;
+  end if;
+exception when others then
+  raise notice 'admin / resident_block_lookup(): FAIL (expected success, got error: %)', sqlerrm;
+end $$;
+
+rollback to savepoint sp_admin;
 
 -- Nothing persists — fixtures AND any writes the checks above happened to make (none expected;
--- every statement here is a SELECT) are all undone.
+-- every statement here is a SELECT/RPC call) are all undone.
 rollback;

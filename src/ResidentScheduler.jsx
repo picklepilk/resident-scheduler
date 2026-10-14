@@ -17574,9 +17574,10 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 //     saved_at timestamptz default now()
 //   );
 //   alter table res_state enable row level security;
+//   revoke all on res_state from anon;
+//   grant select, insert, update, delete on res_state to authenticated;  -- RLS narrows further
 //   create policy "res_state_admin_all" on res_state for all
 //     to authenticated using (is_admin()) with check (is_admin());
-//   revoke all on res_state from anon;
 // (res_state holds every resident's name and full generated schedule — admin-only per RLS, NOT
 // the wide-open-by-design policy this comment described before 2026-10-14. That policy was a
 // confirmed data-exposure gap: the anon key is meant to be safe to expose client-side, but it was
@@ -17616,6 +17617,29 @@ export const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
 // over the delete/import mid-operation (both reload the page on success, which resets this).
 let syncSuspended = false;
 
+// getAccessToken() (supabaseClient.js) calls supabase-js's auth.getSession(), which normally
+// resolves near-instantly from its in-memory session, refreshing over the network only when the
+// token is actually near expiry — but that refresh IS a network call, unbounded by anything sbFetch
+// itself controls. Without its own bound, a hung refresh would block the request indefinitely,
+// before fetchWithTimeout's own 15s bound even starts — silently defeating the "every request is
+// bounded" guarantee this whole function exists to provide. 5s, not 15s: this is normally
+// synchronous/cached, so 5s is already generous for the one case (an actual refresh) where it
+// isn't, and it still leaves the full 15s for the PostgREST request that follows.
+const ACCESS_TOKEN_TIMEOUT_MS = 5000;
+async function getAccessTokenBounded() {
+  let timer;
+  try {
+    return await Promise.race([
+      getAccessToken(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('getAccessToken: timed out')), ACCESS_TOKEN_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const sbFetch = async (path, opts = {}) => {
   // Bound every request so a stalled (not failed — hung) network can't block indefinitely: the
   // mount load, the debounced save, and especially import/clear (which await before reloading)
@@ -17634,8 +17658,26 @@ const sbFetch = async (path, opts = {}) => {
   // what actually enforces access either way; this just makes the request carry the identity RLS
   // needs to say yes.
   let res;
+  let token;
   try {
-    const token = resolveAuthToken(await getAccessToken(), SUPABASE_ANON);
+    token = resolveAuthToken(await getAccessTokenBounded(), SUPABASE_ANON);
+  } catch (e) {
+    // getAccessTokenBounded hung/rejected. When auth is actually configured, silently falling
+    // back to the anon key here would be worse than surfacing the failure outright: res_state's
+    // RLS is admin-only now, so a request sent as anon doesn't fail loudly — it just comes back
+    // looking like an empty, unauthorized result, exactly the ambiguity sbIsAdmin()/the
+    // mount-time effect exist to resolve for the ONE case they can see (a clean 200 with no
+    // rows). A token-lookup failure should never masquerade as that; it's a harder, earlier
+    // failure, so it gets its own error here instead, reaching every caller's existing catch path
+    // (dbReady stays false, the pill shows "Sync error") the same as a network/HTTP failure would.
+    if (AUTH_ENABLED) {
+      throw new Error(`Supabase ${opts.method || 'GET'} ${path}: could not get session token (${e.message})`);
+    }
+    // AUTH_ENABLED false: no session was ever going to exist (see its own dev/prod asymmetry note
+    // in CLAUDE.md) — same anon-key fallback this function always used before this change.
+    token = SUPABASE_ANON;
+  }
+  try {
     res = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1${path}`, {
       headers: {
         'apikey': SUPABASE_ANON,
