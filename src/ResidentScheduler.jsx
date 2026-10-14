@@ -6775,7 +6775,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         // itself a useful signal that something OTHER than candidatePool kept the slot open.
         const key = reason === null ? 'legalNotChosen' : reason;
         blockers[key] = (blockers[key] || 0) + 1;
-        if (reason !== 'noEligible' && reason !== 'allWorking') {
+        // TRIVIAL_BLOCKERS-style exclusion (see unfilledExplainer.js's own set of that name): these
+        // three reasons mean the resident was never a real candidate to begin with — noEligible/
+        // allWorking say nobody could even be considered, and selfCoverOnly means they have no
+        // target for this shift at all, so it was never a legal pick, not a near miss. jeopardyConflict
+        // stays IN (the chief can reassign the call), it's the only hard-looking reason that's
+        // actually actionable here.
+        if (reason !== 'noEligible' && reason !== 'allWorking' && reason !== 'selfCoverOnly') {
           nearMiss.push({ residentId: r.id, reason: key });
         }
       }
@@ -16979,7 +16985,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
   // blockerTotals/{} and a null topBlocker, and the render guards below skip them, so nothing new
   // appears for those reports (CLAUDE.md: handle untrusted/legacy shape, render nothing instead of
   // guessing).
-  const blockerSummary = useMemo(()=>summarizeSlotBlockers(report.unfilled),[report.unfilled]);
+  const blockerSummary = useMemo(()=>summarizeSlotBlockers(report.unfilled, NEAR_MISS_SOFT_RANK),[report.unfilled]);
   // Resident names for the "Closest" line — threaded down from whichever call site has them
   // (ValidationTab already has `allResidents`; ReviewPanel's callers thread it one level further,
   // see ScheduleGrid). Falls back to the raw id if a name truly isn't available anywhere, rather
@@ -17050,13 +17056,15 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
                 {(() => {
                   const bs = blockerSummary[g.shiftId];
                   if (!bs || Object.keys(bs.blockerTotals).length === 0) return null;
-                  const seen = new Map();
-                  for (const s of g.slots) {
-                    for (const nm of (s.nearMiss || [])) {
-                      if (!seen.has(nm.residentId)) seen.set(nm.residentId, nm.reason);
-                    }
-                  }
-                  const closest = [...seen.entries()].slice(0, 5);
+                  // bs.closestResidents is already rank-asc/count-desc from summarizeSlotBlockers;
+                  // the only thing it couldn't do (no resident names in lib/) is the final name
+                  // tiebreak, so re-sort here with the same rank/count keys plus that tiebreak,
+                  // then take 5 — never duplicate the rank computation itself.
+                  const closest = (bs.closestResidents || [])
+                    .slice()
+                    .sort((a,b) => a.rank - b.rank || b.count - a.count
+                      || (nameById[a.residentId] || a.residentId).localeCompare(nameById[b.residentId] || b.residentId))
+                    .slice(0, 5);
                   return (
                     <div className="mt-1.5 pt-1.5 border-t border-amber-200/60">
                       <p className="text-xs text-gray-500">
@@ -17067,7 +17075,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
                       </p>
                       {closest.length > 0 && (
                         <p className="text-xs text-gray-500">
-                          Closest: {closest.map(([rid,reason]) => `${nameById[rid] || rid} (${UNDER_TARGET_BLOCK_LABELS[reason] || reason})`).join(', ')}
+                          Closest: {closest.map(c => `${nameById[c.residentId] || c.residentId} (${UNDER_TARGET_BLOCK_LABELS[c.reason] || c.reason})`).join(', ')}
                         </p>
                       )}
                     </div>

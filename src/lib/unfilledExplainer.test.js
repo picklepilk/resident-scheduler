@@ -64,4 +64,40 @@ describe('summarizeSlotBlockers', () => {
     ]);
     expect(summary['POD-D'].nearMissResidents).toEqual({ r1: 1 });
   });
+
+  it('closestResidents ranks by softRank of the softest reason seen, then by slot count', () => {
+    const softRank = reason => ({ legalNotChosen: 0, allAtTarget: 1, hoursCapped: 1 }[reason] ?? 2);
+    const unfilled = [
+      { shiftId: 'POD-D', nearMiss: [
+        { residentId: 'r1', reason: 'hoursCapped' },
+        { residentId: 'r2', reason: 'circadianBlocked' },
+        { residentId: 'r3', reason: 'allAtTarget' },
+      ] },
+      { shiftId: 'POD-D', nearMiss: [
+        { residentId: 'r1', reason: 'circadianBlocked' }, // softest for r1 stays hoursCapped (rank 1)
+        { residentId: 'r2', reason: 'circadianBlocked' },
+        { residentId: 'r3', reason: 'legalNotChosen' }, // softest for r3 becomes legalNotChosen (rank 0)
+      ] },
+    ];
+    const summary = summarizeSlotBlockers(unfilled, softRank);
+    expect(summary['POD-D'].closestResidents).toEqual([
+      { residentId: 'r3', reason: 'legalNotChosen', rank: 0, count: 2 },
+      { residentId: 'r1', reason: 'hoursCapped', rank: 1, count: 2 },
+      { residentId: 'r2', reason: 'circadianBlocked', rank: 2, count: 2 },
+    ]);
+  });
+
+  it('closestResidents defaults every reason to the same rank when no softRank is passed', () => {
+    const summary = summarizeSlotBlockers([
+      { shiftId: 'POD-D', nearMiss: [{ residentId: 'r1', reason: 'allAtTarget' }] },
+      { shiftId: 'POD-D', nearMiss: [
+        { residentId: 'r1', reason: 'allAtTarget' },
+        { residentId: 'r2', reason: 'hoursCapped' },
+      ] },
+    ]);
+    expect(summary['POD-D'].closestResidents).toEqual([
+      { residentId: 'r1', reason: 'allAtTarget', rank: 0, count: 2 },
+      { residentId: 'r2', reason: 'hoursCapped', rank: 0, count: 1 },
+    ]);
+  });
 });
