@@ -55,7 +55,7 @@ import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePoli
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
-import { applyScenario, compareResults } from './lib/whatIf.js';
+import { applyScenario, compareResultSets } from './lib/whatIf.js';
 import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
@@ -7752,15 +7752,15 @@ export function pickEngineResult(solverRes, localRes, args) {
 
 // ─── WHAT-IF STAFFING SIMULATOR (chief decision support, Violations tab) ──────────────────────
 // Answers "if I add/remove staff or change coverage, how many unfilled MINIMUM slots close, and
-// who is still short?" — see src/lib/whatIf.js (applyScenario/compareResults) for the pure
+// who is still short?" — see src/lib/whatIf.js (applyScenario/compareResultSets) for the pure
 // scenario-building/diff math this wraps; this function supplies the pieces that module may never
 // import (generateScheduleBest/validateAll/the quality scorer). Not to be confused with the
 // WHAT-IF OPTIMIZATION SWEEP above — that one re-arranges the CURRENT roster under alternate rule
 // orders/seeds; this one changes WHO is on the roster (or a coverage minimum) and re-generates.
 //
-// Runs generateScheduleBest TWICE with the SAME baseSeed (base vs scenario, same attempts budget
-// each) so neither side gets a random-restart advantage the other didn't — the only difference
-// between the two runs is `changes` itself.
+// Runs generateScheduleBest `repeats` times per side at a PAIRED seed list (base[k]/scenario[k]
+// share seed_k) so neither side gets a random-restart advantage the other didn't, then compares
+// MEDIANS across runs instead of one single-seed draw — see runWhatIf's own header below.
 //
 // Both runs start from a FRESH working schedule that keeps ONLY currently-locked cells — the same
 // lockedCells-preserving clear runPartialRegenerate's "Regenerate Unlocked" already builds (see
@@ -7790,7 +7790,8 @@ function freshWorkingScheduleHonoringLocks(block) {
 }
 
 // Builds the {schedule, report, issues, qualityVector, allResidents} shape src/lib/whatIf.js's
-// compareResults expects for one side (base or scenario) of a what-if run. `issues` is a fresh
+// compareResultSets expects for one run on one side (base or scenario) of a what-if comparison —
+// called once per repeat. `issues` is a fresh
 // validateAll() pass (needed for underTargetCount, which scoreGenerationResult doesn't expose —
 // it only returns counts); `qualityVector` reuses scoreGenerationResult itself (the exact function
 // generateScheduleBest's own best-of-N selection scores every attempt with) rather than
@@ -7811,16 +7812,30 @@ function analyzeWhatIfResult(args, res, rulePriority) {
 // real Generate's best-of-N budget); tests pass a smaller number for speed — scoring correctness
 // doesn't depend on attempt count, only solution quality does. Returns null when the block has no
 // valid date range (mirrors generateScheduleBest's own null return), otherwise
-// { baseSeed, base, scenario, comparison } — `base`/`scenario` are analyzeWhatIfResult's shape,
-// `comparison` is compareResults' output.
+// { baseSeed, seeds, repeats, base, scenario, comparison } — `base`/`scenario` are
+// analyzeWhatIfResult's shape for the MEDIAN-REPRESENTATIVE run on each side (see
+// src/lib/whatIf.js's compareResultSets header — the run whose own coverageMiss sits at that
+// side's median, so the "still short"/blocked-reasons UI has one real generated schedule to point
+// at), `comparison` is compareResultSets' output (medians + ranges across all `repeats` runs).
 //
-// Async so the UI can repaint and offer Cancel between the two (each multi-second) generations —
-// same yield/isCancelled shape as runOptimizationSweep below. `onStage(1|2)` fires before each
-// run; a cancel between them resolves to `{ cancelled: true }`. The BASE side runs on a deep copy
-// too (applyScenario with no changes), not on live-state references: today's generator never
-// mutates its args, but that's an unenforced convention, and a violation here would corrupt the
-// chief's real block.
-export async function runWhatIf(baseArgs, changes, { seed, attempts = 20, isCancelled = () => false, onStage = () => {} } = {}) {
+// ONE base-vs-scenario draw at a single seed is noisy — which of generateScheduleBest's seeded
+// attempts wins can move errors/under-target by several counts on its own, independent of the
+// staffing change being tested (observed live: removing one resident moved errors 3→10 and
+// under-target 5→11 with unfilled 0→0 — mostly attempt-selection noise). So each side runs
+// `repeats` times (default 3) at DIFFERENT seeds — seed_k = (baseSeed + k*0x9E3779B9)>>>0 for
+// k=0..repeats-1 — and the SAME seed list is used for both base and scenario (paired: run k on
+// each side starts from the same random draw, so the only thing that can differ between base[k]
+// and scenario[k] is `changes` itself, same reasoning as the original single-seed design, just
+// repeated `repeats` times instead of once).
+//
+// Async so the UI can repaint and offer Cancel between every (each multi-second) generation — same
+// yield/isCancelled shape as runOptimizationSweep below. `onStage({side, run, of})` fires before
+// EVERY one of the 2*repeats runs (`side` is 'base' or 'scenario', `run` is 1-indexed within that
+// side, `of` is `repeats`); a cancel at any yield point resolves to `{ cancelled: true }` without
+// starting that run. The BASE side runs on a deep copy too (applyScenario with no changes), not on
+// live-state references: today's generator never mutates its args, but that's an unenforced
+// convention, and a violation here would corrupt the chief's real block.
+export async function runWhatIf(baseArgs, changes, { seed, attempts = 20, repeats = 3, isCancelled = () => false, onStage = () => {} } = {}) {
   const baseSeed = (seed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(baseArgs.appSettings?.rulePriority);
   const baseCopy = applyScenario(baseArgs, []);
@@ -7829,21 +7844,34 @@ export async function runWhatIf(baseArgs, changes, { seed, attempts = 20, isCanc
   const baseGenArgs = { ...baseCopy, block: { ...baseCopy.block, schedule: freshWorkingScheduleHonoringLocks(baseCopy.block) }, clearFirst: false };
   const scenarioGenArgs = { ...scenarioArgs, block: { ...scenarioArgs.block, schedule: freshWorkingScheduleHonoringLocks(scenarioArgs.block) }, clearFirst: false };
 
-  onStage(1);
-  await sweepYieldToBrowser();
-  if (isCancelled()) return { cancelled: true };
-  const baseRes = generateScheduleBest(baseGenArgs, { attempts, baseSeed, repair: true });
-  onStage(2);
-  await sweepYieldToBrowser();
-  if (isCancelled()) return { cancelled: true };
-  const scenarioRes = generateScheduleBest(scenarioGenArgs, { attempts, baseSeed, repair: true });
-  if (!baseRes || !scenarioRes) return null;
+  const seeds = [];
+  for (let k = 0; k < repeats; k++) seeds.push((baseSeed + k * 0x9E3779B9) >>> 0);
 
-  const base = analyzeWhatIfResult(baseGenArgs, baseRes, rulePriority);
-  const scenario = analyzeWhatIfResult(scenarioGenArgs, scenarioRes, rulePriority);
-  const comparison = compareResults(base, scenario);
+  async function runRepeats(side, genArgs) {
+    const results = [];
+    for (let k = 0; k < repeats; k++) {
+      onStage({ side, run: k + 1, of: repeats });
+      await sweepYieldToBrowser();
+      if (isCancelled()) return { cancelled: true };
+      const res = generateScheduleBest(genArgs, { attempts, baseSeed: seeds[k], repair: true });
+      if (!res) return { nullResult: true };
+      results.push(analyzeWhatIfResult(genArgs, res, rulePriority));
+    }
+    return { results };
+  }
 
-  return { baseSeed, base, scenario, comparison };
+  const baseOutcome = await runRepeats('base', baseGenArgs);
+  if (baseOutcome.cancelled) return { cancelled: true };
+  if (baseOutcome.nullResult) return null;
+  const scenarioOutcome = await runRepeats('scenario', scenarioGenArgs);
+  if (scenarioOutcome.cancelled) return { cancelled: true };
+  if (scenarioOutcome.nullResult) return null;
+
+  const comparison = compareResultSets(baseOutcome.results, scenarioOutcome.results);
+  const base = baseOutcome.results[comparison.representativeIndex.base];
+  const scenario = scenarioOutcome.results[comparison.representativeIndex.scenario];
+
+  return { baseSeed, seeds, repeats, base, scenario, comparison };
 }
 
 // ─── WHAT-IF OPTIMIZATION SWEEP ────────────────────────────────────────────────────────────
@@ -18021,7 +18049,13 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
       const baseArgs = { allResidents, block, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
       const res = await runWhatIf(baseArgs, changes, {
         isCancelled: () => cancelRef.current || !mountedRef.current,
-        onStage: n => { if (mountedRef.current) setStageLabel(n === 1 ? 'Generating current roster (1 of 2)…' : 'Generating with your changes (2 of 2)…'); },
+        // {side, run, of}: of = repeats PER SIDE, so the label's own total is of*2 (base runs then
+        // scenario runs) — "Run 2 of 6…" for the default repeats:3.
+        onStage: ({ side, run, of }) => {
+          if (!mountedRef.current) return;
+          const globalRun = side === 'base' ? run : of + run;
+          setStageLabel(`Run ${globalRun} of ${of * 2}…`);
+        },
       });
       if (!mountedRef.current) return;
       if (res?.cancelled) { setStageLabel(''); }
@@ -18064,17 +18098,33 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
       .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.shiftId.localeCompare(b.shiftId));
   }, [result]);
 
-  const fmtDelta = n => (n > 0 ? `+${n}` : `${n}`);
+  const fmtMedian = n => (Number.isInteger(n) ? `${n}` : n.toFixed(1));
+  const fmtDelta = n => (n > 0 ? `+${fmtMedian(n)}` : fmtMedian(n));
+  const fmtRange = r => (r.min === r.max ? `${r.min}` : `${r.min}–${r.max}`);
+
+  // Shortened "still short" line for THIS card only — drops the long "blocks export; expected
+  // while…"/buy-down/conference-tolerance suffixes compareResults' source message carries (see
+  // ValidationTab's own full-detail rendering for those), since this card's job is a quick glance
+  // at who's still short under the scenario, not a full issue explanation. Message format is
+  // `Under target: {count}/{target} shifts...` (ResidentScheduler.jsx's own underTarget push,
+  // `rule: 'underTarget'`) — parsed rather than re-derived so this can never drift from the real
+  // count/target if that message format changes shape.
+  function shortUnderTargetLabel(issue) {
+    const m = /Under target: (\d+)\/(\d+) shifts/.exec(issue.message || '');
+    return m ? `${m[1]} of ${m[2]} shifts` : issue.message;
+  }
 
   return (
     <CollapsibleCard title="What-if staffing" prefId="validation-whatif"
       subtitle="Simulate adding/removing staff or raising a coverage minimum — nothing here touches the real schedule."
       defaultOpen={false}>
       <p className="text-xs text-muted-foreground mb-3">
-        Runs the built-in generator twice (same random seed, best-of-20 each) — once on today's
-        roster, once with your changes applied — then compares unfilled minimum slots. Unlocked
-        manual edits in the live schedule are ignored by both runs (locked cells are honored in
-        both, same as a normal Generate); hypothetical residents never leave this card.
+        Runs the built-in generator {result?.repeats ?? 3} times per side at different seeds (same
+        paired seed list for today's roster and your changes, best-of-20 each run) and compares the
+        MEDIANS — a single run is too noisy to trust on its own (which of the generator's seeded
+        attempts wins can move error/under-target counts by several on its own). Unlocked manual
+        edits in the live schedule are ignored by every run (locked cells are honored in all of
+        them, same as a normal Generate); hypothetical residents never leave this card.
       </p>
 
       {/* Clone-resident row */}
@@ -18215,12 +18265,15 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
       {result && (
         <div className="mt-4 pt-3 border-t border-border space-y-3">
           <p className="text-sm font-semibold text-card-foreground">
-            Unfilled minimum slots: {result.comparison.coverageMiss.before} → {result.comparison.coverageMiss.after}
+            Unfilled minimum slots: {fmtMedian(result.comparison.coverageMiss.before)} → {fmtMedian(result.comparison.coverageMiss.after)}
             {' '}({fmtDelta(result.comparison.coverageMiss.delta)})
           </p>
+          <p className="text-xs text-muted-foreground -mt-2">
+            (range {fmtRange(result.comparison.coverageMiss.beforeRange)} → {fmtRange(result.comparison.coverageMiss.afterRange)}, {result.repeats} runs each)
+          </p>
           <div className="flex gap-4 flex-wrap text-xs text-muted-foreground">
-            <span>Errors: {result.comparison.errorCount.before} → {result.comparison.errorCount.after} ({fmtDelta(result.comparison.errorCount.delta)})</span>
-            <span>Under target: {result.comparison.underTargetCount.before} → {result.comparison.underTargetCount.after} ({fmtDelta(result.comparison.underTargetCount.delta)})</span>
+            <span>Errors: {fmtMedian(result.comparison.errorCount.before)} → {fmtMedian(result.comparison.errorCount.after)} ({fmtDelta(result.comparison.errorCount.delta)})</span>
+            <span>Under target: {fmtMedian(result.comparison.underTargetCount.before)} → {fmtMedian(result.comparison.underTargetCount.after)} ({fmtDelta(result.comparison.underTargetCount.delta)})</span>
             <span>Slots closed: {result.comparison.slotsClosed}</span>
             <span>Slots newly opened: {result.comparison.slotsOpened}</span>
           </div>
@@ -18266,7 +18319,7 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
               <p className="text-xs font-semibold text-card-foreground mb-1">Still short of target in this scenario</p>
               <ul className="text-xs text-muted-foreground space-y-0.5">
                 {scenarioUnderTarget.slice(0, 10).map((i, idx) => (
-                  <li key={idx}>{scenarioNameById[i.residentId] || i.residentId}: {i.message}</li>
+                  <li key={idx}>{scenarioNameById[i.residentId] || i.residentId} — {shortUnderTargetLabel(i)}</li>
                 ))}
                 {scenarioUnderTarget.length > 10 && <li>+{scenarioUnderTarget.length - 10} more</li>}
               </ul>

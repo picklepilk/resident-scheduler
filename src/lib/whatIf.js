@@ -170,3 +170,94 @@ export function compareResults(base, scenario) {
     qualityVector: { before: base?.qualityVector ?? null, after: scenario?.qualityVector ?? null },
   };
 }
+
+// ─── MULTI-RUN (MEDIAN) COMPARISON ─────────────────────────────────────────────────────────
+// A single base-vs-scenario run at one seed is noisy: which of generateScheduleBest's 20 seeded
+// attempts wins can move errors/under-target by several counts on its own, swamping the actual
+// staffing-change signal (observed live: removing one resident moved errors 3→10 and under-target
+// 5→11 with unfilled 0→0 — mostly attempt-selection noise). compareResultSets runs each side
+// `repeats` times (same seed list on both sides — see ResidentScheduler.jsx's runWhatIf, which
+// pairs seed_k = (baseSeed + k*0x9E3779B9)>>>0 across base/scenario so neither side gets a
+// different random-restart budget) and reports MEDIANS instead of one draw.
+//
+// `before`/`after`/`delta` per metric are the statistical median (average of the two middle values
+// for an even run count, so these can be fractional) across that side's `repeats` runs — this
+// answers "is the staffing change real" without picking any single run as ground truth.
+//
+// perShift/slotsClosed/slotsOpened/qualityVector need ONE concrete generated schedule per side,
+// not an interpolated average, so those reuse compareResults(...) on a REPRESENTATIVE pair: the
+// run on each side whose own coverageMiss is closest to (for an even count, the LOWER of the two
+// middle) that side's median coverageMiss. Base and scenario representatives are chosen
+// independently of each other (not forced to share a seed index) — "representative" means
+// "typical for this side's distribution", not "paired with the other side's pick".
+function median(nums) {
+  if (!nums.length) return 0;
+  const sorted = [...nums].sort((a, b) => a - b);
+  const n = sorted.length;
+  const mid = Math.floor((n - 1) / 2);
+  return n % 2 === 1 ? sorted[mid] : (sorted[mid] + sorted[mid + 1]) / 2;
+}
+
+function rangeOf(nums) {
+  return nums.length ? { min: Math.min(...nums), max: Math.max(...nums) } : { min: 0, max: 0 };
+}
+
+// Index (into the ORIGINAL array, not the sorted copy) of the run that best represents the
+// median: for an odd count this is exactly the middle value; for an even count, the lower of the
+// two middle values (a deterministic, real run — never an average of two runs that don't exist).
+function medianRepresentativeIndex(nums) {
+  const n = nums.length;
+  if (!n) return -1;
+  const order = nums.map((_, i) => i).sort((a, b) => nums[a] - nums[b] || a - b);
+  return order[Math.floor((n - 1) / 2)];
+}
+
+function metricsFromResult(result) {
+  const unfilled = result?.report?.unfilled || [];
+  const issues = result?.issues || [];
+  return {
+    coverageMiss: unfilled.length,
+    errorCount: issues.filter(i => i.level === 'error').length,
+    underTargetCount: issues.filter(i => i.rule === 'underTarget').length,
+  };
+}
+
+function medianMetricBlock(beforeArr, afterArr) {
+  const before = median(beforeArr);
+  const after = median(afterArr);
+  return { before, after, delta: after - before, beforeRange: rangeOf(beforeArr), afterRange: rangeOf(afterArr) };
+}
+
+// `baseList`/`scenarioList`: arrays of per-run results, each in the same {report, issues,
+// qualityVector} shape compareResults expects for one side — i.e. `repeats` entries per side,
+// same seed list used to produce both (see this function's own header above). Returns
+// { coverageMiss, errorCount, underTargetCount } (each {before,after,delta,beforeRange,
+// afterRange}), plus perShift/slotsClosed/slotsOpened/qualityVector from the two sides'
+// median-representative runs, and `representativeIndex: {base, scenario}` so a caller can look up
+// which run in each list was used for those.
+export function compareResultSets(baseList, scenarioList) {
+  const baseMetrics = (baseList || []).map(metricsFromResult);
+  const scenarioMetrics = (scenarioList || []).map(metricsFromResult);
+
+  const coverageMiss = medianMetricBlock(baseMetrics.map(m => m.coverageMiss), scenarioMetrics.map(m => m.coverageMiss));
+  const errorCount = medianMetricBlock(baseMetrics.map(m => m.errorCount), scenarioMetrics.map(m => m.errorCount));
+  const underTargetCount = medianMetricBlock(baseMetrics.map(m => m.underTargetCount), scenarioMetrics.map(m => m.underTargetCount));
+
+  const baseRepIdx = medianRepresentativeIndex(baseMetrics.map(m => m.coverageMiss));
+  const scenarioRepIdx = medianRepresentativeIndex(scenarioMetrics.map(m => m.coverageMiss));
+  const baseRep = baseRepIdx >= 0 ? baseList[baseRepIdx] : null;
+  const scenarioRep = scenarioRepIdx >= 0 ? scenarioList[scenarioRepIdx] : null;
+  const repComparison = compareResults(baseRep, scenarioRep);
+
+  return {
+    coverageMiss,
+    errorCount,
+    underTargetCount,
+    perShift: repComparison.perShift,
+    slotsClosed: repComparison.slotsClosed,
+    slotsOpened: repComparison.slotsOpened,
+    qualityVector: repComparison.qualityVector,
+    repeats: { base: baseList?.length || 0, scenario: scenarioList?.length || 0 },
+    representativeIndex: { base: baseRepIdx, scenario: scenarioRepIdx },
+  };
+}
