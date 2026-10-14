@@ -3018,7 +3018,7 @@ const DEFAULT_APP_SETTINGS = {
   wellnessWednesdaysEnabled: true, // program-wide toggle for EM Home's Wellness Wednesdays (see effectiveWellnessWednesdayDate) — false disables the feature entirely; normalized as `=== false`, so an old backup with no such key still behaves as enabled
   // Jeopardy/sick-call incident log — one record per real-world sick-call/activation event, see
   // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: every cloud save
-  // (saveCloudNow/sbCreateState) writes a whole-column replace built fresh from THAT BUILD's own
+  // (saveCloudNow/sbSaveStateExplicit) writes a whole-column replace built fresh from THAT BUILD's own
   // LS_BACKUP_KEYS, so a device still running an older bundle (with no 10th key) would upload a document missing the
   // ledger entirely and silently wipe it from the shared cloud row — the exact record the
   // buy-downs in emBlockAssignments are audited against. Living inside res_app_settings means
@@ -17912,11 +17912,12 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 // "last write wins" — sbSaveStateVersioned PATCHes `?version=eq.N` for the version this device
 // last loaded/saved; if another admin saved in between, the trigger-bumped server version no
 // longer matches, the PATCH matches 0 rows, and the save surfaces as a conflict (see the root
-// component's cloudConflict state) instead of silently overwriting their save. The only
-// unconditional-overwrite path left is sbCreateState (seeding a row for the first time ever, and
-// explicit admin actions that are ALREADY a deliberate full replace — Import Backup, Version
-// History's Restore — which bypass the version check on purpose, the same way they always
-// overwrote everything before this feature existed).
+// component's cloudConflict state) instead of silently overwriting their save. Explicit admin
+// actions that are ALREADY a deliberate full replace — the first-ever seed, Import Backup, Demo
+// Sandbox "start fresh", Version History's Restore — go through sbSaveStateExplicit instead, which
+// still checks the row's real current version before writing (race-safe against two admins both
+// trying to "overwrite everything" at once), just without sbSaveStateVersioned's "I already know
+// the version, diff against it" precondition.
 //
 // Set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (see .env.example) to enable; absent, the app
 // is unchanged from before this feature existed.
@@ -18033,27 +18034,23 @@ const sbFetch = async (path, opts = {}) => {
   return text ? JSON.parse(text) : null;
 };
 
-// Unconditional upsert of the whole department document — POST with Prefer:
-// resolution=merge-duplicates is an upsert keyed on the table's PK, same pattern em-scheduler
-// uses (no ON CONFLICT SQL needed). rowId defaults to the real row; the Demo Sandbox passes
-// RES_STATE_DEMO_ROW_ID so demo I/O never touches the real document.
-//
-// DELIBERATELY bypasses optimistic concurrency (see sbSaveStateVersioned below for the save path
-// that doesn't) — only for call sites where an unconditional full replace is already the intended,
-// explicit behavior: seeding a row that's never existed (saveCloudNow's first save, confirmed safe
-// by the mount effect's is_admin() check), and admin actions that were ALREADY a deliberate full
-// overwrite before this feature existed (Import Backup, Version History's Restore, the Demo
-// Sandbox's "start fresh"). `return=representation` (not the old return=minimal) so every caller
-// can learn the row's real, trigger-computed version/updated_at — needed to keep
-// cloudBaselineRef's version in sync with what the server actually stored.
-const sbCreateState = async (data, rowId = RES_STATE_ROW_ID) => {
+// Insert-only seed for a row that's believed not to exist yet — POST with Prefer:
+// resolution=ignore-duplicates (INSERT ... ON CONFLICT DO NOTHING), NOT merge-duplicates: if
+// another admin's device raced this one and already created the row, this silently does nothing
+// instead of clobbering it, and PostgREST returns `[]`/0 rows rather than an error. That `[]` is
+// exactly how callers (sbSaveStateExplicit, saveCloudNow) detect the race and fall back to a
+// version-checked PATCH against whatever the other device just created, instead of two admins
+// seeding the same row with two different documents and whoever writes last silently winning.
+// `return=representation` so a successful seed's real, trigger-computed version/updated_at can be
+// folded back into cloudBaselineRef.
+const sbSeedState = async (data, rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return null;
   const rows = await sbFetch('/res_state', {
     method: 'POST',
-    prefer: 'resolution=merge-duplicates,return=representation',
+    prefer: 'resolution=ignore-duplicates,return=representation',
     body: { id: rowId, data },
   });
-  return rows && rows[0] ? rows[0] : null;
+  return rows && rows[0] ? rows[0] : null; // null/[] = the row already existed; we created nothing
 };
 
 // Save over an EXISTING row this device already knows the version of — the normal autosave path.
@@ -18073,6 +18070,31 @@ const sbSaveStateVersioned = async (data, version, rowId = RES_STATE_ROW_ID) => 
   return rows && rows[0] ? rows[0] : null; // null/[] = conflict: the version filter matched nothing
 };
 
+// Explicit, deliberate full-replace save (Import Backup, Version History Restore, Demo Sandbox
+// "start fresh", and saveCloudNow's own first-ever seed) — used wherever an admin action is
+// SUPPOSED to overwrite the whole document, but must still never silently clobber a concurrent
+// write it never saw. Loads the row's current version first (a plain read, not an assumption):
+//  - no row yet -> sbSeedState (ignore-duplicates insert). If that ALSO finds a row now (another
+//    admin seeded it in the gap between our load and our insert), re-reads once more and falls
+//    through to the versioned PATCH below against whatever is actually there.
+//  - a row exists -> sbSaveStateVersioned against its real version.
+// Returns the saved row, or null if every attempt lost the race against a concurrent write —
+// callers treat null exactly like any other sbSaveStateVersioned conflict (see each call site for
+// how it's surfaced; a live, interactive flow opens the real conflict modal, a one-shot
+// file/restore flow aborts with an actionable error instead of reusing a modal built for live
+// in-memory state it doesn't have).
+const sbSaveStateExplicit = async (data, rowId = RES_STATE_ROW_ID) => {
+  const current = await sbLoadState(rowId);
+  if (!current) {
+    const seeded = await sbSeedState(data, rowId);
+    if (seeded) return seeded;
+    const now = await sbLoadState(rowId);
+    if (!now) return null;
+    return sbSaveStateVersioned(data, now.version, rowId);
+  }
+  return sbSaveStateVersioned(data, current.version, rowId);
+};
+
 // Loads a shared row — null if never saved yet (or unconfigured). Includes the audit columns
 // (migrate_res_state_history.sql) every save-path and the conflict modal need: version (the
 // optimistic-concurrency token), updated_at/updated_by (who to blame a conflict on).
@@ -18089,15 +18111,26 @@ const sbLoadState = async (rowId = RES_STATE_ROW_ID) => {
 };
 
 // Last `limit` archived snapshots for a row, newest first — Settings' Version History list.
-// Fetches each snapshot's full `data` alongside its metadata in one round trip (rather than a
-// lightweight list + a second fetch per row) so Preview/Restore need no further network call; this
-// is an explicit, infrequent admin action (not something rendered by default), so the extra bytes
-// are an acceptable trade for one simpler round trip. `size` is derived client-side (JSON byte
-// length), not stored — res_state_history has no generated column for it.
+// Metadata only — `data` for a department-sized document can be sizeable, and this list can
+// render up to 50 rows, so fetching every row's full document just to show a list would be
+// needlessly heavy. Preview/Restore fetch ONE row's full `data` lazily, only when the admin
+// actually asks for that specific version (sbFetchHistoryData below). No `size` column either: the
+// table has no generated/computed size (e.g. pg_column_size via a view or RPC) to select cheaply,
+// and fetching full `data` for 50 rows just to display a byte count defeats the point of keeping
+// this list lightweight — omitted rather than paying for it either way.
 const sbFetchHistory = async (rowId = RES_STATE_ROW_ID, limit = 50) => {
   if (!SUPABASE_ENABLED) return [];
-  const rows = await sbFetch(`/res_state_history?row_id=eq.${rowId}&select=id,version,saved_by,saved_at,data&order=id.desc&limit=${limit}`);
-  return (rows || []).map(r => ({ ...r, size: r.data ? JSON.stringify(r.data).length : 0 }));
+  const rows = await sbFetch(`/res_state_history?row_id=eq.${rowId}&select=id,version,saved_by,saved_at&order=id.desc&limit=${limit}`);
+  return rows || [];
+};
+
+// Lazily loads one archived snapshot's full `data` by its res_state_history row id — the only
+// network call Preview/Restore need beyond the metadata list above, and only for the one version
+// the admin actually selected.
+const sbFetchHistoryData = async (id) => {
+  if (!SUPABASE_ENABLED) return null;
+  const rows = await sbFetch(`/res_state_history?id=eq.${id}&select=data`);
+  return rows && rows[0] ? rows[0].data : null;
 };
 
 // uuid -> email, for attributing a history row or a save conflict to an admin by name instead of a
@@ -18143,15 +18176,6 @@ function downloadBackupBlob(data, demoMode) {
   const a = document.createElement('a');
   a.href = url; a.download = `resident-scheduler-backup${demoFilenameSuffix(demoMode)}-${toDateStr(new Date())}.json`; a.click();
   URL.revokeObjectURL(url);
-}
-
-// Settings' Version History list — a history row's `size` is a raw JSON byte count (see
-// sbFetchHistory), not pre-rounded; this is purely a display nicety.
-function formatBytes(n) {
-  if (n == null) return '';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
 // ─── FEEDBACK ─────────────────────────────────────────────────────────────────
@@ -18292,7 +18316,7 @@ function ImportHistoryPanel({ importLog, setImportLog }) {
   );
 }
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady, onShowWhatsNew, importLog, setImportLog }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -18386,11 +18410,17 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           syncSuspended = true;
           showToast('Syncing import to the cloud…', 'amber');
           try {
-            // Unconditional overwrite, same as before this feature existed — importing a backup
-            // IS the deliberate full replace (sbCreateState), not a normal versioned save; the
-            // trigger still bumps the row's version, so the next normal autosave's conflict check
-            // is based on the fresh version this creates, not whatever this device saw before.
-            await sbCreateState(clean);
+            // Import IS a deliberate full replace — but still race-safe (sbSaveStateExplicit):
+            // it loads the row's real current version first and PATCHes against it (or
+            // ignore-duplicates-seeds if the row doesn't exist yet), so a concurrent admin's save
+            // in the gap between opening this file and clicking Import surfaces as a conflict
+            // instead of silently vanishing under the import.
+            const saved = await sbSaveStateExplicit(clean);
+            if (!saved) {
+              syncSuspended = false;
+              showToast('Another admin saved changes just now — reload and try the import again.', 'red');
+              return;
+            }
           } catch (err) {
             syncSuspended = false;
             showToast('Import could not sync to the cloud — nothing changed. Try again when online.', 'red');
@@ -18442,11 +18472,41 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
   const [profileEmails, setProfileEmails] = useState({}); // saved_by uuid -> email, best-effort
-  const [previewFor, setPreviewFor] = useState(null);     // history row being diffed against current
-  const [restoreFor, setRestoreFor] = useState(null);     // history row pending restore confirmation
+  const [previewFor, setPreviewFor] = useState(null);     // lightweight history row being previewed
+  const [previewDiff, setPreviewDiff] = useState(null);   // diffState() result once previewFor's data loads
+  const [previewError, setPreviewError] = useState(null);
+  const [restoreFor, setRestoreFor] = useState(null);     // lightweight history row pending restore confirmation
   const [restoring, setRestoring] = useState(false);
 
   const historyRowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
+
+  // Bumped on every loadPreviewDiff() call (including Retry) — a stale response from an earlier
+  // call (superseded by the admin closing this preview, opening a different one, or hitting Retry)
+  // checks this before writing state, same pattern as openDemoModal's demoCheckGenRef.
+  const previewGenRef = useRef(0);
+
+  // Preview diff lazily loads a row's full data (sbFetchHistory's list never carries it — see its
+  // own comment) only when the admin actually opens that preview, rather than fetching all 50 up
+  // front. Called from the effect below (on previewFor changing) AND directly from the modal's
+  // Retry button, so a retry doesn't need an identity trick to re-trigger an effect dependency.
+  async function loadPreviewDiff(row) {
+    const gen = ++previewGenRef.current;
+    setPreviewDiff(null); setPreviewError(null);
+    try {
+      const data = await sbFetchHistoryData(row.id);
+      if (gen !== previewGenRef.current) return;
+      if (!data) { setPreviewError('Could not load this version.'); return; }
+      setPreviewDiff(diffState(currentLiveDoc(), data));
+    } catch (e) {
+      if (gen === previewGenRef.current) setPreviewError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    if (!previewFor) { setPreviewDiff(null); setPreviewError(null); return; }
+    loadPreviewDiff(previewFor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewFor]);
 
   async function loadHistory() {
     setHistoryOpen(true); setHistoryLoading(true); setHistoryError(null);
@@ -18479,14 +18539,41 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   // Restore = a normal save of the historical snapshot's data as a NEW save (itself undoable by
   // restoring a later version again afterward) — same cloud-op-first-then-reload path and the same
   // demo-mode refusal as importData, since this is also a deliberate full replace of live data.
+  // `row` is the lightweight list/metadata row (sbFetchHistory never carries `data` — see its own
+  // comment); the full document is fetched lazily here, only for the one version actually chosen.
   async function doRestore(row) {
     if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); setRestoreFor(null); return; }
     setRestoring(true);
+    let data;
+    try {
+      data = await sbFetchHistoryData(row.id);
+    } catch (err) {
+      setRestoring(false);
+      showToast('Could not load that version — try again.', 'red');
+      return;
+    }
+    if (!data) {
+      setRestoring(false);
+      showToast('Could not load that version — try again.', 'red');
+      return;
+    }
     const clean = {};
-    for (const k of LS_BACKUP_KEYS) { if (row.data[k] !== undefined && row.data[k] !== null) clean[k] = row.data[k]; }
+    for (const k of LS_BACKUP_KEYS) { if (data[k] !== undefined && data[k] !== null) clean[k] = data[k]; }
+    // Rescues any save still pending or already in flight BEFORE syncSuspended goes up — same
+    // reason deleteDemo does this first: without it, a debounced autosave that fires in the gap
+    // could either race our write or, worse, get silently dropped by syncSuspended right under it.
+    await flushPendingCloudSave();
     syncSuspended = true;
     try {
-      await sbCreateState(clean, RES_STATE_ROW_ID);
+      // Restore IS a deliberate full replace — but still race-safe (sbSaveStateExplicit): see
+      // importData's identical reasoning just above.
+      const saved = await sbSaveStateExplicit(clean, RES_STATE_ROW_ID);
+      if (!saved) {
+        syncSuspended = false;
+        setRestoring(false);
+        showToast('Another admin saved changes just now — reload and try restoring again.', 'red');
+        return;
+      }
     } catch (err) {
       syncSuspended = false;
       setRestoring(false);
@@ -18817,7 +18904,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                 <div key={row.id} className="flex items-center justify-between gap-2 text-xs border border-gray-100 rounded-lg px-2.5 py-1.5">
                   <div className="min-w-0">
                     <div className="font-medium text-gray-700 truncate">{new Date(row.saved_at).toLocaleString()}</div>
-                    <div className="text-gray-400 truncate">{profileEmails[row.saved_by] || (row.saved_by ? 'Unknown admin' : 'Unknown')} · v{row.version} · {formatBytes(row.size)}</div>
+                    <div className="text-gray-400 truncate">{profileEmails[row.saved_by] || (row.saved_by ? 'Unknown admin' : 'Unknown')} · v{row.version}</div>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <Button variant="ghost" size="sm" onClick={()=>setPreviewFor(row)}>Preview diff</Button>
@@ -18831,7 +18918,13 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           {previewFor && (
             <Modal title="Preview diff" onClose={()=>setPreviewFor(null)}>
               {(() => {
-                const diff = diffState(currentLiveDoc(), previewFor.data);
+                if (previewError) {
+                  return <p className="text-sm text-destructive">{previewError} <button className="underline font-medium" onClick={()=>loadPreviewDiff(previewFor)}>Retry</button></p>;
+                }
+                if (!previewDiff) {
+                  return <p className="text-sm text-gray-400">Loading…</p>;
+                }
+                const diff = previewDiff;
                 return (
                   <div className="space-y-3 text-sm text-gray-600">
                     <p>Restoring the version saved {new Date(previewFor.saved_at).toLocaleString()} (v{previewFor.version}) would change, relative to what's live now:</p>
@@ -20637,12 +20730,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   //
   // Two distinct write paths, chosen by whether cloudBaselineRef already has a confirmed version:
   //  - base === null: this row has never been confirmed to exist (the mount effect's
-  //    admin-confirmed-empty path) — seed it with an unconditional upsert (sbCreateState); there is
-  //    no prior version to check against yet.
-  //  - base set: the normal path — PATCH filtered on base.version (sbSaveStateVersioned). A `null`
-  //    result means the filter matched 0 rows: another admin saved since we last loaded/saved, so
-  //    the server's version moved out from under us. Don't overwrite — hand off to openConflict,
-  //    which surfaces the cloudConflict banner instead of silently clobbering their save.
+  //    admin-confirmed-empty path) — seed it via sbSaveStateExplicit (race-safe: a concurrent
+  //    seed from another device is detected, not clobbered — see that function's own header).
+  //  - base set: the normal path — PATCH filtered on base.version (sbSaveStateVersioned).
+  // Either path returning null means a concurrent write won the race (another admin saved since we
+  // last loaded/saved, or seeded the row before we did) — don't overwrite, hand off to
+  // openConflict, which surfaces the cloudConflict modal instead of silently clobbering their save.
   async function saveCloudNow() {
     if (cloudConflictRef.current) return; // already surfaced; let the admin resolve it first
     const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
@@ -20653,13 +20746,9 @@ export default function ResidentScheduler({ viewer } = {}) {
     LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
     const rowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
     try {
-      if (!base) {
-        const row = await sbCreateState(payload, rowId);
-        cloudBaselineRef.current = { values: current, version: row ? row.version : 0 };
-        setDbStatus('idle');
-        return;
-      }
-      const row = await sbSaveStateVersioned(payload, base.version, rowId);
+      const row = base
+        ? await sbSaveStateVersioned(payload, base.version, rowId)
+        : await sbSaveStateExplicit(payload, rowId);
       if (!row) {
         await openConflict(rowId);
         return;
@@ -20848,9 +20937,18 @@ export default function ResidentScheduler({ viewer } = {}) {
       }
       const doc = {};
       for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
-      // Unconditional overwrite (sbCreateState), like Import Backup — "start fresh" always means
-      // replace whatever demo row exists, not negotiate with it.
-      if (SUPABASE_ENABLED) await sbCreateState(doc, RES_STATE_DEMO_ROW_ID);
+      // Explicit full replace (sbSaveStateExplicit), like Import Backup — "start fresh" always
+      // means replace whatever demo row exists, not negotiate with it — but still race-safe: a
+      // null result means another admin wrote the demo row in the gap since openDemoModal's probe,
+      // which aborts here with an actionable error rather than silently overwriting it.
+      if (SUPABASE_ENABLED) {
+        const saved = await sbSaveStateExplicit(doc, RES_STATE_DEMO_ROW_ID);
+        if (!saved) {
+          setDemoBusy(false);
+          showToast('Another admin changed the demo just now — reopen Demo Sandbox and try again.', 'red');
+          return;
+        }
+      }
       for (const k of LS_BACKUP_KEYS) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
       localStorage.setItem(DEMO_MODE_KEY, 'true');
       window.location.reload();
@@ -21733,7 +21831,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

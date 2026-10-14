@@ -17,6 +17,13 @@
 --                                         saved_by=admin2).
 --   retention                          — after 205 more successful updates, history for this
 --                                         row_id is capped at exactly 200 rows, newest kept.
+--   upsert shape (on conflict do update) — sbSeedState's merge-duplicates predecessor and
+--                                         sbSaveStateExplicit's fallback path: version still
+--                                         increments, OLD still gets archived, same as a plain UPDATE.
+--   seed shape (on conflict do nothing)  — sbSeedState itself: creates a fresh row normally;
+--                                         against an EXISTING row it's a true no-op (0 rows
+--                                         affected, no version bump, no history row) — never an
+--                                         upsert in disguise.
 --   RLS on res_state_history           — anon: permission denied. resident: 0 rows (not an
 --                                         error). admin: sees every row for this row_id. No role
 --                                         (including admin) can INSERT into it directly.
@@ -181,6 +188,71 @@ begin
   raise notice 'admin / direct res_state_history insert: FAIL (expected permission denied, the insert succeeded)';
 exception when insufficient_privilege then
   raise notice 'admin / direct res_state_history insert: PASS (permission denied — only the SECURITY DEFINER trigger writes, as designed)';
+end $$;
+
+-- ── PostgREST upsert shape (Prefer: resolution=merge-duplicates) ────────────────────────────────
+-- `INSERT ... ON CONFLICT (id) DO UPDATE` is literally what `resolution=merge-duplicates` compiles
+-- to (sbSeedState's predecessor, and sbSaveStateExplicit's eventual fallback when its own seed
+-- attempt finds the row already there) — confirm the ON CONFLICT path runs through the exact same
+-- triggers as a plain UPDATE statement: version still increments, OLD still gets archived. Still
+-- under admin2's role/claims from the stale-version check above — same caller writes both rows, so
+-- the archived OLD row's saved_by is admin2 (who wrote it), not admin1.
+delete from public.res_state_history where row_id = 'histtest_upsert';
+delete from public.res_state where id = 'histtest_upsert';
+
+insert into public.res_state (id, data) values ('histtest_upsert', jsonb_build_object('n', 1));
+insert into public.res_state (id, data) values ('histtest_upsert', jsonb_build_object('n', 2))
+  on conflict (id) do update set data = excluded.data;
+
+do $$
+declare v_version bigint; cnt int; v_saved_by uuid;
+begin
+  select version into v_version from public.res_state where id = 'histtest_upsert';
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest_upsert';
+  select saved_by into v_saved_by from public.res_state_history where row_id = 'histtest_upsert' order by id desc limit 1;
+  if v_version = 1 and cnt = 1 and v_saved_by = '00000000-0000-0000-0000-000000000102' then
+    raise notice 'upsert shape (on conflict do update) / version+history: PASS (version=1, 1 history row archived, saved_by=admin2 — who wrote the overwritten v0)';
+  else
+    raise notice 'upsert shape (on conflict do update) / version+history: FAIL (version=%, history count=%, saved_by=%)', v_version, cnt, v_saved_by;
+  end if;
+end $$;
+
+-- ── PostgREST seed shape (Prefer: resolution=ignore-duplicates) ──────────────────────────────────
+-- sbSeedState's actual shape: `INSERT ... ON CONFLICT (id) DO NOTHING`. Confirms (a) it creates a
+-- fresh row normally when none exists, and (b) against an EXISTING row it is a true no-op — 0 rows
+-- affected, no version bump, no new history row, original data untouched — which is exactly what
+-- makes it safe for sbSaveStateExplicit to fall back to a versioned PATCH afterward instead of two
+-- admins' concurrent seeds silently colliding (one clobbering the other, as merge-duplicates would).
+delete from public.res_state_history where row_id = 'histtest_seed';
+delete from public.res_state where id = 'histtest_seed';
+
+insert into public.res_state (id, data) values ('histtest_seed', jsonb_build_object('n', 1))
+  on conflict (id) do nothing;
+
+do $$
+declare v_version bigint;
+begin
+  select version into v_version from public.res_state where id = 'histtest_seed';
+  if v_version = 0 then
+    raise notice 'seed shape (on conflict do nothing) / fresh row: PASS (created, version=0)';
+  else
+    raise notice 'seed shape (on conflict do nothing) / fresh row: FAIL (version=%, expected 0)', v_version;
+  end if;
+end $$;
+
+do $$
+declare affected int; v_data jsonb; v_version bigint; cnt int;
+begin
+  insert into public.res_state (id, data) values ('histtest_seed', jsonb_build_object('n', 'should not land'))
+    on conflict (id) do nothing;
+  get diagnostics affected = row_count;
+  select data, version into v_data, v_version from public.res_state where id = 'histtest_seed';
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest_seed';
+  if affected = 0 and v_data = jsonb_build_object('n', 1) and v_version = 0 and cnt = 0 then
+    raise notice 'seed shape (on conflict do nothing) / already exists: PASS (0 rows affected, original data/version untouched, no history row created)';
+  else
+    raise notice 'seed shape (on conflict do nothing) / already exists: FAIL (affected=%, data=%, version=%, history count=%)', affected, v_data, v_version, cnt;
+  end if;
 end $$;
 
 -- Deliberately NOT rolling back to sp_setup here — the 'histtest' row and its 200 archived
