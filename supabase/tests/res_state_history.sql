@@ -1,0 +1,226 @@
+-- Manual verification script for migrate_res_state_history.sql — NOT run automatically by
+-- anything (no test runner wires this up; CODE ONLY per this task's constraints). Run it BY HAND
+-- in the Supabase SQL editor, AFTER migrate_res_state_history.sql, against a project you can
+-- afford to test against. Same pattern as supabase/tests/res_state_rls.sql: everything happens
+-- inside one transaction rolled back at the very end, and each role/scenario block runs inside its
+-- own SAVEPOINT so an expected error in one block can't abort the ones after it.
+--
+-- Every check prints a PASS/FAIL line via RAISE NOTICE — read those, not the (mostly empty/void)
+-- query output, in the SQL editor's "Messages" panel.
+--
+-- Expected results:
+--   insert (admin1)                    — version=0, updated_by=admin1, updated_at≈now.
+--   update (admin2)                    — version=1, updated_by=admin2; history gets ONE row:
+--                                         (version=0, saved_by=admin1, data=the pre-update data).
+--   stale-version update (admin1)      — 0 rows affected (optimistic-concurrency conflict).
+--   correct-version update (admin2)    — succeeds; history gets a SECOND row (version=1,
+--                                         saved_by=admin2).
+--   retention                          — after 205 more successful updates, history for this
+--                                         row_id is capped at exactly 200 rows, newest kept.
+--   RLS on res_state_history           — anon: permission denied. resident: 0 rows (not an
+--                                         error). admin: sees every row for this row_id. No role
+--                                         (including admin) can INSERT into it directly.
+
+begin;
+
+-- ── Fixtures ───────────────────────────────────────────────────────────────────────────────────
+do $$
+begin
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
+  values
+    ('00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'rsh-test-admin1@example.test',   'x', now(), now(), now()),
+    ('00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'rsh-test-admin2@example.test',   'x', now(), now(), now()),
+    ('00000000-0000-0000-0000-000000000103', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'rsh-test-resident@example.test', 'x', now(), now(), now());
+exception when unique_violation then
+  raise notice 'Fixture auth.users rows already exist — re-run against a clean DB or adjust the ids below.';
+end $$;
+
+insert into public.profiles (id, email, role)
+values
+  ('00000000-0000-0000-0000-000000000101', 'rsh-test-admin1@example.test',   'admin'),
+  ('00000000-0000-0000-0000-000000000102', 'rsh-test-admin2@example.test',   'admin'),
+  ('00000000-0000-0000-0000-000000000103', 'rsh-test-resident@example.test', 'resident')
+on conflict (id) do update set role = excluded.role;
+
+-- Clean slate for the throwaway row_id this script uses, in case a previous aborted run left one.
+delete from public.res_state_history where row_id = 'histtest';
+delete from public.res_state where id = 'histtest';
+
+-- ── Setup: admin1 creates the row (through RLS, like a real PostgREST POST upsert would) ───────
+savepoint sp_setup;
+set local role authenticated;
+set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000101","email":"rsh-test-admin1@example.test","role":"authenticated"}';
+
+insert into public.res_state (id, data) values ('histtest', jsonb_build_object('n', 1));
+
+do $$
+declare v_version bigint; v_updated_by uuid;
+begin
+  select version, updated_by into v_version, v_updated_by from public.res_state where id = 'histtest';
+  if v_version = 0 and v_updated_by = '00000000-0000-0000-0000-000000000101' then
+    raise notice 'insert (admin1) / audit fields: PASS (version=0, updated_by=admin1)';
+  else
+    raise notice 'insert (admin1) / audit fields: FAIL (version=%, updated_by=%)', v_version, v_updated_by;
+  end if;
+end $$;
+
+-- A client-supplied version/updated_by is ignored, not honored — confirms "never client-supplied"
+-- even for a row that already exists via a second insert attempt is irrelevant here; the real
+-- proof is the UPDATE case right below, where a client could try to send its own version in the
+-- body. Simulate that: an UPDATE whose SET list includes a bogus version/updated_by must still end
+-- up with the server-computed ones, not the client's.
+update public.res_state set data = jsonb_build_object('n', 2), version = 999, updated_by = '00000000-0000-0000-0000-000000000103'
+where id = 'histtest';
+
+do $$
+declare v_version bigint; v_updated_by uuid;
+begin
+  select version, updated_by into v_version, v_updated_by from public.res_state where id = 'histtest';
+  if v_version = 1 and v_updated_by = '00000000-0000-0000-0000-000000000101' then
+    raise notice 'update (admin1, spoofed version/updated_by in payload) / audit fields: PASS (version forced to 1, updated_by forced to the actual caller, admin1 — client values ignored)';
+  else
+    raise notice 'update (admin1, spoofed version/updated_by in payload) / audit fields: FAIL (version=%, updated_by=%, expected version=1 updated_by=admin1)', v_version, v_updated_by;
+  end if;
+end $$;
+
+do $$
+declare cnt int; v_version bigint; v_saved_by uuid; v_data jsonb;
+begin
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  select version, saved_by, data into v_version, v_saved_by, v_data
+    from public.res_state_history where row_id = 'histtest' order by id desc limit 1;
+  if cnt = 1 and v_version = 0 and v_saved_by = '00000000-0000-0000-0000-000000000101' and v_data = jsonb_build_object('n', 1) then
+    raise notice 'history after first update: PASS (1 row archived — version=0, saved_by=admin1 (who wrote it), data={"n":1})';
+  else
+    raise notice 'history after first update: FAIL (cnt=%, version=%, saved_by=%, data=%)', cnt, v_version, v_saved_by, v_data;
+  end if;
+end $$;
+
+-- ── Optimistic concurrency: a stale `?version=eq.N` filter matches 0 rows ───────────────────────
+-- Simulates the client's real conflict check: PATCH .../res_state?id=eq.histtest&version=eq.0 —
+-- the actual current version is now 1, so this WHERE clause must match nothing.
+set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000102","email":"rsh-test-admin2@example.test","role":"authenticated"}';
+do $$
+declare affected int;
+begin
+  update public.res_state set data = jsonb_build_object('n', 'conflict') where id = 'histtest' and version = 0;
+  get diagnostics affected = row_count;
+  if affected = 0 then
+    raise notice 'conflict / stale-version update (admin2, version=0 when actual is 1): PASS (0 rows updated)';
+  else
+    raise notice 'conflict / stale-version update (admin2, version=0 when actual is 1): FAIL (expected 0 rows updated, got %)', affected;
+  end if;
+end $$;
+
+do $$
+declare v_version bigint; cnt int;
+begin
+  select version into v_version from public.res_state where id = 'histtest';
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  if v_version = 1 and cnt = 1 then
+    raise notice 'conflict / no side effects: PASS (version still 1, history still 1 row — the failed conflict update changed nothing)';
+  else
+    raise notice 'conflict / no side effects: FAIL (version=%, history count=%, expected 1 and 1)', v_version, cnt;
+  end if;
+end $$;
+
+-- Correct version (1) succeeds, producing a second history row attributed to admin1 (who wrote
+-- the version=1 row this update is now overwriting).
+update public.res_state set data = jsonb_build_object('n', 3) where id = 'histtest' and version = 1;
+
+do $$
+declare v_version bigint; cnt int; v2_saved_by uuid; v2_version bigint;
+begin
+  select version into v_version from public.res_state where id = 'histtest';
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  select saved_by, version into v2_saved_by, v2_version from public.res_state_history where row_id = 'histtest' order by id desc limit 1;
+  if v_version = 2 and cnt = 2 and v2_saved_by = '00000000-0000-0000-0000-000000000101' and v2_version = 1 then
+    raise notice 'correct-version update (admin2): PASS (version=2, history now 2 rows, newest archived entry is version=1/saved_by=admin1)';
+  else
+    raise notice 'correct-version update (admin2): FAIL (version=%, history count=%, last saved_by=%, last version=%)', v_version, cnt, v2_saved_by, v2_version;
+  end if;
+end $$;
+
+-- ── Retention: 205 more successful updates must cap history at 200 rows for this row_id ─────────
+do $$
+declare i int; v_version bigint;
+begin
+  select version into v_version from public.res_state where id = 'histtest';
+  for i in 1..205 loop
+    update public.res_state set data = jsonb_build_object('n', i + 3) where id = 'histtest' and version = v_version;
+    v_version := v_version + 1;
+  end loop;
+end $$;
+
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  if cnt = 200 then
+    raise notice 'retention: PASS (history capped at 200 rows for row_id=histtest)';
+  else
+    raise notice 'retention: FAIL (expected exactly 200, got %)', cnt;
+  end if;
+end $$;
+
+-- ── RLS on res_state_history ─────────────────────────────────────────────────────────────────────
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  if cnt = 200 then
+    raise notice 'admin / res_state_history select: PASS (sees all 200 rows)';
+  else
+    raise notice 'admin / res_state_history select: FAIL (expected 200, got %)', cnt;
+  end if;
+end $$;
+
+do $$
+begin
+  insert into public.res_state_history (row_id, data, version) values ('histtest', '{}'::jsonb, 0);
+  raise notice 'admin / direct res_state_history insert: FAIL (expected permission denied, the insert succeeded)';
+exception when insufficient_privilege then
+  raise notice 'admin / direct res_state_history insert: PASS (permission denied — only the SECURITY DEFINER trigger writes, as designed)';
+end $$;
+
+-- Deliberately NOT rolling back to sp_setup here — the 'histtest' row and its 200 archived
+-- history rows need to still exist for the RLS checks below (resident must see 0 despite rows
+-- existing; anon must be denied outright). The final `rollback;` at the end of the script is what
+-- actually undoes all of this — nothing from this script is left behind either way.
+
+-- ── resident ───────────────────────────────────────────────────────────────────────────────────
+savepoint sp_resident;
+set local role authenticated;
+set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000103","email":"rsh-test-resident@example.test","role":"authenticated"}';
+
+do $$
+declare cnt int;
+begin
+  select count(*) into cnt from public.res_state_history where row_id = 'histtest';
+  if cnt = 0 then
+    raise notice 'resident / res_state_history select: PASS (0 rows, RLS denied as expected — no error)';
+  else
+    raise notice 'resident / res_state_history select: FAIL (expected 0 rows, got %)', cnt;
+  end if;
+exception when insufficient_privilege then
+  raise notice 'resident / res_state_history select: FAIL (got permission denied — expected a silent 0-row result)';
+end $$;
+
+rollback to savepoint sp_resident;
+
+-- ── anon ───────────────────────────────────────────────────────────────────────────────────────
+savepoint sp_anon;
+set local role anon;
+
+do $$
+begin
+  perform 1 from public.res_state_history where row_id = 'histtest';
+  raise notice 'anon / res_state_history select: FAIL (expected permission denied, the query succeeded)';
+exception when insufficient_privilege then
+  raise notice 'anon / res_state_history select: PASS (permission denied, as expected — %)', sqlerrm;
+end $$;
+
+rollback to savepoint sp_anon;
+
+-- Nothing persists.
+rollback;
