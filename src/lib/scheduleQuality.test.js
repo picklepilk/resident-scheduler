@@ -131,10 +131,13 @@ describe('computeQualityMetrics — night-run shape', () => {
     const clustered = computeQualityMetrics({ ...baseInput, schedule: clusteredSchedule, dates });
 
     expect(fragmented.nightShapePenalty).toBeGreaterThan(clustered.nightShapePenalty);
-    // Sanity-check the exact numbers per the documented formula:
+    // Sanity-check the exact numbers per the documented formula. Total nights here (3) is <=
+    // nightRules.maxRun(6), so every split beyond the first is the AVOIDABLE cost (2.3), not the
+    // forced one (2) — see computeQualityMetrics' own avoidableSplit comment (and its own note on
+    // why 2.3, not the originally-floated 6, is the committed magnitude).
     // fragmented: 3 runs × (+(minRun-1) for len1, minRun=4 here) + 2 fragmentation bonuses
-    // (beyond-first) × +2 = 9 + 4 = 13
-    expect(fragmented.nightShapePenalty).toBeCloseTo(13, 5);
+    // (beyond-first, avoidable) × +2.3 = 9 + 4.6 = 13.6
+    expect(fragmented.nightShapePenalty).toBeCloseTo(13.6, 5);
     // clustered: single len-5 run — inside the relaxed 2-6 no-shortness-penalty band (see the
     // dedicated relaxation test below) -> 0.
     expect(clustered.nightShapePenalty).toBeCloseTo(0, 5);
@@ -181,6 +184,41 @@ describe('computeQualityMetrics — night-run shape', () => {
     const interiorSingle = { r1: { [dates[1]]: 'POD-N' } };
     const interiorMetrics = computeQualityMetrics({ ...baseInput, schedule: interiorSingle, dates });
     expect(interiorMetrics.nightShapePenalty).toBeGreaterThan(0);
+  });
+
+  it('fragmentation beyond the first run costs more when AVOIDABLE (total nights fit in one run) than when FORCED', () => {
+    // 2026-10-14 chief preference: "bigger preference is for the night shifts to be contiguously
+    // scheduled if able" — NIGHT_RULES.maxRun(6) stays a hard cap, never relaxed. This generator's
+    // own hard nightCapped/nightStintCapped rules keep every one of ITS OWN outputs at <=maxRun
+    // total nights, so every 2-run case it produces is "avoidable" by construction — but a
+    // hand-edited/imported schedule (the only way this scorer ever sees totalNights > maxRun) is
+    // genuinely forced into 2+ runs, and must not be charged the same steep cost.
+    const dates = mkDates('2026-01-01', 14); // indices 0..13
+
+    // Avoidable: two interior runs (len 2 + len 3 = 5 total), well under maxRun(6) — one run could
+    // have held all 5 nights, so the split was never necessary.
+    const avoidableSchedule = {
+      r1: Object.fromEntries([
+        ...[2, 3].map(i => [dates[i], 'POD-N']),       // run A: len 2
+        ...[6, 7, 8].map(i => [dates[i], 'POD-N']),    // run B: len 3
+      ]),
+    };
+    // Forced: two interior runs (len 4 + len 4 = 8 total), OVER maxRun(6) — no single run could
+    // ever have held all 8 nights, so the 2nd run is structurally unavoidable.
+    const forcedSchedule = {
+      r1: Object.fromEntries([
+        ...[2, 3, 4, 5].map(i => [dates[i], 'POD-N']),   // run A: len 4
+        ...[9, 10, 11, 12].map(i => [dates[i], 'POD-N']), // run B: len 4
+      ]),
+    };
+
+    const avoidable = computeQualityMetrics({ ...baseInput, schedule: avoidableSchedule, dates });
+    const forced = computeQualityMetrics({ ...baseInput, schedule: forcedSchedule, dates });
+
+    // Both runs in each schedule are length 2-6, so neither schedule incurs ANY shortness penalty
+    // — the entire nightShapePenalty in each case is pure fragmentation (one "beyond the first" run).
+    expect(avoidable.nightShapePenalty).toBeCloseTo(2.3, 5);
+    expect(forced.nightShapePenalty).toBeCloseTo(2, 5);
   });
 });
 

@@ -352,6 +352,19 @@ export function computeQualityMetrics({
     // shortness/fragmentation/trauma-position penalties below, which are edge-exempt on BOTH
     // sides (see traumaRunPenaltyFor/secondRestDayPenaltyFor's own comments for why).
     for (const run of runs) secondRestDayPenalty += secondRestDayPenaltyFor(rs, run, dates, lastIdx);
+    // AVOIDABLE vs FORCED fragmentation (chief preference, 2026-10-14: "bigger preference is for
+    // the night shifts to be contiguously scheduled if able" — NIGHT_RULES.maxRun stays a hard 6,
+    // never relaxed by this). `totalNights` sums EVERY run (edge runs included — a run touching
+    // the block boundary still used up one of this resident's nights, even though its own SHAPE
+    // isn't judgeable from inside this block) against `nightRules.maxRun`: if the resident's whole
+    // block's worth of nights would already fit in one run, nothing structural forced the split —
+    // this generator's own `nightCapped`/`nightStintCapped` hard rules keep every one of ITS
+    // outputs at <=maxRun total already (so every 2-segment case it produces lands here), but a
+    // hand-edited or imported schedule can still exceed that, which is exactly the FORCED case
+    // this split exists to tell apart (more nights than one run could ever hold, so extra runs are
+    // unavoidable structure, not a generator miss).
+    const totalNights = runs.reduce((sum, run) => sum + run.len, 0);
+    const avoidableSplit = totalNights <= nightRules.maxRun;
     const interior = runs.filter(run => run.start > 0 && run.end < lastIdx);
     interior.forEach((run, idx) => {
       const { len } = run;
@@ -359,12 +372,28 @@ export function computeQualityMetrics({
       // nightCluster relaxation in score(): his real hand-built schedules run mostly 1-3 nights,
       // 61% of real runs, not the aspirational 5-6 NIGHT_RULES ideal). Runs of 2-6 now incur NO
       // shortness penalty at all; only a genuinely ISOLATED single night (run length 1) is still
-      // penalized, at the same magnitude as before. Fragmentation (every run beyond the first,
-      // below) and the block-edge exemption are both UNCHANGED.
+      // penalized, at the same magnitude as before. The block-edge exemption is UNCHANGED.
       if (len === 1) nightShapePenalty += (nightRules.minRun - 1);
       // len 2..maxRun: no shortness penalty. len > maxRun: validateAll's hard rule already
       // forbids this; not this scorer's job to penalize twice.
-      if (idx > 0) nightShapePenalty += 2; // fragmentation: every run beyond the first
+      //
+      // Fragmentation: every run beyond the first costs more when it was AVOIDABLE (2.3) than when
+      // it was FORCED (2, the original flat cost) — see `avoidableSplit` above. A genuinely forced
+      // 3rd+ run (more nights than maxRun can hold in one stretch) still only costs the original 2
+      // — raising ITS cost too would just punish residents for a shape nothing could have avoided.
+      //
+      // 2.3, not a larger value: MEASURED (2026-10-14) against all 4 committed
+      // qualityBaseline.*.json fixtures. At 6 (and even at 3) every baseline REGRESSED by 20-37
+      // points on this slot, because most avoidable splits on these fixtures can't actually be
+      // merged by any legal rearrangement (coverage/target slack already consumed; EM_EMS/EM_TOX
+      // `blockEntireDay` windows and ACGME hour/streak caps block the gap days at the ELIGIBILITY
+      // level). A dedicated "night-stint merge" repair move was tried and dropped for the same
+      // reason — near-zero hit rate. 2.3 is the largest value inside every baseline's 1%-relative
+      // tolerance (baselineSuite.js SLOT3_RELATIVE_TOLERANCE) without forcing, and it already buys
+      // the measured improvement (via best-of-20 selection, see nightContiguity.test.js). Revisit
+      // upward only alongside a merge mechanism that can use cross-date donors — otherwise a bigger
+      // number just scores the same unfixable schedules worse.
+      if (idx > 0) nightShapePenalty += avoidableSplit ? 2.3 : 2;
       traumaRunPenalty += traumaRunPenaltyFor(rs, run, dates);
     });
   }

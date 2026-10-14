@@ -841,3 +841,42 @@ is now empty** (`src/lib/engineHeadToHead.test.js`) — `vacationHeavy` removed.
 Also verified: `chiefBenchmark.solver.test.js` 3/3 passed, `solverParity.test.js` passed, full
 `pytest` (168 passed), full `npm test` (see task report for the count), all 4 quality baselines run
 one at a time (unchanged from their committed baselines), and `chiefBenchmark.test.js` passed.
+
+## Night-stint contiguity preference + avoidable/forced fragmentation split (2026-10-14)
+
+Chief preference measured on real seeds (generateScheduleBest, seed 42, 20 attempts): a large share
+of residents who end up with 2 separate night-run segments in a block (15/23 standard, 7/17
+understaffed, 15/23 vacationHeavy, 13/24 conferenceBlock) have segments whose combined length is
+already `<= NIGHT_RULES.maxRun` (6) — i.e. one clean run was always structurally possible, nothing
+forced the split. "Bigger preference is for the night shifts to be contiguously scheduled if able" —
+`maxRun` stays a hard 6-nights-per-run program cap either way, never relaxed.
+
+**JS side (`src/lib/scheduleQuality.js`, `computeQualityMetrics`)**: `nightShapePenalty`'s existing
+fragmentation term ("every interior run beyond the first costs +2", flat, added when the night-run
+shape relaxation shipped) now distinguishes AVOIDABLE from FORCED: if the resident's TOTAL nights
+this block (summed across every run, edge runs included) is `<= nightRules.maxRun`, the split was
+avoidable and costs +2.3 per extra run (originally floated as +6 — see that file's own comment for
+why it's calibrated down); otherwise (more nights than one run could ever hold) it's forced and
+keeps the original +2. Both still join the existing `fairnessPlusShape` quality-vector slot (never
+a new tuple element) at the same `1x` coefficient nightShapePenalty always carried.
+
+**Generator side**: no new repair move. A `repairPass` "night-stint merge" phase was built, measured
+and dropped — near-zero hit rate on the committed fixtures (slack consumed by earlier phases; gap days
+ineligible via EM_EMS/EM_TOX windows or ACGME caps). The measured improvement (2-segment residents
+15→13 standard, 15→13 vacationHeavy, 13→11 conferenceBlock, understaffed unchanged) comes from the
+metric feeding best-of-20 selection. Detail: `src/lib/nightContiguity.test.js` header.
+
+**Solver side — GAP, documented, not mirrored**: `solver/model/objective.py`'s `_add_isolated_night_
+term` (rule 36, `isolatedNight`, renamed from `nightShape` 2026-08-22) only penalizes a length-1
+isolated night (`soft_min=2`, `min_cost` per unit) — it has NO per-resident "extra night run beyond
+the first" fragmentation term at all, avoidable or forced. (`_add_work_shape_term`'s `fragment_cost`
+is a DIFFERENT axis — general workday-run fragmentation against `MAX_CONSECUTIVE_WORK_DAYS`, not
+night-runs against `NIGHT_RULES.maxRun`.) This was already a gap before this change (JS's flat +2
+fragmentation term had no solver equivalent either); the new avoidable(+2.3)/forced(+2) split widens
+it slightly but doesn't newly introduce it. Left undone here — `add_soft_sequence_constraint`'s cost
+model charges by RUN LENGTH, not by "is there a 2nd run and would merging it still fit under maxRun",
+so mirroring this exactly would need a new per-resident "total-nights-conditioned run-count" term, a
+nontrivial CP-SAT addition out of scope for this task. Since the solver only ever POLISHES a
+local-engine warm start (R9) and must strictly beat it to ship, this gap's worst case is the solver
+settling for a local schedule's existing night-stint shape rather than actively improving it — never
+a regression.
