@@ -15,9 +15,8 @@ marks it seen; it never re-prompts.
 **Title:** EM Residency Scheduler
 
 **Body (two lines):**
-1. Build and validate each month's resident schedule — rotations, coverage rules, jeopardy, and
-   day-off requests all live here, then export straight to QGenda.
-2. A short guided tour points out where each of those lives before you dive in.
+1. Build each month's resident schedule, then export straight to QGenda.
+2. A short tour shows you where everything lives before you dive in.
 
 **Buttons:** Start walkthrough · Skip
 
@@ -41,71 +40,66 @@ walkthrough mounts in (see "Decisions" below) — the `roles` tags below match t
 | 9 | Settings — backup and export config | Settings | admin |
 
 ### 1. Dashboard — your command center
-- **Headline:** Dashboard is where you build and archive each month's block, one step at a time.
+- **Headline:** Build and archive each month's block here.
 - **Bullets:**
-  - The Block Calendar shows every saved block for an academic year with a coverage heatmap.
-  - Current Block is your active workspace — name, dates, and special days live here.
-  - e.g. set the block name and start date, then Save Block to archive it.
+  - The Block Calendar shows every saved block with a coverage heatmap.
+  - e.g. set the name and start date, then Save Block.
 - **Target:** `tab-dashboard` · **Route:** `dashboard`
 
 ### 2. EM Residents — the roster
-- **Headline:** Add residents once a year and set each one's rotation per block.
+- **Headline:** Add residents once a year, then set their rotation each block.
 - **Bullets:**
-  - Import Roster pastes or uploads a spreadsheet instead of adding residents one at a time.
-  - Vacation dates, approved days off, and jeopardy call dates all live on each resident's tile.
-  - e.g. paste a roster row like "Smith, Jane — EM — PGY-2" straight from a spreadsheet.
+  - Import Roster pastes or uploads a spreadsheet instead of adding one at a time.
+  - e.g. paste a row like "Smith, Jane — EM — PGY-2".
 - **Target:** `tab-em` · **Route:** `em` · **Roles:** admin
 
 ### 3. Shift Matrix — who can work what
-- **Headline:** The matrix defines which shift types each residency and PGY year is eligible for.
+- **Headline:** Sets which shifts each residency and year can work.
 - **Bullets:**
-  - Click any cell to toggle; modified rows show a pencil icon and a per-row reset.
-  - e.g. expand a row to set a per-rotation override — an EMS month can have a different shift
-    list than a standard EM month.
+  - Click any cell to toggle; changed rows show a pencil icon.
+  - e.g. expand a row for a per-rotation override, like EMS.
 - **Target:** `tab-matrix` · **Route:** `matrix` · **Roles:** admin
 
 ### 4. Schedule — the grid
-- **Headline:** Generate fills every open slot automatically, respecting eligibility and rest rules.
+- **Headline:** Generate fills every open slot, respecting eligibility and rest rules.
 - **Bullets:**
-  - Click any cell to assign or adjust a shift by hand — the picker only offers legal options.
-  - e.g. Generate Schedule fills the whole block in one click; Trauma Day is filled last so it
-    never crowds out other coverage.
+  - Click any cell to assign or change a shift by hand.
+  - e.g. Generate Schedule fills the whole block in one click.
 - **Target:** `tab-schedule` · **Route:** `schedule`
 
 ### 5. Scheduling Rules — coverage targets
-- **Headline:** Set how many residents each shift needs per day before you generate.
+- **Headline:** Set how many residents each shift needs before you generate.
 - **Bullets:**
-  - e.g. POD Day needs 2 on weekdays, 3 on Monday/Tuesday — coverage is a min/max, not one number.
-  - Day-of-week rules like Grand Rounds Wednesday and EMS Mon/Tue live here too.
+  - e.g. POD Day needs 2 on weekdays, 3 on Mon/Tue.
+  - Day-of-week rules like Grand Rounds Wednesday live here too.
 - **Target:** `tab-rules` · **Route:** `rules` · **Roles:** admin
 
 ### 6. Violations — the generation report
-- **Headline:** Every coverage gap and rule conflict from the last generate lands here.
+- **Headline:** Every coverage gap and rule conflict lands here after you generate.
 - **Bullets:**
-  - e.g. an unfilled Trauma Night slot shows why — no eligible resident, or everyone rest-blocked.
-  - Clear this list before exporting — QGenda export warns on any unresolved issue.
+  - e.g. an unfilled slot shows why — nobody eligible, or rest-blocked.
+  - Clear this list before exporting — QGenda warns on open issues.
 - **Target:** `tab-validation` · **Route:** `validation` · **Roles:** admin
 
 ### 7. Jeopardy — backup call
-- **Headline:** Track who is on backup call and see any day nobody is covering it.
+- **Headline:** Track who's on backup call and any day nobody's covering it.
 - **Bullets:**
-  - Jeopardy never overlaps a clinical shift — the app blocks that combination automatically.
-  - e.g. Auto-fill assigns PGY-1/2/3 jeopardy tracks from whoever is on an EM Home rotation that
-    block.
+  - Jeopardy never overlaps a clinical shift — the app blocks that.
+  - e.g. Auto-fill assigns jeopardy from whoever's on an EM Home rotation.
 - **Target:** `tab-jeopardy` · **Route:** `jeopardy`
 
 ### 8. Requests — resident day-off requests
-- **Headline:** Residents submit their own day-off requests here; you approve or decline.
+- **Headline:** Residents submit day-off requests here; you approve or decline.
 - **Bullets:**
-  - e.g. approve a request and it becomes an orange OFF marker on the Schedule grid automatically.
-  - A note you add when deciding shows on that resident's PDF export.
+  - e.g. approve a request and it becomes an orange OFF marker.
+  - A note you add shows on that resident's PDF export.
 - **Target:** `tab-requests` · **Route:** `requests`
 
 ### 9. Settings — backup and export config
-- **Headline:** Back up your data, restore from a backup, and tune how exports look.
+- **Headline:** Back up your data and tune how exports look.
 - **Bullets:**
-  - e.g. QGenda Task Names lets you override a shift's exported task label per resident.
-  - JSON backup/restore covers the roster, blocks, rules, and coverage in one file.
+  - e.g. QGenda Task Names lets you rename a shift's exported label.
+  - JSON backup/restore covers everything in one file.
 - **Target:** `tab-settings` · **Route:** `settings` · **Roles:** admin
 
 ## Resident walkthrough (`/requests`)
@@ -134,40 +128,39 @@ never reaches the form the walkthrough narrates).
 | 5 | Track your requests | `resident-request-list` |
 
 ### 1. Request a day off
-- **Headline:** Pick any date you want off and it goes straight to the chief for a decision.
+- **Headline:** Pick a date and it goes straight to the chief for a decision.
 - **Bullets:**
   - Use the date field to add a single day, or one row per day for a stretch.
   - e.g. click the date field and pick Oct 12 for a single day off.
 - **Target:** `resident-date-field`
 
 ### 2. Requesting more than one date
-- **Headline:** "+ Add another date" adds a new row — each date is its own line in the request.
+- **Headline:** "+ Add another date" adds a new row for each extra date.
 - **Bullets:**
   - There's no limit on how many dates one request can cover.
-  - e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three separate rows.
+  - e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three rows.
 - **Target:** `resident-add-date`
 
 ### 3. Reason (optional)
-- **Headline:** A short reason is optional, but it's the only context the chief sees when deciding.
+- **Headline:** A short reason is optional, but it's the only context the chief sees.
 - **Bullets:**
   - Nothing here is required — an empty reason is a perfectly normal request.
-  - e.g. type "sister's wedding" so the chief has context without you having to explain in person.
+  - e.g. type "sister's wedding" so the chief has context without asking in person.
 - **Target:** `resident-reason`
 
 ### 4. Submit request
-- **Headline:** Submitting sends the request immediately — there is no draft or save-for-later.
+- **Headline:** Submitting sends the request right away — there is no draft to save.
 - **Bullets:**
-  - A request within 8 weeks of that block still submits — you just get a heads-up that the chief
-    has less flexibility.
-  - e.g. a date that falls on a tracked holiday shows a note too; it still submits the same way.
+  - A request within 8 weeks of that block still submits, with a heads-up that the chief has less
+    flexibility.
+  - e.g. a date on a tracked holiday shows a note too; it still submits the same way.
 - **Target:** `resident-submit`
 
 ### 5. Track your requests
-- **Headline:** Every request you've submitted lists below, grouped by which block it falls in.
+- **Headline:** Every request you've submitted lists below, grouped by block.
 - **Bullets:**
   - Status shows as pending (amber), approved (green), or denied (red) as the chief decides.
-  - e.g. click the × next to a still-pending request to withdraw it yourself before a decision is
-    made.
+  - e.g. click the × next to a pending request to withdraw it yourself.
 - **Target:** `resident-request-list`
 
 ## Replay

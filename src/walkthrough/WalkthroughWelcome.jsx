@@ -38,11 +38,10 @@ export function WalkthroughWelcome({ session }) {
 
         <div className="p-4 space-y-3">
           <p className="text-sm text-gray-600 leading-relaxed">
-            Build and validate each month's resident schedule — rotations, coverage rules, jeopardy,
-            and day-off requests all live here, then export straight to QGenda.
+            Build each month's resident schedule, then export straight to QGenda.
           </p>
           <p className="text-sm text-gray-600 leading-relaxed">
-            A short guided tour points out where each of those lives before you dive in.
+            A short tour shows you where everything lives before you dive in.
           </p>
         </div>
 
