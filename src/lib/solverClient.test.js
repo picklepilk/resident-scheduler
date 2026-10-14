@@ -70,6 +70,17 @@ describe('solverClient — solveRemote', () => {
     expect(opts.method).toBe('POST');
     expect(opts.headers['Content-Type']).toBe('application/json');
     expect(JSON.parse(opts.body)).toEqual(payload);
+    expect(opts.headers.Authorization).toBeUndefined();
+  });
+
+  it('sends the session token as a Bearer Authorization header when given one', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { solveRemote } = await freshModule();
+
+    await solveRemote({ version: 1 }, { accessToken: 'jwt-abc' });
+
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer jwt-abc');
   });
 
   it('throws on a non-200 response', async () => {

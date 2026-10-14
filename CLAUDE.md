@@ -21,7 +21,7 @@ npx vitest run src/lib/qgenda.test.js        # single file
 - `jspdf-autotable@3.8.4`: use `import 'jspdf-autotable'` + `doc.autoTable({...})`, never `autoTable(doc, {...})` (default-export interop broken; `npm run build` doesn't catch it). See archive.
 - **Almost all scheduling logic lives in `src/ResidentScheduler.jsx` (~8,300+ lines).** Grep for `// ─── SECTION ───` markers or function names, not line numbers. Grep before assuming any helper unused — no module boundaries.
 - `src/lib/*` modules are pure and **may never import `ResidentScheduler.jsx`**.
-- Auth/day-off-request surface outside big file: `main.jsx` (`/requests` → `ResidentRequestsApp`, else `AppGate`), `AppGate.jsx`, `supabaseClient.js`, `RequestsTab.jsx`, `residentRequests/*`. **Nothing under `residentRequests/` imports `ResidentScheduler.jsx`** — fetches own data from shared `res_state` row.
+- Auth/day-off-request surface outside big file: `main.jsx` (`/requests` → `ResidentRequestsApp`, else `AppGate`), `AppGate.jsx`, `supabaseClient.js`, `RequestsTab.jsx`, `residentRequests/*`. **Nothing under `residentRequests/` imports `ResidentScheduler.jsx`** — fetches own minimal slice via the `resident_block_lookup()` RPC (never `res_state` directly).
 - Sibling `../em-scheduler`: check its CLAUDE.md for prior fixes before re-deriving scheduling/export/matching patterns.
 - **TDZ hazard**: module-level `const` referencing a later `const` throws at page load; `npm run build` won't catch it. `RULE_NOTES` prose deliberately hardcodes numbers duplicating `NIGHT_RULES`/`JC_MAX_PER_AY`/`TRAUMA_PEDS_SPLIT` for this reason — change one, update matching prose.
 

@@ -14885,7 +14885,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       try {
         setGenStageLabel('Optimizing schedule — up to ~30s…');
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule });
-        const json = await solveRemote(payload);
+        // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
+        // service 401s and the catch below keeps the already-computed local result.
+        const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
+        const json = await solveRemote(payload, { accessToken });
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }

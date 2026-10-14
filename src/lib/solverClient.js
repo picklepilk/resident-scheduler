@@ -40,17 +40,24 @@ export const SOLVER_ENABLED = Boolean(getSolverUrl());
 // abort, or a non-200 HTTP response — the single contract PAYLOAD_SCHEMA.md specifies for the
 // client: "any non-200 or timeout" means "fall back to the JS engine". Callers should wrap this in
 // try/catch and fall back on any rejection; this function never decides that policy itself.
-export async function solveRemote(payload, { timeoutMs = 120000 } = {}) {
+//
+// `accessToken` (optional): the caller's Supabase session JWT, sent as `Authorization: Bearer` —
+// required once the service runs with SOLVER_AUTH_MODE=supabase (solver-service/CLAUDE.md). Passed
+// in rather than fetched here because a src/lib/ module stays free of the auth client; a missing
+// token just means the service may 401, which callers already treat as "fall back to local".
+export async function solveRemote(payload, { timeoutMs = 120000, accessToken = null } = {}) {
   const url = getSolverUrl();
   if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = { 'Content-Type': 'application/json' };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   let res;
   try {
     res = await fetch(`${url}/solve`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
