@@ -30,22 +30,20 @@ export const APP_KEY = 'resident-scheduler';
 export const WALKTHROUGH_STEPS = [
   {
     title: 'Dashboard — your command center',
-    headline: "Dashboard is where you build and archive each month's block, one step at a time.",
+    headline: "Build and archive each month's block here.",
     bullets: [
-      'The Block Calendar shows every saved block for an academic year with a coverage heatmap.',
-      'Current Block is your active workspace — name, dates, and special days live here.',
-      'e.g. set the block name and start date, then Save Block to archive it.',
+      'The Block Calendar shows every saved block with a coverage heatmap.',
+      'e.g. set the name and start date, then Save Block.',
     ],
     target: 'tab-dashboard',
     route: 'dashboard',
   },
   {
     title: 'EM Residents — the roster',
-    headline: "Add residents once a year and set each one's rotation per block.",
+    headline: "Add residents once a year, then set their rotation each block.",
     bullets: [
-      'Import Roster pastes or uploads a spreadsheet instead of adding residents one at a time.',
-      "Vacation dates, approved days off, and jeopardy call dates all live on each resident's tile.",
-      'e.g. paste a roster row like "Smith, Jane — EM — PGY-2" straight from a spreadsheet.',
+      'Import Roster pastes or uploads a spreadsheet instead of adding one at a time.',
+      'e.g. paste a row like "Smith, Jane — EM — PGY-2".',
     ],
     target: 'tab-em',
     route: 'em',
@@ -53,10 +51,10 @@ export const WALKTHROUGH_STEPS = [
   },
   {
     title: 'Shift Matrix — who can work what',
-    headline: 'The matrix defines which shift types each residency and PGY year is eligible for.',
+    headline: 'Sets which shifts each residency and year can work.',
     bullets: [
-      'Click any cell to toggle; modified rows show a pencil icon and a per-row reset.',
-      'e.g. expand a row to set a per-rotation override — an EMS month can have a different shift list than a standard EM month.',
+      'Click any cell to toggle; changed rows show a pencil icon.',
+      'e.g. expand a row for a per-rotation override, like EMS.',
     ],
     target: 'tab-matrix',
     route: 'matrix',
@@ -64,20 +62,20 @@ export const WALKTHROUGH_STEPS = [
   },
   {
     title: 'Schedule — the grid',
-    headline: 'Generate fills every open slot automatically, respecting eligibility and rest rules.',
+    headline: 'Generate fills every open slot, respecting eligibility and rest rules.',
     bullets: [
-      'Click any cell to assign or adjust a shift by hand — the picker only offers legal options.',
-      'e.g. Generate Schedule fills the whole block in one click; Trauma Day is filled last so it never crowds out other coverage.',
+      'Click any cell to assign or change a shift by hand.',
+      'e.g. Generate Schedule fills the whole block in one click.',
     ],
     target: 'tab-schedule',
     route: 'schedule',
   },
   {
     title: 'Scheduling Rules — coverage targets',
-    headline: 'Set how many residents each shift needs per day before you generate.',
+    headline: 'Set how many residents each shift needs before you generate.',
     bullets: [
-      'e.g. POD Day needs 2 on weekdays, 3 on Monday/Tuesday — coverage is a min/max, not one number.',
-      'Day-of-week rules like Grand Rounds Wednesday and EMS Mon/Tue live here too.',
+      'e.g. POD Day needs 2 on weekdays, 3 on Mon/Tue.',
+      'Day-of-week rules like Grand Rounds Wednesday live here too.',
     ],
     target: 'tab-rules',
     route: 'rules',
@@ -85,10 +83,10 @@ export const WALKTHROUGH_STEPS = [
   },
   {
     title: 'Violations — the generation report',
-    headline: 'Every coverage gap and rule conflict from the last generate lands here.',
+    headline: 'Every coverage gap and rule conflict lands here after you generate.',
     bullets: [
-      'e.g. an unfilled Trauma Night slot shows why — no eligible resident, or everyone rest-blocked.',
-      'Clear this list before exporting — QGenda export warns on any unresolved issue.',
+      'e.g. an unfilled slot shows why — nobody eligible, or rest-blocked.',
+      'Clear this list before exporting — QGenda warns on open issues.',
     ],
     target: 'tab-validation',
     route: 'validation',
@@ -96,30 +94,30 @@ export const WALKTHROUGH_STEPS = [
   },
   {
     title: 'Jeopardy — backup call',
-    headline: 'Track who is on backup call and see any day nobody is covering it.',
+    headline: "Track who's on backup call and any day nobody's covering it.",
     bullets: [
-      'Jeopardy never overlaps a clinical shift — the app blocks that combination automatically.',
-      'e.g. Auto-fill assigns PGY-1/2/3 jeopardy tracks from whoever is on an EM Home rotation that block.',
+      'Jeopardy never overlaps a clinical shift — the app blocks that.',
+      "e.g. Auto-fill assigns jeopardy from whoever's on an EM Home rotation.",
     ],
     target: 'tab-jeopardy',
     route: 'jeopardy',
   },
   {
     title: 'Requests — resident day-off requests',
-    headline: 'Residents submit their own day-off requests here; you approve or decline.',
+    headline: 'Residents submit day-off requests here; you approve or decline.',
     bullets: [
-      'e.g. approve a request and it becomes an orange OFF marker on the Schedule grid automatically.',
-      "A note you add when deciding shows on that resident's PDF export.",
+      'e.g. approve a request and it becomes an orange OFF marker.',
+      "A note you add shows on that resident's PDF export.",
     ],
     target: 'tab-requests',
     route: 'requests',
   },
   {
     title: 'Settings — backup and export config',
-    headline: 'Back up your data, restore from a backup, and tune how exports look.',
+    headline: 'Back up your data and tune how exports look.',
     bullets: [
-      "e.g. QGenda Task Names lets you override a shift's exported task label per resident.",
-      'JSON backup/restore covers the roster, blocks, rules, and coverage in one file.',
+      "e.g. QGenda Task Names lets you rename a shift's exported label.",
+      'JSON backup/restore covers everything in one file.',
     ],
     target: 'tab-settings',
     route: 'settings',
@@ -142,7 +140,7 @@ export const WALKTHROUGH_STEPS = [
 export const RESIDENT_WALKTHROUGH_STEPS = [
   {
     title: 'Request a day off',
-    headline: 'Pick any date you want off and it goes straight to the chief for a decision.',
+    headline: 'Pick a date and it goes straight to the chief for a decision.',
     bullets: [
       'Use the date field to add a single day, or one row per day for a stretch.',
       'e.g. click the date field and pick Oct 12 for a single day off.',
@@ -151,37 +149,37 @@ export const RESIDENT_WALKTHROUGH_STEPS = [
   },
   {
     title: 'Requesting more than one date',
-    headline: '"+ Add another date" adds a new row — each date is its own line in the request.',
+    headline: '"+ Add another date" adds a new row for each extra date.',
     bullets: [
       "There's no limit on how many dates one request can cover.",
-      'e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three separate rows.',
+      'e.g. requesting a long weekend? Add Oct 12, Oct 13, and Oct 14 as three rows.',
     ],
     target: 'resident-add-date',
   },
   {
     title: 'Reason (optional)',
-    headline: "A short reason is optional, but it's the only context the chief sees when deciding.",
+    headline: "A short reason is optional, but it's the only context the chief sees.",
     bullets: [
       'Nothing here is required — an empty reason is a perfectly normal request.',
-      'e.g. type "sister\'s wedding" so the chief has context without you having to explain in person.',
+      'e.g. type "sister\'s wedding" so the chief has context without asking in person.',
     ],
     target: 'resident-reason',
   },
   {
     title: 'Submit request',
-    headline: 'Submitting sends the request immediately — there is no draft or save-for-later.',
+    headline: 'Submitting sends the request right away — there is no draft to save.',
     bullets: [
-      'A request within 8 weeks of that block still submits — you just get a heads-up that the chief has less flexibility.',
-      'e.g. a date that falls on a tracked holiday shows a note too; it still submits the same way.',
+      'A request within 8 weeks of that block still submits, with a heads-up that the chief has less flexibility.',
+      'e.g. a date on a tracked holiday shows a note too; it still submits the same way.',
     ],
     target: 'resident-submit',
   },
   {
     title: 'Track your requests',
-    headline: 'Every request you\'ve submitted lists below, grouped by which block it falls in.',
+    headline: "Every request you've submitted lists below, grouped by block.",
     bullets: [
       'Status shows as pending (amber), approved (green), or denied (red) as the chief decides.',
-      'e.g. click the × next to a still-pending request to withdraw it yourself before a decision is made.',
+      'e.g. click the × next to a pending request to withdraw it yourself.',
     ],
     target: 'resident-request-list',
   },

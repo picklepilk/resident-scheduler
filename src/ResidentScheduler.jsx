@@ -3362,12 +3362,12 @@ const CHANGELOG = [
   {
     id: '2026-09-26-cell-inspector',
     date: '2026-09-26',
-    title: 'A cell inspector for hand-editing — click a cell to see who could take it instead',
+    title: 'Click a cell to swap or reassign',
     items: [
-      'On the Schedule tab, **click any grid cell to select it** and open the review panel\'s new Cell Inspector — the resident, date, current shift (or "Off"), lock state, and any rule issues on that exact cell, in plain language.',
-      'A filled cell now offers **"Give to"** (other residents free that day who could legally take the shift, ranked by who\'s furthest under target) and **"Swap with"** (a resident working a different shift that day you could cleanly trade with) — one click applies it. An empty cell offers **"Assign"** (eligible shifts with coverage room, shifts below their minimum first).',
-      'The shift picker is still one click away via **"Change shift…"** in the inspector, and **double-clicking a cell** opens it directly, same as before. Locked cells show only their lock state — unlock first to edit.',
-      'Press **Enter** on a focused cell to select it, **Esc** to clear the selection and go back to the issue lists.',
+      'Click any cell on the **Schedule** tab to see that shift, who\'s working it, and any rule issues.',
+      'A filled cell offers **Give to** or **Swap with** another resident, one click to apply.',
+      'An empty cell offers **Assign**, showing eligible residents who most need the shift.',
+      'Locked cells show their lock status only — unlock first to edit.',
     ],
   },
   // Inserted as the SECOND entry, not the first — see CLAUDE.md's What's New rule ("change
@@ -3378,114 +3378,98 @@ const CHANGELOG = [
   {
     id: '2026-10-14-whatif-staffing',
     date: '2026-10-14',
-    title: 'A "what-if staffing" simulator on the Violations tab',
+    title: 'Test staffing changes before they happen',
     items: [
-      'The Violations tab now has a **What-if staffing** card (below the Generation Report) for testing staffing changes before they happen: add hypothetical resident(s) cloned from an existing one, remove a resident (for the whole block or just a date range), or raise a shift\'s coverage minimum — then **Run what-if** re-generates the schedule twice (today\'s roster vs. your changes, same random seed) and shows how many unfilled minimum slots close, the error/under-target deltas, a per-shift before/after table, and who is still short.',
-      'Nothing here touches the real schedule — hypothetical residents and the comparison results live only in this card for the session; closing or resetting it discards them.',
+      'The **Violations** tab now has a **What-if staffing** card for trying out roster changes.',
+      'Add or remove a resident, or raise a shift\'s minimum coverage, then click **Run what-if** to see what improves.',
+      'Nothing here touches your real schedule — it\'s just a trial that disappears when you close it.',
     ],
   },
   {
     id: '2026-09-26-review-panel',
     date: '2026-09-26',
-    title: 'A review panel beside the schedule grid, plus several mobile fixes',
+    title: 'See errors right next to the grid',
     items: [
-      'The **Schedule tab now has a review panel** next to the grid (below it on narrower screens) — "Must fix" errors, "Should look at" warnings, and Generation notes, all in one place instead of a separate Violations tab visit. Click any issue with a resident and date to jump straight to that cell in the grid.',
-      'The block status rail\'s "errors to fix" button now opens this panel directly on the Schedule tab instead of switching you to Violations.',
-      'On the grid, a **hard error still gets a red ring, but a soft rule warning (like a rest-hours preference) now gets a small dot instead** — so hard vs. soft reads at a glance. The legend below the grid explains every ring/dot/outline now, including locked cells.',
-      'Several small-screen fixes: the app header no longer overlaps the block name and the "Not saved yet" pill at phone widths, the per-cell lock button no longer sits on top of the shift label, day markers (GR/JC/WW) on a shift chip are now a small dot instead of covering the label text, the resident name column narrows on small screens so more date columns fit, and weekend columns are no longer washed-out white in dark mode.',
+      'The **Schedule** tab now shows a review panel next to the grid with errors, warnings, and notes.',
+      'Click an issue to jump straight to that cell in the grid.',
+      'A red ring means a hard error; a small dot means a soft warning.',
+      'Several phone-screen fixes: the header, lock button, and name column all read better now.',
     ],
   },
   {
     id: '2026-09-26-block-status-rail',
     date: '2026-09-26',
-    title: 'A block status rail shows what\'s left, and Publish moved to where you review',
+    title: 'A status bar shows what\'s left to do',
     items: [
-      'The bar above the Schedule/Violations/Coverage/etc. tabs now shows a **step rail** — Set up, Generated, errors, Publish, Export — so you can always tell what\'s left before a block is done at a glance, without digging through tabs.',
-      'You can now **publish a block right from that rail**, not just from the Dashboard\'s Block Calendar — the confirmation spells out exactly what publishing affects: the 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts.',
+      'The bar above the tabs now shows each step — set up, generate, fix errors, publish, export.',
+      'You can now **Publish** a block right from that bar, not just from the **Dashboard** tab.',
+      'Publishing still shows exactly what it affects before you confirm.',
     ],
   },
   {
     id: '2026-08-22-trauma-nights-peds-progress-dark-mode',
     date: '2026-08-22',
-    title: 'Smarter trauma-night placement, more Peds Night coverage, a progress indicator while generating, and dark-mode fixes',
+    title: 'Better night scheduling and more Peds coverage',
     items: [
-      'Trauma Night placement is smarter now: **no more than 2 Trauma Nights in one night run**, a 2nd trauma night in a run and one sitting in the middle of a mixed run are both discouraged, and the generator now avoids awkward alternating night-shift lengths within a run.',
-      'Night runs of 2-6 are no longer flagged as "too short" — only a truly isolated single night shift gets that treatment now, matching how the department actually runs nights in practice. Small new preference for a 2nd full rest day after a longer night run.',
-      '**"Allow Trauma/Peds interns to work Peds Night" is now ON by default** (still a Rules-tab toggle if you want it off), and the generator now aims for about 5 Peds Nights per split intern, clustered into runs, matching how they\'re actually hand-scheduled today.',
-      '**Peds Night now runs all 7 nights of the week** (previously Thursday–Sunday only), and **Peds Swing now runs all 7 days** (previously Monday/Tuesday/Thursday/Friday) — both are also open to more residents now: Peds rotators, BAMC, and FM PGY-1, in addition to EM Home.',
-      'A **progress indicator now shows while Generate Schedule / Clear & Regenerate / Regenerate Unlocked are running** — a spinner, elapsed time, and what stage it\'s on (building the request, optimizing, or falling back to the built-in engine), so the app no longer looks stuck during a ~30-second optimizer run.',
-      'The Daily Shift Coverage editor on the Rules tab now has **bigger +/- buttons** instead of tiny number boxes — easier to tap on a phone or tablet.',
-      'Fixed a batch of **dark-mode contrast issues** across the whole app (not just the header) — several light-tinted badges, borders, and status text were hard to read against the dark background.',
+      'Trauma Night placement is smarter now — fewer awkward back-to-back patterns in a night run.',
+      '**Peds Night** now runs every night of the week, open to more residents.',
+      'A progress bar now shows while **Generate Schedule** is running, so the app doesn\'t look stuck.',
+      'Several dark-mode readability fixes across the app.',
     ],
   },
   {
     id: '2026-08-21-markers-time-off-jeopardy-conflict',
     date: '2026-08-21',
-    title: 'Easier-to-read schedule markers, a paintable Time Off calendar, and jeopardy can no longer land on a working day',
+    title: 'Clearer markers, paintable time off, safer jeopardy',
     items: [
-      'The **GR/JC/WW/OFF/VAC/J** markers on the schedule grid are easier to read now, especially when they sit on top of a colored shift chip — they no longer fade into the shift\'s own color. Journal Club\'s marker also changed to a distinct blue so it can\'t be confused with the app\'s own accent color, and vacation/wellness-Wednesday markers are now readable in dark mode too.',
-      '**Hover an approved day off to see why it was requested** — the resident\'s typed reason and your own decision note now show up in the tooltip, the per-resident view, and the printed PDF. Note: only approvals made from today forward will carry a reason; existing approved days off won\'t get one retroactively.',
-      '**Jeopardy call can no longer be scheduled on a day a resident is already working a shift.** Auto-fill, schedule generation, and the Jeopardy tab\'s manual dropdown all now treat that as a hard conflict instead of a soft warning.',
-      '**Rest hours since/until a resident\'s nearest shift** are now shown on the per-resident schedule view, the grid, and the shift picker — with a red flag when the gap is too short.',
-      'Off-service residents whose rotation spans two blocks now show exactly **how their shift target was calculated** for this block (e.g. "5 of 15 worked in prior blocks, 10 remaining here") instead of a bare number.',
-      'New **Time Off Calendar** — click the button on any resident to paint Approved Off, Vacation, or Jeopardy dates by clicking and dragging across a full academic-year calendar, instead of adding dates one at a time.',
-      'New Rules tab toggle: **allow Trauma/Peds interns to work Peds Night** during their peds half of the rotation — off by default.',
+      'Schedule markers (**GR/JC/WW/OFF/VAC/J**) are easier to read now, including in dark mode.',
+      'Hover an approved day off to see why it was requested.',
+      '**Jeopardy** call can no longer be scheduled on a day someone\'s already working.',
+      'New **Time Off Calendar** — paint a resident\'s days off by clicking and dragging across the year.',
     ],
   },
   {
     id: '2026-08-19-trauma-peds-jeopardy-mobile',
     date: '2026-08-19',
-    title: 'Trauma & Peds rules overhauled, a new Jeopardy tab, hard shift-target enforcement, and the app now installs like a phone app',
+    title: 'Trauma, Peds, and Jeopardy rules overhauled',
     items: [
-      '**Trauma Day is now PGY-1 only**, and trauma coverage is only required on the days it actually runs — Day on Tue/Thu/Sat/Sun, Night Fri–Mon. No more phantom unfilled trauma slots on days trauma doesn\'t work.',
-      '**Peds now takes PGY-2s instead of PGY-1s** — existing Peds PGY-1 residents were automatically updated to PGY-2. Peds PGY-3s now work Wednesdays, the Peds shift target is 15, and Peds Night can now be covered by BAMC residents and FM PGY-1s (Thu–Sun).',
-      'Rest rules are tightened, and one false alarm is gone: **no more warning for a night shift running straight into Grand Rounds**, and a post-overnight resident\'s Grand Rounds day no longer counts toward the 6-day work streak. New **hard rule**: 24 hours off is now required after a 6-day run, and nights must cluster into one run of 5-6 — three or more separate night stints is now a hard error.',
-      '**FLEX now requires a PGY-2** on every staffed shift, the same way POD requires a PGY-3 (with the same Wellness-Wednesday exceptions). EM residents finishing a block under their shift target now **block CSV/PDF export** until it\'s fixed. Vacation-block targets (13/12/11 shifts) now apply even to chief residents. Off-service shift obligations now correctly follow a resident\'s own rotation window across block boundaries.',
-      'New **Jeopardy tab**: auto-fills the PGY-1/2/3 jeopardy call tracks with built-in balancing, handles Metro date ranges, lets you hand-edit any cell, and flags gaps that need attention.',
-      'Vacation, day-off, and jeopardy dates can now be entered as a **date range** instead of one day at a time. New per-resident **work restrictions** — block specific shift types or clock-time windows, scoped to date ranges or weekdays. Wellness Wednesdays can now be toggled off globally or per resident (opt out, or set a custom date).',
-      'Schedule tab gets a **Month calendar** view plus a per-resident month view. Unscheduled residents are now hidden by default (toggle to show them). **Hover any shift chip** to see who else is working that shift, and who else is in the department at that time. New rule: the overnight shift on the block\'s final Sunday only goes to residents who are continuing into the next block.',
-      'The app can now be **installed like a native app** on your phone or desktop (PWA), and every tab is now fully usable on a phone screen. The sidebar gained an **Other** overflow group, and cards now remember whether you had them open or closed. Settings gained an **Import History** log, the Shift Matrix got a readability overhaul, unlocking all cells now asks for confirmation, and pasting a roster now accepts a blank PGY for single-PGY specialties (fixes podiatry import).',
+      '**Trauma Day** is now PGY-1 only, and only required on the days it actually runs.',
+      '**Peds** now takes PGY-2s, with a higher shift target and more residents eligible for **Peds Night**.',
+      'New **Jeopardy** tab auto-fills backup call and flags any gaps.',
+      'The app can now be installed like a phone app, and every tab works on mobile.',
     ],
   },
   {
     id: '2026-08-19-grid-coverage-release-notes',
     date: '2026-08-19',
-    title: 'A schedule grid that stays readable, easier shift locking, a new Coverage tab, and release notes you can go back to',
+    title: 'A grid that stays put while you scroll',
     items: [
-      'On the Schedule grid, the **dates stay pinned at the top and the resident names stay pinned at the side** no matter how far you scroll — and the daily coverage totals stay pinned at the bottom. The grid now scrolls inside its own window instead of dragging the whole page.',
-      'New **Full screen** button on the Schedule grid, for when you want the whole monitor. Press Esc to come back.',
-      'Side-to-side scrolling got easier: **◀ / ▶ buttons jump one week at a time**, and a "Jump to date" picker takes you straight to any date in the block.',
-      'Locking shifts is much less fiddly. The per-cell lock is bigger and easier to hit; you can now **lock a whole resident\'s row, a whole date\'s column, or every assigned shift at once**; a **Lock mode** toggle lets you click or drag across cells to lock them in bulk; and the toolbar shows how many cells are locked with a one-click **Unlock all**. Locked shifts still survive "Regenerate Unlocked" exactly as before.',
-      'New **Coverage** tab: a birds-eye view of how the department is staffed. See, for any date and shift, **how many EM-Home PGY-1/2/3 vs BAMC vs off-service residents** are covering — by area across the whole block, one date at a time, or as block totals per group.',
-      '**Wednesday day shifts no longer demand a senior EM resident.** POD and FLEX day shifts on Wednesdays are exempt, because the EM seniors are at Grand Rounds and the department is covered by off-service residents and APPs. The generator will now staff those shifts instead of leaving them empty, and the false violations are gone. Wednesday evening and night shifts are unchanged.',
-      'New **What\'s New** tab in the sidebar keeps every release note permanently — this pop-up is no longer a one-shot. Anything you haven\'t read yet is badged **New**.',
+      'On the **Schedule** grid, dates and names now stay pinned while you scroll.',
+      'New **Full screen** button, week-jump arrows, and a date picker make the grid easier to navigate.',
+      'Locking shifts is easier — lock a whole row, column, or all assigned shifts at once.',
+      'New **Coverage** tab and this **What\'s New** tab were added.',
     ],
   },
   {
     id: '2026-08-18-jeopardy-ledger',
     date: '2026-08-18',
-    title: 'Jeopardy & sick-call tracking, Peds Night split into two shifts, editable QGenda task names, and per-block target overrides',
+    title: 'Jeopardy tracking, Peds Night split, QGenda names',
     items: [
-      'New **Jeopardy & Sick Calls** card on the Dashboard tab: log every sick call and every jeopardy activation for the academic year — who called out, which shift, and who (if anyone) was pulled off jeopardy to cover. Each activation earns that resident a buy-down credit, tracked as earned/spent/remaining right on the card.',
-      'This is **advisory only** — logging an incident never changes a schedule or a target by itself. The chief spends an earned credit by hand, on the EM Residents tab\'s existing **Target Δ** field, checked **buy-down**. Nothing auto-applies.',
-      'The EM Residents tab now shows a compact sick-call/activation/credit line on any resident\'s tile who has one this academic year.',
-      'Peds Night is now two separate shifts with correct hours: FM-3 keeps its own **PED-N-FM** (23:00–08:00), exclusively Mon/Tue/Wed; EM Home residents get **PED-N** (19:00–04:00), open Thu–Sun.',
-      'QGenda export task names are now fully chief-editable — Settings → **QGenda Task Names** lets you set the exact task name QGenda expects per shift and preview the exported staff-name format, so a rejected import can be fixed without a redeploy.',
-      'Per-block shift-target overrides ("buy-downs" and their opposite) are now available on the EM Residents tab: a **Target Δ** field per resident adjusts that one resident\'s shift-count target for the current block only, with a reason note.',
+      'New **Jeopardy & Sick Calls** card on the **Dashboard** tab logs every sick call and jeopardy activation.',
+      'This is tracking only — it never changes a schedule by itself.',
+      '**Peds Night** is now two separate shifts with correct hours.',
+      '**Settings** → **QGenda Task Names** lets you edit exported shift names yourself.',
     ],
   },
   {
     id: '2026-08-16-jc-dates-12h-windows',
     date: '2026-08-16',
-    title: 'Journal Club dates you control, and 12-hour shifts on any dates you choose',
+    title: 'Journal Club dates and 12-hour shifts, your way',
     items: [
-      'Journal Club is no longer locked to the first Tuesday. Dashboard tab → the academic-year band → **Journal Club Dates** lets you move, add or remove any date for the year. Untouched years still default to first Tuesdays.',
-      'Journal Club presenters can now be assigned straight from the **Journal Club** card — one dropdown per PGY per date, showing who is already presenting and each resident\'s worked-JC count. The resident-profile date chips still work exactly as before.',
-      '12-hour shifts are no longer tied to conference weeks. Dashboard tab → **12-Hour Shift Windows** lets you set any date range, pick which areas (POD / MT / FLEX / PED) switch to 12h, choose whether the normal 9h shifts are replaced or kept alongside, and override staffing numbers per window.',
-      'Your existing ACEP / AAEM / SAEM dates keep working with no setup — they appear as ready-made windows you can edit.',
-      'The schedule grid now marks every 12h date with a **12h** badge, and the Dashboard says how many 12h days a block has — including saying plainly when there are none.',
-      '**Fixed the ACEP problem**: if you had ever customized shift eligibility (Shift Matrix tab, including a per-rotation row), your saved settings pre-dated the 12h shifts and never listed them — so during a conference the normal shifts were correctly switched off and the 12h ones could not be assigned, leaving residents unscheduled. Existing settings now pick up the 12h shifts automatically for any area they already cover.',
-      'Fixed: every 12h shift was silently being counted as required staffing on ordinary, non-conference days, which inflated the unfilled-slot count on every schedule.',
+      '**Dashboard** tab → **Journal Club Dates** lets you move, add, or remove any date.',
+      'Assign Journal Club presenters right from the **Journal Club** card.',
+      '**Dashboard** tab → **12-Hour Shift Windows** lets you set any date range to run 12-hour shifts.',
+      'Fixed two bugs where 12-hour shifts were silently skipped or miscounted.',
     ],
   },
 ];
@@ -19617,78 +19601,77 @@ function UserGuideTab({ onNavigate }) {
 
       {show('quickstart') && <GuideSection {...sec('quickstart')}>
         <ol className="list-decimal space-y-1.5 text-sm">
-          <li><strong>Dashboard tab</strong> — click <strong>New Block</strong>, then set the block name and start date (end date and academic year auto-fill from it — both stay editable).</li>
-          <li><strong>EM Residents / Off-Service tabs</strong> — set each EM Home resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong> to paste/upload a roster instead of adding one at a time). Enter approved dates off, vacation dates (or use <strong>Import Vacation Dates</strong> to upload the chief's vacation-tracking spreadsheet), and jeopardy call dates.</li>
-          <li><strong>Dashboard tab</strong> — enter this block's special days (Code Blue, procedure, US days) before scheduling — they affect eligibility.</li>
-          <li><strong>Scheduling Rules tab</strong> — set daily shift coverage (how many residents each shift needs), then click <strong>Generate Schedule</strong> on the Schedule tab to auto-fill the whole block.</li>
-          <li><strong>Schedule tab</strong> — review the generated schedule, or click any cell to assign/adjust a shift manually. The picker only offers shifts that resident can legally work that day; anything else needs an explicit "Assign Anyway".</li>
-          <li><strong>Violations tab</strong> — review the Generation Report and any remaining errors/warnings before finalizing.</li>
-          <li><strong>Dashboard tab</strong> — click <strong>Save Block</strong> to archive it, then use the header's <strong>Export</strong> menu → <strong>QGenda CSV…</strong> to migrate the schedule into QGenda.</li>
+          <li><strong>Dashboard</strong> — click <strong>New Block</strong> and set a name and start date.</li>
+          <li><strong>EM Residents / Off-Service</strong> — set each resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong>). Enter days off, vacation, and jeopardy dates.</li>
+          <li><strong>Dashboard</strong> — enter this block's special days (Code Blue, procedure, US days) before scheduling.</li>
+          <li><strong>Scheduling Rules</strong> — set how many residents each shift needs, then click <strong>Generate Schedule</strong> on the <strong>Schedule</strong> tab.</li>
+          <li><strong>Schedule</strong> — review the result, or click any cell to assign or change a shift by hand.</li>
+          <li><strong>Violations</strong> — fix any remaining errors or warnings before finalizing.</li>
+          <li><strong>Dashboard</strong> — click <strong>Save Block</strong>, then <strong>Export</strong> → <strong>QGenda CSV…</strong> to send it to QGenda.</li>
         </ol>
       </GuideSection>}
 
       {show('dashboard') && <GuideSection {...sec('dashboard')}>
-        <p>The <strong>Block Calendar</strong> at the top shows a July→July view of every saved block for a chosen academic year, each with a color-coded coverage strip — click a block to expand a per-shift heatmap, or "Open block" to switch to it. Pick an AY from the dropdown to browse or edit that year's <strong>Conference &amp; ITE Dates</strong> (shown inline above that AY's blocks) — these apply to every block in the year and surface below when they overlap the current block.</p>
-        <p>Below the calendar, the <strong>Current Block</strong> card is your active workspace: name and dates editable inline (collapse it with the header once set up).</p>
+        <p>The <strong>Block Calendar</strong> at the top shows every saved block for a chosen academic year — click one to see its coverage, or "Open block" to switch to it.</p>
+        <p>Below it, <strong>Current Block</strong> is your active workspace: name and dates, editable inline.</p>
         <ul className="list-disc space-y-1">
-          <li><strong>Save Block</strong> snapshots everything (roster assignments, schedule, special days) into the Block Calendar above. Re-saving the same block updates its snapshot.</li>
-          <li><strong>Load</strong> (from a Block Calendar row) restores a saved block — you'll be prompted to save current work first.</li>
-          <li><strong>Import Master Matrix</strong> uploads the chief's yearly workbook and turns it into ready-to-load saved blocks — never touches the live block.</li>
+          <li><strong>Save Block</strong> archives everything (roster, schedule, special days) into the calendar above.</li>
+          <li><strong>Load</strong> restores a saved block — you'll be asked to save current work first.</li>
+          <li><strong>Import Master Matrix</strong> turns the chief's yearly workbook into ready-to-load blocks.</li>
         </ul>
-        <p>Further down: block progress, any conferences that fall inside the current block, first Fridays (Anesthesia social), and editable special-day lists. Use it as the pre-scheduling checklist: confirm conferences, Code Blue days, procedure days, and US days are all entered before assigning shifts.</p>
+        <p>Further down: block progress and special days (Code Blue, procedure, US days) — confirm these are entered before assigning shifts.</p>
       </GuideSection>}
 
       {show('residents') && <GuideSection {...sec('residents')}>
         <ul className="list-disc space-y-1">
-          <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Their rotation is set per block.</li>
-          <li><strong>Off-service residents are per-block</strong> — cleared on New Block/Block Reset, re-entered each month.</li>
-          <li><strong>Import Roster</strong> — paste rows from a spreadsheet or upload a CSV (Name, Category, PGY — any Rotation/date columns are ignored) instead of adding residents one at a time. Shows a preview before committing; already-listed names are skipped automatically.</li>
-          <li><strong>Import Vacation Dates</strong> (EM Residents tab) — upload the chief's vacation-tracking .xlsx workbook. Matches names against the EM Home roster (tolerant of extra middle/last names and parenthetical suffixes); ambiguous or unmatched rows are shown separately for manual review rather than guessed. Commit merges parsed dates into each matched resident's Vacation Dates — never touches other fields or off-service residents.</li>
-          <li><strong>Approved Dates Off</strong> (orange) — hard-blocked in the grid; scheduling over one is an error. Off-service residents can add/remove these directly on their tile, no need to open Edit.</li>
-          <li><strong>Jeopardy Call Dates</strong> (purple "J") — the resident is on backup call. How this affects scheduling is configurable in Settings: Block (unschedulable), Warn (default — allowed but flagged), or Ignore.</li>
-          <li><strong>Availability</strong> (off-service only) — defaults to available all block; switch to <strong>Date ranges</strong> for a resident who only rotates with you part of the block, or <strong>Specific days only</strong> for a whitelist of exact dates (e.g. Peds residents' self-cover days from Amion). Outside their availability, the resident is unschedulable, same as an approved day off.</li>
-          <li>Edit any profile with the pencil icon; the IM "CCU nights" toggle blocks Tue/Wed automatically.</li>
+          <li><strong>EM Home roster persists</strong> across blocks — add interns once a year, remove graduates. Rotation is set per block.</li>
+          <li><strong>Off-service residents are per-block</strong> — re-entered each month.</li>
+          <li><strong>Import Roster</strong> — paste or upload a spreadsheet instead of adding residents one at a time.</li>
+          <li><strong>Import Vacation Dates</strong> (EM Residents tab) — upload the chief's vacation-tracking spreadsheet; unmatched rows are flagged for manual review.</li>
+          <li><strong>Approved Dates Off</strong> (orange) — hard-blocked; scheduling over one is an error.</li>
+          <li><strong>Jeopardy Call Dates</strong> (purple "J") — the resident is on backup call.</li>
+          <li><strong>Availability</strong> (off-service only) — set date ranges or specific days when a resident only rotates with you part of the block.</li>
+          <li>Edit any profile with the pencil icon.</li>
         </ul>
       </GuideSection>}
 
       {show('matrix') && <GuideSection {...sec('matrix')}>
-        <p>The matrix defines which shift types each <strong>residency + year</strong> can work. Checks are color-coded by area (POD, PED, FLEX, MT, Trauma).</p>
+        <p>The matrix defines which shift types each <strong>residency + year</strong> can work.</p>
         <ul className="list-disc space-y-1">
-          <li>Click any cell to toggle. Modified rows show <span className="text-primary">✎</span> and a per-row reset.</li>
-          <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to see its rotations (EM, EMS, Tox, Peds/Trauma…). Dimmed checks inherit from the parent row; clicking creates a <span className="text-purple-500">rotation override</span> so e.g. an EMS month can have a different shift list than a standard EM month.</li>
-          <li>Day-of-week rules (GR Wednesday, clinic days, EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun) are enforced on top of the matrix and aren't edited here — see the Scheduling Rules tab, which now controls those directly.</li>
+          <li>Click any cell to toggle. Changed rows show <span className="text-primary">✎</span> and a per-row reset.</li>
+          <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to set an override for one rotation, like EMS, without changing the rest.</li>
+          <li>Day-of-week rules (GR Wednesday, EMS Mon/Tue, etc.) aren't edited here — see the <strong>Scheduling Rules</strong> tab.</li>
         </ul>
       </GuideSection>}
 
       {show('generate') && <GuideSection {...sec('generate')}>
-        <p>Set <strong>Daily Shift Coverage</strong> on the Scheduling Rules tab first — how many residents each shift (POD Day, Trauma Night, etc.) needs per day. Then, on the Schedule tab, click <strong>Generate Schedule</strong> to auto-fill every open slot for the whole block.</p>
+        <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Scheduling Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot.</p>
         <ul className="list-disc space-y-1">
-          <li>The generator respects everyone's eligibility, days off, jeopardy policy, rest-period rule, the EM PGY-2/3 trauma cap, the <strong>EM PGY-3 requirement on POD</strong> (waived for day shifts on Wednesdays — Grand Rounds), and the <strong>max 6 consecutive work days</strong> rule (Grand Rounds and Journal Club presenting days count as worked too, and the count carries across the previous block's tail) — it never assigns a shift a resident couldn't legally work.</li>
-          <li><strong>Trauma Day is filled last</strong>, after every other shift for the whole block, so PGY-1 trauma-day slots don't crowd out other coverage.</li>
-          <li><strong>Generate never overwrites a cell you've already filled in</strong> — manual or picker assignments are kept, and it only fills what's still empty. Run it again anytime after making manual edits.</li>
-          <li><strong>Clear &amp; Regenerate</strong> wipes every assignment (including manual ones) and rebuilds from scratch — confirm before using it.</li>
-          <li>After generating, check the <strong>Violations tab</strong> for a Generation Report: any coverage slot it couldn't fill, why, and what to change. Peds Night (FM-3-exclusive Mon/Tue/Wed) gaps are marked "Expected" when no one eligible is on the block those days.</li>
+          <li>The generator only assigns shifts a resident can legally work — it respects eligibility, days off, jeopardy, rest rules, and the max-6-consecutive-days rule.</li>
+          <li><strong>Generate never overwrites a cell you've already filled in</strong> — it only fills what's still empty. Run it again anytime after manual edits.</li>
+          <li><strong>Clear &amp; Regenerate</strong> wipes every assignment and rebuilds from scratch — confirm before using it.</li>
+          <li>After generating, check the <strong>Violations</strong> tab for a report of any slot it couldn't fill and why.</li>
         </ul>
       </GuideSection>}
 
       {show('grid') && <GuideSection {...sec('grid')}>
         <ul className="list-disc space-y-1">
-          <li><strong className="text-yellow-700">GR</strong> (yellow) — Grand Rounds day: every EM Home resident's Wednesday, every BAMC resident's Thursday (suppressed on a vacation/approved-off date). Shows as a corner tag on cells that also have a shift assigned, not just empty ones — a resident with GR <em>and</em> an evening/night shift the same day now shows both.</li>
-          <li><strong className="text-sky-700">JC</strong> (sky blue) — this resident is presenting Journal Club that date (their own <code>jcPresentDates</code>) — a different thing from the plain GR day above.</li>
-          <li><strong className="text-yellow-700">GR lecture</strong> — this resident is giving a Grand Rounds lecture that date (their own <code>grLectureDates</code>) — a personal presenting date, not the weekly GR attendance day.</li>
-          <li><strong className="text-violet-700">WW</strong> (violet) — Wellness Wednesday; each EM Home PGY's own 1st/2nd/3rd Wednesday on/after the block's start date (PGY-1/2/3 respectively) — no day <em>or</em> evening shifts that day (a night shift starting that Wednesday is still workable). Takes priority over the plain GR/JC cue on that one cell since it's the stricter rule.</li>
+          <li><strong className="text-yellow-700">GR</strong> (yellow) — Grand Rounds day.</li>
+          <li><strong className="text-sky-700">JC</strong> (sky blue) — presenting Journal Club that date.</li>
+          <li><strong className="text-yellow-700">GR lecture</strong> — giving a Grand Rounds lecture that date.</li>
+          <li><strong className="text-violet-700">WW</strong> (violet) — Wellness Wednesday; no day or evening shift that day.</li>
           <li><strong className="text-orange-700">OFF</strong> (orange) — approved day off.</li>
-          <li><strong className="text-teal-700">VAC</strong> (teal) — vacation date (tracked separately from approved day off, same hard block).</li>
-          <li><strong className="text-purple-700">J</strong> (purple) — jeopardy call; corner badge if warn-mode, full cell if block-mode.</li>
+          <li><strong className="text-teal-700">VAC</strong> (teal) — vacation date.</li>
+          <li><strong className="text-purple-700">J</strong> (purple) — jeopardy call.</li>
           <li><strong className="text-red-500">Red ring</strong> — rule violation on that assignment.</li>
-          <li>Gray cells have no eligible shifts that day (clinic day, weekend call, etc.).</li>
-          <li>The shift picker validates <em>before</em> you commit: eligibility, jeopardy, and the rest-period rule (a shift's length = the hours off required after it; Trauma 12h → 12h rest).</li>
-          <li>Filter by residency with the chips above the grid. Shift counts vs target show next to each name.</li>
+          <li>Gray cells have no eligible shifts that day.</li>
+          <li>The shift picker checks eligibility, jeopardy, and rest rules before you commit.</li>
+          <li>Filter by residency with the chips above the grid. Shift counts vs. target show next to each name.</li>
         </ul>
       </GuideSection>}
 
       {show('legend') && <GuideSection {...sec('legend')}>
-        <p className="text-xs text-gray-500">Shift chips as they appear in the Schedule grid, grouped by area:</p>
+        <p className="text-xs text-gray-500">Shift chips as they appear on the Schedule grid, by area:</p>
         <div className="space-y-2">
           {SHIFT_AREAS.map(area => (
             <div key={area} className="flex items-center gap-2 flex-wrap">
@@ -19717,40 +19700,40 @@ function UserGuideTab({ onNavigate }) {
       </GuideSection>}
 
       {show('rules') && <GuideSection {...sec('rules')}>
-        <p>If you ran <strong>Generate Schedule</strong>, a <strong>Generation Report</strong> appears at the top of the Violations tab: how many coverage slots were filled, which ones weren't and why (no eligible resident, everyone at target, rest-rule conflicts, trauma cap…), with a plain-language recommendation for each — raise a target, lower coverage, check the Shift Matrix, and so on. Gaps that just match a day-of-week rule (Trauma's Tue/Thu/Sat/Sun window, GR Wednesday) are marked "Expected" rather than flagged as problems.</p>
-        <p>Below that, the <strong>Violations list</strong> shows every error (must fix: ineligible shifts, days-off conflicts, rest violations, hard circadian turnarounds, overlaps, &gt;6 consecutive work days, two residents on one trauma shift, a staffed POD shift with no EM PGY-3) and warning (review: over target, trauma cap, jeopardy, BAMC Wednesday-night count, Peds/EM mix) grouped by resident. The sidebar badge shows the live count. Exporting a CSV with unresolved errors will prompt for confirmation first.</p>
-        <p>The <strong>Scheduling Rules tab</strong> is where every residency/PGY type's day-of-week and rotation rules live — full-day blocks, day/night-only restrictions (some marked "generator only," meaning the manual picker still allows the shift), rotation-specific day windows (EMS Mon/Tue, Tox Thu/Fri, trauma Tue/Thu/Sat/Sun for days and Fri/Sat/Sun/Mon for nights), computed-date rules (e.g. Anesthesia's 1st-Friday-of-month), how Code Blue/procedure/anesthesia dates affect eligibility, and the <strong>Daily Shift Coverage</strong> grid used by Generate Schedule. Edit them directly here — no code changes needed. Each type shows a ✎ mark and reset button when modified from the built-in defaults. Shift targets and eligible shifts are shown live.</p>
+        <p>After <strong>Generate Schedule</strong>, a <strong>Generation Report</strong> appears at the top of the <strong>Violations</strong> tab: which slots weren't filled, why, and what to change.</p>
+        <p>Below that, the <strong>Violations list</strong> groups every must-fix error and review warning by resident. Exporting a CSV with unresolved errors asks you to confirm first.</p>
+        <p>The <strong>Scheduling Rules</strong> tab is where each residency/PGY type's day-of-week rules and the <strong>Daily Shift Coverage</strong> grid live — edit them directly, no code changes needed.</p>
       </GuideSection>}
 
       {show('export') && <GuideSection {...sec('export')}>
-        <p>The header's <strong>Export</strong> menu (visible once the current block has a start date) offers:</p>
+        <p>The header's <strong>Export</strong> menu offers:</p>
         <ul className="list-disc space-y-1">
-          <li><strong>Grid CSV</strong> — the same resident × date matrix shown on the Schedule tab, raw shift codes only. Best for your own visual cross-check, not for importing anywhere.</li>
-          <li><strong>QGenda CSV…</strong> — opens a picker for the staff-name format and a UTF-8 BOM toggle, then one of two layouts: <strong>Minimal</strong> (Staff, Date, Task — smallest surface area if QGenda's importer is picky about extra columns) or <strong>With times</strong> (adds EndDate, StartTime, EndTime, for an importer that needs explicit shift times instead of inferring them from the Task name).</li>
-          <li><strong>PDF…</strong> and <strong>ICS Calendar</strong> — a printable matrix or per-resident PDF, and one .ics file per resident for Outlook/Google/Apple Calendar.</li>
+          <li><strong>Grid CSV</strong> — the schedule as shown on the <strong>Schedule</strong> tab, for your own records.</li>
+          <li><strong>QGenda CSV…</strong> — formatted for QGenda's importer, with a staff-name and layout picker.</li>
+          <li><strong>PDF…</strong> and <strong>ICS Calendar</strong> — a printable schedule, or one calendar file per resident.</li>
         </ul>
-        <p>If the schedule has unresolved errors (ineligible shifts, days-off conflicts, rest violations) — or, for QGenda specifically, any shift whose task name isn't yet confirmed — export will ask you to confirm before downloading.</p>
-        <p><strong>If QGenda rejects the file, or the shifts land under the wrong name, you can fix it yourself — no developer needed.</strong> <strong>Settings tab → QGenda Task Names</strong> lets you set the exact task name QGenda expects for each shift (leave a field blank to use the best-guess default shown as its placeholder), change the exported staff-name format, and toggle the UTF-8 BOM. If QGenda matches a particular resident by an internal abbreviation rather than by name, set that resident's own <strong>QGenda Staff ID</strong> on their profile (Edit Resident) — it overrides the name format for that one person.</p>
+        <p>If the schedule has unresolved errors, export asks you to confirm before downloading.</p>
+        <p><strong>If QGenda rejects the file, or shifts land under the wrong name, you can fix it yourself — no developer needed.</strong> <strong>Settings</strong> → <strong>QGenda Task Names</strong> lets you set the exact name QGenda expects for each shift.</p>
       </GuideSection>}
 
       {show('settings') && <GuideSection {...sec('settings')}>
         <ul className="list-disc space-y-1">
-          <li><strong>Rule Enforcement</strong> — jeopardy policy, rest-period rule on/off, PGY-2 trauma cap.</li>
-          <li><strong>Shift Targets</strong> — override shifts-per-block for any residency/year (incl. Chief).</li>
-          <li><strong>QGenda Task Names</strong> — the exact task name QGenda expects per shift, the exported staff-name format, and a live preview. See "Exporting to QGenda" above.</li>
-          <li><strong>Data Management</strong> — everything is stored in this browser only (localStorage). It does <em>not</em> sync between computers. <strong>Export a backup</strong> regularly; Import restores it on any machine.</li>
+          <li><strong>Rule Enforcement</strong> — jeopardy policy, rest rule on/off, trauma cap.</li>
+          <li><strong>Shift Targets</strong> — override shifts-per-block for any residency/year.</li>
+          <li><strong>QGenda Task Names</strong> — the exact task name QGenda expects per shift. See "Exporting to QGenda" above.</li>
+          <li><strong>Data Management</strong> — your data lives in this browser only; it does <em>not</em> sync between computers. <strong>Export a backup</strong> regularly; Import restores it elsewhere.</li>
         </ul>
       </GuideSection>}
 
       {show('faq') && <GuideSection {...sec('faq')}>
         <ul className="list-disc space-y-2">
-          <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day — a clinic day, day-of-week restriction (e.g. EMS Mon/Tue), GR Wednesday, or a non-schedulable rotation. Check the Shift Matrix and Scheduling Rules tabs to see why.</li>
-          <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> in the picker to override — it will be flagged in Violations so you can track it.</li>
-          <li><strong>My schedule disappeared on another computer.</strong> Data lives in the browser's localStorage and does <em>not</em> sync between machines. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
-          <li><strong>The Export button is missing.</strong> It appears in the header only once the current block has a start date set (Dashboard tab).</li>
-          <li><strong>QGenda says the file is unreadable, or shifts import under the wrong name.</strong> Fix it yourself in <strong>Settings → QGenda Task Names</strong> — set the exact task name for the shift in question, try the other column layout (Minimal vs. With times) in the QGenda CSV picker, or toggle the UTF-8 BOM. No redeploy needed.</li>
-          <li><strong>A resident shows the wrong shifts in the picker.</strong> Check their rotation for this block (EM Residents tab) and any rotation override in the Shift Matrix — dimmed checks inherit, solid checks are overrides.</li>
-          <li><strong>I saved a block by mistake.</strong> Re-saving the same block just updates its snapshot; you can also Load any earlier saved block from the Block Calendar on the Dashboard tab.</li>
+          <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day. Check the <strong>Shift Matrix</strong> and <strong>Scheduling Rules</strong> tabs.</li>
+          <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> to override — it gets flagged in Violations so you can track it.</li>
+          <li><strong>My schedule disappeared on another computer.</strong> Data stays in this browser only. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
+          <li><strong>The Export button is missing.</strong> It appears once the current block has a start date (<strong>Dashboard</strong> tab).</li>
+          <li><strong>QGenda says the file is unreadable, or shifts import under the wrong name.</strong> Fix it in <strong>Settings → QGenda Task Names</strong>, or try the other column layout in the QGenda CSV picker.</li>
+          <li><strong>A resident shows the wrong shifts in the picker.</strong> Check their rotation (<strong>EM Residents</strong> tab) and any override in the <strong>Shift Matrix</strong>.</li>
+          <li><strong>I saved a block by mistake.</strong> Re-saving just updates its snapshot; Load any earlier version from the Block Calendar.</li>
         </ul>
       </GuideSection>}
     </div>
