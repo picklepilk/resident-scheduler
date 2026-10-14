@@ -13,9 +13,12 @@ import os
 
 from importlib.metadata import version as _pkg_version
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.auth import AuthResult
+from api.limits import MaxBodySizeMiddleware
+from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
 from solver.io.payload import PayloadError, parse_payload
 from solver.io.result import build_response
@@ -40,21 +43,37 @@ _cors_origins = [
     ).split(",")
     if o.strip()
 ]
+# Starlette's `add_middleware` PREPENDS, so the LAST call here ends up
+# OUTERMOST. CORS must be outermost: a rejection raised by any inner layer
+# (MaxBodySizeMiddleware's 413, or a 401/429 raised from inside a route's own
+# dependencies) still needs to pass back out through CORSMiddleware's `send`
+# wrapper to get its Access-Control-Allow-Origin header -- a browser caller
+# would otherwise see those error responses as a raw CORS failure with no way
+# to read the actual status/body. Caps real request body bytes before they
+# reach Pydantic parsing (see api/limits.py); /health has no body worth
+# capping but this runs ahead of routing so it applies uniformly, harmlessly.
+app.add_middleware(MaxBodySizeMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> dict:
+    # Deliberately open: no auth, no rate limit -- Fly's health check (and
+    # anyone else) must always be able to reach this.
     return {"status": "ok", "ortools": ORTOOLS_VERSION}
 
 
 @app.post("/solve", response_model=SolveResponse)
-def solve_endpoint(request: SolveRequest) -> dict:
+def solve_endpoint(
+    request: SolveRequest,
+    _preauth: None = Depends(enforce_preauth_ip_limit),
+    auth: AuthResult = Depends(enforce_rate_limit),
+) -> dict:
     raw = request.model_dump(mode="python")
 
     try:
