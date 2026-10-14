@@ -20,7 +20,7 @@ import {
 // side-effect-import gotcha (still applies under dynamic import — the plugin patches the shared
 // jsPDF class regardless of which import site pulls jspdf-autotable in).
 import RequestsTab from './RequestsTab';
-import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken } from './supabaseClient';
+import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken, getAccessToken, resolveAuthToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
@@ -17563,7 +17563,9 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 // keyed by RES_STATE_ROW_ID holding the whole LS_BACKUP_KEYS-shaped object as one jsonb blob is
 // the minimal-impedance-mismatch choice — no per-block rows to keep in sync.
 //
-// Database schema (run once in the Supabase project's SQL editor):
+// Database schema (fresh install: run supabase/day_off_requests.sql first, then this table —
+// already-provisioned DBs instead run supabase/migrate_res_state_admin_only.sql; see that file's
+// own DEPLOY ORDER note before running it):
 //   create table res_state (
 //     id       text primary key,
 //     data     jsonb not null,   -- the whole LS_BACKUP_KEYS-shaped document — a new res_* key
@@ -17572,11 +17574,16 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
 //     saved_at timestamptz default now()
 //   );
 //   alter table res_state enable row level security;
-//   create policy "public_read_write" on res_state for all using (true) with check (true);
-// (Wide-open RLS policy is intentional — same "accountability, not hard security" posture
-// em-scheduler already accepts: the anon key is safe to expose client-side by Supabase's design,
-// but this policy means anyone who extracts it from the deployed bundle's network requests has
-// full read/write on this one row.)
+//   create policy "res_state_admin_all" on res_state for all
+//     to authenticated using (is_admin()) with check (is_admin());
+//   revoke all on res_state from anon;
+// (res_state holds every resident's name and full generated schedule — admin-only per RLS, NOT
+// the wide-open-by-design policy this comment described before 2026-10-14. That policy was a
+// confirmed data-exposure gap: the anon key is meant to be safe to expose client-side, but it was
+// also the ONLY credential sbFetch ever sent — see migrate_res_state_admin_only.sql's header for
+// the full writeup. Residents still need a few non-schedule fields read-only (scheduling-block
+// dates, roster first/last names) — that's public.resident_block_lookup(), a SECURITY DEFINER
+// function scoped to exactly those fields, called from src/residentRequests/blockLookup.js.)
 //
 // Set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (see .env.example) to enable; absent, the app
 // is unchanged from before this feature existed.
@@ -17615,12 +17622,24 @@ const sbFetch = async (path, opts = {}) => {
   // all surface a timeout as a normal error instead of hanging the UI forever. Delegates the
   // actual fetch + abort/timeout wrapping to fetchWithTimeout (FEEDBACK ADMIN section) — same
   // 15s bound, one implementation.
+  //
+  // `apikey` stays the anon key always (PostgREST requires it on every request, admin or not —
+  // it's project identification, not an authorization decision). `Authorization` used to ALSO be
+  // the anon key, which combined with res_state's old wide-open RLS meant every resident's name
+  // and full schedule was readable by anyone holding the public anon key (see
+  // migrate_res_state_admin_only.sql). Now it's the caller's own session JWT when one exists —
+  // fetched fresh every call (not cached) so supabase-js's background auto-refresh is always
+  // reflected — falling back to the anon key only when there's no session at all (AUTH_ENABLED
+  // false, or signed out). RLS (res_state admin-only; profiles/day_off_requests per-resident) is
+  // what actually enforces access either way; this just makes the request carry the identity RLS
+  // needs to say yes.
   let res;
   try {
+    const token = resolveAuthToken(await getAccessToken(), SUPABASE_ANON);
     res = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1${path}`, {
       headers: {
         'apikey': SUPABASE_ANON,
-        'Authorization': `Bearer ${SUPABASE_ANON}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         'Prefer': opts.prefer || 'return=representation',
         ...opts.headers,
@@ -17654,10 +17673,28 @@ const sbSaveState = async (data, rowId = RES_STATE_ROW_ID) => {
 };
 
 // Loads a shared row — null if never saved yet (or unconfigured).
+//
+// AMBIGUITY (load-bearing for the mount-time effect below): res_state's RLS is admin-only
+// (migrate_res_state_admin_only.sql). PostgREST returns the exact same 200 `[]` whether the row
+// genuinely doesn't exist yet OR RLS silently filtered it out for a non-admin/expired-session
+// caller — a GET never 401s/403s for a policy-denied SELECT, it just returns no rows. This
+// function can't tell those apart; sbIsAdmin() below is what resolves it.
 const sbLoadState = async (rowId = RES_STATE_ROW_ID) => {
   if (!SUPABASE_ENABLED) return null;
   const rows = await sbFetch(`/res_state?id=eq.${rowId}&select=data,saved_at`);
   return rows && rows[0] ? rows[0] : null;
+};
+
+// Resolves sbLoadState's null-result ambiguity (see its own comment): is_admin() is a SECURITY
+// DEFINER function checked against `profiles`, not `res_state` — it answers truthfully regardless
+// of what res_state's own RLS was willing to show the caller, so "am I actually authorized here"
+// never depends on the same policy whose effect we're trying to disambiguate. Granted to
+// `authenticated` (day_off_requests.sql); callable by anon too (no explicit revoke there) but
+// harmless — auth.uid() is null for anon, so it just evaluates false.
+const sbIsAdmin = async () => {
+  if (!SUPABASE_ENABLED) return false;
+  const result = await sbFetch('/rpc/is_admin', { method: 'POST', body: {} });
+  return result === true;
 };
 
 // Delete a shared cloud row — SettingsTab's clearAll() gates the local wipe + reload on this
@@ -19922,7 +19959,19 @@ export default function ResidentScheduler({ viewer } = {}) {
   useEffect(() => {
     if (!SUPABASE_ENABLED) { setDbReady(true); return; }
     setDbStatus('loading');
-    sbLoadState(demoMode ? RES_STATE_DEMO_ROW_ID : undefined).then(row => {
+    (async () => {
+      let row;
+      try {
+        row = await sbLoadState(demoMode ? RES_STATE_DEMO_ROW_ID : undefined);
+      } catch (e) {
+        // Load failed (network/timeout, or a genuine 401/403 — see fetchWithTimeout/sbFetch's
+        // !res.ok throw) → do NOT set dbReady. Leaving it false keeps the debounced save disabled,
+        // so this device can't overwrite the cloud with local state it never successfully
+        // read/merged (that would silently destroy another device's newer data). Local editing
+        // still works; the pill shows "Sync error"; a reload retries the load cleanly.
+        setDbError(e.message); setDbStatus('error');
+        return;
+      }
       if (row && row.data) {
         const d = row.data;
         LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
@@ -19930,17 +19979,29 @@ export default function ResidentScheduler({ viewer } = {}) {
         // the local value we left untouched) — so the save effect below won't re-upload what we
         // just downloaded on every page open.
         cloudBaselineRef.current = LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0]));
+        setDbReady(true); setDbStatus('idle');
+        return;
       }
-      // row == null (empty cloud): leave cloudBaselineRef null so the save effect seeds the cloud
-      // once with this device's existing local data.
+      // row == null is AMBIGUOUS, not simply "empty cloud" (see sbLoadState's own comment): with
+      // res_state now admin-only RLS, the exact same result also happens when RLS silently
+      // filtered the row out for a non-admin or expired-session caller. Treating that case as
+      // "safe to seed" would let a blocked caller push its local state up as a brand-new row,
+      // which is exactly the silent-overwrite this whole dbReady gate exists to prevent. Confirm
+      // via is_admin() — a check against `profiles`, unaffected by res_state's own RLS — before
+      // trusting the empty result. In practice only a confirmed admin ever mounts this component in
+      // production (AppGate only renders ResidentScheduler for ROLE.ADMIN); this guards the dev
+      // (AUTH_ENABLED false) fallback and any future change to that gate from silently reopening
+      // the gap this effect is supposed to close.
+      let admin = false;
+      try { admin = await sbIsAdmin(); } catch { admin = false; }
+      if (!admin) {
+        setDbError('Not authorized to read cloud schedule data.'); setDbStatus('error');
+        return;
+      }
+      // Genuinely empty AND admin-confirmed: leave cloudBaselineRef null so the save effect seeds
+      // the cloud once with this device's existing local data.
       setDbReady(true); setDbStatus('idle');
-    }).catch(e => {
-      // Load failed → do NOT set dbReady. Leaving it false keeps the debounced save disabled, so
-      // this device can't overwrite the cloud with local state it never successfully read/merged
-      // (that would silently destroy another device's newer data). Local editing still works;
-      // the pill shows "Sync error"; a reload retries the load cleanly.
-      setDbError(e.message); setDbStatus('error');
-    });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
