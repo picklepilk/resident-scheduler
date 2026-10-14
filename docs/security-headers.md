@@ -1,0 +1,75 @@
+# Security headers rollout
+
+`netlify.toml`'s `[[headers]]` block for `/*` ships a `Content-Security-Policy-Report-Only`
+(logs violations, blocks nothing) plus several headers that are already enforced
+(`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+`Strict-Transport-Security`). See the comment above that block for the audit this policy is
+derived from (inline script, inline styles, blob: exports, supabase/solver origins, the Teams
+framing question).
+
+## 1. Check the Report-Only CSP on a deploy preview
+
+1. Push this branch / open the PR so Netlify builds a deploy preview.
+2. Open the preview URL in a browser, open DevTools **before** navigating so no early requests
+   are missed, then load the app and click through the main flows: sign in, open each tab
+   (Schedule/Dashboard/Rules/Settings), generate a schedule, and exercise every export (PDF,
+   CSV, QGenda, .ics, JSON backup) plus Master Matrix import.
+3. Console tab: CSP violations log as
+   `[Report Only] Refused to ... because it violates the following Content Security Policy
+   directive: ...`. Network tab: filter for `report-to`/`csp-report` if a report endpoint is
+   ever added (none is configured yet — this policy only logs to the browser console, it
+   doesn't POST reports anywhere).
+4. Expect to see zero violations for a correct audit. Two in particular are *expected to be
+   silent*, not worth chasing:
+   - The inline `<script>` in `index.html` and the ~46 inline `style={{...}}` props are already
+     covered by `'unsafe-inline'` in `script-src`/`style-src` (see the netlify.toml comment for
+     why a hash isn't used here).
+   - `blob:` URLs from PDF/CSV/.ics export and the raw-text log export are covered by
+     `img-src ... blob:` / `worker-src ... blob:`.
+5. If something unexpected DOES show up, it means the audit missed an origin or mechanism —
+   fix the root cause (don't just widen the policy to make the message go away) and re-check.
+
+## 2. Resolve the open decisions before enforcing
+
+- **Solver origin**: `connect-src` currently allows `https://*.fly.dev` because no exact
+  `VITE_SOLVER_URL` value is committed anywhere in this repo (it's a Netlify dashboard env var).
+  Pull the real value from Netlify (Site settings → Environment variables) and narrow
+  `connect-src` to that exact origin before enforcing.
+- **Teams framing**: `frame-ancestors` allows `'self'`, `https://teams.microsoft.com`,
+  `https://*.teams.microsoft.com`, and `https://*.office.com` because `pdfSave()` in
+  `src/ResidentScheduler.jsx` has iframe-embed handling commented "e.g. Teams" — but no Teams
+  app manifest or Teams SDK exists in this repo, so it's unconfirmed whether this app is
+  actually live inside a Teams tab today. **Confirm with the chief/IT admin** whether this app
+  is (or will be) embedded in Teams:
+  - If yes: keep the allowlist (or narrow it to the exact tenant's Teams/Office origins).
+  - If no: tighten `frame-ancestors` to `'self'` only, and consider adding
+    `X-Frame-Options: SAMEORIGIN` as defense-in-depth for browsers that ignore CSP somehow.
+- **Inline script `'unsafe-inline'`**: the one inline `<script>` in `index.html` sets
+  `window.__SUPABASE_URL__`/`__SUPABASE_ANON__`/`__ALLOWED_EMAIL_DOMAIN__`/`__SOLVER_URL__` from
+  `%VITE_*%` tokens that Netlify's HTML snippet-injection substitutes post-build — so its content
+  (and any sha256 hash of it) differs per deploy context and changes whenever an env var is
+  rotated. Two ways to drop `'unsafe-inline'` from `script-src` later:
+  1. Accept it as a narrow, low-risk carve-out (it's a fixed, first-party config block, not
+     user-influenced data) and move on.
+  2. Refactor to build-time injection via `vite.config.js`'s `define` (the same pattern already
+     used for `__APP_VERSION__`) instead of runtime HTML token substitution, which removes the
+     inline `<script>` entirely and lets `script-src` be just `'self'`.
+- **Inline styles `'unsafe-inline'`**: React's `style={{...}}` prop sets individual CSS
+  properties on the DOM node, which the CSP spec treats the same as a `style="..."` attribute
+  (no nonce/hash mechanism practically applies to ~46 dynamic call sites) — `style-src`
+  realistically keeps `'unsafe-inline'` long-term unless those call sites move to Tailwind
+  utility classes.
+
+## 3. Flip to enforcing
+
+Once a deploy preview shows zero unexpected Report-Only violations and the two decisions above
+are resolved:
+
+1. In `netlify.toml`, rename `Content-Security-Policy-Report-Only` to
+   `Content-Security-Policy` (same value, update origins per the decisions above).
+2. Redeploy a preview first, repeat the console check in step 1 — now violations actually BLOCK
+   the resource, so re-verify every export path and the sign-in flow before merging to `master`
+   (which auto-deploys to residentscheduling.netlify.app).
+3. Keep `X-Content-Type-Options` / `Referrer-Policy` / `Permissions-Policy` /
+   `Strict-Transport-Security` as-is — they were already enforced from the start and nothing
+   about flipping the CSP line changes them.
