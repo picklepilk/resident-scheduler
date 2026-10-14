@@ -172,6 +172,20 @@ happened to be harmless there since an always-hard family can never appear in `f
 in the first place — corrected to build from `RELAXABLE_DUTY_HOUR_FAMILIES`/
 `RELAXABLE_POLICY_CAP_FAMILIES` only.
 
+**Correction (2026-10-14, nightRunMax retier — user decision):** the max-6-consecutive-nights cap is
+NOT an ACGME rule — it's a program target the chief set ("ideally what we'd like to target as a
+program"), paired with a stated preference for nights to cluster contiguously when possible.
+`src/lib/rulePolicy.js`'s `nightRunMax` moved from tier `acgme` to tier `program` to say so honestly.
+**No hardness change**: `program` blocks everywhere exactly like `acgme` (differ only in WHY, never in
+HOW HARD — rulePolicy.js's own tier comment), so `nightRunMax` stays exactly where it was in
+`solver/model/elastic.py`'s `ALWAYS_HARD_DUTY_HOUR_FAMILIES` tuple — unmoved, still never wrapped by a
+pass-2 relax literal. `solverTierParity.test.js` already accepted `acgme` OR `program` for always-hard
+families, so no test-mapping change was needed either. Contiguity (the chief's stated preference, as
+opposed to the hard 6-night ceiling) is NOT enforced anywhere yet — `SCORE_WEIGHTS.nightCluster`/
+`isolated night` scoring already nudges toward one run, and `nightStintCapped` hard-caps at 2 stints —
+whether that's a sufficient proxy for "contiguous if able" was measured but not acted on (see the task
+that produced this note); no generator/solver behavior changed beyond the tier relabel.
+
 ### Changed rule: `restGap` (rule 17) — GR-end adjustment
 
 `solver/model/rest.py`'s `_effective_earlier_end_min` (and `solver/validate.py`'s independent
