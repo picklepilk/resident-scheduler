@@ -85,7 +85,7 @@ function emptyTotals() {
 // that resident's {dateStr: shiftId} row for this block — guarded here (untrusted shape, per
 // CLAUDE.md) so a corrupted/legacy snapshot can't throw. A falsy or non-object `rs` contributes
 // NOTHING, including no "seen" marker — same as computeAyPriorTotals' own `if (!rs) continue`.
-function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, resident, getShiftTarget, appSettings }) {
+function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, resident, getShiftTarget, appSettings, isSchedulable }) {
   if (!rs || typeof rs !== 'object') return;
   const totals = totalsMap.get(rid) || emptyTotals();
   totalsMap.set(rid, totals);
@@ -115,7 +115,11 @@ function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, 
   // target below — see the module header on why.
   if (resident && typeof getShiftTarget === 'function') {
     const ba = assignment && typeof assignment === 'object' ? assignment : {};
-    const t = getShiftTarget({ ...resident, isChief: !!ba.isChief, blockType: ba.blockType ?? 'EM', targetDelta: ba.targetDelta }, appSettings || {});
+    const asOfBlock = { ...resident, isChief: !!ba.isChief, blockType: ba.blockType ?? 'EM', targetDelta: ba.targetDelta };
+    // A non-schedulable rotation (Elective, Ortho/VAC, ...) owes no EM shifts that block —
+    // getShiftTarget alone would return the base EM target, so gate it like the generator does.
+    const owes = typeof isSchedulable === 'function' ? isSchedulable(asOfBlock) : true;
+    const t = owes ? getShiftTarget(asOfBlock, appSettings || {}) : null;
     if (t != null) {
       totals.targetSum += t;
       totals.hasTarget = true;
@@ -171,6 +175,8 @@ const OFF_SERVICE_SPREAD_COLS = ['assigned', 'nights', 'weekendShifts', 'holiday
  * @param {(resident:object, appSettings:object)=>number|null} getShiftTarget  injected (owned by
  *   ResidentScheduler.jsx) — lib may not import it, see CLAUDE.md
  * @param {(resident:object)=>boolean} [isEm]  injected classifier, defaults to defaultIsEm
+ * @param {(resident:object)=>boolean} [isSchedulable]  injected; a block whose rotation is not
+ *   schedulable contributes shifts but no target
  * @param {number} [outlierMinGroupSize]
  */
 export function buildAyLedger({
@@ -182,6 +188,7 @@ export function buildAyLedger({
   appSettings = {},
   getShiftTarget,
   isEm = defaultIsEm,
+  isSchedulable,
   outlierMinGroupSize = DEFAULT_OUTLIER_MIN_GROUP_SIZE,
 }) {
   const residentIndex = new Map((Array.isArray(allResidents) ? allResidents : []).filter(Boolean).map(r => [r.id, r]));
@@ -204,7 +211,7 @@ export function buildAyLedger({
     const assignments = data.emBlockAssignments && typeof data.emBlockAssignments === 'object' ? data.emBlockAssignments : {};
     for (const rid of Object.keys(schedule)) {
       foldResidentBlock(totalsByResident, rid, schedule[rid], {
-        dates, holidaySet, assignment: assignments[rid], resident: residentIndex.get(rid), getShiftTarget, appSettings,
+        dates, holidaySet, assignment: assignments[rid], resident: residentIndex.get(rid), getShiftTarget, appSettings, isSchedulable,
       });
     }
   }
@@ -218,7 +225,7 @@ export function buildAyLedger({
       const assignments = currentBlock.emBlockAssignments && typeof currentBlock.emBlockAssignments === 'object' ? currentBlock.emBlockAssignments : {};
       for (const rid of Object.keys(schedule)) {
         foldResidentBlock(totalsByResident, rid, schedule[rid], {
-          dates, holidaySet, assignment: assignments[rid], resident: residentIndex.get(rid), getShiftTarget, appSettings,
+          dates, holidaySet, assignment: assignments[rid], resident: residentIndex.get(rid), getShiftTarget, appSettings, isSchedulable,
         });
       }
     }

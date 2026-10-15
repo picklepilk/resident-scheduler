@@ -10230,7 +10230,7 @@ function AyFairnessLedgerCard({ ledger }) {
   return (
     <CollapsibleCard title="AY Fairness Ledger" prefId="ayLedger" defaultOpen={false}
       subtitle={hasRows
-        ? `${ledger.ay} · cumulative load across saved blocks + the current block — display only, never feeds targets or generation`
+        ? `${ledger.ay} · published blocks + current block · display only`
         : `${ledger?.ay || ''} · no published blocks yet this academic year`}>
       {hasRows ? (
         <div className="space-y-5">
@@ -10342,6 +10342,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
     appSettings,
     getShiftTarget,
     isEm: isEmResident,
+    isSchedulable,
   }), [block, allResidents, blocksHistory, ayConf, appSettings]);
 
   function updSD(field, newDates) {

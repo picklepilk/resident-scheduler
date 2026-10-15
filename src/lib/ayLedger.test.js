@@ -287,3 +287,24 @@ describe('untrusted-shape guards', () => {
     expect(() => buildAyLedger({ ay: AY, allResidents: [resident('r1')], getShiftTarget: fakeGetShiftTarget })).not.toThrow();
   });
 });
+
+describe('non-schedulable rotations owe no target', () => {
+  it('a block on a non-schedulable rotation adds shifts but no target', () => {
+    const r1 = resident('r1');
+    const emBlock = snapshot({
+      id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
+      schedule: { r1: { '2026-07-06': 'POD-D' } }, emBlockAssignments: { r1: { blockType: 'EM' } },
+    });
+    const offBlock = snapshot({
+      id: 'b2', startDate: '2026-07-13', endDate: '2026-07-19',
+      schedule: { r1: { '2026-07-13': 'POD-D' } }, emBlockAssignments: { r1: { blockType: 'ELECTIVE' } },
+    });
+    const { groups } = buildAyLedger({
+      ay: AY, allResidents: [r1], blocksHistory: [emBlock, offBlock], getShiftTarget: fakeGetShiftTarget,
+      isSchedulable: r => r.blockType !== 'ELECTIVE',
+    });
+    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    expect(row.assigned).toBe(2);
+    expect(row.target).toBe(16);
+  });
+});
