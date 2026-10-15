@@ -54,6 +54,7 @@ import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib
 import { findSickCallCoverage } from './lib/sickCallCover.js';
 import { findSlotCandidates } from './lib/slotCandidates.js';
 import { findFixablePlans, isFixableBlocked } from './lib/slotFixes.js';
+import { scanUnderTargetSlots, topBlockerReasons } from './lib/underTargetExplainer.js';
 import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
@@ -18838,13 +18839,247 @@ function WhatIfCard({ block, allResidents, coverage, eligOverrides, appSettings,
   );
 }
 
-function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {}, coverage = {}, eligOverrides = {}, dayRules = {} }) {
+// ─── UNDER-TARGET EXPLAINER (Violations tab, underTarget rows) ────────────────────────────────
+// 2026-10-15: per-resident "why are they still short, and what can actually close the gap" panel
+// — the interactive companion to computeUnderTargetDiagnostics' openSlots/blockedBy tally
+// (GenerationReportCard's "Residents left under target" section above). That one explains the
+// WINNING generation attempt's own numbers; this one re-scans the CURRENT schedule live (via
+// src/lib/underTargetExplainer.js's scanUnderTargetSlots), so it never goes stale after a manual
+// edit and works even when the block has no generationReport at all (hand-built schedules).
+// Built on the exact primitives the Coverage board's SlotPanel already uses — useCellHelpers,
+// slotCandidates.js's classifyResidentForSlot (via scanUnderTargetSlots), slotFixes.js's
+// findFixablePlans/isFixableBlocked, the same coverageForAny builder, the same
+// runOrConfirmOverride/OverrideConfirmPanel override-confirm posture — see that component for the
+// slot x residents mirror image of this resident x slots scan.
+function UnderTargetExplainPanel({
+  residentId, name, block, allResidents, appSettings, dayRules, ayConf, coverage,
+  eligOverrides, blocksHistory, updateBlockTracked, showToast,
+}) {
+  const sched = block.schedule || {};
+  const cellHelpers = useCellHelpers({ allResidents, block, sched, eligOverrides, appSettings, dayRules, ayConf, blocksHistory });
+  const dates = useMemo(() => getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
+
+  // Coverage lookup for an arbitrary (shiftId, date) pair — identical to SlotPanel's own
+  // coverageForAny, built from the same primitives computeCoverageByDate uses (never a forked
+  // coverage computation — CLAUDE.md "never fork coverage math").
+  const coverageForAny = useCallback((sid, ds) => {
+    const dow = parseDate(ds).getDay();
+    if (!shiftActiveOnDow(sid, dow)) return { min: 0, max: 0, count: 0 };
+    const state = twelveHourStateFor(ds, ayConf || {});
+    const { min, max } = getCoverageFor(sid, coverage, dow, state);
+    let count = 0;
+    for (const r of allResidents) if (sched[r.id]?.[ds] === sid) count++;
+    return { min, max, count };
+  }, [allResidents, sched, coverage, ayConf]);
+
+  const scan = useMemo(() => scanUnderTargetSlots({
+    residentId, dates, shifts: SHIFTS, schedule: sched, lockedCells: cellHelpers.lockedCells,
+    isEligible: cellHelpers.isEligible, eligibilityReason: cellHelpers.eligibilityReasonFor,
+    hardViolations: cellHelpers.hardViolations, softViolations: cellHelpers.softViolations,
+    targetInfo: cellHelpers.targetInfo, coverageFor: coverageForAny,
+  }), [residentId, dates, sched, cellHelpers, coverageForAny]);
+
+  // Own-schedule fix search, bounded + chunked exactly like SlotPanel's own fixablePlans effect
+  // (one blocked slot per macrotask, so the panel paints before the search runs) — bounded to the
+  // first FIX_MAX_SLOTS blockedFixable entries so a resident with many fixable-looking slots can't
+  // run an unbounded DFS search burst; only consulted when no slot is already flatly legal.
+  const FIX_MAX_SLOTS = 6;
+  const [fixState, setFixState] = useState({ plans: [], done: 0, total: 0, running: false });
+  useEffect(() => {
+    const entries = scan.legal.length || scan.override.length ? [] : scan.blockedFixable.slice(0, FIX_MAX_SLOTS);
+    let cancelled = false;
+    setFixState({ plans: [], done: 0, total: entries.length, running: entries.length > 0 });
+    (async () => {
+      const plans = [];
+      for (let i = 0; i < entries.length; i++) {
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+        if (cancelled) return;
+        const e = entries[i];
+        plans.push(...findFixablePlans({
+          dateStr: e.dateStr, shiftId: e.shiftId, blocked: [e], residents: allResidents, schedule: sched,
+          lockedCells: cellHelpers.lockedCells, coverageFor: coverageForAny,
+          isEligible: cellHelpers.isEligible, hardViolations: cellHelpers.hardViolations,
+          softViolations: cellHelpers.softViolations, blockDates: dates, maxPlansPerResident: 1,
+        }));
+        if (cancelled) return;
+        setFixState({ plans: plans.slice(), done: i + 1, total: entries.length, running: i + 1 < entries.length });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [scan.legal.length, scan.override.length, scan.blockedFixable, allResidents, sched, cellHelpers, coverageForAny, dates]);
+
+  // Same confirm-with-note posture as SlotPanel/ScheduleGrid's own runOrConfirmOverride —
+  // kept local, not hoisted, same reasoning as SlotPanel's own copy of this.
+  const [pendingOverride, setPendingOverride] = useState(null); // {overridable, run} | null
+  const [overrideNote, setOverrideNote] = useState('');
+  function runOrConfirmOverride(candidate, run) {
+    if (candidate?.needsOverride) {
+      const overridable = (candidate.softViolations || []).filter(v => RULE_POLICY[v.rule]?.tier === 'override');
+      setPendingOverride({ overridable, run });
+      return;
+    }
+    run(null);
+  }
+  function confirmOverride() {
+    if (!pendingOverride) return;
+    const ruleIds = [...new Set(pendingOverride.overridable.map(w => w.rule).filter(Boolean))];
+    pendingOverride.run({ ruleIds, note: overrideNote.trim() || null });
+    setPendingOverride(null);
+    setOverrideNote('');
+  }
+
+  function applyAssign(candidate) {
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[residentId] = { ...(s[residentId] || {}), [candidate.dateStr]: candidate.shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Assigned ${name} to ${candidate.shiftId} (${formatDisplayDate(candidate.dateStr)})`, 'green');
+    });
+  }
+
+  // One functional updateBlockTracked for every edit + the final placement (single undo step,
+  // CLAUDE.md "every bulk lock action = ONE functional updateBlockTracked") — identical commit
+  // shape to SlotPanel's own applyFixablePlan, including the final re-validate-before-write guard.
+  function applyFixablePlan(plan) {
+    let nextSchedule = { ...sched };
+    const setCell = (rid, ds, sid) => { nextSchedule = { ...nextSchedule, [rid]: { ...(nextSchedule[rid] || {}), [ds]: sid } }; };
+    const touched = [];
+    for (const e of plan.edits) {
+      if (e.kind === 'drop') { setCell(plan.residentId, e.fromDate, null); touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null }); }
+      else if (e.kind === 'move') {
+        setCell(plan.residentId, e.fromDate, null); setCell(plan.residentId, e.toDate, e.shiftId);
+        touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null }, { rid: plan.residentId, ds: e.toDate, sid: e.shiftId });
+      } else if (e.kind === 'handoff') {
+        setCell(plan.residentId, e.fromDate, null); setCell(e.toResidentId, e.fromDate, e.shiftId);
+        touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null }, { rid: e.toResidentId, ds: e.fromDate, sid: e.shiftId });
+      }
+    }
+    setCell(plan.residentId, plan.final.dateStr, plan.final.shiftId);
+    touched.push({ rid: plan.residentId, ds: plan.final.dateStr, sid: plan.final.shiftId });
+
+    for (const t of touched) {
+      if (t.sid == null) continue;
+      const hard = cellHelpers.hardViolations(t.rid, t.ds, t.sid, nextSchedule);
+      if (hard.length) {
+        showToast('That plan no longer applies cleanly — the schedule changed since it was found. Reopen to recompute.', 'red');
+        return;
+      }
+    }
+    updateBlockTracked(b => ({ ...b, schedule: nextSchedule }));
+    showToast(`Applied ${plan.edits.length} change${plan.edits.length === 1 ? '' : 's'} to legally place ${name} on ${plan.final.shiftId} (${formatDisplayDate(plan.final.dateStr)})`, 'green');
+  }
+
+  function describeEdit(e) {
+    if (e.kind === 'drop') return `Drop their ${e.shiftId} on ${formatDisplayDate(e.fromDate)}`;
+    if (e.kind === 'move') return `Move their ${e.shiftId} from ${formatDisplayDate(e.fromDate)} to ${formatDisplayDate(e.toDate)}`;
+    if (e.kind === 'handoff') {
+      const r = cellHelpers.residentById.get(e.toResidentId);
+      return `Hand their ${e.shiftId} on ${formatDisplayDate(e.fromDate)} to ${r ? `${r.firstName} ${r.lastName}` : e.toResidentId}`;
+    }
+    return '';
+  }
+
+  // Buy-down is NEVER auto-applied here (chief decision, CLAUDE.md "Per-Block Target Overrides")
+  // — this only copies the suggested delta to the clipboard so it can be pasted into the real
+  // Target Δ field (EM Residents tab, setTargetDelta), which is also where the reason note and
+  // buy-down flag live. No cross-tab navigation is attempted; it isn't needed for a copy/paste.
+  function copyBuyDown(n) {
+    const text = String(-Math.abs(n));
+    const ok = () => showToast(`Copied "${text}" — paste into ${name}'s Target Δ field (EM Residents tab)`, 'green');
+    const fail = () => showToast(`Could not copy — enter ${text} manually in ${name}'s Target Δ field (EM Residents tab)`, 'red');
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(ok, fail); else fail();
+  }
+
+  const info = cellHelpers.targetInfo(residentId) || {};
+  const deficit = info.target != null ? Math.max(0, info.target - (info.count ?? 0)) : 0;
+  const topBlockers = topBlockerReasons(scan.blockerTotals, 4);
+  const legalCombined = [...scan.legal, ...scan.override];
+  const fixPlans = fixState.plans;
+
+  return (
+    <div className="mt-2 border border-border rounded-lg p-3 bg-muted/30 text-xs space-y-2.5">
+      <div className="text-muted-foreground">
+        Scanned {scan.scanned} open-headroom slot{scan.scanned === 1 ? '' : 's'} across the block
+        {scan.noHeadroomCount > 0 && <> (plus {scan.noHeadroomCount} already fully staffed)</>}.
+      </div>
+
+      {topBlockers.length > 0 && (
+        <div>
+          <span className="font-semibold text-foreground">Blocked by: </span>
+          {topBlockers.map(b => `${RULE_POLICY[b.rule]?.label || b.rule} (${b.count})`).join(', ')}
+        </div>
+      )}
+
+      {pendingOverride ? (
+        <div>
+          <OverrideConfirmPanel overridable={pendingOverride.overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+          <div className="flex gap-2 mt-1.5">
+            <Button variant="secondary" size="sm" onClick={() => setPendingOverride(null)}>Cancel</Button>
+            <Button variant="primary" size="sm" onClick={confirmOverride}>Confirm override</Button>
+          </div>
+        </div>
+      ) : legalCombined.length > 0 ? (
+        <div>
+          <div className="font-semibold text-foreground mb-1 flex items-center gap-1"><CheckCircle size={12} className="text-green-600"/> Legal now ({legalCombined.length})</div>
+          <ul className="space-y-1">
+            {legalCombined.slice(0, 6).map((c, i) => (
+              <li key={`${c.dateStr}-${c.shiftId}-${i}`} className="flex items-center justify-between gap-2">
+                <span>{formatDisplayDate(c.dateStr)} — {c.shiftId}{c.needsOverride ? ' (override)' : ''}</span>
+                <Button size="sm" variant="secondary" onClick={() => applyAssign(c)}>Assign</Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : fixPlans.length > 0 ? (
+        <div>
+          <div className="font-semibold text-foreground mb-1 flex items-center gap-1"><Wrench size={12}/> Legal after a small edit ({fixPlans.length}{fixState.running ? '…' : ''})</div>
+          <ul className="space-y-2">
+            {fixPlans.slice(0, 4).map((plan, i) => (
+              <li key={i} className="border border-border rounded p-2 bg-card">
+                <div className="mb-1">{formatDisplayDate(plan.final.dateStr)} — {plan.final.shiftId}, after:
+                  <ul className="list-disc list-inside text-muted-foreground">
+                    {plan.edits.map((e, j) => <li key={j}>{describeEdit(e)}</li>)}
+                  </ul>
+                </div>
+                <Button size="sm" variant="secondary" onClick={() => applyFixablePlan(plan)}>Apply</Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : fixState.running ? (
+        <p className="text-muted-foreground">Checking own-schedule fixes ({fixState.done}/{fixState.total})…</p>
+      ) : (
+        <div className="border border-amber-200 bg-amber-50 rounded p-2 space-y-1">
+          <p className="text-amber-800">
+            No legal slot and no small schedule edit closes this — every remaining option is blocked by a
+            hard rule. The target and the safety rules are in genuine conflict for {name} this block.
+          </p>
+          {deficit > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-amber-800">Buy down the target by {deficit}?</span>
+              <Button size="sm" variant="secondary" onClick={() => copyBuyDown(deficit)}>Copy -{deficit}</Button>
+              <span className="text-muted-foreground">→ paste into Target Δ, EM Residents tab</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {}, coverage = {}, eligOverrides = {}, dayRules = {}, updateBlockTracked, showToast }) {
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
   const byRes = useMemo(()=>{
     const m={};
     for(const i of issues){ if(!m[i.residentId]) m[i.residentId]={name:i.name,issues:[]}; m[i.residentId].issues.push(i); }
     return m;
   },[issues]);
+  // Lazy per-resident expander for the under-target explainer (UnderTargetExplainPanel just
+  // above) — only the expanded resident's scan runs, same "don't pay for what isn't open"
+  // posture as the Coverage board's SlotPanel.
+  const [explainOpen, setExplainOpen] = useState({});
 
   const report = block.generationReport;
 
@@ -18876,6 +19111,8 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
       </div>
       {Object.entries(byRes).map(([id,{name,issues:ri}])=>{
         const hasErr=ri.some(i=>i.level==='error');
+        const hasUnderTarget = updateBlockTracked && ri.some(i=>i.rule==='underTarget');
+        const isOpen = !!explainOpen[id];
         return (
           <div key={id} className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
             <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${hasErr?'bg-destructive/10 border-destructive/20':'bg-amber-50 border-amber-100'}`}>
@@ -18887,13 +19124,27 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
               {ri.map((issue,i)=>(
                 <li key={i} className="px-4 py-2.5 flex items-start gap-2">
                   <span className={`mt-0.5 ${issue.level==='error'?'text-destructive':'text-amber-400'}`}>•</span>
-                  <div className="text-sm text-card-foreground">
+                  <div className="text-sm text-card-foreground flex-1">
                     {issue.dateStr && <span className="font-medium text-muted-foreground text-xs mr-1.5">{formatDisplayDate(issue.dateStr)}{issue.shiftId?` · ${issue.shiftId}`:''}</span>}
                     {issue.message}
                   </div>
+                  {issue.rule==='underTarget' && hasUnderTarget && (
+                    <button type="button" onClick={() => setExplainOpen(p => ({ ...p, [id]: !p[id] }))}
+                      className="text-xs font-medium text-primary hover:text-primary/80 shrink-0 flex items-center gap-0.5">
+                      {isOpen ? 'Hide' : 'Explain'} <ChevronDown size={11} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`}/>
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
+            {isOpen && hasUnderTarget && (
+              <div className="px-4 pb-3">
+                <UnderTargetExplainPanel residentId={id} name={name} block={block} allResidents={allResidents}
+                  appSettings={appSettings} dayRules={dayRules} ayConf={ayConf} coverage={coverage}
+                  eligOverrides={eligOverrides} blocksHistory={blocksHistory}
+                  updateBlockTracked={updateBlockTracked} showToast={showToast}/>
+              </div>
+            )}
           </div>
         );
       })}
@@ -23557,7 +23808,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
-          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules}/>}
+          {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
