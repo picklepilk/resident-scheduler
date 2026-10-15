@@ -67,6 +67,38 @@ describe('findFixablePlans', () => {
     ]);
   });
 
+  it('never moves a shift to a date outside blockDates', () => {
+    const blocked = [{ residentId: 'R1', reasons: [{ rule: 'restShiftLength', message: 'rest' }], blockerKinds: ['hardRule'] }];
+    const schedule = { R1: { [PREV1]: 'TRAUMA-N' } };
+    const out = findFixablePlans({
+      dateStr: DATE, shiftId: 'POD-D', blocked, residents: [{ id: 'R1' }], schedule, lockedCells: {},
+      coverageFor: (sid, ds) => (sid === 'TRAUMA-N' && ds === PREV1 ? { min: 2, max: 2, count: 2 } : { min: 0, max: 3, count: 0 }),
+      isEligible: (rid, ds, sid) => rid === 'R1' && ((ds === DATE && sid === 'POD-D') || (ds === MOVE_TARGET && sid === 'TRAUMA-N')),
+      hardViolations: (rid, ds, sid, sched) => (rid === 'R1' && ds === DATE && sid === 'POD-D' ? restBlockedOnPrev1(sched) : []),
+      softViolations: () => [],
+      // Block ends before MOVE_TARGET — the only legal move target is out of block.
+      blockDates: [PREV2, PREV1, DATE, '2026-01-11'],
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('prefers the nearest move target when searchDates arrives in calendar order', () => {
+    const blocked = [{ residentId: 'R1', reasons: [{ rule: 'restShiftLength', message: 'rest' }], blockerKinds: ['hardRule'] }];
+    const schedule = { R1: { [PREV1]: 'TRAUMA-N' } };
+    const FAR = '2026-01-20';
+    const NEAR = '2026-01-12';
+    const out = findFixablePlans({
+      dateStr: DATE, shiftId: 'POD-D', blocked, residents: [{ id: 'R1' }], schedule, lockedCells: {},
+      coverageFor: (sid, ds) => (sid === 'TRAUMA-N' && ds === PREV1 ? { min: 2, max: 2, count: 2 } : { min: 0, max: 3, count: 0 }),
+      isEligible: (rid, ds, sid) => rid === 'R1' && ((ds === DATE && sid === 'POD-D') || ((ds === FAR || ds === NEAR) && sid === 'TRAUMA-N')),
+      hardViolations: (rid, ds, sid, sched) => (rid === 'R1' && ds === DATE && sid === 'POD-D' ? restBlockedOnPrev1(sched) : []),
+      softViolations: () => [],
+      maxPlansPerResident: 1,
+      searchDates: [FAR, NEAR],
+    });
+    expect(out[0].edits[0].toDate).toBe(NEAR);
+  });
+
   it('finds a handoff plan when neither drop nor move is available', () => {
     const blocked = [{ residentId: 'R1', reasons: [{ rule: 'restShiftLength', message: 'rest' }], blockerKinds: ['hardRule'] }];
     const schedule = { R1: { [PREV1]: 'TRAUMA-N' }, R2: {} };

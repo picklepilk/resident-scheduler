@@ -53,7 +53,7 @@ import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
 import { findSickCallCoverage } from './lib/sickCallCover.js';
 import { findSlotCandidates } from './lib/slotCandidates.js';
-import { findFixablePlans } from './lib/slotFixes.js';
+import { findFixablePlans, isFixableBlocked } from './lib/slotFixes.js';
 import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
@@ -20610,10 +20610,18 @@ const HEATMAP_LEGEND = [
   { status: 'over', label: 'Over max' },
 ];
 
+// Shift ids (from `candidates`) whose effectively-eligible roster is non-empty and all PGY-1.
+function pgy1OnlyNow(candidates, allResidents, eligOverrides) {
+  return candidates.filter(sid => {
+    const elig = (allResidents || []).filter(r => getEffectiveEligibility(r, eligOverrides).list.includes(sid));
+    return elig.length > 0 && elig.every(r => Number(r.pgy) === 1);
+  });
+}
+
 // Builds expectedFillerFor's `seniorityRules` param exactly per that file's own ADAPTER comment
 // (src/lib/expectedFiller.js, bottom) — resolved once per (block/appSettings/ayConf), never
 // per shift/date call, since none of these three change per shift or per date.
-function buildSeniorityRules(block, appSettings, ayConf) {
+function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides) {
   const ownerLabel = (key) => {
     const m = /^(.+)_(\d+)$/.exec(key);
     if (!m) return key;
@@ -20626,7 +20634,9 @@ function buildSeniorityRules(block, appSettings, ayConf) {
       [shiftId, `Owners only: ${(owners || []).map(ownerLabel).join(', ')}`])
   );
   return {
-    pgy1OnlyShiftIds: ['TRAUMA-D'],
+    // Live, not hardcoded: a chief override can grant TRAUMA-D beyond PGY-1, and the banner must
+    // not contradict the candidate list under it.
+    pgy1OnlyShiftIds: pgy1OnlyNow(['TRAUMA-D'], allResidents, eligOverrides),
     pedGuardOwnerLabels,
     composition: SENIOR_COMPOSITION,
     isCompositionExempt: (shift, ds) => seniorCompositionExempt(shift, ds),
@@ -20833,7 +20843,7 @@ function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById,
     return n;
   }, [sched, isNightOrWeekendShift]);
 
-  const seniorityRules = useMemo(() => buildSeniorityRules(block, appSettings, ayConf), [block.startDate, appSettings, ayConf]);
+  const seniorityRules = useMemo(() => buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides), [block.startDate, appSettings, ayConf, allResidents, eligOverrides]);
   const expected = useMemo(() => expectedFillerFor({
     shiftId, dateStr, residents: allResidents,
     effectiveEligibleShifts: r => getEffectiveEligibility(r, eligOverrides).list,
@@ -20863,24 +20873,38 @@ function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById,
     return { min, max, count };
   }, [allResidents, sched, coverage, ayConf]);
 
-  // Lazy + bounded (plan: "run it lazily only when the panel opens, and only for that slot") —
-  // SlotPanel only exists while a slot is selected, so this never runs for a slot nobody opened;
-  // keyed off `sched` so it's never stale after an Assign/Apply. `searchDates` is explicitly
-  // clamped to this BLOCK's own dates (minus the target date itself) — slotFixes.js's own default
-  // is an unclamped +/-7 CALENDAR days around dateStr, which would happily propose moving a shift
-  // to a date outside the block (invisible in every grid/calendar view, since those all render off
-  // getBlockDates). A "legal after edits" plan must only ever touch dates the chief can actually
-  // see and review.
-  const fixablePlans = useMemo(() => {
-    if (!candidates.blocked.length) return [];
-    return findFixablePlans({
-      dateStr, shiftId, blocked: candidates.blocked, residents: allResidents, schedule: sched,
-      lockedCells: cellHelpers.lockedCells, coverageFor: coverageForAny,
-      isEligible: cellHelpers.isEligible, hardViolations: cellHelpers.hardViolations,
-      softViolations: cellHelpers.softViolations,
-      searchDates: (dates || []).filter(d => d !== dateStr),
-    });
+  // Lazy + chunked: the search runs only for the open slot, one blocked resident per macrotask, so
+  // the panel paints at once and the page stays responsive (a full search on a ~56-resident block
+  // costs seconds). Restarts (and cancels the old run) whenever the schedule or slot changes, so it
+  // is never stale after an Assign/Apply. `blockDates` clamps every edited and target date to this
+  // block (the lib's +/-7-day window would otherwise reach into the neighbouring block, which no
+  // grid/calendar view shows).
+  const FIX_MAX_RESIDENTS = 10;
+  const [fixState, setFixState] = useState({ plans: [], done: 0, total: 0, running: false });
+  useEffect(() => {
+    const entries = candidates.blocked.filter(isFixableBlocked).slice(0, FIX_MAX_RESIDENTS);
+    let cancelled = false;
+    setFixState({ plans: [], done: 0, total: entries.length, running: entries.length > 0 });
+    (async () => {
+      const plans = [];
+      for (let i = 0; i < entries.length; i++) {
+        // Yield after the next paint, so the panel shows before the first chunk runs.
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+        if (cancelled) return;
+        plans.push(...findFixablePlans({
+          dateStr, shiftId, blocked: [entries[i]], residents: allResidents, schedule: sched,
+          lockedCells: cellHelpers.lockedCells, coverageFor: coverageForAny,
+          isEligible: cellHelpers.isEligible, hardViolations: cellHelpers.hardViolations,
+          softViolations: cellHelpers.softViolations,
+          blockDates: dates || [],
+        }));
+        if (cancelled) return;
+        setFixState({ plans: plans.slice(), done: i + 1, total: entries.length, running: i + 1 < entries.length });
+      }
+    })();
+    return () => { cancelled = true; };
   }, [dateStr, shiftId, candidates.blocked, allResidents, sched, cellHelpers, coverageForAny, dates]);
+  const fixablePlans = fixState.plans;
 
   function nameFor(rid) {
     const r = residentById[rid];
@@ -20981,9 +21005,9 @@ function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById,
       {expected.buckets.length > 0 && (
         <div className="mb-3 flex flex-wrap gap-1">
           {expected.buckets.map(b => (
-            <span key={b.key} title={`${b.availableCount} free of ${b.count} on this rotation`}
+            <span key={b.key} title={`${b.availableCount} of ${b.count} eligible are free this date`}
               className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-              {b.label} ({b.availableCount}/{b.count})
+              {b.label} · {b.availableCount} free
             </span>
           ))}
         </div>
@@ -21028,8 +21052,8 @@ function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById,
           </div>
 
           <div>
-            <h5 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1"><Wrench size={12}/> Legal after edits ({fixablePlans.length})</h5>
-            {fixablePlans.length === 0 ? <p className="text-xs text-muted-foreground">None found.</p> : (
+            <h5 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1"><Wrench size={12}/> Legal after edits ({fixablePlans.length}{fixState.running ? '…' : ''})</h5>
+            {fixablePlans.length === 0 ? <p className="text-xs text-muted-foreground">{fixState.running ? `Checking ${fixState.done + 1} of ${fixState.total}…` : 'None found.'}</p> : (
               <ul className="space-y-2">
                 {fixablePlans.slice(0, 5).map((plan, i) => (
                   <li key={`${plan.residentId}-${i}`} className="text-xs border border-border rounded p-2">

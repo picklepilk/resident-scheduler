@@ -42,7 +42,7 @@ const FIXABLE_HARD_RULE_IDS = new Set([
 // eligibility/hard-clean from scratch) or one of FIXABLE_HARD_RULE_IDS above. An 'eligibility' or
 // 'locked' blocker (or any hard-rule reason outside the fixable set) disqualifies the resident
 // entirely — a partial plan that still leaves one unfixable reason standing is not offered.
-function isFixableBlocked(entry) {
+export function isFixableBlocked(entry) {
   if (!entry || !Array.isArray(entry.reasons) || !entry.reasons.length) return false;
   const kinds = entry.blockerKinds || [];
   if (kinds.includes('eligibility') || kinds.includes('locked')) return false;
@@ -70,14 +70,25 @@ function datesByDistance(centerDateStr, windowDays, includeCenter) {
   return out.map(o => o.d);
 }
 
+// Caller-supplied dates, reordered nearest-to-centerDateStr first (ties: earlier date first) so a
+// 'move' prefers the closest legal target, same as the default window's order.
+function sortByDistance(centerDateStr, dates) {
+  const c = parseDate(centerDateStr).getTime();
+  return dates
+    .map(d => ({ d, dist: Math.abs(parseDate(d).getTime() - c) }))
+    .sort((a, b) => a.dist - b.dist || (a.d < b.d ? -1 : 1))
+    .map(o => o.d);
+}
+
 // This resident's OWN non-empty, unlocked cells within the window, nearest-to-dateStr first
 // (dateStr itself sorts first, at distance 0, which is exactly the cell an 'ownShip'/allWorking
 // blocker needs freed). Bounded to the first `limit` candidates — complexity control, not a
 // correctness requirement (a resident rarely has more than one or two relevant own-shifts this
 // close to the target date).
-function ownEditableDates(scratch, residentId, lockedCells, dateStr, windowDays, limit) {
+function ownEditableDates(scratch, residentId, lockedCells, dateStr, windowDays, limit, inBlock) {
   const out = [];
   for (const d of datesByDistance(dateStr, windowDays, true)) {
+    if (inBlock && !inBlock.has(d)) continue; // never edit a date outside the block
     const sid = (scratch[residentId] || {})[d];
     if (!sid) continue;
     if (lockedCells?.[residentId]?.[d]) continue; // locked cells are never edited
@@ -128,7 +139,7 @@ function search(ctx, residentId, scratch, touched, edits, depthLeft, plansOut) {
 
   if (depthLeft <= 0) return;
 
-  const ownDates = ownEditableDates(scratch, residentId, ctx.lockedCells, ctx.dateStr, ctx.windowDays, ctx.maxEditCandidatesPerLevel);
+  const ownDates = ownEditableDates(scratch, residentId, ctx.lockedCells, ctx.dateStr, ctx.windowDays, ctx.maxEditCandidatesPerLevel, ctx.inBlock);
 
   for (const { dateStr: d, shiftId: sAtD } of ownDates) {
     if (plansOut.length >= ctx.maxPlansPerResident) return;
@@ -149,12 +160,15 @@ function search(ctx, residentId, scratch, touched, edits, depthLeft, plansOut) {
     // 2. MOVE — to another date in the search window where this resident is free, eligible, it has
     // headroom (count < max), and it creates no hard violation.
     const scratchWithoutD = withCell(scratch, residentId, d, null);
+    let moveChecks = 0;
     for (const t of ctx.searchDates) {
       if (plansOut.length >= ctx.maxPlansPerResident) break;
       if (t === d || t === ctx.dateStr) continue;
       if (ctx.lockedCells?.[residentId]?.[t]) continue;
       if ((scratchWithoutD[residentId] || {})[t]) continue; // not free
       if (!ctx.isEligible(residentId, t, sAtD)) continue;
+      // Bound the expensive hard-rule checks per own date (nearest targets come first).
+      if (++moveChecks > ctx.maxMoveCandidatesPerLevel) break;
       const hardAtT = ctx.hardViolations(residentId, t, sAtD, scratchWithoutD) || [];
       if (hardAtT.length) continue;
       const covT = ctx.coverageFor(sAtD, t) || {};
@@ -195,8 +209,10 @@ function search(ctx, residentId, scratch, touched, edits, depthLeft, plansOut) {
 //
 //   blocked — the `blocked` array findSlotCandidates.js returned for this same (dateStr, shiftId).
 //   coverageFor(shiftId, dateStr) => { min, max, count }.
-//   searchDates — optional bounded list of candidate dates for a 'move' edit's target; defaults to
-//     +/- 7 days of dateStr, nearest first.
+//   searchDates — optional list of candidate dates for a 'move' edit's target (reordered nearest
+//     first); defaults to +/- 7 days of dateStr, nearest first.
+//   blockDates — the block's own date list. When given, every edited or target date is clamped to
+//     it, so a plan never touches a date outside the block (no view would show that change).
 //
 // Only attempts residents whose blocker reasons are "own-schedule fixable" (see
 // FIXABLE_HARD_RULE_IDS / isFixableBlocked above); eligibility failures, jeopardy, vacation/
@@ -209,17 +225,22 @@ function search(ctx, residentId, scratch, touched, edits, depthLeft, plansOut) {
 export function findFixablePlans({
   dateStr, shiftId, blocked, residents, schedule, lockedCells, coverageFor,
   isEligible, hardViolations, softViolations,
-  maxEdits = 2, maxResidents = 10, maxPlansPerResident = 2, searchDates,
+  maxEdits = 2, maxResidents = 10, maxPlansPerResident = 2, searchDates, blockDates,
 }) {
   const windowDays = 7;
+  const inBlock = Array.isArray(blockDates) ? new Set(blockDates) : null;
+  const targets = (searchDates ? sortByDistance(dateStr, searchDates) : datesByDistance(dateStr, windowDays, false))
+    .filter(d => !inBlock || inBlock.has(d));
   const ctx = {
     dateStr, shiftId,
     residents: residents || [],
     lockedCells: lockedCells || {},
     coverageFor, isEligible, hardViolations, softViolations,
-    searchDates: searchDates || datesByDistance(dateStr, windowDays, false),
+    searchDates: targets,
+    inBlock,
     windowDays,
     maxEditCandidatesPerLevel: 4,
+    maxMoveCandidatesPerLevel: 8,
     maxPlansPerResident,
   };
 
