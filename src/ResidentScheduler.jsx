@@ -6906,6 +6906,23 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 // the solver reaches for that one date, never competes with coverageMin/targetDeficit.
 const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
 
+// "Deep solve" (admin-facing, 2026-10-15): same solver/polisher pipeline as the default Generate
+// path, just a larger CP-SAT time budget — measured on a real block to leave 9 unfilled minimum
+// slots at 120s vs. 17 at the default 30s (buildSolverPayload's own `maxTimeSeconds: 30`, left
+// unchanged — this is an explicit opt-in override, never a global). Exported so
+// generateViaSolverOrLocal and ResidentScheduler.test.js share one number instead of two literals
+// drifting apart. solver-service has no server-side cap on `config.maxTimeSeconds` (checked
+// 2026-10-15: schemas.py/payload.py accept any float; the only hardcoded ceilings are
+// hint_pin.py's unrelated 30s hint-feasibility pre-check and report/builder.py's unrelated 10s
+// verification-resolve step — neither touches the main staged solve, which reads
+// payload.config.max_time_seconds directly) — 120s needs no server change.
+export const DEEP_SOLVE_MAX_TIME_SECONDS = 120;
+// solveRemote's client-side abort timeout for a deep solve — must clear the solver's own budget
+// plus network/cold-start slack (Fly scale-to-zero can add several seconds), same margin
+// CLAUDE.md's goal doc calls for. The default (non-deep) path keeps solveRemote's own 120000ms
+// default untouched.
+const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
+
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
 // solver-service/docs/PAYLOAD_SCHEMA.md, the authoritative contract this function targets. ALL
@@ -14520,7 +14537,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmUnlockAll, setConfirmUnlockAll] = useState(false);
-  const [confirmGenerate, setConfirmGenerate] = useState(null); // {messages,keptViolations} | null — readiness warnings
+  const [confirmGenerate, setConfirmGenerate] = useState(null); // {messages,keptViolations,deepSolve} | null — readiness warnings
   // Partial regenerate: "Regenerate Unlocked" and date-range regenerate share one confirm modal,
   // gated by the same checkGenerateReadiness warning flow as Clear & Regenerate above.
   const [rangeStart, setRangeStart] = useState('');
@@ -15248,10 +15265,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
   // Warns before generating if the block's manual per-block dates (special-day lists, JC
   // presenters) haven't been entered — chief can override and generate anyway.
-  function requestGenerate() {
+  // `deepSolve`: carried through to the confirm dialog (if one is needed) and from there to
+  // runGenerate — see genConfirmSpec below, which reads it back off `confirmGenerate.deepSolve`.
+  function requestGenerate(deepSolve = false) {
     const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill' });
-    if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate(readiness);
-    else runGenerate(false);
+    if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate({ ...readiness, deepSolve });
+    else runGenerate(false, undefined, deepSolve);
   }
 
   // Shared by runGenerate/runPartialRegenerate: R9 (2026-09-27, CP-SAT-as-polisher) — runs the
@@ -15275,7 +15294,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // report additionally carrying `engineComparison` on the solver path) plus `engineUsed`/`relaxed`
   // for the caller's toast, or `null` when the block has no valid date range (mirrors
   // generateSchedule's own null return).
-  async function generateViaSolverOrLocal(genBlock, clearFirst) {
+  async function generateViaSolverOrLocal(genBlock, clearFirst, deepSolve = false) {
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const hasValidDates = getBlockDates(genBlock.startDate, genBlock.endDate).length > 0;
     if (!hasValidDates) return null;
@@ -15294,12 +15313,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const solverAllowed = appSettings.useSolverService !== false;
     if (SOLVER_ENABLED && solverAllowed) {
       try {
-        setGenStageLabel('Optimizing schedule — up to ~30s…');
-        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule });
+        // Deep solve (admin opt-in, "Try harder (~2 min)"): same pipeline, just a bigger explicit
+        // `config.maxTimeSeconds` override — never the default (buildSolverPayload's own
+        // `maxTimeSeconds: 30` stays the baseline for every other caller) — and a client-side
+        // solveRemote timeout wide enough to cover it (DEEP_SOLVE_TIMEOUT_MS's own header).
+        setGenStageLabel(deepSolve
+          ? 'Deep solve — optimizing, this can take up to ~2 minutes…'
+          : 'Optimizing schedule — up to ~30s…');
+        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
+          config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
         // service 401s and the catch below keeps the already-computed local result.
         const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
-        const json = await solveRemote(payload, { accessToken });
+        const json = await solveRemote(payload, deepSolve ? { accessToken, timeoutMs: DEEP_SOLVE_TIMEOUT_MS } : { accessToken });
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
@@ -15329,7 +15355,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // immediately generate off of it in the same handler, without waiting a render for `block` (a
   // prop) to catch up — reading `block.schedule` here would otherwise still see the pre-clear
   // cells until the next render.
-  async function runGenerate(clearFirst, overrideSchedule) {
+  async function runGenerate(clearFirst, overrideSchedule, deepSolve = false) {
     if (generatingRef.current) return;
     generatingRef.current = true;
     setConfirmRegen(false);
@@ -15340,7 +15366,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       // generateViaSolverOrLocal's header comment) — an emptied schedule here makes its `locked[]`
       // come out empty too, the solver-path equivalent of generateSchedule's clearFirst:true.
       const genBlock = clearFirst ? { ...block, schedule: {} } : { ...block, schedule: overrideSchedule || block.schedule };
-      const res = await generateViaSolverOrLocal(genBlock, clearFirst);
+      const res = await generateViaSolverOrLocal(genBlock, clearFirst, deepSolve);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
       updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
@@ -15748,11 +15774,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         messages: confirmGenerate.messages,
         keptViolations: confirmGenerate.keptViolations,
         onFixAndGenerate: () => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
-          cleared => runGenerate(false, cleared)),
+          cleared => runGenerate(false, cleared, confirmGenerate.deepSolve)),
         onCancel: () => setConfirmGenerate(null),
         primaryLabel: 'Generate Anyway',
         primaryVariant: 'primary',
-        onPrimary: () => runGenerate(false),
+        onPrimary: () => runGenerate(false, undefined, confirmGenerate.deepSolve),
       }
     : confirmRegen
     ? {
@@ -15808,10 +15834,21 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="flex items-center gap-2 flex-wrap">
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
-          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={requestGenerate}
+          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
           </Button>
+          {/* Deep solve (2026-10-15): same Generate pipeline, just a bigger CP-SAT time budget
+              (DEEP_SOLVE_MAX_TIME_SECONDS) passed as an explicit buildSolverPayload config override —
+              the default Generate button above is untouched. Gated on the same condition as the
+              Settings → "Use optimizer service" toggle (SOLVER_ENABLED && useSolverService !== false):
+              there's no solver to ask for extra time otherwise. */}
+          {SOLVER_ENABLED && appSettings.useSolverService !== false && (
+            <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
+              title="Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~30s — can fill more slots on a tight block. Only ships if it beats the regular result.">
+              Deep Solve (~2 min)
+            </Button>
+          )}
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
             title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
             What-If Sweep
@@ -16041,7 +16078,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           <Wand2 size={28} className="mx-auto mb-2 text-primary"/>
           <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
           <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
-          <Button variant="primary" icon={Wand2} onClick={requestGenerate}>
+          <Button variant="primary" icon={Wand2} onClick={() => requestGenerate(false)}>
             Generate Schedule
           </Button>
           <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
