@@ -7,7 +7,7 @@
 // DOM access; window.__SUPABASE_URL__/__SOLVER_URL__ reads are typeof-guarded) — do NOT extract
 // these functions out of the monolith to work around import issues.
 import { describe, it, expect } from 'vitest';
-import { buildSolverPayload, mapSolverResult, summarizeGenerationReport, getEligibleShifts, getShiftTarget } from '../ResidentScheduler.jsx';
+import { buildSolverPayload, mapSolverResult, summarizeGenerationReport, getEligibleShifts, getShiftTarget, DEEP_SOLVE_MAX_TIME_SECONDS } from '../ResidentScheduler.jsx';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -203,6 +203,21 @@ describe('buildSolverPayload', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload({ ...fixture, config: { numWorkers: 2 } });
     expect(payload.config.numWorkers).toBe(2);
+  });
+
+  // "Deep solve" (2026-10-15): the admin-facing "Try harder (~2 min)" option passes
+  // DEEP_SOLVE_MAX_TIME_SECONDS through generateViaSolverOrLocal as an explicit
+  // buildSolverPayload `config.maxTimeSeconds` override — never the default. Pinning the exported
+  // constant's value here (rather than just re-checking the generic override path above) means a
+  // drive-by edit to the constant shows up as a failing assertion with the number in it, not just
+  // a silent behavior change.
+  it('DEEP_SOLVE_MAX_TIME_SECONDS is exported as 120 and flows through as an explicit config override, leaving the plain default untouched', () => {
+    const fixture = makeFixture('standard');
+    expect(DEEP_SOLVE_MAX_TIME_SECONDS).toBe(120);
+    const deepPayload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } });
+    expect(deepPayload.config.maxTimeSeconds).toBe(120);
+    const defaultPayload = buildSolverPayload(fixture);
+    expect(defaultPayload.config.maxTimeSeconds).toBe(30);
   });
 
   // R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): warm-start hint.
