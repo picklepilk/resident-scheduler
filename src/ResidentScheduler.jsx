@@ -22294,7 +22294,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // src/lib/signOutCleanup.js for exactly which keys survive (device-local prefs only). Only when
   // cloud sync is configured: with no cloud, localStorage IS the only copy of the data, and
   // sign-out must never destroy someone's only copy.
-  const [signOutWarning, setSignOutWarning] = useState(null); // null | 'conflict' | 'error'
+  const [signOutWarning, setSignOutWarning] = useState(null); // null | 'conflict' | 'error' | 'unsynced'
 
   function clearLocalDataForSignOut() {
     if (!(SUPABASE_ENABLED && AUTH_ENABLED)) return;
@@ -22314,10 +22314,20 @@ export default function ResidentScheduler({ viewer } = {}) {
   // pending/in-flight debounced cloud save first — never lose an unsaved edit silently. If that
   // flush leaves a conflict open or the last save failed, stop and let the admin choose instead of
   // wiping local data (which may be the only place that edit still exists).
+  // Live view of save state: requestSignOut awaits the flush, so this render's `dbStatus` is stale
+  // by the time it checks; one macrotask lets React commit any status the flush set.
+  const dbLiveRef = useRef({ dbStatus, dbReady });
+  dbLiveRef.current = { dbStatus, dbReady };
+
   async function requestSignOut() {
     await flushPendingCloudSave();
+    await new Promise(r => setTimeout(r, 0));
+    const live = dbLiveRef.current;
     if (cloudConflictRef.current) { setSignOutWarning('conflict'); return; }
-    if (dbStatus === 'error') { setSignOutWarning('error'); return; }
+    if (live.dbStatus === 'error') { setSignOutWarning('error'); return; }
+    // Never read the cloud on this device (load failed/offline): edits made here were never
+    // allowed to sync, so local storage may be their only copy.
+    if (SUPABASE_ENABLED && AUTH_ENABLED && !live.dbReady) { setSignOutWarning('unsynced'); return; }
     await performSignOut();
   }
 
@@ -23288,14 +23298,16 @@ export default function ResidentScheduler({ viewer } = {}) {
           copy of that edit. */}
       {signOutWarning && (
         <ConfirmDialog icon={AlertTriangle} tone="warn"
-          title={signOutWarning === 'conflict' ? "Unresolved save conflict" : "Last cloud save failed"}
+          title={signOutWarning === 'conflict' ? "Unresolved save conflict" : signOutWarning === 'unsynced' ? "Not synced to the cloud" : "Last cloud save failed"}
           actions={
             <>
               <Button variant="secondary" size="sm" onClick={()=>setSignOutWarning(null)}>Stay signed in</Button>
               <Button variant="danger" size="sm" onClick={()=>{ setSignOutWarning(null); performSignOut(); }}>Sign out anyway</Button>
             </>
           }>
-          {signOutWarning === 'conflict'
+          {signOutWarning === 'unsynced'
+            ? <p>This device never loaded the cloud copy, so nothing here has synced. Signing out clears this device's copy. Download a backup in Settings first if you made changes.</p>
+            : signOutWarning === 'conflict'
             ? <p>Another admin saved changes that haven't been reconciled yet (see the conflict dialog above). Signing out now clears this device's local copy before that's resolved — pick Reload/Overwrite up there first, or sign out anyway if you don't need this device's edits.</p>
             : <p>Your last save to the cloud didn't go through{dbError ? <>: <span className="font-mono text-xs">{dbError}</span></> : '.'} Signing out now will clear this device's local copy, which may be the only place that change still exists.</p>}
         </ConfirmDialog>
