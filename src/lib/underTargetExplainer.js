@@ -81,8 +81,10 @@ export function scanUnderTargetSlots({
       const count = cov.count ?? 0;
       if (count >= max) { noHeadroomCount++; continue; }
 
-      if (result.bucket === 'legal') { legal.push({ dateStr: ds, shiftId, ...result.entry }); continue; }
-      if (result.bucket === 'override') { override.push({ dateStr: ds, shiftId, ...result.entry }); continue; }
+      // belowMin: taking this slot also fills a coverage hole, so it sorts first.
+      const belowMin = count < (cov.min ?? 0);
+      if (result.bucket === 'legal') { legal.push({ dateStr: ds, shiftId, belowMin, ...result.entry }); continue; }
+      if (result.bucket === 'override') { override.push({ dateStr: ds, shiftId, belowMin, ...result.entry }); continue; }
 
       const entry = { dateStr: ds, shiftId, ...result.entry };
       for (const r of entry.reasons) blockerTotals[r.rule] = (blockerTotals[r.rule] || 0) + 1;
@@ -90,6 +92,10 @@ export function scanUnderTargetSlots({
     }
   }
 
+  // Stable: below-min slots first, otherwise date order.
+  const holesFirst = (a, b) => (b.belowMin ? 1 : 0) - (a.belowMin ? 1 : 0);
+  legal.sort(holesFirst);
+  override.sort(holesFirst);
   return { legal, override, blockedFixable, blockedOther, blockerTotals, noHeadroomCount, scanned };
 }
 

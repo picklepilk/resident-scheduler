@@ -18902,14 +18902,14 @@ function UnderTargetExplainPanel({
   const info = cellHelpers.targetInfo(residentId) || {};
   const deficit = info.target != null ? Math.max(0, info.target - (info.count ?? 0)) : 0;
   const topBlockers = topBlockerReasons(scan.blockerTotals, 4);
-  const legalCombined = [...scan.legal, ...scan.override];
+  // Coverage holes first (legal before override within each), then the rest.
+  const legalCombined = [...scan.legal, ...scan.override].sort((a, b) => (b.belowMin ? 1 : 0) - (a.belowMin ? 1 : 0));
   const fixPlans = fixState.plans;
 
   return (
     <div className="mt-2 border border-border rounded-lg p-3 bg-muted/30 text-xs space-y-2.5">
       <div className="text-muted-foreground">
-        Scanned {scan.scanned} open-headroom slot{scan.scanned === 1 ? '' : 's'} across the block
-        {scan.noHeadroomCount > 0 && <> (plus {scan.noHeadroomCount} already fully staffed)</>}.
+        {deficit > 0 ? `${deficit} short of target. ` : ''}{scan.scanned} open slot{scan.scanned === 1 ? '' : 's'} checked.
       </div>
 
       {topBlockers.length > 0 && (
@@ -18929,11 +18929,12 @@ function UnderTargetExplainPanel({
         </div>
       ) : legalCombined.length > 0 ? (
         <div>
-          <div className="font-semibold text-foreground mb-1 flex items-center gap-1"><CheckCircle size={12} className="text-green-600"/> Legal now ({legalCombined.length})</div>
+          <div className="font-semibold text-foreground mb-1 flex items-center gap-1"><CheckCircle size={12} className="text-green-600"/> Can take now ({legalCombined.length})</div>
           <ul className="space-y-1">
             {legalCombined.slice(0, 6).map((c, i) => (
               <li key={`${c.dateStr}-${c.shiftId}-${i}`} className="flex items-center justify-between gap-2">
-                <span>{formatDisplayDate(c.dateStr)} — {c.shiftId}{c.needsOverride ? ' (override)' : ''}</span>
+                <span>{formatDisplayDate(c.dateStr)} — {c.shiftId}{c.needsOverride ? ' (override)' : ''}
+                  {c.belowMin && <span className="ml-1.5 text-[10px] font-medium px-1 rounded bg-red-50 text-red-700 border border-red-200">fills gap</span>}</span>
                 <Button size="sm" variant="secondary" onClick={() => applyAssign(c)}>Assign</Button>
               </li>
             ))}
