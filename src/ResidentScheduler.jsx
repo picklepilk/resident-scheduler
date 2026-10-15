@@ -8521,11 +8521,12 @@ function Modal({ title, onClose, children, wide = false }) {
           doesn't leave a gap or clip the footer) — a centered max-w-md/2xl card is unusable at
           390px, especially once a keyboard opens above an input. At `sm:` and up this reverts to
           the original centered card untouched. */}
-      <div className={`bg-white shadow-2xl flex flex-col w-full h-full max-h-[100dvh] rounded-none
+      <div role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined}
+        className={`bg-white shadow-2xl flex flex-col w-full h-full max-h-[100dvh] rounded-none
         sm:h-auto sm:max-h-[90vh] sm:rounded-xl ${wide ? 'sm:w-full sm:max-w-2xl' : 'sm:w-full sm:max-w-md'}`}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 shrink-0">
           <h2 className="text-base font-semibold text-gray-800">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
+          <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4">{children}</div>
       </div>
@@ -17816,6 +17817,10 @@ function JeopardyTag() {
 
 function CandidateRow({ resident, count, target, softViolations, needsOverride, shiftNote, actionLabel, onApply, isJeopardy }) {
   if (!resident) return null;
+  // The same rule can be reported more than once (e.g. once per affected date), so collapse
+  // identical messages before joining them into the one warning line.
+  const warnings = [...new Set(softViolations.map(v => v.message || labelForIssue(v)))];
+  const overTarget = target != null && count + 1 > target;
   return (
     <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
       <div className="min-w-0">
@@ -17826,10 +17831,11 @@ function CandidateRow({ resident, count, target, softViolations, needsOverride, 
         </div>
         <div className="text-[11px] text-muted-foreground">
           {target != null ? `${count}→${count + 1} of ${target}` : `${count} shifts (no target)`}
+          {overTarget && <span className="text-amber-600"> · over target</span>}
           {shiftNote && ` · ${shiftNote}`}
         </div>
-        {softViolations.length > 0 && (
-          <div className="text-[11px] text-amber-600 mt-0.5">{softViolations.map(v => v.message || labelForIssue(v)).join('; ')}</div>
+        {warnings.length > 0 && (
+          <div className="text-[11px] text-amber-600 mt-0.5">{warnings.join('; ')}</div>
         )}
       </div>
       <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>{actionLabel}</Button>
@@ -17888,7 +17894,7 @@ function SickCallCoverModal({ allResidents, block, plan, residentId, onResidentI
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="block text-[10px] font-medium text-muted-foreground mb-1">Resident</label>
-            <select value={residentId} onChange={e => onResidentIdChange(e.target.value)}
+            <select aria-label="Resident who is out" value={residentId} onChange={e => onResidentIdChange(e.target.value)}
               className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background max-w-[12rem]">
               <option value="">Select resident…</option>
               {allResidents.map(r => <option key={r.id} value={r.id}>{r.lastName}, {r.firstName}</option>)}
@@ -17896,13 +17902,13 @@ function SickCallCoverModal({ allResidents, block, plan, residentId, onResidentI
           </div>
           <div>
             <label className="block text-[10px] font-medium text-muted-foreground mb-1">From</label>
-            <input type="date" value={rangeStart} min={block.startDate} max={block.endDate}
+            <input type="date" aria-label="Out from" value={rangeStart} min={block.startDate} max={block.endDate}
               onChange={e => setRange(e.target.value, rangeEnd || e.target.value)}
               className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background"/>
           </div>
           <div>
             <label className="block text-[10px] font-medium text-muted-foreground mb-1">Through</label>
-            <input type="date" value={rangeEnd} min={block.startDate} max={block.endDate}
+            <input type="date" aria-label="Out through" value={rangeEnd} min={block.startDate} max={block.endDate}
               onChange={e => setRange(rangeStart || e.target.value, e.target.value)}
               className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background"/>
           </div>
