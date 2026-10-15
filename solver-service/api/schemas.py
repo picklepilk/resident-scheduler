@@ -11,10 +11,22 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ConfigModel(BaseModel):
+class _RequestModel(BaseModel):
+    """Base for every REQUEST-side model. `extra="allow"` keeps keys this file
+    doesn't declare: api/main.py hands `request.model_dump()` to
+    solver/io/payload.py, so pydantic's default `extra="ignore"` silently dropped
+    any payload field added there but not mirrored here (obligationsExemptAfterNight,
+    truePrimary, grDates and others were lost on the HTTP path while the CLI path
+    the tests use kept them). payload.py stays the real typed parse.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ConfigModel(_RequestModel):
     maxTimeSeconds: float = 30
     # 0 = "use os.cpu_count()" -- see solver/io/payload.py's Config.num_workers.
     numWorkers: int = 0
@@ -29,20 +41,20 @@ class ConfigModel(BaseModel):
     symmetryLevel: Optional[int] = None
 
 
-class BlockModel(BaseModel):
+class BlockModel(_RequestModel):
     startDate: str
     endDate: str
     dates: list
 
 
-class ShiftModel(BaseModel):
+class ShiftModel(_RequestModel):
     startH: int
     durationH: int
     type: str
     area: str
 
 
-class CapsModel(BaseModel):
+class CapsModel(_RequestModel):
     nights: Optional[int] = None
     trauma: Optional[int] = None
     jcRemaining: Optional[int] = None
@@ -52,20 +64,20 @@ class CapsModel(BaseModel):
     fm1PedsMax: Optional[int] = None
 
 
-class TraumaPedsSplitModel(BaseModel):
+class TraumaPedsSplitModel(_RequestModel):
     traumaDates: list = Field(default_factory=list)
     pedsDates: list = Field(default_factory=list)
     traumaCap: int
     pedsCap: int
 
 
-class AyPriorModel(BaseModel):
+class AyPriorModel(_RequestModel):
     nights: int = 0
     weekends: int = 0
     holidays: int = 0
 
 
-class ResidentModel(BaseModel):
+class ResidentModel(_RequestModel):
     id: str
     cohort: Optional[str] = None
     target: Optional[int] = None
@@ -80,18 +92,18 @@ class ResidentModel(BaseModel):
     ayPrior: AyPriorModel = Field(default_factory=AyPriorModel)
 
 
-class LockedCellModel(BaseModel):
+class LockedCellModel(_RequestModel):
     residentId: str
     date: str
     shiftId: str
 
 
-class CoverageEntryModel(BaseModel):
+class CoverageEntryModel(_RequestModel):
     min: int
     max: int
 
 
-class PreferenceModel(BaseModel):
+class PreferenceModel(_RequestModel):
     residentId: str
     shiftId: str
     date: str
@@ -99,12 +111,12 @@ class PreferenceModel(BaseModel):
     tag: str = ""
 
 
-class SettingsModel(BaseModel):
+class SettingsModel(_RequestModel):
     enforceRest: bool = True
     enforceWeekendOff: bool = True
 
 
-class SolveRequest(BaseModel):
+class SolveRequest(_RequestModel):
     version: int = 1
     config: ConfigModel = Field(default_factory=ConfigModel)
     block: BlockModel
