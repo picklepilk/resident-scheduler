@@ -63,6 +63,7 @@ import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import { applyScenario, compareResultSets } from './lib/whatIf.js';
 import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
+import { buildAyLedger, DEFAULT_OUTLIER_MIN_GROUP_SIZE } from './lib/ayLedger.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -10124,6 +10125,139 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
   );
 }
 
+// ─── AY FAIRNESS LEDGER (Dashboard card) ───────────────────────────────────
+// Thin presentation layer over lib/ayLedger.js's buildAyLedger — all the aggregation, the AY
+// population rule, and the "display only, never feeds targets/generation" guarantee live there.
+// This component only renders what that pure function already computed.
+const AY_LEDGER_EM_COLUMNS = [
+  { key: 'assigned', label: 'Shifts' },
+  { key: 'target', label: 'Target' },
+  { key: 'deltaFromTarget', label: '+/−' },
+  { key: 'nights', label: 'Nights' },
+  { key: 'weekendShifts', label: 'Wknd' },
+  { key: 'holidayShifts', label: 'Hol' },
+  { key: 'twelveHour', label: '12h' },
+  { key: 'blocks', label: 'Blocks' },
+];
+const AY_LEDGER_OFF_SERVICE_COLUMNS = AY_LEDGER_EM_COLUMNS.filter(c => c.key !== 'target' && c.key !== 'deltaFromTarget');
+
+function AyLedgerGroupTable({ group }) {
+  const columns = group.excludedFromSpread ? AY_LEDGER_OFF_SERVICE_COLUMNS : AY_LEDGER_EM_COLUMNS;
+  const [sortKey, setSortKey] = useState(group.excludedFromSpread ? 'name' : 'deltaFromTarget');
+  const [sortDir, setSortDir] = useState(1);
+  function toggleSort(key) {
+    if (key === sortKey) setSortDir(d => -d);
+    else { setSortKey(key); setSortDir(1); }
+  }
+  const sortedRows = useMemo(() => {
+    const list = [...group.rows];
+    list.sort((a, b) => {
+      const av = sortKey === 'name' ? a.name : a[sortKey];
+      const bv = sortKey === 'name' ? b.name : b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;   // nulls (e.g. unknown target) always sort last
+      if (bv == null) return -1;
+      if (typeof av === 'string') return sortDir * av.localeCompare(bv);
+      return sortDir * (av - bv);
+    });
+    return list;
+  }, [group.rows, sortKey, sortDir]);
+
+  const arrow = key => sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : '';
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-200">
+            <th className="text-left py-1.5 pr-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
+              onClick={() => toggleSort('name')}>
+              Resident{arrow('name')}
+            </th>
+            {columns.map(c => (
+              <th key={c.key} className="text-right py-1.5 px-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
+                onClick={() => toggleSort(c.key)}>
+                {c.label}{arrow(c.key)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sortedRows.map(r => (
+            <tr key={r.residentId} className="border-b border-gray-100 hover:bg-gray-50">
+              <td className="py-1 pr-2 whitespace-nowrap text-gray-700">
+                {r.name} <span className="text-gray-400">PGY-{r.pgy ?? '—'}</span>
+              </td>
+              {columns.map(c => {
+                const v = r[c.key];
+                const isOutlier = (group.outlierIds[c.key] || []).includes(r.residentId);
+                const display = v == null ? '—' : (c.key === 'deltaFromTarget' && v > 0 ? `+${v}` : v);
+                return (
+                  <td key={c.key}
+                    className={`text-right py-1 px-2 whitespace-nowrap ${isOutlier ? 'bg-amber-50 text-amber-700 font-semibold rounded' : 'text-gray-700'}`}>
+                    {display}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+        {!group.excludedFromSpread && (
+          <tfoot>
+            <tr className="border-t-2 border-gray-200 text-gray-500">
+              <td className="py-1.5 pr-2 font-medium whitespace-nowrap">Spread (min / median / max)</td>
+              {columns.map(c => {
+                const s = group.stats[c.key];
+                return (
+                  <td key={c.key} className="text-right py-1.5 px-2 whitespace-nowrap">
+                    {!s || s.count === 0 ? '—' : `${s.min} / ${s.median} / ${s.max}`}
+                  </td>
+                );
+              })}
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    </div>
+  );
+}
+
+function AyFairnessLedgerCard({ ledger }) {
+  const hasRows = !!ledger && ledger.groups.some(g => g.rows.length);
+  return (
+    <CollapsibleCard title="AY Fairness Ledger" prefId="ayLedger" defaultOpen={false}
+      subtitle={hasRows
+        ? `${ledger.ay} · cumulative load across saved blocks + the current block — display only, never feeds targets or generation`
+        : `${ledger?.ay || ''} · no published blocks yet this academic year`}>
+      {hasRows ? (
+        <div className="space-y-5">
+          {ledger.groups.map(g => (
+            <div key={g.key}>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+                {g.label}
+                {g.excludedFromSpread && (
+                  <span className="ml-2 normal-case font-normal text-gray-400">
+                    (brief rotations — shown for reference, not spread/outlier-scored)
+                  </span>
+                )}
+              </h4>
+              <AyLedgerGroupTable group={g}/>
+            </div>
+          ))}
+          <p className="text-[11px] text-gray-400">
+            Amber = &gt;1.5×IQR beyond the group's own Q1/Q3 for that column (only flagged once a group has
+            at least {DEFAULT_OUTLIER_MIN_GROUP_SIZE} members with a value). "Target" sums each block's own
+            effective target using TODAY's Settings — a display estimate, not a time-accurate historical
+            value, and it is never read by the generator or validator.
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400">Publish at least one block this academic year to populate this ledger.</p>
+      )}
+    </CollapsibleCard>
+  );
+}
+
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
   emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
@@ -10193,6 +10327,20 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const minTotal = blockDates.reduce((s,ds)=>s+(coverageByDate[ds]?.minTotal||0), 0);
   const fillPct = minTotal > 0 ? Math.round((shiftCount/minTotal)*100) : 0;
 
+  // AY Fairness Ledger (display only — see lib/ayLedger.js header). getShiftTarget/isEmResident
+  // are module-scope functions in this same file (not props) since lib/ayLedger.js can't import
+  // either directly (lib may not import ResidentScheduler.jsx).
+  const ayLedger = useMemo(() => buildAyLedger({
+    ay: block.academicYear || getAcademicYear(),
+    allResidents,
+    currentBlock: block,
+    blocksHistory,
+    ayConf,
+    appSettings,
+    getShiftTarget,
+    isEm: isEmResident,
+  }), [block, allResidents, blocksHistory, ayConf, appSettings]);
+
   function updSD(field, newDates) {
     updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: newDates } }));
   }
@@ -10210,6 +10358,11 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         blocksHistory={blocksHistory} loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished}
         onDeleteSnapshot={deleteBlockSnapshot}
         setTab={setTab} ayData={ayData} updateAyData={updateAyData} blockSaveState={blockSaveState}/>
+
+      {/* AY Fairness Ledger — cumulative per-resident load across this AY's published blocks +
+          the current block, so the chief can balance the NEXT block. Display only; see
+          lib/ayLedger.js. */}
+      <AyFairnessLedgerCard ledger={ayLedger}/>
 
       {/* Current Block — inline editable form, relocated from the old Home tab (now removed —
           the Block Calendar above replaced its Saved Blocks list, and AYConferenceEditor moved
