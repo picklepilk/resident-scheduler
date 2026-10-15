@@ -221,6 +221,10 @@ class ObjectiveInfo:
     coverage_slacks: dict
     post_night_rest_penalties: list
     target_deficit_vars: dict          # residentId -> (target:int, deficitVar)
+    # (shiftId, date) -> BoolVar, mirrors CoverageResult.overstaff 1:1 -- carried here so solve.py's
+    # `_build_report` can read back which (shift,date) pairs actually spent the solver's last-resort
+    # +1-over-max allowance (gap fix: previously invisible, mapSolverResult hardcoded `repairs: []`).
+    coverage_overstaff: dict = field(default_factory=dict)
     weights: dict = field(default_factory=dict)  # final, rule-priority-adjusted weights actually used
     # R9: tier name -> summed (coef*expr) linear expression for that tier,
     # each an OrTools linear expr (0 for an empty tier -- see TermGroup.add's
@@ -306,11 +310,26 @@ def _add_overstaff_term(group: TermGroup, coverage_result: CoverageResult, weigh
 # only ever a 'warn' (JS never blocks export/hard-errors on it), landing in
 # the quality vector's fairnessPlusShape term instead (TIER_QUALITY). Same
 # split the JS engine's own validateAll makes via `isEmResident(resident)`.
+#
+# Gap fix (conferenceTolerated, mirrors validateAll's own branch EXACTLY):
+# when `payload.block_touches_conference` is True, an EM-core resident's
+# shortfall of exactly 1 is JS's `underTarget` + `conferenceTolerated: true`
+# at 'warn' level, NOT 'error' -- it still counts toward blockingWarnCount
+# (TIER_BLOCKING), never errorCount (TIER_ERRORS). A shortfall of 2+ still
+# charges the full remainder at TIER_ERRORS (JS only tolerates exactly 1).
+# Modeled by splitting `deficit` into `tolerated = min(deficit, 1)` (goes to
+# TIER_BLOCKING at the `conferenceTolerated` weight) and
+# `remainder = deficit - tolerated` (goes to TIER_ERRORS at the usual
+# `targetDeficitCore` weight) -- `deficit` itself (the var `hint_pin.py`
+# pins against) is unchanged, only which group(s) its value feeds.
 def _add_target_deficit_terms(
-    model, payload: Payload, store: VarStore, core_group: TermGroup, noncore_group: TermGroup, weights: dict
+    model, payload: Payload, store: VarStore,
+    core_group: TermGroup, noncore_group: TermGroup, blocking_group: TermGroup,
+    weights: dict,
 ) -> dict:
     core_coef = int(weights["targetDeficitCore"]["perUnit"])
     noncore_coef = int(weights["targetDeficit"]["perUnit"])
+    tolerated_coef = int(weights["conferenceTolerated"]["perUnit"])
     result = {}
     for resident in payload.residents:
         if resident.target is None:
@@ -320,7 +339,15 @@ def _add_target_deficit_terms(
         model.add_max_equality(deficit, [resident.target - assigned_expr, 0])
         result[resident.id] = (resident.target, deficit)
         if resident.is_em_core:
-            core_group.add(core_coef, deficit)
+            if payload.block_touches_conference:
+                tolerated = model.new_int_var(0, 1, f"deficit_tolerated[{resident.id}]")
+                model.add_min_equality(tolerated, [deficit, 1])
+                remainder = model.new_int_var(0, resident.target, f"deficit_remainder[{resident.id}]")
+                model.add(remainder == deficit - tolerated)
+                blocking_group.add(tolerated_coef, tolerated)
+                core_group.add(core_coef, remainder)
+            else:
+                core_group.add(core_coef, deficit)
         else:
             noncore_group.add(noncore_coef, deficit)
     return result
@@ -654,7 +681,9 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
 
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
     _add_overstaff_term(tier_rank, coverage_result, weights)
-    target_deficit_vars = _add_target_deficit_terms(model, payload, store, tier_errors, tier_quality, weights)
+    target_deficit_vars = _add_target_deficit_terms(
+        model, payload, store, tier_errors, tier_quality, tier_blocking, weights
+    )
     post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, tier_blocking, weights)
     _add_fairness_terms(model, payload, store, tier_quality, weights)
     _add_isolated_night_term(model, payload, store, tier_quality, weights)
@@ -680,6 +709,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
         coverage_slacks=coverage_result.slacks,
         post_night_rest_penalties=post_night_rest_penalties,
         target_deficit_vars=target_deficit_vars,
+        coverage_overstaff=coverage_result.overstaff,
         weights=weights,
         stage_exprs=stage_exprs,
     )

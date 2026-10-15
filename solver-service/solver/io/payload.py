@@ -236,6 +236,16 @@ class Payload:
     # behavior (never LESS strict than before).
     obligations_exempt_after_night: dict = field(default_factory=dict)  # residentId -> set[date]
 
+    # ---- gap fix (solver-side conference tolerance, mirrors JS validateAll's `conferenceTolerated`
+    # branch): True when this block overlaps an ACEP/AAEM/SAEM-style conference AT ALL (same
+    # `getConferencesInBlock(block.startDate, block.endDate, ayConf).length > 0` check
+    # `buildSolverPayload`/validateAll both run) -- block-level only, combined with each resident's
+    # own `is_em_core` by objective.py's target-deficit term, same as JS's `isHardCategory &&
+    # blockConferences.length > 0` combination. OPTIONAL, defaults to False: an older JS build that
+    # doesn't send this field gets the pre-this-fix behavior (every EM-core shortfall charged at
+    # full TIER_ERRORS weight, never downgraded) -- never LESS strict than before.
+    block_touches_conference: bool = False
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
@@ -412,6 +422,7 @@ def parse_payload(raw: dict) -> Payload:
             gr_end_h=int(raw.get("grEndH", 12) or 12),
             true_primary=raw.get("truePrimary", {}) or {},
             obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
+            block_touches_conference=bool(raw.get("blockTouchesConference", False)),
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

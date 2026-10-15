@@ -136,6 +136,9 @@ class SolveRequest(BaseModel):
     emResidentIds: list = Field(default_factory=list)
     emPgy2ResidentIds: list = Field(default_factory=list)
     emPgy3ResidentIds: list = Field(default_factory=list)
+    # Gap fix (solver-side conference tolerance) -- see solver/io/payload.py's
+    # Payload.block_touches_conference. Optional, defaults False.
+    blockTouchesConference: bool = False
 
 
 class SolveResponse(BaseModel):

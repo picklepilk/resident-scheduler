@@ -6916,6 +6916,13 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   const traumaCap = getTraumaCap(appSettings);
   const ay = block.academicYear || getAcademicYearFor(block.startDate);
   const jeoPolicy = appSettings.jeopardyPolicy ?? 'warn';
+  // Conference-tolerance signal (solver gap 1, PAYLOAD_SCHEMA.md's R9 tier-mapping table): mirrors
+  // validateAll's own `blockConferences` EXACTLY (same getConferencesInBlock call, same args) so the
+  // solver can downgrade an EM-core resident's exactly-1-shift shortfall from TIER_ERRORS to
+  // TIER_BLOCKING on a block that touches a conference, same as validateAll's `conferenceTolerated`
+  // downgrade from 'error' to 'warn'. Block-level only (not per-resident) — isEmCore on each
+  // residents[] entry is what the solver combines it with, same as isHardCategory does here.
+  const blockConferences = getConferencesInBlock(block.startDate, block.endDate, ayConf);
 
   // Shift catalog: startH/durationH is the single source of truth Python derives ALL its own
   // temporal math from (rest gaps, circadian pairs, cross-midnight ends) — see the schema's own
@@ -7338,6 +7345,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // convention as the three fields directly above: an OPTIONAL field an older solver build simply
     // ignores, falling back to its own hardcoded 12.
     grEndH: GR_END_H,
+    // Solver gap 1 fix: see this function's own `blockConferences` comment above.
+    blockTouchesConference: blockConferences.length > 0,
   };
 }
 
@@ -7396,6 +7405,27 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
     for (let k = 0; k < n; k++) unfilled.push({ dateStr: u.dateStr, shiftId: u.shiftId, slotIndex: k, reason: u.reason || 'coverageShort' });
   }
 
+  // Solver gap 2 fix: `report.overstaffed` arrives as a per-(shift,date) AGGREGATE
+  // ({shiftId,dateStr,count,max} — solve.py's `_build_report`, the `overstaff` BoolVar only ever
+  // allows +1 over max, see coverage.py's own docstring) since the model has no notion of WHICH
+  // resident is "the extra one" — only that the shift/date ended up one over. Re-expand into this
+  // app's own `report.overstaffed` shape (one entry per over-placement, `{residentId,name,date,
+  // shiftId}` — see repairPass Phase 5's `overstaffFor`) by picking that many residents off the
+  // FINAL merged schedule's own (shiftId,dateStr) roster — arbitrary WHICH one (the model never
+  // tracked that), but the (shift,date) and count are exact. Only runs when `allResidents` is
+  // supplied, same optional/backward-compatible posture as podSubstitutes/underTarget above.
+  const overstaffed = [];
+  if (Array.isArray(json?.report?.overstaffed) && Array.isArray(allResidents)) {
+    for (const o of json.report.overstaffed) {
+      const over = Math.max(1, (Number(o.count) || 0) - (Number(o.max) || 0));
+      const assignedHere = allResidents.filter(r => schedule[r.id]?.[o.dateStr] === o.shiftId);
+      for (let k = 0; k < over && k < assignedHere.length; k++) {
+        const r = assignedHere[assignedHere.length - 1 - k];
+        overstaffed.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, date: o.dateStr, shiftId: o.shiftId });
+      }
+    }
+  }
+
   const keptManual = countAssigned(block?.schedule);
   const totalAssigned = countAssigned(schedule);
   const filled = Math.max(0, totalAssigned - keptManual);
@@ -7434,6 +7464,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
       })(),
       capacityWarnings: [],
       repairs: [],
+      overstaffed,
       feasibility: json?.feasibility ?? null,
       qualityVector: null,
     },

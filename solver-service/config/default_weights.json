@@ -2,6 +2,7 @@
   "coverageMin": { "perSlack": 1000000 },
   "targetDeficitCore": { "perUnit": 10000 },
   "postNightRest": { "perViolation": 50000 },
+  "conferenceTolerated": { "perUnit": 50000 },
   "targetDeficit": { "perUnit": 5000 },
   "overstaffCoverage": { "perUnit": 2000 },
   "pedsInternNightDeficit": { "perUnit": 800 },

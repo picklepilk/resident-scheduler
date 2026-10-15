@@ -397,6 +397,24 @@ describe('buildSolverPayload', () => {
     expect(payload.alternationExemptDates).not.toContain('2026-07-20');
   });
 
+  // Gap fix: solver-side conference tolerance signal (PAYLOAD_SCHEMA.md's R9 tier-mapping table —
+  // the solver used to carry no "does this block touch a conference" signal at all, so a
+  // conference-tolerated 1-shift EM-core shortfall was charged at full errorCount-equivalent weight
+  // server-side). Mirrors validateAll's own `blockConferences.length > 0` check exactly.
+  describe('blockTouchesConference', () => {
+    it('is false for a standard block with no conferences configured', () => {
+      const fixture = makeFixture('standard');
+      const payload = buildSolverPayload(fixture);
+      expect(payload.blockTouchesConference).toBe(false);
+    });
+
+    it('is true for a block whose ayConf carries a conference window overlapping it', () => {
+      const fixture = makeFixture('conferenceBlock');
+      const payload = buildSolverPayload(fixture);
+      expect(payload.blockTouchesConference).toBe(true);
+    });
+  });
+
   // engineHeadToHead.test.js (2026-09-26) found the solver placing an overnight on the block's
   // final Sunday far more often than the JS engine when the next block hasn't been imported — see
   // FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header comment for why the JS engine's own
@@ -611,6 +629,56 @@ describe('mapSolverResult', () => {
       };
       const { report } = mapSolverResult(json, { block: ppBlock });
       expect(report.podSubstitutes).toEqual([]);
+    });
+  });
+
+  // Gap fix: the solver's own last-resort +1-over-max placements used to be invisible
+  // (mapSolverResult hardcoded `repairs: []`, and `report.overstaffed` didn't exist at all) — see
+  // docs/PAYLOAD_SCHEMA.md's known-gaps section. `report.overstaffed` arrives from the solver as a
+  // per-(shift,date) AGGREGATE ({shiftId,dateStr,count,max}) since the model has no notion of WHICH
+  // resident is "the extra one" — mapSolverResult re-expands it into this app's own per-placement
+  // shape ({residentId,name,date,shiftId}, same as repairPass Phase 5's `overstaffFor`) by picking
+  // residents off the FINAL merged schedule's own assignees for that (shift,date).
+  describe('overstaffed', () => {
+    const r1 = { id: 'r1', firstName: 'Ann', lastName: 'Alpha' };
+    const r2 = { id: 'r2', firstName: 'Bo', lastName: 'Beta' };
+
+    it('expands a {shiftId,dateStr,count,max} aggregate into one entry per over-placement', () => {
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { r1: { '2026-07-06': 'POD-D' }, r2: { '2026-07-06': 'POD-D' } },
+        report: {
+          unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [],
+          overstaffed: [{ shiftId: 'POD-D', dateStr: '2026-07-06', count: 2, max: 1 }],
+        },
+      };
+      const { report } = mapSolverResult(json, { block, allResidents: [r1, r2] });
+      expect(report.overstaffed).toHaveLength(1);
+      expect(report.overstaffed[0]).toMatchObject({ date: '2026-07-06', shiftId: 'POD-D' });
+      expect(['r1', 'r2']).toContain(report.overstaffed[0].residentId);
+      expect(report.overstaffed[0].name).toMatch(/Ann Alpha|Bo Beta/);
+    });
+
+    it('is empty when the response carries no overstaffed field (backward compatible)', () => {
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1, schedule: {},
+        report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
+      };
+      const { report } = mapSolverResult(json, { block, allResidents: [r1, r2] });
+      expect(report.overstaffed).toEqual([]);
+    });
+
+    it('is empty when allResidents is omitted, even if the response carries an aggregate (no residents to attribute to)', () => {
+      const json = {
+        status: 'OPTIMAL', mode: 'strict', seed: 1,
+        schedule: { r1: { '2026-07-06': 'POD-D' } },
+        report: {
+          unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [],
+          overstaffed: [{ shiftId: 'POD-D', dateStr: '2026-07-06', count: 2, max: 1 }],
+        },
+      };
+      const { report } = mapSolverResult(json, { block });
+      expect(report.overstaffed).toEqual([]);
     });
   });
 });

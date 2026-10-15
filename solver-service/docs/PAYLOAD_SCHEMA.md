@@ -67,7 +67,10 @@ solver-side mirror of `ResidentScheduler.jsx`'s repairPass Phase 5
 
 ## Known gap (not fixed here, out of scope)
 
-The solver's `/solve` response shape (`_build_report`/`_build_report_relaxed`
+**FIXED 2026-10-15** — see this doc's own dated section near the bottom
+("Two engine gaps closed"). The paragraph below is kept for history.
+
+~~The solver's `/solve` response shape (`_build_report`/`_build_report_relaxed`
 in `solve.py`) has no `overstaffed` field, and `mapSolverResult`
 (`ResidentScheduler.jsx`) hardcodes `repairs: []` for the solver path — so an
 `overstaff` var the objective spent is invisible to `GenerationReportCard`
@@ -75,7 +78,7 @@ today (the app still ends up correctly staffed/under-target-lifted, just
 without the explicit "these residents got a +1-over-max shift" surfacing the
 JS engine's own `report.overstaffed` provides). Left out of this change to
 keep it minimal; would need a report-shape addition on both sides plus a
-`docs/PAYLOAD_SCHEMA.md` response-shape update if picked up later.
+`docs/PAYLOAD_SCHEMA.md` response-shape update if picked up later.~~
 
 ## R7 (2026-09-27): rule-severity policy + ACGME EM work-hour rules — solver parity
 
@@ -294,7 +297,7 @@ every pre-existing `test_weight_tiering.py` invariant stays green unchanged).
 
 | JS `betterQuality` slot | Solver objective term(s) | Notes / gaps |
 |---|---|---|
-| `errorCount` (validateAll 'error' level) | `targetDeficitCore.perUnit` (EM-core resident under shift-count target) | Every OTHER JS 'error' (acgme/program tier, `rulePolicy.js`) is already a solver HARD constraint (circadian, trauma caps, ACGME hours, senior composition, ...) — 0 by construction in a strict-pass-1 solve, so it needs no objective term. **Gap**: JS's `conferenceTolerated` exception (a 1-shift EM-core shortfall during a conference block downgrades from 'error' to blockingWarnCount) has NO solver equivalent — the solver payload carries no "does this block touch a conference" signal, so a solver-side conference-tolerated shortfall is still charged at full `targetDeficitCore` weight, same tier as any other EM-core shortfall. Not fixed here (would need a new payload field); in practice the solver still gets PUSHED toward the same target the JS side aims for, so this only matters for the exact objective magnitude, not the direction. |
+| `errorCount` (validateAll 'error' level) | `targetDeficitCore.perUnit` (EM-core resident under shift-count target), minus the tolerated unit on a conference block — see below | Every OTHER JS 'error' (acgme/program tier, `rulePolicy.js`) is already a solver HARD constraint (circadian, trauma caps, ACGME hours, senior composition, ...) — 0 by construction in a strict-pass-1 solve, so it needs no objective term. **FIXED 2026-10-15** (was a documented gap): JS's `conferenceTolerated` exception (a 1-shift EM-core shortfall during a conference block downgrades from 'error' to blockingWarnCount) now has a solver equivalent — `payload.blockTouchesConference` (new, `buildSolverPayload`'s `blockTouchesConference`, same `getConferencesInBlock(...).length > 0` check validateAll itself runs) tells `_add_target_deficit_terms` to split an EM-core resident's `deficit` into `tolerated = min(deficit, 1)` (charged at the new `conferenceTolerated.perUnit` weight, into `TIER_BLOCKING`) and `remainder = deficit - tolerated` (still `targetDeficitCore.perUnit`, `TIER_ERRORS`) whenever the flag is set. Only the first unit moves — a 2+ shortfall still charges the remainder at full `TIER_ERRORS` weight, matching JS's own "scoped to a shortfall of exactly 1" comment. See "Two engine gaps closed" below for the full change and the re-measured `conferenceBlock` head-to-head outcome. |
 | `blockingWarnCount` (JS `EXPORT_BLOCKING_RULE_IDS`: `postNightRest` + every `rulePolicy.js` 'override'-tier rule) | `postNightRest.perViolation` | Override-tier rules (`traumaRunCap`, `podPgy3Composition`, `wellnessWednesday`, ...) are hard-never-broken by the solver's own strict pass 1 too (mirrors the JS generator, which also never breaks them) — 0 by construction, no objective term needed in `TIER_BLOCKING`. They only become genuinely violable in PASS 2 (relaxed), which is a documented gap below. |
 | `qualityVector[n0,n1,n2]` (`coverageMin`/`seniorComposition`/`postNightRest`, in `rulePriority` order) | `coverageMin.perSlack` + `overstaffCoverage.perUnit` (`TIER_RANK`) | `seniorComposition` is hard (0, no term needed). `postNightRest` is already pinned to its true minimum by `TIER_BLOCKING` above, regardless of `rulePriority` order — same as the JS side, where `blockingWarnCount` (unconditional) always outranks the quality vector (rulePriority-ordered) as a lexicographic tier, so a `postNightRest`-first `rulePriority` doesn't change WHICH count gets minimized first, only which of `coverageMin`/`postNightRest` (already both effectively pinned by earlier tiers) would be re-ranked if either weren't. `overstaffCoverage` has no `betterQuality` slot of its own in JS either (`ResidentScheduler.jsx`'s own comment on repair Phase 5) — placed here since that's its natural weight-ordering position (between ordinary soft rules and target deficit). |
 | `qualityVector[fairnessPlusShape]` | Everything else (`TIER_QUALITY`): `targetDeficit` (non-core), `fairness.*`, `isolatedNight`, `workShape.*`, `traumaSecondInRun`/`traumaMidRun`/`nightDurationAlternation`/`secondRestDay`/`pedsInternNightDeficit`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `podEmComposition`/`flexEmComposition`, `podPgy2Fallback`/`flexPgy3Fallback`, `seniorTruePrimary`, `dowPreference` | Rolled into ONE combined solve stage (`_STAGE_3_NAME`, alongside `TIER_RANK`) rather than a 4th separate stage — JS's own `qualityVector` is itself one lexicographic tuple, not two further top-level `betterQuality` slots, so a 4th CP-SAT stage would over-split it relative to what it's modeling. |
@@ -428,10 +431,12 @@ file plus stdout) is the regression gate; everything else in that file remains m
   different, orthogonal lexicographic ladder from `betterQuality`'s. Staging BOTH ladders in one
   solve is real design work left for a future round. The warm-start hint still applies in pass 2
   (and `repair_hint` is allowed there, since pass 2 is a single solve, not a repeated one).
-- `conferenceTolerated` (see the tier-mapping table above): no solver-side signal exists for "this
+- ~~`conferenceTolerated` (see the tier-mapping table above): no solver-side signal exists for "this
   block touches a conference", so a 1-shift EM-core shortfall during a conference block is still
   charged at full `TIER_ERRORS` weight instead of downgrading to blocking-warn severity like the JS
-  side does. Would need a new payload field (e.g. `blockTouchesConference: bool`) to close.
+  side does. Would need a new payload field (e.g. `blockTouchesConference: bool`) to close.~~
+  **FIXED 2026-10-15** — see "Two engine gaps closed" below and the tier-mapping table's own
+  `errorCount` row.
 - **`stageSplit`-default bug invalidated the ORIGINAL characterization below (fixed 2026-09-27)**:
   `solver/io/payload.py`'s `parse_payload` had a second, stale hardcoded fallback of `(0.3, 0.2,
   0.5)` for an absent `config.stageSplit`, disagreeing with `Config.stage_split`'s own default of
@@ -880,3 +885,97 @@ nontrivial CP-SAT addition out of scope for this task. Since the solver only eve
 local-engine warm start (R9) and must strictly beat it to ship, this gap's worst case is the solver
 settling for a local schedule's existing night-stint shape rather than actively improving it — never
 a regression.
+
+## Two engine gaps closed (2026-10-15)
+
+Closes the two long-standing, explicitly-deferred gaps this doc documented elsewhere
+(`errorCount` row of the R9 tier-mapping table; the "Known gap (not fixed here, out of scope)"
+section near the top of this file) — both struck through above rather than silently rewritten, per
+this repo's "every rule here is load-bearing" convention.
+
+### Gap 1: `conferenceTolerated` now has a solver-side signal
+
+**Payload**: new OPTIONAL field `blockTouchesConference: bool` (default `false`). JS
+(`buildSolverPayload`, `ResidentScheduler.jsx`) computes it with the EXACT SAME call validateAll's
+own `conferenceTolerated` branch uses — `getConferencesInBlock(block.startDate, block.endDate,
+ayConf).length > 0` — so the two can never drift on "does this block touch a conference." Parsed in
+`solver/io/payload.py` (`Payload.block_touches_conference`) AND declared on `api/schemas.py`'s
+`SolveRequest` — the schema declaration is NOT optional busywork: `SolveRequest` is a Pydantic
+`BaseModel` with the library default `extra="ignore"`, and `api/main.py`'s `solve_endpoint` calls
+`request.model_dump()` before `parse_payload` ever sees the raw dict, so a field `SolveRequest`
+doesn't declare is silently dropped before it reaches `solver/io/payload.py` at all, regardless of
+what `Payload`'s own dataclass declares or defaults. (This same gap already existed for several
+older optional fields, e.g. `obligationsExemptAfterNight`/`truePrimary`/`grDates` — out of scope to
+fix here, but `test_conference_tolerance.py`'s
+`test_block_touches_conference_survives_the_api_schema_boundary` guards this NEW field against the
+same class of regression via a real `TestClient` round-trip, not just a `parse_payload` unit test.)
+
+**Objective** (`solver/model/objective.py`'s `_add_target_deficit_terms`): when the flag is set, an
+EM-core resident's `deficit` (unchanged var, same one `hint_pin.py` pins against) is split into
+`tolerated = min(deficit, 1)` — charged at the new `conferenceTolerated.perUnit` weight
+(`config/default_weights.json`, `50000`, same magnitude as `postNightRest` since both now share
+`TIER_BLOCKING`) — and `remainder = deficit - tolerated`, still charged at `targetDeficitCore.perUnit`
+in `TIER_ERRORS`. Only the first unit ever moves, matching JS's own "scoped to a shortfall of
+exactly 1 (2+ is still a real problem)" comment; a non-EM-core resident's deficit (already routed to
+`TIER_QUALITY`'s `targetDeficit`, non-core) is untouched either way. `hint_pin.py` needed no change:
+its `targetDeficitCore` pin sums the raw (unweighted) `deficit` vars directly off
+`objective.target_deficit_vars`, which this change never alters — only which group(s) a deficit's
+*value* feeds into, not the deficit var itself.
+
+**Tests**: `tests/test_conference_tolerance.py` (new) — `payload.block_touches_conference` defaults
+`False`; a shortfall of 1 under the flag lands entirely in `TIER_BLOCKING` (0 in `TIER_ERRORS`); a
+shortfall of 2 under the flag tolerates only the first unit (`TIER_ERRORS` gets exactly 1 unit's
+worth); the flag is a no-op without it (`TIER_ERRORS` gets the full deficit); a non-EM-core resident
+is unaffected regardless; the API-schema round-trip test above. `src/lib/solverPayload.test.js`
+(updated) — `buildSolverPayload` emits `blockTouchesConference: false` for the `standard` fixture and
+`true` for `conferenceBlock` (which has a real ACEP window inside the block, `CONFERENCE_AY_CONF`).
+
+### Gap 2: solver over-max ("+1 overstaff") placements are now visible in the report
+
+**Response**: `solve.py`'s `_build_report` (used by both the strict-pass-1 and relaxed-pass-2 report
+builders) now includes `report["overstaffed"]`: a list of `{shiftId, dateStr, count, max}`, one entry
+per `(shift, date)` pair whose `overstaff` BoolVar (`solver/model/coverage.py`) actually fired.
+`count` is always `max + 1` — the BoolVar only ever allows exactly +1 over `max` (coverage.py's own
+docstring), never unbounded. This is a per-`(shift,date)` AGGREGATE, not per-resident: the model has
+no notion of WHICH assigned resident is "the extra one," only that the pair ended up one over.
+`ObjectiveInfo` gained a `coverage_overstaff` field (mirrors `coverage_slacks` 1:1) so `_build_report`
+can read the BoolVars back; `_build_report`/`_build_report_relaxed` both now take `payload` (threaded
+through, previously only `solver`/`objective`) so they can look up each pair's own `max` out of
+`payload.coverage`. `_empty_report` also gained `"overstaffed": []` for response-shape consistency on
+a genuine INFEASIBLE.
+
+**Client** (`mapSolverResult`, `ResidentScheduler.jsx`): re-expands each aggregate entry into this
+app's own per-placement `report.overstaffed` shape — `{residentId, name, date, shiftId}`, the EXACT
+shape `repairPass` Phase 5's `overstaffFor` already produces for the local engine, so
+`GenerationReportCard`'s existing "Placed over maximum staffing" subsection (`report.overstaffed||[]`
+`.length > 0` gate) renders a solver-sourced entry identically, no UI change needed. Picks `count -
+max` residents (always 1 in practice) off the FINAL merged schedule's own assignees for that
+`(shift, date)` — which specific resident is arbitrary (the model never tracked that), but the
+`(shift, date)` and count are exact. Only runs when `allResidents` is supplied, same
+optional/backward-compatible posture as `podSubstitutes`/`underTarget` filtering elsewhere in this
+function. `report.repairs` is deliberately left `[]` for the solver path still — it is never rendered
+by `GenerationReportCard` (only `report.overstaffed` is), and nothing else reads it off a solver
+result.
+
+**Tests**: `tests/test_overstaffed_report.py` (new) — empty when nothing was overstaffed; a tight
+2-resident/1-slot fixture that forces the solver to spend the allowance once, asserting the exact
+`{shiftId, dateStr, count, max}` entry; the key is always present (even `[]`) on an otherwise-solvable
+result. `src/lib/solverPayload.test.js` (updated) — `mapSolverResult` expands a canned aggregate into
+one `{residentId, name, date, shiftId}` entry attributable to an actual final-schedule assignee; is
+empty with no `overstaffed` field in the response (backward compatible); is empty when `allResidents`
+is omitted even if the response carries an aggregate (no residents to attribute to).
+
+### Verification
+
+- `solver-service`: full `pytest` suite — 214 passed (205 pre-existing + 9 new), zero regressions.
+- JS: `npx vitest run src/lib/solverPayload.test.js` — 53 passed (48 pre-existing + 5 new).
+  `SOLVER_PARITY=1 npx vitest run src/lib/solverParity.test.js` and
+  `chiefBenchmark.solver.test.js` (real CP-SAT subprocess, run individually) — both still pass.
+- `SOLVER_PARITY=1 npx vitest run src/lib/engineHeadToHead.test.js`, run once alone: **R9
+  win/tie/loss 0W/4T/0L — standard=tie, understaffed=tie, vacationHeavy=tie, conferenceBlock=tie.**
+  `conferenceBlock` in particular now ties on `errorCount` (1 vs 1) where this doc's own prior
+  3-run measurement (see "Pin-to-hint re-measurement" above) recorded a loss specifically from this
+  gap ("errorCount 1→2 — the pre-existing, documented `conferenceTolerated` gap"); no fixture
+  regressed. `vacationHeavy` remains in `KNOWN_GAP_VARIANTS` (its hint is still reported infeasible
+  by `evaluate_hint` for the separate, pre-existing GR-obligation-staleness reason documented above —
+  untouched by this task) but tied, not lost, on this particular run.
