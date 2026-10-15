@@ -61,17 +61,19 @@
 #     both talk to `${VITE_SUPABASE_URL}/rest/v1` and `/auth/v1` on *.supabase.co; supabase-js
 #     also carries a Realtime client capable of wss:// even though no `.channel()` call exists in
 #     src/ today (grep confirmed) — connect-src allows both defensively.
-#   - Optional CP-SAT solver (src/lib/solverClient.js, gated by VITE_SOLVER_URL/SOLVER_ENABLED)
-#     posts to `${VITE_SOLVER_URL}/solve`. No solver hostname is committed anywhere in this repo
-#     (it's Netlify-env-only) — connect-src allows *.fly.dev as the documented hosting platform;
-#     narrow this to the exact solver hostname once pulled from the Netlify dashboard's env vars.
+#   - Optional CP-SAT solver posts to `${VITE_SOLVER_URL}/solve`; connect-src names the live host
+#     (resident-scheduler-solver.fly.dev, confirmed from the deployed page 2026-10-15). Supabase is
+#     pinned to this project's own host too. A new solver/Supabase host must be added here.
+#   - ENFORCING since 2026-10-15, after a local run of the built app under this exact policy.
+#     font-src needs data: — Vite inlines the small woff/woff2 files as data: URLs; the first
+#     enforcing test blocked every font.
 #   - Framing: the app is never embedded (user-confirmed 2026-10-14), so frame-ancestors 'none'
 #     and X-Frame-Options DENY (enforced now — XFO has no report-only mode, and nothing frames the
 #     app). pdfSave()'s iframe branch is dead in production as a result; harmless to keep.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.fly.dev; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://wjyygoansjfbzzfvtsjq.supabase.co wss://wjyygoansjfbzzfvtsjq.supabase.co https://resident-scheduler-solver.fly.dev; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"

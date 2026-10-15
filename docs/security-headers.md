@@ -66,3 +66,12 @@ are resolved:
 3. Keep `X-Content-Type-Options` / `Referrer-Policy` / `Permissions-Policy` /
    `Strict-Transport-Security` as-is — they were already enforced from the start and nothing
    about flipping the CSP line changes them.
+
+## Status (2026-10-15): enforcing
+
+The policy is now `Content-Security-Policy` (enforcing), with `connect-src` pinned to this
+project's Supabase host and the live solver host, and `font-src 'self' data:`. Verified by
+serving the built bundle and the dev server under the exact policy (generate, Grid CSV, ICS,
+PDF matrix): the only violation found was Vite's inlined `data:` fonts, now allowed. If the
+Supabase project or solver host changes, update `connect-src` in `netlify.toml` or those
+requests will be blocked.
