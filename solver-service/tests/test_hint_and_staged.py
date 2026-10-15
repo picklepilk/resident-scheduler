@@ -175,13 +175,14 @@ def test_staged_stage_with_no_terms_is_skipped_without_crashing():
 def test_stage_time_budgets_sum_within_total_and_respect_split():
     payload = parse_payload(load_fixture("small_feasible.json"))
     object.__setattr__(payload.config, "max_time_seconds", 30.0)
-    object.__setattr__(payload.config, "stage_split", (0.3, 0.2, 0.5))
+    object.__setattr__(payload.config, "stage_split", (0.3, 0.1, 0.4, 0.2))
     budgets = _stage_time_budgets(payload)
-    assert len(budgets) == 3
+    assert len(budgets) == 4
     assert sum(budgets) <= payload.config.max_time_seconds + 1e-6
-    # Roughly proportional (30/20/50) -- exact equality isn't required, but
-    # the largest stage must be stage 3 and the smallest stage 2.
-    assert budgets[2] > budgets[0] > budgets[1]
+    # Roughly proportional (30/10/40/20) -- exact equality isn't required, but
+    # stage 3 (coverage/rank) must be the largest and stage 2 (blocking) the
+    # smallest.
+    assert budgets[2] > budgets[0] > budgets[3] > budgets[1]
 
 
 def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch):
@@ -235,29 +236,116 @@ def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch)
 
 def test_stage_time_budgets_falls_back_to_default_split_when_misconfigured():
     payload = parse_payload(load_fixture("small_feasible.json"))
-    object.__setattr__(payload.config, "stage_split", (0.0, 0.0, 0.0))
+    object.__setattr__(payload.config, "stage_split", (0.0, 0.0, 0.0, 0.0))
     budgets = _stage_time_budgets(payload)
     assert sum(budgets) <= payload.config.max_time_seconds + 1e-6
-    # Default split is 15/15/70 (see payload.py's Config.stage_split) --
-    # stages 1-2 tied, stage 3 by far the largest.
-    assert budgets[2] > budgets[0] == budgets[1]
+    # Default split is 15/15/50/20 (see payload.py's Config.stage_split) --
+    # stages 1-2 tied, stage 3 (coverage) by far the largest, stage 4
+    # (quality) the second-largest.
+    assert budgets[2] > budgets[3] > budgets[0] == budgets[1]
+
+
+def test_stage_time_budgets_wrong_length_falls_back_to_default_split():
+    """A `stageSplit` whose length doesn't match the (now 4) staged-solve
+    stages must degrade to the default rather than silently zipping stray
+    fractions onto the wrong stages."""
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "stage_split", (0.3, 0.2, 0.5))  # stale 3-tuple
+    budgets = _stage_time_budgets(payload)
+    assert len(budgets) == 4
+    assert budgets[2] > budgets[3] > budgets[0] == budgets[1]
 
 
 def test_parse_payload_without_stage_split_uses_configs_own_default():
     """Reviewer-caught bug: `parse_payload`'s fallback for an absent
     `config.stageSplit` was a second, stale hardcoded literal `(0.3, 0.2,
-    0.5)` that disagreed with `Config.stage_split`'s own default of
-    `(0.15, 0.15, 0.7)` (payload.py L55) -- and with docs/PAYLOAD_SCHEMA.md,
-    which documents 15/15/70. Every request that omitted `stageSplit`
-    therefore silently ran the OLD, worse-measured 30/20/50 split even after
-    R9 shipped 15/15/70 as the intended default. Fixed to reference
-    `Config.stage_split` directly so there is exactly one place this number
-    lives.
+    0.5)` that disagreed with `Config.stage_split`'s own default -- and with
+    docs/PAYLOAD_SCHEMA.md. Every request that omitted `stageSplit` therefore
+    silently ran the OLD, worse-measured split even after R9 shipped the
+    intended default. Fixed to reference `Config.stage_split` directly so
+    there is exactly one place this number lives.
     """
     raw = load_fixture("small_feasible.json")
     assert "stageSplit" not in raw.get("config", {})
     payload = parse_payload(raw)
-    assert payload.config.stage_split == (0.15, 0.15, 0.7)
+    assert payload.config.stage_split == (0.15, 0.15, 0.5, 0.2)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-15 (real-block gap fix): TIER_RANK/TIER_QUALITY split into two
+# genuinely separate staged-solve stages, and unused per-stage time budget
+# rolls forward instead of sitting idle. See solve.py's `_solve_staged` own
+# docstring (BUDGET ROLLOVER paragraph) for the measured anomaly this fixes:
+# giving the solver MORE total time used to make real-block coverageMiss
+# WORSE (120s regressed to the hint's own 23, vs. 30s's 20), because stages
+# 1-2's share of the budget grew right along with the total even though they
+# rarely need more than a second or two, burning the surplus on tiebreak
+# search noise instead of handing it to the stage that still has real
+# combinatorial work left (coverage, then quality).
+# ---------------------------------------------------------------------------
+
+def test_rank_and_quality_run_as_two_separate_stage_solves_not_one(monkeypatch):
+    """small_feasible.json (no hint) has non-empty TIER_ERRORS (r1 is
+    EM-core), TIER_BLOCKING (a night shift exists, so postNightRest penalty
+    vars exist), TIER_RANK (D's coverage min is 1/day), and TIER_QUALITY (r1
+    has a dowPreference bonus) -- every one of the 4 stages actually solves.
+    `_carry_hint` runs once per non-final stage transition: ERRORS->BLOCKING,
+    BLOCKING->RANK, and -- the thing this test actually proves, now that
+    RANK and QUALITY are no longer combined into one solve -- RANK->QUALITY
+    too. Before the 2026-10-15 split this would have been only 2 calls."""
+    payload = parse_payload(load_fixture("small_feasible.json"))
+
+    carry_hint_calls = []
+    original_carry_hint = solve_module._carry_hint
+
+    def spy_carry_hint(model, store, solver):
+        carry_hint_calls.append(True)
+        original_carry_hint(model, store, solver)
+
+    monkeypatch.setattr(solve_module, "_carry_hint", spy_carry_hint)
+
+    result = solve(payload)
+
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert len(carry_hint_calls) == 3, (
+        "expected 3 stage-to-stage hint carries (errors->blocking, "
+        "blocking->rank, rank->quality) -- got "
+        f"{len(carry_hint_calls)}; TIER_RANK and TIER_QUALITY may have been "
+        "recombined into one solve"
+    )
+
+
+def test_budget_rollover_grows_a_later_stage_when_an_earlier_one_finishes_early(monkeypatch):
+    """small_feasible.json is trivial enough that every stage proves OPTIMAL
+    in well under its own tiny proportional share of a 10s budget -- so each
+    stage's leftover time should roll forward, making the LAST stage's actual
+    `max_time_in_seconds` far bigger than its naive proportional share
+    (`_stage_time_budgets`' own, pre-rollover numbers)."""
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 10.0)
+    proportional_budgets = _stage_time_budgets(payload)
+
+    seen_budgets = []
+    original_cpsolver_solve = cp_model.CpSolver.solve
+
+    def recording_solve(self, model):
+        seen_budgets.append(self.parameters.max_time_in_seconds)
+        return original_cpsolver_solve(self, model)
+
+    monkeypatch.setattr(cp_model.CpSolver, "solve", recording_solve)
+
+    result = solve(payload)
+
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert len(seen_budgets) == 4, f"expected one solve() call per stage, got {seen_budgets}"
+    # Every stage but the first got AT LEAST its own proportional share plus
+    # whatever rolled forward -- never less than the bare proportional split.
+    for actual, proportional in zip(seen_budgets, proportional_budgets):
+        assert actual >= proportional - 1e-9
+    # The real proof: stage 4 (quality) actually received noticeably more
+    # than its own ~30% share because stages 1-3 all finished almost
+    # instantly on this trivial fixture.
+    assert seen_budgets[-1] > proportional_budgets[-1] * 1.5
 
 
 # ---------------------------------------------------------------------------

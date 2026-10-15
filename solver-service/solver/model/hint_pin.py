@@ -1,13 +1,19 @@
-"""R9 follow-up (2026-09-27, "pin the polisher to its own hint"): the staged
-solve (`solve.py`'s `_solve_staged`) already bounds each of its 3 stages
-lexicographically, but stage 3 minimizes `TIER_RANK + TIER_QUALITY` as ONE
-combined expression -- nothing stops CP-SAT from trading coverage slack
-(TIER_RANK) for a cheaper quality move (TIER_QUALITY) inside that single
-solve, even though the warm-start hint already achieved some particular
-coverage value. That's the diagnosed root cause of `engineHeadToHead.test.js`
-losses where the solver's `qualityVector` total improved but its own
-`coverageMiss` got WORSE than the JS engine's hint schedule (see
-docs/PAYLOAD_SCHEMA.md's dated R9 section).
+"""R9 follow-up (2026-09-27, "pin the polisher to its own hint"): at the time
+this was written, the staged solve (`solve.py`'s `_solve_staged`) bounded each
+of its 3 stages lexicographically, but its last stage minimized
+`TIER_RANK + TIER_QUALITY` as ONE combined expression -- nothing stopped
+CP-SAT from trading coverage slack (TIER_RANK) for a cheaper quality move
+(TIER_QUALITY) inside that single solve, even though the warm-start hint
+already achieved some particular coverage value. That's the diagnosed root
+cause of `engineHeadToHead.test.js` losses where the solver's `qualityVector`
+total improved but its own `coverageMiss` got WORSE than the JS engine's hint
+schedule (see docs/PAYLOAD_SCHEMA.md's dated R9 section).
+
+2026-10-15: `_solve_staged` now runs `TIER_RANK` and `TIER_QUALITY` as two
+genuinely separate lexicographic stages (see that function's own docstring),
+which closes most of this same gap structurally -- but the pins below stay:
+they're a cheap, always-on, multi-worker-nondeterminism-proof floor underneath
+whatever the staged solve's own search does, not a substitute for it.
 
 Fix: before the staged solve ever runs, measure exactly what the hint itself
 achieves on the 3 components the JS `betterQuality` ladder can actually see

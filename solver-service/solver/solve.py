@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from ortools.sat.python import cp_model
 
 from solver.build import BuildResult, build_model
-from solver.io.payload import Payload
+from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
 from solver.model.hint_pin import apply_hint_pins, evaluate_hint
 from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK
@@ -25,15 +25,37 @@ SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 PROBE_TIME_SECONDS = 5.0
 
 # R9 (2026-09-27, CP-SAT-as-polisher): the staged solve runs the JS engine's
-# 3-tier ladder (errorCount, blockingWarnCount, qualityVector) as 3 SEPARATE
-# solves on the SAME model, each fixing an upper bound on the tier(s) before
-# it and re-optimizing only what's left -- see solve()/`_solve_staged`'s own
-# docstring and docs/PAYLOAD_SCHEMA.md's dated R9 section for the full
-# tier-to-objective-term mapping. `TIER_RANK`/`TIER_QUALITY` (objective.py's
-# 4 groups) are deliberately combined into ONE 3rd solve rather than 4 -- the
-# JS side's own qualityVector is itself just one lexicographic tuple, not two
-# further top-level betterQuality slots, so a 4th stage would over-split it.
-_STAGE_3_NAME = "tier3_rankAndQuality"
+# betterQuality ladder (errorCount, blockingWarnCount, qualityVector) as a
+# sequence of SEPARATE solves on the SAME model, each fixing an upper bound on
+# the tier(s) before it and re-optimizing only what's left -- see
+# solve()/`_solve_staged`'s own docstring and docs/PAYLOAD_SCHEMA.md's dated
+# R9 section for the full tier-to-objective-term mapping.
+#
+# 2026-10-15 (real-block gap fix): `TIER_RANK` (coverageMin + overstaff) and
+# `TIER_QUALITY` (fairness/workShape/...) used to be combined into ONE 3rd
+# solve, on the theory that JS's own `qualityVector` is a single field so a
+# 4th stage would "over-split" it. Measured on a real 58-resident block, that
+# combined stage left a LOT of coverage on the table: a dedicated
+# coverageMiss-only CP-SAT solve (`solver/bound_probe.py`) proved coverageMiss
+# 1 achievable, OPTIMAL, where the combined stage 3 only ever got to ~20 (vs.
+# local's 23) even at a 120s budget -- and JS's own `compareVectors`
+# (`scheduleQuality.js`) is in fact a PLAIN element-by-element lexicographic
+# compare of `[errorCount, blockingWarnCount, n0, n1, n2, fairnessPlusShape]`,
+# so `coverageMiss` (n0) already strictly dominates `fairnessPlusShape` on the
+# JS side -- combining them into one CP-SAT objective relies on WEIGHT-
+# MAGNITUDE dominance (`coverageMin.perSlack` 1,000,000 vs. everything in
+# `TIER_QUALITY` bounded well under it, see objective.py's own module
+# docstring) to approximate that same ordering, which is exactly the kind of
+# "weighted ratchet" fragility that module's docstring already warns is prone
+# to search-budget starvation on a big-enough instance: CP-SAT has to jointly
+# search coverage AND quality to even recognize an improving move, instead of
+# being free to hammer on coverage alone the way `bound_probe.py`'s dedicated
+# single-objective solve does. Splitting them into two true lexicographic
+# stages -- `TIER_RANK` alone, then `TIER_QUALITY` alone -- gives coverage a
+# clean, undiluted objective and (with `_stage_time_budgets`' rollover) a much
+# bigger share of the time budget, without changing what either tier actually
+# measures.
+_STAGE_NAMES = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_QUALITY)
 
 
 def _num_workers(payload: Payload) -> int:
@@ -70,7 +92,7 @@ def _configure_solver(payload: Payload, allow_repair_hint: bool = True) -> cp_mo
     a new bound + new hints) is solved AGAIN afterward, even by a brand-new
     CpSolver instance with repair_hint left at its default (confirmed by
     hand -- the corruption lives in the model's own cached state, not the
-    solver object). The staged solve re-solves the SAME model up to 3 times,
+    solver object). The staged solve re-solves the SAME model up to 4 times,
     so it can never safely set this. It doesn't need to: repair_hint only
     matters for the ORIGINAL, possibly-illegal JS-supplied hint (stage 1);
     every hint staged-solve carries forward after that is this model's OWN
@@ -105,19 +127,22 @@ def _is_empty_stage(expr) -> bool:
 
 
 def _stage_time_budgets(payload: Payload) -> list:
-    """Splits `config.max_time_seconds` across the 3 staged-solve stages per
-    `config.stage_split` (default 15/15/70, see payload.py's Config).
-    Defensively renormalizes so the 3 fractions sum to 1 (a misconfigured
-    payload degrades to the default split rather than mis-sizing every
-    stage), and floors each stage at 0.1s so a very small fraction still gets
-    A solve rather than none -- then rescales back down if that flooring
-    would have pushed the total over `max_time_seconds` (spec: "total <= the
-    existing time limit").
+    """Splits `config.max_time_seconds` across the 4 staged-solve stages
+    (`_STAGE_NAMES`) per `config.stage_split` (default 15/15/50/20, see
+    payload.py's Config). Defensively renormalizes so the fractions sum to 1
+    (a misconfigured payload degrades to the default split rather than
+    mis-sizing every stage), and floors each stage at 0.1s so a very small
+    fraction still gets A solve rather than none -- then rescales back down if
+    that flooring would have pushed the total over `max_time_seconds` (spec:
+    "total <= the existing time limit"). These are a STARTING allocation only
+    -- `_solve_staged` rolls a stage's unused time forward into the next
+    stage's budget when that stage proves OPTIMAL (or is skipped as empty)
+    before spending its whole share.
     """
     total = max(0.1, payload.config.max_time_seconds)
     splits = list(payload.config.stage_split)
-    if len(splits) != 3 or sum(splits) <= 0:
-        splits = [0.15, 0.15, 0.7]
+    if len(splits) != len(_STAGE_NAMES) or sum(splits) <= 0:
+        splits = list(Config.stage_split)
     s = sum(splits)
     normalized = [x / s for x in splits]
     budgets = [max(0.1, total * f) for f in normalized]
@@ -155,13 +180,41 @@ _TIEBREAK_MULTIPLIER = 1_000_000
 
 
 def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
-    """Runs the 3-stage lexicographic ladder described at `_STAGE_3_NAME`'s
+    """Runs the 4-stage lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
     ever-growing set of "stage N was already this good" bound constraints
     change). Returns (status_name, solver, solve_time_ms): `solver` holds the
     LAST stage that actually produced a solution, so callers extract the
     schedule/report from it exactly like the single-shot path does.
+
+    BUDGET ROLLOVER (2026-10-15, real-block gap fix): whenever a stage proves
+    OPTIMAL (the tiebreak-weighted objective -- see TIEBREAK paragraph below
+    -- is PROVEN to go no lower, not just "ran out the clock") strictly before
+    its own allotted budget expires, or is skipped entirely as empty, the
+    unused remainder is carried forward and ADDED to the next stage's budget
+    rather than left idle. `_stage_time_budgets`' fixed fractions are
+    therefore a starting allocation, not a hard ceiling per stage. This is
+    the direct fix for a measured anomaly: stages 1-2 (targetDeficitCore/
+    postNightRest) can reach a SOLVABLE status well before their own share of
+    a big budget runs out (their own 15% share of `max_time_seconds` scales up
+    right along with the total -- 4.5s each of 30s, 18s each of 120s -- even
+    when a couple of seconds would have done), and any time beyond that bought
+    nothing for those two stages while giving their own (tiebreak-weighted,
+    effectively-whole-problem-sized) search MORE opportunity to settle on a
+    different, merely-TIED-for-its-own-tier solution via multi-worker racing
+    (see `_configure_solver`'s own nondeterminism note) whose carried-forward
+    hint happened to be a worse starting point for the coverage stage that
+    follows -- this is the mechanism behind the measured "giving the solver
+    120s instead of 30s made coverageMiss WORSE (23 instead of 20)"
+    regression. Rolling the surplus forward instead spends it on the stage
+    that still has real combinatorial search left to do (coverage, then
+    quality) rather than burning it on stages that were already done. NOTE:
+    on a block big enough that stages 1-2 DON'T reach OPTIMAL early (the
+    common case on a real-sized block -- see PAYLOAD_SCHEMA.md's dated
+    2026-10-15 section for a measured case where an overly-aggressive cut to
+    their own base share, not rollover, was the actual mistake), rollover is a
+    no-op and the fixed `stage_split` floor is what's actually load-bearing.
 
     TIEBREAK (found by hand via engineHeadToHead.test.js's R9 proof, part 4 --
     the "vacationHeavy" fixture initially LOST to local under a naive staged
@@ -207,11 +260,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
     store = build_result.store
     objective = build_result.objective
 
-    stage_defs = [
-        (TIER_ERRORS, objective.stage_exprs[TIER_ERRORS]),
-        (TIER_BLOCKING, objective.stage_exprs[TIER_BLOCKING]),
-        (_STAGE_3_NAME, objective.stage_exprs[TIER_RANK] + objective.stage_exprs[TIER_QUALITY]),
-    ]
+    stage_defs = [(name, objective.stage_exprs[name]) for name in _STAGE_NAMES]
     budgets = _stage_time_budgets(payload)
 
     total_time_ms = 0
@@ -227,9 +276,16 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
     # solution). `last_good_solver` is the one thing this function may ever
     # hand back to a caller.
     last_good_solver = None
+    # See this function's own BUDGET ROLLOVER paragraph: time a stage didn't
+    # need (proven OPTIMAL early, or skipped as empty) flows into the NEXT
+    # stage's budget instead of sitting unused.
+    rollover_seconds = 0.0
 
     for i, ((name, expr), budget) in enumerate(zip(stage_defs, budgets)):
+        budget = budget + rollover_seconds
+        rollover_seconds = 0.0
         if _is_empty_stage(expr):
+            rollover_seconds = budget  # nothing to solve here -- hand the whole share onward
             continue
         is_last = name == stage_defs[-1][0]
         # See this function's own TIEBREAK paragraph: every stage after this
@@ -247,7 +303,8 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
         solver.parameters.max_time_in_seconds = budget
         t0 = time.time()
         status = solver.solve(model)
-        total_time_ms += int((time.time() - t0) * 1000)
+        elapsed_seconds = time.time() - t0
+        total_time_ms += int(elapsed_seconds * 1000)
         status_name = solver.status_name(status)
 
         if status_name not in SOLVABLE_STATUSES:
@@ -269,6 +326,14 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
         if not is_last:
             model.add(expr <= round(solver.value(expr)))
             _carry_hint(model, store, solver)
+            # BUDGET ROLLOVER: only when CP-SAT PROVED this stage's
+            # (tiebreak-weighted) objective optimal -- "FEASIBLE" means it
+            # merely ran out the clock, and the clock was already set to
+            # exactly `budget`, so there is no real surplus to hand onward in
+            # that case (and in fact MORE of this stage's own time might
+            # still have helped it).
+            if status_name == "OPTIMAL":
+                rollover_seconds = max(0.0, budget - elapsed_seconds)
 
     if last_status_name is None:
         # Degenerate payload: every stage was empty (no soft terms anywhere
@@ -386,8 +451,9 @@ def _solve_pass1(payload: Payload) -> SolveResult:
         schedule=schedule,
         # `solver.value(objective.total_expr)` rather than
         # `solver.objective_value`: in staged mode the model's LAST
-        # `model.minimize()` call was stage 3's own (partial) expression, not
-        # `total_expr`, so `.objective_value` would report the wrong number.
+        # `model.minimize()` call was the final stage's own (partial,
+        # tiebreak-weighted) expression, not `total_expr`, so
+        # `.objective_value` would report the wrong number.
         # `Value()` evaluates any expression against the current solution
         # regardless of what was actually minimized, so this is exactly
         # `.objective_value` in weighted mode (unchanged) and the FULL
