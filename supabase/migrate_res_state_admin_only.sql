@@ -58,6 +58,9 @@ revoke all on res_state from anon;
 -- substitute for the GRANT. Harmless to (re)run against an already-provisioned DB that still has
 -- its original default template grant.
 grant select, insert, update, delete on res_state to authenticated;
+-- Supabase's default privileges also hand `authenticated` TRUNCATE/TRIGGER/REFERENCES; TRUNCATE
+-- skips RLS entirely. Not reachable through PostgREST, but revoked so the grant matches intent.
+revoke truncate, trigger, references on res_state from authenticated;
 
 -- Every operation gated on is_admin() (day_off_requests.sql) — same helper the day_off_requests
 -- admin policies already use, so there's exactly one definition of "is the caller an admin"

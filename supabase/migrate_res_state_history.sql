@@ -100,6 +100,9 @@ revoke all on public.res_state_history from anon;
 -- below is the only writer, by design (point 1 of this feature's spec: "no insert/update/delete
 -- policies, only the SECURITY DEFINER trigger writes").
 grant select on public.res_state_history to authenticated;
+-- Supabase's default privileges also hand `authenticated` TRUNCATE/TRIGGER/REFERENCES; TRUNCATE
+-- skips RLS entirely. Not reachable through PostgREST, but revoked so the grant matches intent.
+revoke truncate, trigger, references on public.res_state_history from authenticated;
 drop policy if exists "res_state_history_admin_select" on public.res_state_history;
 create policy "res_state_history_admin_select" on public.res_state_history for select
   to authenticated
