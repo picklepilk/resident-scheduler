@@ -294,5 +294,26 @@ end $$;
 
 rollback to savepoint sp_anon;
 
+-- ── Trigger function EXECUTE revoke (migrate_revoke_trigger_fn_execute.sql) ─────────────────────
+-- Confirms the security-advisor fix: anon/authenticated can no longer call either trigger function
+-- directly via /rest/v1/rpc/<fn_name>. This does NOT re-check that the triggers still fire — every
+-- PASS above this point (audit fields set, history rows archived, retention capped at 200) already
+-- happened AFTER migrate_revoke_trigger_fn_execute.sql's revoke if it's been applied, so those are
+-- the real proof the revoke doesn't disable the triggers themselves (see that file's header for
+-- why: trigger invocation bypasses EXECUTE privilege checks entirely).
+do $$
+declare anon_archive boolean; anon_audit boolean; authed_archive boolean; authed_audit boolean;
+begin
+  anon_archive   := has_function_privilege('anon',          'public.res_state_archive_history()',  'EXECUTE');
+  anon_audit     := has_function_privilege('anon',          'public.res_state_set_audit_fields()', 'EXECUTE');
+  authed_archive := has_function_privilege('authenticated',  'public.res_state_archive_history()',  'EXECUTE');
+  authed_audit   := has_function_privilege('authenticated',  'public.res_state_set_audit_fields()', 'EXECUTE');
+  if not anon_archive and not anon_audit and not authed_archive and not authed_audit then
+    raise notice 'trigger fn EXECUTE revoke: PASS (anon and authenticated can call neither res_state_archive_history() nor res_state_set_audit_fields() directly)';
+  else
+    raise notice 'trigger fn EXECUTE revoke: FAIL (anon_archive=%, anon_audit=%, authenticated_archive=%, authenticated_audit=%) — run migrate_revoke_trigger_fn_execute.sql (or the fold-in in migrate_res_state_history.sql)', anon_archive, anon_audit, authed_archive, authed_audit;
+  end if;
+end $$;
+
 -- Nothing persists.
 rollback;

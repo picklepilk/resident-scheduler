@@ -62,6 +62,8 @@ import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/j
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import { applyScenario, compareResultSets } from './lib/whatIf.js';
 import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHistory.js';
+import { keysToClearOnSignOut } from './lib/signOutCleanup.js';
+import { createIdleTimer, DEFAULT_IDLE_TIMEOUT_MINUTES } from './lib/idleTimer.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -14567,6 +14569,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [genElapsedSec, setGenElapsedSec] = useState(0);
   const genTimerRef = useRef(null);
   function startGenProgress(label) {
+    generationInProgress = true; // read by the root's idle sign-out handler — see its declaration
     setGenStageLabel(label);
     setGenElapsedSec(0);
     setGenActive(true);
@@ -14574,6 +14577,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     genTimerRef.current = setInterval(() => setGenElapsedSec(s => s + 1), 1000);
   }
   function stopGenProgress() {
+    generationInProgress = false;
     setGenActive(false);
     if (genTimerRef.current) { clearInterval(genTimerRef.current); genTimerRef.current = null; }
   }
@@ -18789,6 +18793,15 @@ export const SUPABASE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON);
 // over the delete/import mid-operation (both reload the page on success, which resets this).
 let syncSuspended = false;
 
+// Set by ScheduleGrid's startGenProgress/stopGenProgress (the Generate/Regenerate progress-overlay
+// pair) — true for the duration of a generate/solver run. Read by the root component's idle
+// sign-out handler, which must defer (never fire mid-generation, shared-workstation hygiene) rather
+// than reach into ScheduleGrid's own state. Module-level like syncSuspended above, for the same
+// reason: a plain prop/callback would mean threading generation state up through a component this
+// agent was told to stay out of (CLAUDE.md: generate/solver code paths owned by another agent) —
+// this is a read-only poll of a flag that component's existing progress overlay already tracks.
+let generationInProgress = false;
+
 // getAccessToken() (supabaseClient.js) calls supabase-js's auth.getSession(), which normally
 // resolves near-instantly from its in-memory session, refreshing over the network only when the
 // token is actually near expiry — but that refresh IS a network call, unbounded by anything sbFetch
@@ -22275,6 +22288,113 @@ export default function ResidentScheduler({ viewer } = {}) {
     if (savePromiseRef.current) await savePromiseRef.current;
   }
 
+  // ─── SIGN-OUT HYGIENE (shared-workstation) ───────────────────────────────────────────────────
+  // Clears this device's res_*/res_demo_* localStorage on sign-out so the next person to sit down
+  // at the same browser doesn't inherit the previous admin's roster/schedule — see
+  // src/lib/signOutCleanup.js for exactly which keys survive (device-local prefs only). Only when
+  // cloud sync is configured: with no cloud, localStorage IS the only copy of the data, and
+  // sign-out must never destroy someone's only copy.
+  const [signOutWarning, setSignOutWarning] = useState(null); // null | 'conflict' | 'error'
+
+  function clearLocalDataForSignOut() {
+    if (!(SUPABASE_ENABLED && AUTH_ENABLED)) return;
+    let allKeys;
+    try { allKeys = Object.keys(localStorage); } catch { return; }
+    for (const k of keysToClearOnSignOut(allKeys)) {
+      try { localStorage.removeItem(k); } catch { /* best-effort */ }
+    }
+  }
+
+  async function performSignOut() {
+    clearLocalDataForSignOut();
+    await supabase.auth.signOut();
+  }
+
+  // Shared by the header's Sign out button and the idle-timeout handler below. Flushes any
+  // pending/in-flight debounced cloud save first — never lose an unsaved edit silently. If that
+  // flush leaves a conflict open or the last save failed, stop and let the admin choose instead of
+  // wiping local data (which may be the only place that edit still exists).
+  async function requestSignOut() {
+    await flushPendingCloudSave();
+    if (cloudConflictRef.current) { setSignOutWarning('conflict'); return; }
+    if (dbStatus === 'error') { setSignOutWarning('error'); return; }
+    await performSignOut();
+  }
+
+  // ─── IDLE SIGN-OUT (shared-workstation hygiene) ──────────────────────────────────────────────
+  // Admin-only — gated on AUTH_ENABLED, same as the Sign out button; the resident-facing /requests
+  // tree is a separate, lighter component (AppGate.jsx) this root never renders, so it needs no
+  // idle timer of its own. Pure schedule/reset/warn logic lives in src/lib/idleTimer.js (unit
+  // tested there); this effect only wires real DOM activity events, the warning banner, and the
+  // actual sign-out call. requestSignOutRef keeps the idle timer's onTimeout calling the CURRENT
+  // render's requestSignOut (which closes over live dbStatus/cloudConflictRef) rather than a stale
+  // one captured by the mount-only effect below.
+  const requestSignOutRef = useRef(requestSignOut);
+  requestSignOutRef.current = requestSignOut;
+  const [idleWarningOpen, setIdleWarningOpen] = useState(false);
+  const idleTimerRef = useRef(null);
+  const idlePendingSignOutRef = useRef(false); // idle timeout fired mid-generation — retry once it ends
+  const idlePollRef = useRef(null);
+
+  function stayLoggedIn() {
+    setIdleWarningOpen(false);
+    idleTimerRef.current?.notifyActivity();
+  }
+
+  useEffect(() => {
+    if (!AUTH_ENABLED) return;
+    function fireSignOut() {
+      setIdleWarningOpen(false);
+      // Must never fire mid-generation (shared-workstation hygiene spec) — generationInProgress is
+      // set by ScheduleGrid's own startGenProgress/stopGenProgress (see its declaration above).
+      // Deferring here, rather than reaching into ScheduleGrid's state, keeps this change out of
+      // the generate/solver code paths another agent owns concurrently.
+      if (generationInProgress) {
+        idlePendingSignOutRef.current = true;
+        if (!idlePollRef.current) {
+          idlePollRef.current = setInterval(() => {
+            if (generationInProgress) return;
+            clearInterval(idlePollRef.current);
+            idlePollRef.current = null;
+            if (idlePendingSignOutRef.current) {
+              idlePendingSignOutRef.current = false;
+              requestSignOutRef.current();
+            }
+          }, 2000);
+        }
+        return;
+      }
+      requestSignOutRef.current();
+    }
+    const timer = createIdleTimer({
+      idleMs: DEFAULT_IDLE_TIMEOUT_MINUTES * 60 * 1000,
+      onWarn: () => setIdleWarningOpen(true),
+      onTimeout: fireSignOut,
+    });
+    idleTimerRef.current = timer;
+    timer.start();
+    // Throttled: mousemove/scroll fire far more often than the clearTimeout/setTimeout pair needs.
+    let lastNotify = 0;
+    function onActivity() {
+      const now = Date.now();
+      if (now - lastNotify < 1000) return;
+      lastNotify = now;
+      setIdleWarningOpen(false);
+      timer.notifyActivity();
+    }
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart'];
+    events.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
+    return () => {
+      timer.stop();
+      idleTimerRef.current = null;
+      events.forEach(e => window.removeEventListener(e, onActivity));
+      if (idlePollRef.current) { clearInterval(idlePollRef.current); idlePollRef.current = null; }
+    };
+    // Intentionally mount-only — fireSignOut/onActivity always reach current state via
+    // requestSignOutRef/the module-level generationInProgress flag, not via this effect's closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function openDemoModal() {
     const gen = ++demoCheckGenRef.current;
     setDemoModalOpen(true);
@@ -23046,7 +23166,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
             {AUTH_ENABLED && (
-              <button onClick={()=>supabase.auth.signOut()} title="Sign out" aria-label="Sign out"
+              <button onClick={()=>requestSignOut()} title="Sign out" aria-label="Sign out"
                 className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
                 <LogOut size={16}/>
               </button>
@@ -23158,6 +23278,38 @@ export default function ResidentScheduler({ viewer } = {}) {
             <li><strong>Download my copy</strong> — save a backup first; doesn't resolve the conflict by itself.</li>
           </ul>
         </ConfirmDialog>
+      )}
+
+      {/* Sign-out hygiene guard (shared-workstation): requestSignOut flushes the pending cloud save
+          first, then lands here instead of silently wiping local data if that flush didn't actually
+          resolve things. 'conflict': the cloudConflict modal above is already up and blocking —
+          this just makes the choice explicit rather than the sign-out button appearing to do
+          nothing. 'error': the last save failed outright (dbError), so local data may be the only
+          copy of that edit. */}
+      {signOutWarning && (
+        <ConfirmDialog icon={AlertTriangle} tone="warn"
+          title={signOutWarning === 'conflict' ? "Unresolved save conflict" : "Last cloud save failed"}
+          actions={
+            <>
+              <Button variant="secondary" size="sm" onClick={()=>setSignOutWarning(null)}>Stay signed in</Button>
+              <Button variant="danger" size="sm" onClick={()=>{ setSignOutWarning(null); performSignOut(); }}>Sign out anyway</Button>
+            </>
+          }>
+          {signOutWarning === 'conflict'
+            ? <p>Another admin saved changes that haven't been reconciled yet (see the conflict dialog above). Signing out now clears this device's local copy before that's resolved — pick Reload/Overwrite up there first, or sign out anyway if you don't need this device's edits.</p>
+            : <p>Your last save to the cloud didn't go through{dbError ? <>: <span className="font-mono text-xs">{dbError}</span></> : '.'} Signing out now will clear this device's local copy, which may be the only place that change still exists.</p>}
+        </ConfirmDialog>
+      )}
+
+      {/* Idle sign-out warning (shared-workstation hygiene) — any activity (or the button below)
+          cancels it via stayLoggedIn(); doing nothing signs out through the same requestSignOut
+          path as the header button, deferred until any in-progress generation finishes. */}
+      {idleWarningOpen && (
+        <div className="fixed bottom-4 right-4 z-[200] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg p-3 flex items-center gap-3 max-w-sm">
+          <AlertTriangle size={16} className="text-amber-500 shrink-0"/>
+          <p className="text-sm flex-1">Signing out in 60s due to inactivity.</p>
+          <Button variant="primary" size="sm" onClick={stayLoggedIn}>Stay signed in</Button>
+        </div>
       )}
 
       {BLOCK_SCOPED_TABS.has(tab) && (

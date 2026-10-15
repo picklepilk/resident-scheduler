@@ -149,4 +149,15 @@ create trigger res_state_archive_history
   after update on public.res_state
   for each row execute function public.res_state_archive_history();
 
+-- Security advisor hygiene (folded in from migrate_revoke_trigger_fn_execute.sql, 2026-10-15, so a
+-- fresh install never has the gap): both trigger functions above get EXECUTE granted to PUBLIC by
+-- default on creation, which PostgREST then exposes at /rest/v1/rpc/<fn_name> to anon and
+-- authenticated. Neither does anything useful called that way (both read `old`, which is null
+-- outside a real trigger invocation), and revoking EXECUTE doesn't stop the triggers themselves
+-- from firing — Postgres invokes a trigger function through the table owner's trigger-execution
+-- path, not through a role's EXECUTE privilege. See migrate_revoke_trigger_fn_execute.sql for the
+-- full rationale and a verification query.
+revoke execute on function public.res_state_archive_history()   from public, anon, authenticated;
+revoke execute on function public.res_state_set_audit_fields()  from public, anon, authenticated;
+
 commit;
