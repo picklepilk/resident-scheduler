@@ -52,6 +52,10 @@ import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssues
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
 import { findSickCallCoverage } from './lib/sickCallCover.js';
+import { findSlotCandidates } from './lib/slotCandidates.js';
+import { findFixablePlans } from './lib/slotFixes.js';
+import { expectedFillerFor } from './lib/expectedFiller.js';
+import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
@@ -3369,6 +3373,20 @@ const CHANGELOG = [
       'A filled cell offers **Give to** or **Swap with** another resident, one click to apply.',
       'An empty cell offers **Assign**, showing eligible residents who most need the shift.',
       'Locked cells show their lock status only — unlock first to edit.',
+    ],
+  },
+  // Same non-interrupting insert as the entry below (see its own comment) — second position, not
+  // first, so CHANGELOG[0] stays exactly as it was and no banner re-interrupts anyone who already
+  // dismissed it; this still shows up in the full What's New archive tab.
+  {
+    id: '2026-10-15-coverage-board',
+    date: '2026-10-15',
+    title: 'See every gap at a glance, fill it without breaking a rule',
+    items: [
+      'The **Coverage** tab now opens on a **Heatmap** — every area/shift vs. every date in the block, colored below/at/within/over target.',
+      'Click any cell or date to open that day\'s **floor view**: seats per shift, filled seats show who and their PGY.',
+      'Click an empty seat to see who\'s expected to fill it and why, then **Legal** candidates (ranked), **Needs override** candidates, and plans that go legal after 1–2 schedule changes — one click applies any of them.',
+      'A collapsed **Why not** list explains every resident who can\'t take the shift.',
     ],
   },
   // Inserted as the SECOND entry, not the first — see CLAUDE.md's What's New rule ("change
@@ -8540,6 +8558,76 @@ function useLocalStorage(key, def) {
   });
   useEffect(() => { localStorage.setItem(key, JSON.stringify(val)); }, [key, val]);
   return [val, setVal];
+}
+
+// Rule-domain closures shared by every surface that needs "is this resident legal on this cell" —
+// originally a ScheduleGrid-local useMemo (Cell inspector / Sick-call cover), hoisted here so the
+// Coverage board's day-floor empty-slot panel (docs/superpowers/plans/2026-10-15-coverage-board.md,
+// build step 5) can ask the exact same questions without a second, divergent implementation.
+// isEligible/eligibilityReasonFor/hardViolations/softViolations/targetInfo each mirror
+// getEligibleShifts/eligibilityBlockReasons/cellViolations/getShiftTarget exactly — see
+// ScheduleGrid's own prior comment (still true) for why each shape is what it is. prevTail/
+// finalSunday/nextRotationMap are resolved HERE (not by each caller separately) since every
+// consumer of cellHelpers also needs them threaded to getEligibleShifts/cellViolations/
+// ShiftPickerModal — ScheduleGrid still reads them back off the returned object rather than
+// recomputing its own copies.
+function useCellHelpers({ allResidents, block, sched, eligOverrides, appSettings, dayRules, ayConf, blocksHistory }) {
+  const sd = block.specialDays || {};
+  const prevTail = useMemo(() => prevBlockTailSchedules(block, blocksHistory), [block.id, block.startDate, blocksHistory]);
+  // Final-Sunday overnight transition rule (see nextBlockRotationFor/RULE_NOTES) — resolved once
+  // per resident here, mirroring prevTail above, and threaded via ctx/props to every
+  // getEligibleShifts/cellViolations call site (ScheduleGrid, ShiftPickerModal, the Coverage
+  // board) so none of them can drift on what counts as a violation.
+  const finalSunday = useMemo(() => finalSundayOf(block), [block.startDate, block.endDate]);
+  const nextRotationMap = useMemo(() => {
+    const m = {};
+    const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
+    for (const r of allResidents) m[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
+    return m;
+  }, [allResidents, block.id, block.endDate, blocksHistory]);
+
+  return useMemo(() => {
+    const residentById = new Map(allResidents.map(r => [r.id, r]));
+    const isEligible = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return false;
+      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules,
+        { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+      return list.includes(sid);
+    };
+    // R6: when isEligible says no, this explains WHY (see eligibilityBlockReasons) so
+    // findGiveCandidates/findSwapCandidates/findSlotCandidates can still offer an override-tier-
+    // ineligible candidate (approvedDayOff, wellnessWednesday, academicChiefTueEveNight,
+    // finalSundayOvernight, pedNightSwingOwnerGuard) tagged needsOverride, instead of silently
+    // dropping it.
+    const eligibilityReasonFor = (rid, ds, sid) => {
+      const r = residentById.get(rid);
+      if (!r) return null;
+      return eligibilityBlockReasons(r, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
+    };
+    // Mirrors cellViolations exactly — the SAME hard/soft split ScheduleGrid's own handleDrop
+    // uses for a drag-drop swap (level==='error' vs everything else); scheduleOverride lets a
+    // caller validate each side with the OTHER side's cell already cleared, same as
+    // scheduleClearing does for handleDrop.
+    const violationsFor = (rid, ds, sid, scheduleOverride) => {
+      const r = residentById.get(rid);
+      if (!r) return [];
+      return cellViolations(r, ds, sid, { ...block, schedule: scheduleOverride || sched },
+        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
+    };
+    const hardViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level === 'error');
+    const softViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level !== 'error');
+    const targetInfo = rid => {
+      const r = residentById.get(rid);
+      const count = Object.values(sched[rid] || {}).filter(Boolean).length;
+      return { count, target: r ? getShiftTarget(r, appSettings) : null };
+    };
+    const lockedCells = block.lockedCells || {};
+    const enrich = list => list.map(c => ({ ...c, resident: residentById.get(c.residentId) }));
+    return { residentById, isEligible, eligibilityReasonFor, hardViolations, softViolations, targetInfo, lockedCells, enrich, prevTail, finalSunday, nextRotationMap };
+  }, [sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
+      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
+      sd, blocksHistory]);
 }
 
 // ─── UI PRIMITIVES ────────────────────────────────────────────────────────────
@@ -14623,18 +14711,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       return { ...b, label };
     });
   },[dates]);
-  const prevTail = useMemo(() => prevBlockTailSchedules(block, blocksHistory), [block.id, block.startDate, blocksHistory]);
-  // Final-Sunday overnight transition rule (see nextBlockRotationFor/RULE_NOTES) — resolved once
-  // per resident here, mirroring prevTail above, and threaded via ctx/props to every
-  // getEligibleShifts/cellViolations call site in this component and ShiftPickerModal so all three
-  // (grid cell rendering, drag-and-drop, the picker) can't drift on what counts as a violation.
-  const finalSunday = useMemo(() => finalSundayOf(block), [block.startDate, block.endDate]);
-  const nextRotationMap = useMemo(() => {
-    const m = {};
-    const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
-    for (const r of allResidents) m[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
-    return m;
-  }, [allResidents, block.id, block.endDate, blocksHistory]);
+  // prevTail/finalSunday/nextRotationMap are resolved inside useCellHelpers below (shared with the
+  // Coverage board) — destructured back out of cellHelpers just below since this component's own
+  // handleDrop/getEligibleShifts call sites and ShiftPickerModal's props still need them directly.
 
   // Single validateAll pass, shared by violMap (grid cell red-ring rendering, below) and
   // violatingSummary (Fix Violations — see keptCellViolations.js) so the two can never disagree
@@ -14739,54 +14818,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     [issues]
   );
 
-  // Rule-domain helpers shared by the Cell inspector (P3, below) AND the Sick-call cover modal
-  // (both just candidate math over arbitrary residentId/dateStr/shiftId triples, neither tied to
-  // `selectedCell`) — hoisted out of inspectorData's own useMemo so a second consumer doesn't have
-  // to re-derive the same isEligible/violation/target closures. residentById/lockedCells/enrich are
-  // plain lookups; isEligible/eligibilityReasonFor/hardViolations/softViolations/targetInfo each
-  // mirror getEligibleShifts/eligibilityBlockReasons/cellViolations/getShiftTarget exactly — see
-  // their own comments below for why each shape is what it is.
-  const cellHelpers = useMemo(() => {
-    const residentById = new Map(allResidents.map(r => [r.id, r]));
-    const isEligible = (rid, ds, sid) => {
-      const r = residentById.get(rid);
-      if (!r) return false;
-      const list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules,
-        { blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
-      return list.includes(sid);
-    };
-    // R6: when isEligible says no, this explains WHY (see eligibilityBlockReasons) so
-    // findGiveCandidates/findSwapCandidates can still offer an override-tier-ineligible candidate
-    // (approvedDayOff, wellnessWednesday, academicChiefTueEveNight, finalSundayOvernight,
-    // pedNightSwingOwnerGuard) tagged needsOverride, instead of silently dropping it.
-    const eligibilityReasonFor = (rid, ds, sid) => {
-      const r = residentById.get(rid);
-      if (!r) return null;
-      return eligibilityBlockReasons(r, ds, sid, { appSettings, dayRules, specialDays: sd, eligOverrides, blockStart: block.startDate, ayConf, finalSunday, nextRotation: nextRotationMap[rid], jeopardySchedule: block.jeopardySchedule });
-    };
-    // Mirrors cellViolations exactly — the SAME hard/soft split ScheduleGrid's own handleDrop
-    // uses for a drag-drop swap (level==='error' vs everything else); scheduleOverride lets the
-    // swap finder validate each side with the OTHER side's cell already cleared, same as
-    // scheduleClearing does for handleDrop.
-    const violationsFor = (rid, ds, sid, scheduleOverride) => {
-      const r = residentById.get(rid);
-      if (!r) return [];
-      return cellViolations(r, ds, sid, { ...block, schedule: scheduleOverride || sched },
-        eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
-    };
-    const hardViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level === 'error');
-    const softViolations = (rid, ds, sid, scheduleOverride) => violationsFor(rid, ds, sid, scheduleOverride).filter(v => v.level !== 'error');
-    const targetInfo = rid => {
-      const r = residentById.get(rid);
-      const count = Object.values(sched[rid] || {}).filter(Boolean).length;
-      return { count, target: r ? getShiftTarget(r, appSettings) : null };
-    };
-    const lockedCells = block.lockedCells || {};
-    const enrich = list => list.map(c => ({ ...c, resident: residentById.get(c.residentId) }));
-    return { residentById, isEligible, eligibilityReasonFor, hardViolations, softViolations, targetInfo, lockedCells, enrich };
-  }, [sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
-      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
-      sd, blocksHistory]);
+  // Rule-domain helpers shared by the Cell inspector (P3, below), the Sick-call cover modal, AND
+  // the Coverage board's day-floor empty-slot panel — see useCellHelpers (HOOKS section) for what
+  // each field means; this component also reads prevTail/finalSunday/nextRotationMap back out of
+  // it for its own handleDrop/getEligibleShifts call sites and ShiftPickerModal's props.
+  const cellHelpers = useCellHelpers({ allResidents, block, sched, eligOverrides, appSettings, dayRules, ayConf, blocksHistory });
+  const { prevTail, finalSunday, nextRotationMap } = cellHelpers;
 
   // Cell inspector (P3) — candidate math for the selected cell only (never all cells), so this is
   // cheap for ~25 residents even though it calls cellViolations per candidate: findGiveCandidates/
@@ -20543,12 +20580,493 @@ function CoverageTotalsView({ dates, composed }) {
   );
 }
 
-// Root Coverage tab: birds-eye department-composition view. `block`/`allResidents`/`coverage`/
-// `ayConf` mirror the shapes ScheduleGrid/DashboardTab already consume (block.schedule,
-// root's allResidents memo, res_coverage, the current AY's ayData entry) — no new shapes
-// introduced. Handles a block with no dates (new/blank block) and an empty/unset schedule without
-// crashing, same guarantee composeCoverage itself already carries (see its own tests).
-function CoverageTab({ block, allResidents, coverage, ayConf }) {
+// ─── Coverage board: heatmap + day floor (docs/superpowers/plans/2026-10-15-coverage-board.md,
+// build steps 4-6) ──────────────────────────────────────────────────────────────────────────────
+// Upgrades the Coverage tab with a block-wide heatmap (areas × dates) that drills into a
+// single-date "day floor" (areas × time bands, seats per slot) and an empty-slot panel offering
+// ranked Legal / Override-needed / "legal after 1-2 edits" / Why-not candidates. Every coverage
+// NUMBER still comes from computeCoverageByDate/composeCoverage (never forked here — see
+// src/lib/coverageBoard.js's own header); every schedule-domain LEGALITY question goes through
+// useCellHelpers, the exact hook ScheduleGrid itself now uses, so this board can never disagree
+// with the Schedule tab about what's legal.
+
+// Every one of these four non-empty states maps to Tailwind classes index.css ALREADY has a
+// `.dark` override for (see CLAUDE.md "Dark mode: .dark override sheet in index.css, NOT Tailwind
+// dark:") — bg-red-50/text-red-700/border-red-200, bg-amber-50/text-amber-700/border-amber-200,
+// bg-green-50/text-green-700/border-green-200, bg-blue-50/text-blue-700/border-blue-200 are all
+// already remapped there, so this needs no index.css edit of its own. `empty` uses the semantic
+// bg-muted/text-muted-foreground tokens (dark-aware via CSS vars, same as the rest of this file).
+const HEATMAP_CELL_BG = {
+  empty:   'bg-muted/40 text-muted-foreground',
+  below:   'bg-red-50 text-red-700 border border-red-200',
+  atMin:   'bg-amber-50 text-amber-700 border border-amber-200',
+  between: 'bg-green-50 text-green-700 border border-green-200',
+  over:    'bg-blue-50 text-blue-700 border border-blue-200',
+};
+const HEATMAP_LEGEND = [
+  { status: 'below', label: 'Below min' },
+  { status: 'atMin', label: 'At min' },
+  { status: 'between', label: 'Min–max' },
+  { status: 'over', label: 'Over max' },
+];
+
+// Builds expectedFillerFor's `seniorityRules` param exactly per that file's own ADAPTER comment
+// (src/lib/expectedFiller.js, bottom) — resolved once per (block/appSettings/ayConf), never
+// per shift/date call, since none of these three change per shift or per date.
+function buildSeniorityRules(block, appSettings, ayConf) {
+  const ownerLabel = (key) => {
+    const m = /^(.+)_(\d+)$/.exec(key);
+    if (!m) return key;
+    const [, cat, pgy] = m;
+    const short = cat === 'EM_HOME' ? 'EM' : cat === 'EM_BAMC' ? 'BAMC' : (CAT_MAP[cat]?.shortLabel || cat);
+    return `${short} PGY-${pgy}`;
+  };
+  const pedGuardOwnerLabels = Object.fromEntries(
+    Object.entries(PED_GUARD_LEGITIMATE_OWNER).map(([shiftId, owners]) =>
+      [shiftId, `Owners only: ${(owners || []).map(ownerLabel).join(', ')}`])
+  );
+  return {
+    pgy1OnlyShiftIds: ['TRAUMA-D'],
+    pedGuardOwnerLabels,
+    composition: SENIOR_COMPOSITION,
+    isCompositionExempt: (shift, ds) => seniorCompositionExempt(shift, ds),
+    substituteStatus: (area, ds) => substituteReasonFor(area, ds, block.startDate, appSettings, ayConf),
+  };
+}
+
+// Heatmap grid: rows = area -> shift (time band), columns = block dates. `coverageByDate` and
+// `activeCoverageShifts` are computed ONCE by CoverageTab via computeCoverageByDate/
+// getActiveCoverageShifts (the exact functions ScheduleGrid's own coverage footer uses) and handed
+// down, so these numbers can never drift from the Schedule tab's. Clicking a date header or any
+// cell opens that date's day floor.
+function CoverageHeatmapGrid({ dates, coverageByDate, activeCoverageShifts, onOpenDate }) {
+  const rows = useMemo(() => buildHeatmapRows(activeCoverageShifts), [activeCoverageShifts]);
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">No shifts have coverage requirements or assignments in this block yet.</p>;
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-2 flex-wrap text-[10px] text-muted-foreground" aria-hidden="true">
+        {HEATMAP_LEGEND.map(l => (
+          <span key={l.status} className="flex items-center gap-1">
+            <span className={`inline-block w-2.5 h-2.5 rounded-sm ${HEATMAP_CELL_BG[l.status]}`}/>{l.label}
+          </span>
+        ))}
+      </div>
+      <div className="border rounded-xl overflow-hidden shadow-sm border-border">
+        <div className="overflow-auto schedule-scroll" style={{ maxHeight: 'calc(100vh - 24rem)' }}>
+          <div style={{ minWidth: COVERAGE_TAB_NAME_W + COVERAGE_TAB_CELL_W * dates.length }}>
+            <div className="flex bg-muted border-b border-border sticky top-0 z-20">
+              <div className="grid-sticky bg-muted border-r border-border flex items-center px-2" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W, zIndex: 30 }}>
+                <span className="font-display text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Shift</span>
+              </div>
+              {dates.map(ds => {
+                const d = parseDate(ds); const dow = d.getDay(); const isWknd = dow === 0 || dow === 6;
+                return (
+                  <button key={ds} onClick={() => onOpenDate(ds)} title={`Open ${formatDisplayDate(ds)}`}
+                    style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W }}
+                    className={`flex flex-col items-center justify-center py-1 border-r border-border/40 hover:bg-accent ${isWknd ? 'bg-muted/70' : ''}`}>
+                    <span className="text-[10px] font-bold text-muted-foreground">{DOW[dow]}</span>
+                    <span className="text-[10px] text-muted-foreground">{d.getMonth() + 1}/{d.getDate()}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {rows.map(({ area, shifts }) => (
+              <div key={area}>
+                <div className="flex bg-muted/40 border-b border-border/60">
+                  <div className="grid-sticky bg-muted/40 border-r border-border flex items-center px-2 py-1" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W }}>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{area}</span>
+                  </div>
+                  <div style={{ flex: 1 }}/>
+                </div>
+                {shifts.map(s => (
+                  <div key={s.id} className="flex border-b border-border/30">
+                    <div className="grid-sticky bg-card border-r border-border flex items-center px-2 py-1.5" style={{ width: COVERAGE_TAB_NAME_W, minWidth: COVERAGE_TAB_NAME_W }}>
+                      <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                    </div>
+                    {dates.map(ds => {
+                      const info = coverageByDate[ds]?.perShift[s.id];
+                      if (!info) {
+                        return <div key={ds} style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W, height: 30 }} className="border-r border-border/20"/>;
+                      }
+                      const status = coverageCellStatus(info);
+                      return (
+                        <button key={ds} onClick={() => onOpenDate(ds)}
+                          title={`${s.id} ${formatDisplayDate(ds)}: ${info.count}/${info.min}${info.max !== info.min ? `–${info.max}` : ''}`}
+                          style={{ width: COVERAGE_TAB_CELL_W, minWidth: COVERAGE_TAB_CELL_W, height: 30 }}
+                          className={`flex items-center justify-center font-mono tabular-nums text-[11px] border-r border-border/20 hover:ring-1 hover:ring-primary/40 ${HEATMAP_CELL_BG[status]}`}>
+                          {info.count}/{info.min}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Day floor: columns = areas, rows = time bands (one card per active shift), seats = max (the
+// first `min` solid/required, the rest dashed/optional); a filled seat renders a resident chip
+// (CAT_MAP badge colour + PGY, the same colour axis every other roster view in this file uses); an
+// empty seat is a button that opens SlotPanel below, scoped to (dateStr, shiftId) — ANY empty seat
+// of the same shift/date opens the same panel, since the fill target is "one more body on this
+// shift that date", not a specific seat index. Reuses composeCoverage (never computes a resident
+// list of its own) so the chips shown here are exactly who computeCoverageByDate/the grid footer
+// already counted.
+function DayFloorBoard({ dateStr, dates, onBack, onNavigate, block, allResidents, coverage, ayConf, eligOverrides, appSettings, dayRules, blocksHistory, updateBlockTracked, showToast }) {
+  const sched = block.schedule || {};
+  const residentById = useMemo(() => {
+    const m = {};
+    for (const r of allResidents) m[r.id] = r;
+    return m;
+  }, [allResidents]);
+  const cellHelpers = useCellHelpers({ allResidents, block, sched, eligOverrides, appSettings, dayRules, ayConf, blocksHistory });
+  const composedAll = useMemo(
+    () => composeCoverage({ dates: [dateStr], schedule: sched, allResidents, coverage, ayConf }),
+    [dateStr, sched, allResidents, coverage, ayConf]
+  );
+  const dayComposed = composedAll[dateStr] || {};
+  const perShiftCounts = useMemo(() => toPerShiftCounts(composedAll, [dateStr]), [composedAll, dateStr]);
+  const activeShifts = useMemo(() => getActiveCoverageShifts([dateStr], perShiftCounts), [perShiftCounts, dateStr]);
+  const columns = useMemo(() => buildHeatmapRows(activeShifts), [activeShifts]);
+
+  const [selectedShiftId, setSelectedShiftId] = useState(null);
+  useEffect(() => { setSelectedShiftId(null); }, [dateStr]);
+
+  const idx = dates.indexOf(dateStr);
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Button variant="secondary" size="sm" icon={ChevronLeft} onClick={onBack}>Heatmap</Button>
+        <Button variant="secondary" size="sm" disabled={idx <= 0} onClick={() => onNavigate(dates[idx - 1])}>Prev</Button>
+        <span className="text-sm font-semibold">{formatDisplayDate(dateStr)}</span>
+        <Button variant="secondary" size="sm" disabled={idx === -1 || idx >= dates.length - 1} onClick={() => onNavigate(dates[idx + 1])}>Next</Button>
+      </div>
+      {columns.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No shifts run or are required on this date.</p>
+      ) : (
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(140px, 1fr))` }}>
+          {columns.map(({ area, shifts }) => (
+            <div key={area} className="space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground text-center">{area}</div>
+              {shifts.filter(s => dayComposed[s.id]).map(s => {
+                const info = dayComposed[s.id];
+                const seatCount = Math.max(info.max, info.residentIds.length);
+                return (
+                  <div key={s.id} className="rounded-lg border border-border p-2">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${s.chip}`}>{s.id}</span>
+                      <span className="font-mono tabular-nums text-[10px] text-muted-foreground">{info.total}/{info.min}{info.max !== info.min ? `–${info.max}` : ''}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {seatCount === 0 ? (
+                        <span className="text-[10px] text-muted-foreground">No seats today</span>
+                      ) : Array.from({ length: seatCount }).map((_, i) => {
+                        const rid = info.residentIds[i];
+                        if (rid) {
+                          const r = residentById[rid];
+                          const badge = (r && CAT_MAP[r.category]?.badge) || 'bg-muted text-muted-foreground';
+                          return (
+                            <span key={i} title={r ? `${r.firstName} ${r.lastName} — ${bucketLabel(`${r.category}_${r.pgy}`)}` : rid}
+                              className={`text-[10px] font-medium px-1.5 py-1 rounded ${badge}`}>
+                              {r ? `${r.lastName} PGY-${r.pgy}` : rid}
+                            </span>
+                          );
+                        }
+                        const required = i < info.min;
+                        return (
+                          <button key={i} onClick={() => setSelectedShiftId(s.id)}
+                            aria-label={`Open empty ${required ? 'required' : 'optional'} seat for ${s.id} on ${formatDisplayDate(dateStr)}`}
+                            title={required ? 'Unfilled — required' : 'Open — optional'}
+                            className={`text-[10px] font-medium px-1.5 py-1 rounded border-2 border-dashed ${required ? 'border-destructive/50 text-destructive hover:bg-destructive/10' : 'border-muted-foreground/40 text-muted-foreground hover:bg-muted'}`}>
+                            {required ? 'Open' : 'Opt.'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+      {selectedShiftId && (
+        <SlotPanel
+          dateStr={dateStr} dates={dates} shiftId={selectedShiftId} block={block} allResidents={allResidents}
+          residentById={residentById} sched={sched} coverage={coverage} ayConf={ayConf}
+          eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
+          cellHelpers={cellHelpers} updateBlockTracked={updateBlockTracked} showToast={showToast}
+          onClose={() => setSelectedShiftId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Empty-slot side panel: expected-filler chips + the hard requirement (if any), then Legal
+// (ranked) / Needs override (confirm-with-note, same flow as the Schedule tab's cell inspector) /
+// "legal after 1-2 edits" (the exact changes, one click applies all of them) / a collapsed Why-not
+// list. Every write is ONE functional updateBlockTracked call (single undo step); locked cells are
+// never touched (findSlotCandidates/findFixablePlans both already exclude them).
+function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById, sched, coverage, ayConf, eligOverrides, appSettings, dayRules, cellHelpers, updateBlockTracked, showToast, onClose }) {
+  const [pendingOverride, setPendingOverride] = useState(null); // {overridable, run} | null
+  const [overrideNote, setOverrideNote] = useState('');
+  useEffect(() => { setPendingOverride(null); setOverrideNote(''); }, [dateStr, shiftId]);
+
+  const isNightOrWeekendShift = useCallback((sid, ds) => {
+    if (isNightShiftId(sid)) return true;
+    const dow = parseDate(ds).getDay();
+    return dow === 0 || dow === 6;
+  }, []);
+  const nightWeekendCountFor = useCallback((rid) => {
+    const row = sched[rid] || {};
+    let n = 0;
+    for (const ds of Object.keys(row)) if (row[ds] && isNightOrWeekendShift(row[ds], ds)) n++;
+    return n;
+  }, [sched, isNightOrWeekendShift]);
+
+  const seniorityRules = useMemo(() => buildSeniorityRules(block, appSettings, ayConf), [block.startDate, appSettings, ayConf]);
+  const expected = useMemo(() => expectedFillerFor({
+    shiftId, dateStr, residents: allResidents,
+    effectiveEligibleShifts: r => getEffectiveEligibility(r, eligOverrides).list,
+    isEligibleOnDate: (r, ds, sid) => cellHelpers.isEligible(r.id, ds, sid),
+    isAvailableOnDate, categories: CATEGORIES, seniorityRules,
+  }), [shiftId, dateStr, allResidents, eligOverrides, cellHelpers, seniorityRules]);
+
+  const candidates = useMemo(() => findSlotCandidates({
+    dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells: cellHelpers.lockedCells,
+    isEligible: cellHelpers.isEligible, eligibilityReason: cellHelpers.eligibilityReasonFor,
+    hardViolations: cellHelpers.hardViolations, softViolations: cellHelpers.softViolations,
+    targetInfo: cellHelpers.targetInfo, isNightOrWeekendShift, nightWeekendCountFor,
+  }), [dateStr, shiftId, allResidents, sched, cellHelpers, isNightOrWeekendShift, nightWeekendCountFor]);
+
+  // Coverage lookup for an ARBITRARY (shiftId, date) pair — slotFixes.js's search tries moving a
+  // blocked resident's own shift to a NEARBY date, so this can't be scoped to `dateStr` alone.
+  // Built from the exact same primitives computeCoverageByDate itself uses (shiftActiveOnDow /
+  // twelveHourStateFor / getCoverageFor), just evaluated for one pair at a time — never a forked
+  // coverage computation.
+  const coverageForAny = useCallback((sid, ds) => {
+    const dow = parseDate(ds).getDay();
+    if (!shiftActiveOnDow(sid, dow)) return { min: 0, max: 0, count: 0 };
+    const state = twelveHourStateFor(ds, ayConf || {});
+    const { min, max } = getCoverageFor(sid, coverage, dow, state);
+    let count = 0;
+    for (const r of allResidents) if (sched[r.id]?.[ds] === sid) count++;
+    return { min, max, count };
+  }, [allResidents, sched, coverage, ayConf]);
+
+  // Lazy + bounded (plan: "run it lazily only when the panel opens, and only for that slot") —
+  // SlotPanel only exists while a slot is selected, so this never runs for a slot nobody opened;
+  // keyed off `sched` so it's never stale after an Assign/Apply. `searchDates` is explicitly
+  // clamped to this BLOCK's own dates (minus the target date itself) — slotFixes.js's own default
+  // is an unclamped +/-7 CALENDAR days around dateStr, which would happily propose moving a shift
+  // to a date outside the block (invisible in every grid/calendar view, since those all render off
+  // getBlockDates). A "legal after edits" plan must only ever touch dates the chief can actually
+  // see and review.
+  const fixablePlans = useMemo(() => {
+    if (!candidates.blocked.length) return [];
+    return findFixablePlans({
+      dateStr, shiftId, blocked: candidates.blocked, residents: allResidents, schedule: sched,
+      lockedCells: cellHelpers.lockedCells, coverageFor: coverageForAny,
+      isEligible: cellHelpers.isEligible, hardViolations: cellHelpers.hardViolations,
+      softViolations: cellHelpers.softViolations,
+      searchDates: (dates || []).filter(d => d !== dateStr),
+    });
+  }, [dateStr, shiftId, candidates.blocked, allResidents, sched, cellHelpers, coverageForAny, dates]);
+
+  function nameFor(rid) {
+    const r = residentById[rid];
+    return r ? `${r.firstName} ${r.lastName}` : rid;
+  }
+
+  // Same confirm-with-note posture as ScheduleGrid's own runOrConfirmOverride/
+  // OverrideConfirmPanel — kept local (not hoisted) since it's a thin state machine over this
+  // panel's own pendingOverride, not schedule-domain logic worth sharing.
+  function runOrConfirmOverride(candidate, run) {
+    if (candidate?.needsOverride) {
+      const overridable = (candidate.softViolations || []).filter(v => RULE_POLICY[v.rule]?.tier === 'override');
+      setPendingOverride({ overridable, run });
+      return;
+    }
+    run(null);
+  }
+  function confirmOverride() {
+    if (!pendingOverride) return;
+    const ruleIds = [...new Set(pendingOverride.overridable.map(w => w.rule).filter(Boolean))];
+    pendingOverride.run({ ruleIds, note: overrideNote.trim() || null });
+    setPendingOverride(null);
+    setOverrideNote('');
+  }
+
+  function applyAssign(candidate) {
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[candidate.residentId] = { ...(s[candidate.residentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      showToast(`Assigned ${nameFor(candidate.residentId)} to ${shiftId} (${formatDisplayDate(dateStr)})`, 'green');
+      onClose();
+    });
+  }
+
+  function applyFixablePlan(plan) {
+    // One functional updateBlockTracked for every edit + the final placement — single undo step
+    // (CLAUDE.md "every bulk lock action = ONE functional updateBlockTracked (looping floods
+    // undo)" — same posture applies here). Re-validates every touched cell against the FINAL
+    // resulting schedule immediately before writing: slotFixes.js already checked this during its
+    // search, but this is the one place that actually commits it, so it never trusts a plan that
+    // could in principle have gone stale since the panel opened.
+    let nextSchedule = { ...sched };
+    const setCell = (rid, ds, sid) => { nextSchedule = { ...nextSchedule, [rid]: { ...(nextSchedule[rid] || {}), [ds]: sid } }; };
+    const touched = [];
+    for (const e of plan.edits) {
+      if (e.kind === 'drop') {
+        setCell(plan.residentId, e.fromDate, null);
+        touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null });
+      } else if (e.kind === 'move') {
+        setCell(plan.residentId, e.fromDate, null);
+        setCell(plan.residentId, e.toDate, e.shiftId);
+        touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null }, { rid: plan.residentId, ds: e.toDate, sid: e.shiftId });
+      } else if (e.kind === 'handoff') {
+        setCell(plan.residentId, e.fromDate, null);
+        setCell(e.toResidentId, e.fromDate, e.shiftId);
+        touched.push({ rid: plan.residentId, ds: e.fromDate, sid: null }, { rid: e.toResidentId, ds: e.fromDate, sid: e.shiftId });
+      }
+    }
+    setCell(plan.residentId, plan.final.dateStr, plan.final.shiftId);
+    touched.push({ rid: plan.residentId, ds: plan.final.dateStr, sid: plan.final.shiftId });
+
+    for (const t of touched) {
+      if (t.sid == null) continue;
+      const hard = cellHelpers.hardViolations(t.rid, t.ds, t.sid, nextSchedule);
+      if (hard.length) {
+        showToast('That plan no longer applies cleanly — the schedule changed since it was found. Reopen the slot to recompute.', 'red');
+        return;
+      }
+    }
+
+    updateBlockTracked(b => ({ ...b, schedule: nextSchedule }));
+    showToast(`Applied ${plan.edits.length} change${plan.edits.length === 1 ? '' : 's'} to legally place ${nameFor(plan.residentId)} on ${shiftId} (${formatDisplayDate(dateStr)})`, 'green');
+    onClose();
+  }
+
+  function describeEdit(e) {
+    if (e.kind === 'drop') return `Drop their ${e.shiftId} on ${formatDisplayDate(e.fromDate)}`;
+    if (e.kind === 'move') return `Move their ${e.shiftId} from ${formatDisplayDate(e.fromDate)} to ${formatDisplayDate(e.toDate)}`;
+    if (e.kind === 'handoff') return `Hand their ${e.shiftId} on ${formatDisplayDate(e.fromDate)} to ${nameFor(e.toResidentId)}`;
+    return '';
+  }
+
+  return (
+    <div className="mt-3 border border-border rounded-xl p-4 bg-card" role="region" aria-label={`Fill ${shiftId} on ${formatDisplayDate(dateStr)}`}>
+      <div className="flex items-start justify-between mb-2">
+        <h4 className="text-sm font-semibold">{shiftId} — {formatDisplayDate(dateStr)}</h4>
+        <button onClick={onClose} aria-label="Close panel" className="text-muted-foreground hover:text-foreground"><X size={16}/></button>
+      </div>
+
+      {expected.requirement && (
+        <div className="mb-2 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+          {expected.requirement}
+        </div>
+      )}
+      {expected.buckets.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1">
+          {expected.buckets.map(b => (
+            <span key={b.key} title={`${b.availableCount} free of ${b.count} on this rotation`}
+              className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+              {b.label} ({b.availableCount}/{b.count})
+            </span>
+          ))}
+        </div>
+      )}
+
+      {pendingOverride ? (
+        <div>
+          <OverrideConfirmPanel overridable={pendingOverride.overridable} note={overrideNote} onNoteChange={setOverrideNote}/>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setPendingOverride(null)}>Cancel</Button>
+            <Button variant="primary" size="sm" onClick={confirmOverride}>Confirm override</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <h5 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1"><CheckCircle size={12} className="text-green-600"/> Legal ({candidates.legal.length})</h5>
+            {candidates.legal.length === 0 ? <p className="text-xs text-muted-foreground">None.</p> : (
+              <ul className="space-y-1">
+                {candidates.legal.slice(0, 8).map(c => (
+                  <li key={c.residentId} className="flex items-center justify-between text-xs gap-2">
+                    <span>{nameFor(c.residentId)}{c.target != null && <span className="text-muted-foreground"> · {c.count}/{c.target}</span>}</span>
+                    <Button size="sm" variant="secondary" onClick={() => applyAssign(c)}>Assign</Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <h5 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1"><AlertTriangle size={12} className="text-amber-600"/> Needs override ({candidates.override.length})</h5>
+            {candidates.override.length === 0 ? <p className="text-xs text-muted-foreground">None.</p> : (
+              <ul className="space-y-1">
+                {candidates.override.slice(0, 8).map(c => (
+                  <li key={c.residentId} className="flex items-center justify-between text-xs gap-2">
+                    <span>{nameFor(c.residentId)}</span>
+                    <Button size="sm" variant="secondary" onClick={() => applyAssign(c)}>Assign</Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <h5 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 flex items-center gap-1"><Wrench size={12}/> Legal after edits ({fixablePlans.length})</h5>
+            {fixablePlans.length === 0 ? <p className="text-xs text-muted-foreground">None found.</p> : (
+              <ul className="space-y-2">
+                {fixablePlans.slice(0, 5).map((plan, i) => (
+                  <li key={`${plan.residentId}-${i}`} className="text-xs border border-border rounded p-2">
+                    <div className="font-medium mb-1">{nameFor(plan.residentId)}</div>
+                    <ul className="list-disc list-inside text-muted-foreground mb-1.5">
+                      {plan.edits.map((e, j) => <li key={j}>{describeEdit(e)}</li>)}
+                    </ul>
+                    <Button size="sm" variant="secondary" onClick={() => applyFixablePlan(plan)}>Apply changes</Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <details>
+            <summary className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground cursor-pointer select-none">Why not the rest ({candidates.blocked.length})</summary>
+            <ul className="mt-1 space-y-1">
+              {candidates.blocked.map(b => (
+                <li key={b.residentId} className="text-xs text-muted-foreground">
+                  {nameFor(b.residentId)} — {b.reasons.map(r => r.message).join('; ')}
+                </li>
+              ))}
+            </ul>
+          </details>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Root Coverage tab: birds-eye department-composition view, now opening on the heatmap above
+// (CLAUDE.md decision: upgrade this tab, not a new one). `block`/`allResidents`/`coverage`/
+// `ayConf` mirror the shapes ScheduleGrid/DashboardTab already consume (block.schedule, root's
+// allResidents memo, res_coverage, the current AY's ayData entry) — no new shapes introduced.
+// Handles a block with no dates (new/blank block) and an empty/unset schedule without crashing,
+// same guarantee composeCoverage itself already carries (see its own tests).
+function CoverageTab({ block, allResidents, coverage, ayConf, eligOverrides, appSettings, dayRules, blocksHistory, updateBlockTracked, showToast }) {
   const dates = useMemo(() => getBlockDates(block?.startDate, block?.endDate), [block?.startDate, block?.endDate]);
   const schedule = block?.schedule || {};
   const residents = allResidents || [];
@@ -20561,15 +21079,26 @@ function CoverageTab({ block, allResidents, coverage, ayConf }) {
     for (const r of residents) m[r.id] = r;
     return m;
   }, [residents]);
+  // Same shared function the Schedule grid's own coverage footer uses (CLAUDE.md: "never fork") —
+  // the heatmap's n/min numbers are therefore guaranteed equal to the grid footer's.
+  const coverageByDate = useMemo(
+    () => computeCoverageByDate(dates, schedule, coverage, residents, ayConf),
+    [dates, schedule, coverage, residents, ayConf]
+  );
+  const activeCoverageShifts = useMemo(() => getActiveCoverageShifts(dates, coverageByDate), [dates, coverageByDate]);
 
-  const [view, setView] = useState('byArea');
+  const [view, setView] = useState('heatmap');
   const [selectedDate, setSelectedDate] = useState(dates[0] || null);
+  const [boardDate, setBoardDate] = useState(null); // heatmap sub-view's own drill-down date, or null
   // Guards against a stale selected date surviving a block switch (different date range) or a
   // block with no dates yet — same "reconcile against fresh data" spirit as reconcileTabOrder.
   useEffect(() => {
     if (dates.length > 0 && !dates.includes(selectedDate)) setSelectedDate(dates[0]);
     else if (dates.length === 0 && selectedDate !== null) setSelectedDate(null);
   }, [dates, selectedDate]);
+  useEffect(() => {
+    if (boardDate && !dates.includes(boardDate)) setBoardDate(null);
+  }, [dates, boardDate]);
 
   if (dates.length === 0) {
     return (
@@ -20580,12 +21109,23 @@ function CoverageTab({ block, allResidents, coverage, ayConf }) {
   }
 
   return (
-    <SectionCard title="Department Coverage" subtitle="Who is covering each shift, by category and PGY">
-      <SubTabs value={view} onChange={setView} options={[
+    <SectionCard title="Department Coverage" subtitle="Spot a gap, see who can fill it">
+      <SubTabs value={view} onChange={v => { setView(v); setBoardDate(null); }} options={[
+        { id: 'heatmap', label: 'Heatmap' },
         { id: 'byArea', label: 'By Area' },
         { id: 'byDate', label: 'By Date' },
         { id: 'totals', label: 'Totals' },
       ]}/>
+      {view === 'heatmap' && (
+        boardDate ? (
+          <DayFloorBoard dateStr={boardDate} dates={dates} onBack={() => setBoardDate(null)} onNavigate={setBoardDate}
+            block={block} allResidents={residents} coverage={coverage} ayConf={ayConf}
+            eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory}
+            updateBlockTracked={updateBlockTracked} showToast={showToast}/>
+        ) : (
+          <CoverageHeatmapGrid dates={dates} coverageByDate={coverageByDate} activeCoverageShifts={activeCoverageShifts} onOpenDate={setBoardDate}/>
+        )
+      )}
       {view === 'byArea' && <CoverageByAreaView dates={dates} composed={composed} residentById={residentById}/>}
       {view === 'byDate' && (
         <CoverageByDateView dates={dates} composed={composed} residentById={residentById}
@@ -22641,7 +23181,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
-          {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf}/>}
+          {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
