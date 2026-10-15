@@ -51,6 +51,7 @@ import { deriveBlockSteps } from './lib/blockStatus.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
+import { findSickCallCoverage } from './lib/sickCallCover.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
 import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
@@ -9347,7 +9348,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory, ayConf = {}, o
 // JournalClubPlanner updates emRoster via a functional setter matched by resident id instead of
 // rebuilding from the derived allResidents memo. A stale closure here would silently drop a
 // concurrent add/delete.
-function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings, setAppSettings }) {
+function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings, setAppSettings, onRequestSickCallCover }) {
   const ay = block.academicYear || (block.startDate ? getAcademicYearFor(block.startDate) : null);
   const log = Array.isArray(appSettings?.jeopardyLog) ? appSettings.jeopardyLog : [];
 
@@ -9419,6 +9420,17 @@ function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings
           same way, with a positive Target Δ checked <strong>payback</strong> (manually, by the chief; not
           necessarily tied to whoever covered). Nothing here auto-applies to any target or schedule.
         </p>
+
+        {/* Entry point into the Schedule tab's "Cover a sick call" modal (see ScheduleGrid/
+            SickCallCoverModal) — this card already logs WHO called out and WHEN; this button is
+            the fast path from "I just logged that" to "now who covers it", without making this
+            card itself own any schedule-editing UI. */}
+        {onRequestSickCallCover && (
+          <button type="button" onClick={() => onRequestSickCallCover(null, [])}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-teal-600 hover:bg-teal-700 text-white rounded-lg transition-colors">
+            <Stethoscope size={12}/> Cover a sick call
+          </button>
+        )}
 
         {/* Add-incident form */}
         <div className="flex flex-wrap items-end gap-2 bg-gray-50 border border-gray-200 rounded-lg p-3">
@@ -9976,7 +9988,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -10308,7 +10320,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
 
       {/* Jeopardy activations / sick-call log + advisory buy-down ledger */}
       <JeopardySickCallsCard allResidents={allResidents} block={block} blocksHistory={blocksHistory}
-        appSettings={appSettings} setAppSettings={setAppSettings}/>
+        appSettings={appSettings} setAppSettings={setAppSettings} onRequestSickCallCover={onRequestSickCallCover}/>
 
       {/* 1st Fridays */}
       {firstFridays.length > 0 && (
@@ -14304,7 +14316,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -14313,6 +14325,26 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // cell inspector on top of this later). Cleared implicitly whenever a different jump replaces it;
   // never persisted.
   const [selectedCell, setSelectedCell] = useState(null); // {residentId, dateStr} | null
+  // Sick-call cover modal (reachable from this tab's Review panel header AND from the Dashboard's
+  // Jeopardy & Sick Calls card via `sickCallRequest` below) — `sickCallResidentId`/`sickCallDates`
+  // are the modal's own inputs, read by the sickCallPlan memo above regardless of whether the
+  // modal is currently open (closing it just stops rendering the result, not computing it — cheap
+  // either way since it's gated on both being non-empty).
+  const [sickCallModalOpen, setSickCallModalOpen] = useState(false);
+  const [sickCallResidentId, setSickCallResidentId] = useState('');
+  const [sickCallDates, setSickCallDates] = useState([]); // string[] of 'YYYY-MM-DD', in-block dates
+  // A cross-tab launch from the Dashboard's Jeopardy & Sick Calls card (see sickCallRequest prop)
+  // arrives as {residentId, dates, nonce} — nonce changes on every request so two consecutive
+  // requests for the SAME resident/dates still reopen the modal. Consumed once, then cleared via
+  // onConsumeSickCallRequest so a re-render of this tab (e.g. an unrelated prop change) doesn't
+  // reopen it.
+  useEffect(() => {
+    if (!sickCallRequest) return;
+    setSickCallResidentId(sickCallRequest.residentId || '');
+    setSickCallDates(Array.isArray(sickCallRequest.dates) ? sickCallRequest.dates : []);
+    setSickCallModalOpen(true);
+    onConsumeSickCallRequest?.();
+  }, [sickCallRequest, onConsumeSickCallRequest]);
   // Populated by each rendered cell via a callback ref (see renderResidentRow) so jumpToCell can
   // find the real DOM node to scroll to without any manual row/column pixel math of its own — the
   // grid already handles CSS `zoom` and sticky header/name-column layout for every other scroll
@@ -14675,23 +14707,15 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     [issues]
   );
 
-  // Cell inspector (P3) — candidate math for the selected cell only (never all cells), so this is
-  // cheap for ~25 residents even though it calls cellViolations per candidate: findGiveCandidates/
-  // findSwapCandidates/findAssignOptions live in lib/cellAlternatives.js (pure; every rule-domain
-  // helper below is injected as a parameter, same trick as scheduleGrouping.js). A locked cell
-  // short-circuits before any of that runs — the inspector shows only its lock state then, no
-  // actions (see CLAUDE.md "locked cells untouchable").
-  const inspectorData = useMemo(() => {
-    if (!selectedCell) return null;
-    const { residentId, dateStr } = selectedCell;
+  // Rule-domain helpers shared by the Cell inspector (P3, below) AND the Sick-call cover modal
+  // (both just candidate math over arbitrary residentId/dateStr/shiftId triples, neither tied to
+  // `selectedCell`) — hoisted out of inspectorData's own useMemo so a second consumer doesn't have
+  // to re-derive the same isEligible/violation/target closures. residentById/lockedCells/enrich are
+  // plain lookups; isEligible/eligibilityReasonFor/hardViolations/softViolations/targetInfo each
+  // mirror getEligibleShifts/eligibilityBlockReasons/cellViolations/getShiftTarget exactly — see
+  // their own comments below for why each shape is what it is.
+  const cellHelpers = useMemo(() => {
     const residentById = new Map(allResidents.map(r => [r.id, r]));
-    const resident = residentById.get(residentId);
-    if (!resident) return null;
-    const shiftId = sched[residentId]?.[dateStr] || null;
-    const locked = !!block.lockedCells?.[residentId]?.[dateStr];
-    const cellIssues = violMap[`${residentId}_${dateStr}`] || [];
-    if (locked) return { resident, dateStr, shiftId, locked, cellIssues, give: [], swap: [], assign: [] };
-
     const isEligible = (rid, ds, sid) => {
       const r = residentById.get(rid);
       if (!r) return false;
@@ -14727,6 +14751,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     };
     const lockedCells = block.lockedCells || {};
     const enrich = list => list.map(c => ({ ...c, resident: residentById.get(c.residentId) }));
+    return { residentById, isEligible, eligibilityReasonFor, hardViolations, softViolations, targetInfo, lockedCells, enrich };
+  }, [sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
+      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
+      sd, blocksHistory]);
+
+  // Cell inspector (P3) — candidate math for the selected cell only (never all cells), so this is
+  // cheap for ~25 residents even though it calls cellViolations per candidate: findGiveCandidates/
+  // findSwapCandidates/findAssignOptions live in lib/cellAlternatives.js (pure; every rule-domain
+  // helper below is injected as a parameter, same trick as scheduleGrouping.js). A locked cell
+  // short-circuits before any of that runs — the inspector shows only its lock state then, no
+  // actions (see CLAUDE.md "locked cells untouchable").
+  const inspectorData = useMemo(() => {
+    if (!selectedCell) return null;
+    const { residentId, dateStr } = selectedCell;
+    const { residentById, isEligible, eligibilityReasonFor, hardViolations, softViolations, targetInfo, lockedCells, enrich } = cellHelpers;
+    const resident = residentById.get(residentId);
+    if (!resident) return null;
+    const shiftId = sched[residentId]?.[dateStr] || null;
+    const locked = !!block.lockedCells?.[residentId]?.[dateStr];
+    const cellIssues = violMap[`${residentId}_${dateStr}`] || [];
+    if (locked) return { resident, dateStr, shiftId, locked, cellIssues, give: [], swap: [], assign: [] };
 
     if (shiftId) {
       const give = enrich(findGiveCandidates({
@@ -14751,9 +14796,48 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, coverageFor,
     });
     return { resident, dateStr, shiftId: null, locked, cellIssues, give: [], swap: [], assign };
-  }, [selectedCell, sched, block.lockedCells, block.startDate, block.endDate, block.jeopardySchedule,
-      allResidents, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap,
-      coverageByDate, violMap, sd, blocksHistory]);
+  }, [selectedCell, cellHelpers, sched, block.lockedCells, block.startDate, block.jeopardySchedule,
+      allResidents, eligOverrides, appSettings, dayRules, ayConf, nextRotationMap,
+      coverageByDate, violMap, sd]);
+
+  // Sick-call cover (P4-ish, chief-review-loop adjacent): candidate math for EVERY affected shift
+  // a resident out sick (or needing an ad-hoc day off) has in a chosen date range, not just one
+  // cell — lib/sickCallCover.js's findSickCallCoverage reuses findGiveCandidates under the hood
+  // (same cellHelpers as the inspector above) and additionally ranks a jeopardy-for-that-date
+  // resident first (the "natural first cover" — see CLAUDE.md) and, for a night/weekend shift,
+  // tiebreaks on fewest nights/weekends this block. `sickCallResidentId`/`sickCallDates` are the
+  // modal's own inputs (null/[] when the modal is closed or nothing chosen yet, in which case this
+  // is a cheap no-op array).
+  const jeopardyResidentIdsFor = useCallback((dateStr) => {
+    const out = new Set();
+    for (const r of allResidents) {
+      if (isJeopardyDate(r, dateStr, block.jeopardySchedule)) out.add(r.id);
+    }
+    return out;
+  }, [allResidents, block.jeopardySchedule]);
+  const isNightOrWeekendShift = useCallback((sid, ds) => {
+    if (isNightShiftId(sid)) return true;
+    const dow = parseDate(ds).getDay();
+    return dow === 0 || dow === 6;
+  }, []);
+  const nightWeekendCountFor = useCallback((rid) => {
+    const row = sched[rid] || {};
+    let n = 0;
+    for (const ds of Object.keys(row)) {
+      if (row[ds] && isNightOrWeekendShift(row[ds], ds)) n++;
+    }
+    return n;
+  }, [sched, isNightOrWeekendShift]);
+  const sickCallPlan = useMemo(() => {
+    if (!sickCallResidentId || !sickCallDates?.length) return [];
+    const { isEligible, eligibilityReasonFor, hardViolations, softViolations, targetInfo, lockedCells, enrich } = cellHelpers;
+    const raw = findSickCallCoverage({
+      sickResidentId: sickCallResidentId, dates: sickCallDates, schedule: sched, residents: allResidents, lockedCells,
+      isEligible, eligibilityReason: eligibilityReasonFor, hardViolations, softViolations, targetInfo,
+      jeopardyResidentIdsFor, nightWeekendCountFor, isNightOrWeekendShift,
+    });
+    return raw.map(e => ({ ...e, candidates: enrich(e.candidates) }));
+  }, [sickCallResidentId, sickCallDates, cellHelpers, sched, allResidents, jeopardyResidentIdsFor, nightWeekendCountFor, isNightOrWeekendShift]);
 
   // Ref on the mobile review-panel drawer (below the grid) — selectCell scrolls it into view on
   // phone/tablet widths, where there's no desktop sidebar already on screen for the click to land
@@ -14851,6 +14935,35 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         ...b, schedule: { ...b.schedule, [resident.id]: { ...(b.schedule[resident.id] || {}), [dateStr]: assignShiftId } },
       }), overrideMeta);
       showToast(`Assigned ${assignShiftId} to ${resident.firstName} ${resident.lastName} (${formatDisplayDate(dateStr)})`, 'green');
+    });
+  }
+
+  // Sick-call cover modal's own apply — one shift at a time (one click = one updateBlockTracked
+  // call = one undo step, same posture as applyGive). Moves dateStr's shiftId from the sick
+  // resident to the cover candidate; routes through the SAME runOrConfirmOverride confirm-with-note
+  // step as the inspector when the chosen candidate needsOverride. `logJeopardy` (the modal's own
+  // checkbox, default on) additionally appends one appSettings.jeopardyLog entry — mirrors
+  // JeopardySickCallsCard's own addIncident shape exactly ({id,date,shiftId,sickResidentId,
+  // activatedResidentId,note,at}) so it rolls into the same ledger/buy-down math, just entered from
+  // this workflow instead of typed by hand.
+  function applySickCallCover(dateStr, shiftId, candidateResidentId, candidate, logJeopardy) {
+    const sick = allResidents.find(r => r.id === sickCallResidentId);
+    const cand = allResidents.find(r => r.id === candidateResidentId);
+    runOrConfirmOverride(candidate, (overrideMeta) => {
+      updateBlockTracked(b => {
+        const s = { ...b.schedule };
+        s[sickCallResidentId] = { ...(s[sickCallResidentId] || {}), [dateStr]: null };
+        s[candidateResidentId] = { ...(s[candidateResidentId] || {}), [dateStr]: shiftId };
+        return { ...b, schedule: s };
+      }, overrideMeta);
+      if (logJeopardy && setAppSettings) {
+        const rec = {
+          id: uuid(), date: dateStr, shiftId, sickResidentId: sickCallResidentId,
+          activatedResidentId: candidateResidentId, note: 'Covered via Cover a sick call', at: Date.now(),
+        };
+        setAppSettings(p => ({ ...p, jeopardyLog: [...(Array.isArray(p.jeopardyLog) ? p.jeopardyLog : []), rec] }));
+      }
+      showToast(`Covered ${shiftId} (${formatDisplayDate(dateStr)}): ${sick ? `${sick.firstName} ${sick.lastName}` : sickCallResidentId} → ${cand ? `${cand.firstName} ${cand.lastName}` : candidateResidentId}`, 'green');
     });
   }
 
@@ -16097,7 +16210,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}/>
         </div>
       )}
       </div>
@@ -16120,10 +16233,20 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}/>
         </div>
       )}
       </div>
+
+      {sickCallModalOpen && (
+        <SickCallCoverModal
+          allResidents={allResidents} block={block} plan={sickCallPlan}
+          residentId={sickCallResidentId} onResidentIdChange={setSickCallResidentId}
+          dates={sickCallDates} onDatesChange={setSickCallDates}
+          onUnlockCell={(rid,ds)=>toggleLock(rid,ds)}
+          onApply={applySickCallCover}
+          onClose={()=>{ setSickCallModalOpen(false); setSickCallResidentId(''); setSickCallDates([]); }}/>
+      )}
 
       {dropConfirm && (
         <DragConfirmModal dropConfirm={dropConfirm}
@@ -17457,7 +17580,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
 function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
-  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign }) {
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover }) {
   const { mustFix, orderedWarns } = panelIssues;
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
   // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
@@ -17490,12 +17613,26 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
         ) : (
           <span className="text-sm font-semibold text-foreground">Review</span>
         )}
-        {onClose && (
-          <button type="button" onClick={onClose} title="Collapse review panel"
-            className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
-            <ChevronRight size={16}/>
-          </button>
-        )}
+        <div className="flex items-center gap-1 shrink-0">
+          {/* "Cover a sick call" lives here rather than as its own toolbar button or a per-cell
+              context action: it's not about any one cell (it scans a resident's whole date range),
+              and the review panel is already where a chief lands to deal with a schedule problem —
+              one more entry point beside the Review/Cell-inspector header is the least-cluttered
+              option. Hidden while the Cell inspector sub-view is open (its own "Back to review" is
+              the way out of that, not a reason to also show this). */}
+          {!showInspector && onOpenSickCallCover && (
+            <button type="button" onClick={onOpenSickCallCover} title="Cover a sick call"
+              className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-primary px-1.5 py-1 rounded transition-colors">
+              <Stethoscope size={14}/> Cover sick call
+            </button>
+          )}
+          {onClose && (
+            <button type="button" onClick={onClose} title="Collapse review panel"
+              className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
+              <ChevronRight size={16}/>
+            </button>
+          )}
+        </div>
       </div>
       {showInspector ? (
         <div className="overflow-y-auto flex-1 p-3 text-sm">
@@ -17669,12 +17806,24 @@ function NeedsOverrideTag() {
   return <span className="inline-block text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ml-1.5">Needs override</span>;
 }
 
-function CandidateRow({ resident, count, target, softViolations, needsOverride, shiftNote, actionLabel, onApply }) {
+// isJeopardy (sick-call cover modal only): this candidate is on jeopardy THIS date — the natural
+// first cover (CLAUDE.md) — surfaced as its own small badge, same visual tier as NeedsOverrideTag
+// but teal, never shown alongside it (a jeopardy-and-needs-override candidate still sorts last —
+// see sickCallCover.js — so showing both would read as a contradiction in rank vs badge order).
+function JeopardyTag() {
+  return <span className="inline-block text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 ml-1.5">On jeopardy</span>;
+}
+
+function CandidateRow({ resident, count, target, softViolations, needsOverride, shiftNote, actionLabel, onApply, isJeopardy }) {
   if (!resident) return null;
   return (
     <li className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border border-border bg-muted/30">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-foreground truncate flex items-center">{resident.firstName} {resident.lastName}{needsOverride && <NeedsOverrideTag/>}</div>
+        <div className="text-xs font-medium text-foreground truncate flex items-center">
+          {resident.firstName} {resident.lastName}
+          {isJeopardy && !needsOverride && <JeopardyTag/>}
+          {needsOverride && <NeedsOverrideTag/>}
+        </div>
         <div className="text-[11px] text-muted-foreground">
           {target != null ? `${count}→${count + 1} of ${target}` : `${count} shifts (no target)`}
           {shiftNote && ` · ${shiftNote}`}
@@ -17701,6 +17850,112 @@ function AssignRow({ shiftId, min, max, count, softViolations, needsOverride, on
       </div>
       <Button variant="secondary" size="sm" className="shrink-0" onClick={onApply}>Assign</Button>
     </li>
+  );
+}
+
+// "Cover a sick call" — reachable from this tab's Review panel header AND (via sickCallRequest,
+// see ScheduleGrid) from the Dashboard's Jeopardy & Sick Calls card. Unlike the Cell inspector
+// (one cell), this scans every shift a chosen resident has across a chosen date range and offers
+// ranked cover candidates for EACH ONE — `plan` is ScheduleGrid's sickCallPlan memo
+// ([{dateStr, shiftId, locked, candidates}]), already computed off `residentId`/`dates` by the
+// time this renders. Each shift's "Assign" is its own one-click apply (one updateBlockTracked call
+// — see applySickCallCover), so covering three shifts is three clicks, not a bulk action; the plan
+// recomputes after each apply since it's reactive off the live schedule.
+function SickCallCoverModal({ allResidents, block, plan, residentId, onResidentIdChange, dates, onDatesChange, onUnlockCell, onApply, onClose }) {
+  const blockDates = useMemo(() => getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
+  const rangeStart = dates?.[0] || '';
+  const rangeEnd = dates?.[dates.length - 1] || '';
+  // Default on (CLAUDE.md "checkbox, default on") — logs every apply in this modal session into
+  // appSettings.jeopardyLog, same shape JeopardySickCallsCard's own add-incident form writes.
+  const [logJeopardy, setLogJeopardy] = useState(true);
+
+  function setRange(start, end) {
+    if (!start || !end || start > end) { onDatesChange(start ? [start] : []); return; }
+    onDatesChange(blockDates.filter(ds => ds >= start && ds <= end));
+  }
+
+  const resident = allResidents.find(r => r.id === residentId);
+  const coveredCount = plan.filter(e => e.candidates.length === 0 && !e.locked).length;
+
+  return (
+    <Modal title="Cover a sick call" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Pick who's out and the date range — every shift they're scheduled for in range shows its
+          top legal cover options, ranked by who's on jeopardy that date, then under target, then
+          fewest shifts.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">Resident</label>
+            <select value={residentId} onChange={e => onResidentIdChange(e.target.value)}
+              className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background max-w-[12rem]">
+              <option value="">Select resident…</option>
+              {allResidents.map(r => <option key={r.id} value={r.id}>{r.lastName}, {r.firstName}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">From</label>
+            <input type="date" value={rangeStart} min={block.startDate} max={block.endDate}
+              onChange={e => setRange(e.target.value, rangeEnd || e.target.value)}
+              className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background"/>
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">Through</label>
+            <input type="date" value={rangeEnd} min={block.startDate} max={block.endDate}
+              onChange={e => setRange(rangeStart || e.target.value, e.target.value)}
+              className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background"/>
+          </div>
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input type="checkbox" checked={logJeopardy} onChange={e => setLogJeopardy(e.target.checked)} className="rounded"/>
+          Log each cover as a jeopardy/sick-call incident
+        </label>
+
+        {!residentId ? (
+          <p className="text-xs text-muted-foreground italic">Select a resident to see their affected shifts.</p>
+        ) : plan.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            {resident ? `${resident.firstName} ${resident.lastName}` : 'This resident'} has no shifts scheduled in that range.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {plan.map(entry => (
+              <div key={entry.dateStr} className="border border-border rounded-lg p-2.5">
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="text-xs font-semibold text-foreground">
+                    {formatDisplayDate(entry.dateStr)} — <span className="font-mono">{entry.shiftId}</span>
+                  </div>
+                </div>
+                {entry.locked ? (
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-2 flex items-center justify-between gap-2">
+                    <span className="text-xs text-indigo-700 font-medium flex items-center gap-1.5"><Lock size={12}/> Locked — unlock to cover</span>
+                    <Button variant="secondary" size="sm" icon={Unlock} onClick={() => onUnlockCell(residentId, entry.dateStr)}>Unlock</Button>
+                  </div>
+                ) : entry.candidates.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No legal candidate found for this shift.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {entry.candidates.slice(0, 5).map(c => (
+                      <CandidateRow key={c.residentId} resident={c.resident} count={c.count} target={c.target}
+                        softViolations={c.softViolations} needsOverride={c.needsOverride} isJeopardy={c.isJeopardy}
+                        actionLabel="Assign" onApply={() => onApply(entry.dateStr, entry.shiftId, c.residentId, c, logJeopardy)}/>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+            {coveredCount > 0 && plan.length > coveredCount && (
+              <p className="text-[11px] text-muted-foreground italic">{coveredCount} shift{coveredCount === 1 ? '' : 's'} above have no legal candidate left to cover.</p>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end pt-1">
+          <Button variant="secondary" size="sm" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -20983,6 +21238,17 @@ export default function ResidentScheduler({ viewer } = {}) {
   // persisted today, but guard anyway in case a future change (deep link, restored session, etc.)
   // ever hands this a stale 'home' value.
   useEffect(() => { if (tab === 'home') setTab('dashboard'); }, [tab]);
+  // Cross-tab launch for "Cover a sick call" (the Dashboard's Jeopardy & Sick Calls card has its
+  // own entry button, but the actual modal lives in ScheduleGrid — it needs the same rule-domain
+  // helper closures the Cell inspector already built there, see cellHelpers). `nonce` makes two
+  // consecutive requests for the same resident/dates still reopen the modal (ScheduleGrid's own
+  // effect keys off the whole object identity). Consumed once by ScheduleGrid's effect, then
+  // cleared here so a later re-render of the Schedule tab doesn't reopen it.
+  const [sickCallRequest, setSickCallRequest] = useState(null); // {residentId, dates, nonce} | null
+  function requestSickCallCover(residentId, dates) {
+    setSickCallRequest({ residentId: residentId || '', dates: dates || [], nonce: uuid() });
+    setTab('schedule');
+  }
   const [navOpen, setNavOpen] = useState(false); // below-md sidebar drawer; ignored at md+
   const [toast, setToast] = useState(null);
   // Toast history (P4 UI polish): a toast auto-dismisses after 5s with no way to re-read it — this
@@ -22329,12 +22595,12 @@ export default function ResidentScheduler({ viewer } = {}) {
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
-              setImportLog={setImportLog}/>
+              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
