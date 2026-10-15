@@ -2,7 +2,7 @@
 
 EM residency shift scheduler (UH Emergency Medicine). Builds/validates resident schedules across areas (POD, PED, FLEX, MT, TRAUMA), auto-generates from coverage rules, exports CSV/PDF/QGenda, JSON backup/restore in Settings.
 
-**Full-detail doc (war stories, measurements, rationale): `docs/CLAUDE-full.md`; evicted detail: `CLAUDE-Archive.md`. Every rule here is load-bearing — consult the full doc before relaxing one.**
+**Evicted detail (war stories, measurements, rationale): `CLAUDE-Archive.md`. Every rule here is load-bearing — consult it before relaxing one.**
 
 ## Commands
 ```bash
@@ -65,7 +65,7 @@ npx vitest run src/lib/qgenda.test.js        # single file
 - **Max 6 consecutive work days** (`MAX_CONSECUTIVE_WORK_DAYS`): counts assigned shift (incl. `prevBlockTailSchedules`), GR weekday (`grWorkDow`), JC presenting date — unless vacation/approved-off. Shared by validator, generator, picker.
 - **Journal Club** (`src/lib/journalClub.js`): consumers use `resolveJcDates`/`jcDatesInRange`/`isJcDate`/`isJcDateAnyAy` — never re-derive. Absent config = first Tuesdays; explicit `[]` honored. `ayWindowFor().end` EXCLUSIVE.
 - **Holidays**: **absent config derives NOTHING** (opposite of jcDates).
-- **Seniority**: POD hard (PGY-3 required, `'pgy3Required'`), FLEX soft. **Wednesday DAY shifts exempt** (`seniorCompositionExempt`) — FOUR call sites in lockstep: `validateAll` senior loop, `fillDayPass` POD branch, `fillDayPass` FLEX branch, `narrowForSeniority`/`podStillSatisfied`.
+- **Seniority**: POD hard (PGY-3 required, `'pgy3Required'`), FLEX hard too (PGY-2, `'pgy2Required'`; an unmet requirement leaves the slot unfilled, no junior fallback). **Wednesday DAY shifts exempt** (`seniorCompositionExempt`) — FOUR call sites in lockstep: `validateAll` senior loop, `fillDayPass` POD branch, `fillDayPass` FLEX branch, `narrowForSeniority`/`podStillSatisfied`.
 - **Wellness Wednesdays**: `ctx.blockStart` must reach EVERY `getEligibleShifts` call site (a grid caller once omitted `ctx` and silently no-op'd this).
 - **Jeopardy never collides with a clinical shift** (hard under `'warn'` and `'block'`; `'off'` silent). **Off-service residents have no jeopardy** (`isJeopardyDate` gates on `EM_HOME`/`EM_BAMC`).
 - `PED_GUARD_LEGITIMATE_OWNER` DERIVED from `BASE_ELIGIBILITY` — grant eligibility there, never hand-edit the guard.
