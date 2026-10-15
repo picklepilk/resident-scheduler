@@ -300,13 +300,14 @@ every pre-existing `test_weight_tiering.py` invariant stays green unchanged).
 | `errorCount` (validateAll 'error' level) | `targetDeficitCore.perUnit` (EM-core resident under shift-count target), minus the tolerated unit on a conference block — see below | Every OTHER JS 'error' (acgme/program tier, `rulePolicy.js`) is already a solver HARD constraint (circadian, trauma caps, ACGME hours, senior composition, ...) — 0 by construction in a strict-pass-1 solve, so it needs no objective term. **FIXED 2026-10-15** (was a documented gap): JS's `conferenceTolerated` exception (a 1-shift EM-core shortfall during a conference block downgrades from 'error' to blockingWarnCount) now has a solver equivalent — `payload.blockTouchesConference` (new, `buildSolverPayload`'s `blockTouchesConference`, same `getConferencesInBlock(...).length > 0` check validateAll itself runs) tells `_add_target_deficit_terms` to split an EM-core resident's `deficit` into `tolerated = min(deficit, 1)` (charged at the new `conferenceTolerated.perUnit` weight, into `TIER_BLOCKING`) and `remainder = deficit - tolerated` (still `targetDeficitCore.perUnit`, `TIER_ERRORS`) whenever the flag is set. Only the first unit moves — a 2+ shortfall still charges the remainder at full `TIER_ERRORS` weight, matching JS's own "scoped to a shortfall of exactly 1" comment. See "Two engine gaps closed" below for the full change and the re-measured `conferenceBlock` head-to-head outcome. |
 | `blockingWarnCount` (JS `EXPORT_BLOCKING_RULE_IDS`: `postNightRest` + every `rulePolicy.js` 'override'-tier rule) | `postNightRest.perViolation` | Override-tier rules (`traumaRunCap`, `podPgy3Composition`, `wellnessWednesday`, ...) are hard-never-broken by the solver's own strict pass 1 too (mirrors the JS generator, which also never breaks them) — 0 by construction, no objective term needed in `TIER_BLOCKING`. They only become genuinely violable in PASS 2 (relaxed), which is a documented gap below. |
 | `qualityVector[n0,n1,n2]` (`coverageMin`/`seniorComposition`/`postNightRest`, in `rulePriority` order) | `coverageMin.perSlack` + `overstaffCoverage.perUnit` (`TIER_RANK`) | `seniorComposition` is hard (0, no term needed). `postNightRest` is already pinned to its true minimum by `TIER_BLOCKING` above, regardless of `rulePriority` order — same as the JS side, where `blockingWarnCount` (unconditional) always outranks the quality vector (rulePriority-ordered) as a lexicographic tier, so a `postNightRest`-first `rulePriority` doesn't change WHICH count gets minimized first, only which of `coverageMin`/`postNightRest` (already both effectively pinned by earlier tiers) would be re-ranked if either weren't. `overstaffCoverage` has no `betterQuality` slot of its own in JS either (`ResidentScheduler.jsx`'s own comment on repair Phase 5) — placed here since that's its natural weight-ordering position (between ordinary soft rules and target deficit). |
-| `qualityVector[fairnessPlusShape]` | Everything else (`TIER_QUALITY`): `targetDeficit` (non-core), `fairness.*`, `isolatedNight`, `workShape.*`, `traumaSecondInRun`/`traumaMidRun`/`nightDurationAlternation`/`secondRestDay`/`pedsInternNightDeficit`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `podEmComposition`/`flexEmComposition`, `podPgy2Fallback`/`flexPgy3Fallback`, `seniorTruePrimary`, `dowPreference` | Rolled into ONE combined solve stage (`_STAGE_3_NAME`, alongside `TIER_RANK`) rather than a 4th separate stage — JS's own `qualityVector` is itself one lexicographic tuple, not two further top-level `betterQuality` slots, so a 4th CP-SAT stage would over-split it relative to what it's modeling. |
+| `qualityVector[fairnessPlusShape]` | Everything else (`TIER_QUALITY`): `targetDeficit` (non-core), `fairness.*`, `isolatedNight`, `workShape.*`, `traumaSecondInRun`/`traumaMidRun`/`nightDurationAlternation`/`secondRestDay`/`pedsInternNightDeficit`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `podEmComposition`/`flexEmComposition`, `podPgy2Fallback`/`flexPgy3Fallback`, `seniorTruePrimary`, `dowPreference` | **CHANGED 2026-10-15**: now its OWN 4th solve stage (was: rolled into ONE combined stage alongside `TIER_RANK`, on the theory that JS's own `qualityVector` is a single field so a 4th CP-SAT stage would "over-split" it). Measured on a real block, that theory was wrong in practice: JS's own `compareVectors` (`scheduleQuality.js`) is a plain element-by-element lexicographic compare of `[errorCount, blockingWarnCount, n0, n1, n2, fairnessPlusShape]`, so `coverageMiss` (n0) already strictly dominates `fairnessPlusShape` on the JS side — combining them into one CP-SAT objective only ever APPROXIMATED that via weight-magnitude dominance, and on an instance big enough, CP-SAT's search needed real, undiluted, dedicated time on coverage alone to get anywhere near the bound-probe-proven optimum. See "Real-block coverage gap fix" below. |
 
-**Implementation** (`solver/solve.py`'s `_solve_staged`): 3 sequential solves on the SAME model
+**Implementation** (`solver/solve.py`'s `_solve_staged`): up to 4 sequential solves on the SAME model
 (no rebuild — only the objective and an accumulating set of "stage N was already this good" bound
 constraints change): stage 1 minimizes `TIER_ERRORS`, fixes `model.Add(expr <= achieved)`, carries
 that stage's own solution forward as the next stage's hint; stage 2 does the same for
-`TIER_BLOCKING`; stage 3 minimizes `TIER_RANK + TIER_QUALITY` with the remaining time. A stage with
+`TIER_BLOCKING`; stage 3 does the same for `TIER_RANK` (coverage + overstaff); stage 4 minimizes
+`TIER_QUALITY` alone with whatever time is left. A stage with
 no terms at all (`_is_empty_stage`, e.g. no EM-core residents in the payload) is skipped entirely —
 no solve, no bound, no hint-carry. If a stage returns no solution, the loop stops and returns the
 PREVIOUS stage's real solution (never worse than that stage's own input) rather than discarding it;
@@ -979,3 +980,88 @@ is omitted even if the response carries an aggregate (no residents to attribute 
   regressed. `vacationHeavy` remains in `KNOWN_GAP_VARIANTS` (its hint is still reported infeasible
   by `evaluate_hint` for the separate, pre-existing GR-obligation-staleness reason documented above —
   untouched by this task) but tied, not lost, on this particular run.
+
+## Real-block coverage gap fix: `TIER_RANK`/`TIER_QUALITY` split + budget rollover (2026-10-15)
+
+**Measured on a real 58-resident production block** (never committed — aggregates only, see the
+task's own scratchpad report): the production pipeline (local-first -> solver-polish ->
+`pickEngineResult`) left a large, reproducible `coverageMiss` gap, and — the actual trigger for this
+investigation — giving the solver MORE time made it WORSE: `maxTimeSeconds: 30` shipped a solver
+result with `coverageMiss` 20 (beating local's 23); `maxTimeSeconds: 120` regressed all the way back
+to a result byte-identical to the un-polished hint (`coverageMiss` 23, discarded as a tie). A dedicated
+single-objective coverage-only probe (`solver/bound_probe.py`) proved `coverageMiss = 1` is
+OPTIMAL-achievable on this exact block under the hint's own `targetDeficitCore`/`postNightRest`
+constraints — so the gap was a search/time-budget problem in the staged solve, not a model/hard-rule
+mismatch (the reconstructed coverageMiss=1 schedule validates clean under JS `validateAll`, same 2
+structural `underTarget` errors every engine has).
+
+**Root cause**: stage 3 (the combined `TIER_RANK + TIER_QUALITY` weighted solve, 70% of the budget by
+default) relied on WEIGHT-MAGNITUDE dominance (`coverageMin.perSlack` 1,000,000 vs. everything in
+`TIER_QUALITY` bounded well under it) to approximate JS's own strict lexicographic ordering
+(`compareVectors` in `scheduleQuality.js` compares `[errorCount, blockingWarnCount, n0, n1, n2,
+fairnessPlusShape]` element-by-element — `coverageMiss` genuinely dominates `fairnessPlusShape` on the
+JS side, not just "usually"). That approximation is exact on a toy fixture (few variables, trivially
+exhaustible) but not at real-block scale: CP-SAT has to jointly search coverage AND every quality term
+to even recognize an improving coverage move, instead of being free to hammer on coverage alone the
+way `bound_probe.py`'s dedicated single-objective solve does — exactly the "weighted ratchet"
+fragility `objective.py`'s own module docstring already warns is prone to search-budget starvation
+once an instance is big enough. The 30s-vs-120s regression itself: extra time flowed into stages 1-2's
+own PROPORTIONAL share (which scales with the total budget, 15% each) even though those stages'
+objective is `_TIEBREAK_MULTIPLIER * own_tier + sum(every later stage)` — nearly as expensive to
+search as the whole remaining problem — so the extra time there bought nothing but a chance for
+multi-worker CP-SAT's documented run-to-run nondeterminism to carry forward a different, merely-tied
+solution that happened to be a worse starting point for stage 3.
+
+**Fix**:
+1. `TIER_RANK` (coverage + overstaff) and `TIER_QUALITY` now run as two genuinely separate
+   lexicographic stages (`solver/solve.py`'s `_solve_staged`, `_STAGE_NAMES` — was `_STAGE_3_NAME`
+   combining both into one solve). Coverage gets an undiluted objective and a dedicated share of the
+   budget instead of sharing one with every quality term.
+2. **Budget rollover**: whenever a stage proves `OPTIMAL` strictly before its own allotted budget
+   expires, or is skipped entirely as empty, the unused remainder rolls forward into the NEXT stage's
+   budget rather than sitting idle. `_stage_time_budgets`'s fixed fractions are now a starting
+   allocation, not a hard ceiling.
+3. `Config.stage_split` default changed from `(0.15, 0.15, 0.7)` (3 stages) to `(0.15, 0.15, 0.5, 0.2)`
+   (4 stages). **Measured pitfall, corrected before shipping**: an initial attempt shrank stages 1-2's
+   share to 5%/5%, on the (wrong, at this scale) assumption that they're "always already optimal, just
+   need a quick confirm" — at 5% of a 30s budget (1.5s), stage 1 came back `UNKNOWN` (genuinely out of
+   time) on the real block, which the pre-existing "never fall to pass 2 when the hint is feasible"
+   fallback (correctly, for a real timeout) treats as "stop here, report the hint's own schedule" —
+   abandoning stages 2-4 entirely and producing a result byte-identical to local at BOTH 30s and 120s,
+   an even worse regression than the one being fixed. Stages 1-2 keep the empirically-needed 15%/15%
+   floor; the remaining 70% now splits 50/20 between coverage and quality (was 70% combined, no
+   internal split).
+4. `hint_pin.py`'s existing hard `<=` pins on `targetDeficitCore`/`postNightRest`/`coverageMin` are
+   unchanged — still the correctness floor underneath the staged solve's own search, not a substitute
+   for it (see that module's updated docstring).
+
+No change to `betterQuality`, `SCORE_WEIGHTS`, or the quality vector shape. No `ResidentScheduler.jsx`
+change (the task allowed an optional JS-side "deep solve" time-budget knob only if trivially small;
+skipped to avoid touching a file another agent was concurrently editing, and because the production
+30s default already benefits substantially from this fix alone).
+
+**Measured before/after** (production pipeline, same real block, `pickEngineResult`'s shipped result):
+
+| | coverageMiss | quality vector | errorCount | ships |
+|---|---|---|---|---|
+| local (no solver) | 23 | [23,0,0,1204.97] | 2 | n/a |
+| BEFORE @30s | 20 | [20,0,0,1198.57] | 2 | solver |
+| BEFORE @120s | 23 (regressed) | [23,0,0,1204.97] | 2 | local (tie) |
+| AFTER @30s | 17 | [17,0,0,1182.11] | 2 | solver |
+| AFTER @120s | 9 | [9,0,0,1129.36] | 1 | solver |
+| proven bound | 1 | [1,0,8,1291.90]\* | 2 | n/a |
+
+\* the bound-probe's coverageMiss=1 schedule needs `postNightRest = 3` (n2) to get there, which the
+staged solve's hard hint-pins forbid (pinned `<= 0`, the hint's own achieved value) — since
+`postNightRest` outranks `coverageMiss` in the real ladder, that schedule is not actually BETTER under
+`betterQuality`, so this residual gap is not closed by (nor is it a target of) this fix. More time
+within the now-corrected 4-stage ladder continues to help (30s -> 120s: 17 -> 9), so the gap is a
+search-budget one, not a structural ceiling.
+
+**Tests**: `solver-service`'s `pytest` suite (185 passed, 4 pre-existing unrelated collection failures
+— missing `jwt` package in this environment, confirmed pre-existing), including 3 new tests for the
+changed staging behavior: a later stage's hint carry now fires 3 times (errors->blocking,
+blocking->rank, rank->quality, proving the split actually runs as 2 solves not 1), budget rollover
+measurably grows a later stage's actual `max_time_in_seconds` when an earlier one finishes early, and
+a wrong-length `stageSplit` degrades to the (now 4-entry) default. No JS tests run — no JS files
+changed by this fix.

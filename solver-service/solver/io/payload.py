@@ -41,18 +41,37 @@ class Config:
     # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
     # keeps the pre-R9 single-shot solve for comparison/rollback.
     objective_mode: str = "staged"
-    # Fraction of `max_time_seconds` given to each of the 3 stages (errors ->
-    # blocking-warns -> quality). Must sum to <= 1.0; solve.py renormalizes
-    # defensively if a caller sends something that doesn't. Skewed toward
-    # stage 3 on purpose (was an even-ish 30/20/50): stages 1-2 are usually
-    # ALREADY at their optimum from the warm-start hint alone (targetDeficit/
-    # postNightRest are typically 0 in a good local schedule) and only need
-    # enough time to CONFIRM that via presolve/propagation, not to search;
-    # stage 3 (coverage + every quality term) is the one doing real
-    # combinatorial work and benefits far more from a bigger share -- see
-    # solve.py's `_solve_staged` docstring and PAYLOAD_SCHEMA.md's dated R9
-    # section for the engineHeadToHead measurement that motivated this.
-    stage_split: tuple = (0.15, 0.15, 0.7)
+    # Fraction of `max_time_seconds` given to each of the 4 staged-solve
+    # stages (errors -> blocking-warns -> coverage/rank -> quality). Must sum
+    # to <= 1.0; solve.py renormalizes defensively if a caller sends something
+    # that doesn't, or falls back to this default if the length doesn't match
+    # the 4 stages. `solve.py`'s `_solve_staged` rolls any time a stage
+    # finishes early (proven OPTIMAL) forward into the NEXT stage's budget
+    # rather than letting it sit idle, so these fixed fractions are a
+    # starting allocation, not a hard ceiling -- but they are NOT just a
+    # "floor that barely matters" either: each non-final stage's own solve
+    # minimizes a TIEBREAK-weighted expression that includes every LATER
+    # stage's terms too (see `_solve_staged`'s TIEBREAK paragraph), which on
+    # a real-sized block (dozens of residents) is nearly as expensive to
+    # even reach a SOLVABLE status on as the whole remaining problem -- stage
+    # 1/2 are NOT "usually already optimal and just need a quick confirm" on
+    # an instance that size (that assumption held on small unit-test
+    # fixtures, not measured reality: an earlier version of this default,
+    # 5/5/60/30, starved stage 1 down to 1.5s of a 30s budget on a real
+    # 58-resident block and made it come back UNKNOWN -- not INFEASIBLE, just
+    # out of time -- which `_solve_staged`'s existing hint-feasible fallback
+    # (correctly, for a genuine timeout) treats as "stop here and report the
+    # hint's own schedule", abandoning stages 2-4 and any chance to improve
+    # coverage at all). 15/15 for stages 1-2 is the empirically-needed floor
+    # (matches the pre-2026-10-15 default that measurably DID get through the
+    # ladder on that same block); the real-block gap fix's actual lever is
+    # splitting stage 3 (coverage + overstaff, `TIER_RANK`) from stage 4
+    # (`TIER_QUALITY`) so coverage gets an undiluted objective and the bulk
+    # of what's left (50%, vs. quality's 20%) -- see solve.py's
+    # `_solve_staged` and PAYLOAD_SCHEMA.md's dated R9 section (2026-10-15)
+    # for why a combined weighted stage 3 left real coverage headroom on the
+    # table that a dedicated coverage-only stage closes much more reliably.
+    stage_split: tuple = (0.15, 0.15, 0.5, 0.2)
     # CP-SAT `CpSolverParameters.symmetry_level` override (0-3). None keeps
     # OR-Tools' own default -- this repo has no hand-written symmetry-
     # breaking constraints to conflict with it (see solve.py's docstring).
