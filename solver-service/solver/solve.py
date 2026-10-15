@@ -371,7 +371,7 @@ def _solve_pass1(payload: Payload) -> SolveResult:
         )
 
     schedule = _extract_schedule(solver, store)
-    report = _build_report(solver, objective, hint_diag)
+    report = _build_report(payload, solver, objective, hint_diag)
 
     failures = validate_schedule(payload, schedule)
     if failures:
@@ -535,12 +535,23 @@ def _default_hint_diag() -> dict:
     return {"applied": False, "hintFeasible": None, "pinned": {}}
 
 
-def _build_report(solver: cp_model.CpSolver, objective, hint_diag: dict = None) -> dict:
+def _build_report(payload: Payload, solver: cp_model.CpSolver, objective, hint_diag: dict = None) -> dict:
     unfilled = []
     for (shift_id, date_str), slack in objective.coverage_slacks.items():
         short = solver.value(slack)
         if short > 0:
             unfilled.append({"dateStr": date_str, "shiftId": shift_id, "shortBy": int(short), "reason": "coverageShort"})
+
+    # Gap fix: surface the solver's own last-resort +1-over-max placements (previously invisible --
+    # mapSolverResult hardcoded `repairs: []`). Aggregate per (shift,date) rather than per-resident:
+    # the `overstaff` BoolVar (coverage.py) only ever allows exactly +1 over `max`, and the model has
+    # no notion of WHICH assigned resident is "the extra one" -- `mapSolverResult` (ResidentScheduler
+    # .jsx) attributes it to one of the final schedule's own assignees for display.
+    overstaffed = []
+    for (shift_id, date_str), var in objective.coverage_overstaff.items():
+        if solver.value(var) >= 1:
+            max_val = int(payload.coverage[shift_id][date_str].max)
+            overstaffed.append({"shiftId": shift_id, "dateStr": date_str, "count": max_val + 1, "max": max_val})
 
     rest_compromises = []
     for p in objective.post_night_rest_penalties:
@@ -567,6 +578,7 @@ def _build_report(solver: cp_model.CpSolver, objective, hint_diag: dict = None) 
         "restCompromises": rest_compromises,
         "underTarget": under_target,
         "seniorGaps": [],
+        "overstaffed": overstaffed,
         # R9 follow-up ("pin to hint", solver/model/hint_pin.py): diagnostics
         # for whether the warm-start hint was feasible under this model's own
         # hard constraints and, if so, what got pinned. Additive-only key --
@@ -584,7 +596,7 @@ def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpS
     mode (coverage.py never builds the slack branch there), so relying on it
     would silently under-report coverage shortfalls in that mode.
     """
-    report = _build_report(solver, objective)
+    report = _build_report(payload, solver, objective)
     counts: dict = {}
     for _rid, by_date in schedule.items():
         for d, sid in by_date.items():
@@ -607,5 +619,6 @@ def _empty_report(hint_diag: dict = None) -> dict:
         "restCompromises": [],
         "underTarget": [],
         "seniorGaps": [],
+        "overstaffed": [],
         "hintPinning": hint_diag if hint_diag is not None else _default_hint_diag(),
     }
