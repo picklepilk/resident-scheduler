@@ -16,6 +16,9 @@
 //                      computeAyPriorTotals uses for its own (differently-scoped) AY carryover map
 //   - holiday shift -> lib/holidays.js holidayDateSet(ayConf) ("absent config derives NOTHING")
 //   - 12h shift     -> lib/coverage.js TWELVE_HOUR_IDS
+//   - hours         -> lib/shifts.js SHIFT_TIMING[id].durationH (same formula the old Dashboard
+//                      EquityPanel card used before being folded into this ledger)
+//   - area          -> lib/shifts.js SHIFT_MAP[id].area
 //   - AY window     -> not needed directly here (blocksHistory snapshots already carry their own
 //                      academicYear string; filtering is a plain string match against `ay`)
 //
@@ -48,7 +51,7 @@
 // just without a target column or outlier highlighting — comparing a 3-week rotator's raw count
 // against a full-AY EM resident's would be apples-to-oranges.
 
-import { isNightShiftId } from './shifts.js';
+import { isNightShiftId, SHIFT_TIMING, SHIFT_MAP } from './shifts.js';
 import { TWELVE_HOUR_IDS } from './coverage.js';
 import { parseDate, getBlockDates } from './dates.js';
 import { holidayDateSet } from './holidays.js';
@@ -78,7 +81,7 @@ function isTwelveHourShiftId(sid) {
 }
 
 function emptyTotals() {
-  return { blocks: 0, assigned: 0, nights: 0, weekendShifts: 0, holidayShifts: 0, twelveHour: 0, targetSum: 0, hasTarget: false };
+  return { blocks: 0, assigned: 0, nights: 0, weekendShifts: 0, holidayShifts: 0, twelveHour: 0, hours: 0, areaCounts: {}, targetSum: 0, hasTarget: false };
 }
 
 // Folds one resident's one block of real schedule data into their running AY totals. `rs` is
@@ -90,7 +93,7 @@ function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, 
   const totals = totalsMap.get(rid) || emptyTotals();
   totalsMap.set(rid, totals);
 
-  let assigned = 0, nights = 0, weekendShifts = 0, holidayShifts = 0, twelveHour = 0;
+  let assigned = 0, nights = 0, weekendShifts = 0, holidayShifts = 0, twelveHour = 0, hours = 0;
   for (const ds of dates) {
     const sid = rs[ds];
     if (!sid) continue;
@@ -100,6 +103,11 @@ function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, 
     if (dow === 0 || dow === 6) weekendShifts++;
     if (holidaySet.has(ds)) holidayShifts++;
     if (isTwelveHourShiftId(sid)) twelveHour++;
+    // Same SHIFT_TIMING-based duration EquityPanel used (row.hours += SHIFT_TIMING[sid]?.durationH
+    // || 0) — reused verbatim rather than re-derived, per CLAUDE.md.
+    hours += SHIFT_TIMING[sid]?.durationH || 0;
+    const area = SHIFT_MAP[sid]?.area;
+    if (area) totals.areaCounts[area] = (totals.areaCounts[area] || 0) + 1;
   }
   totals.blocks += 1;
   totals.assigned += assigned;
@@ -107,6 +115,7 @@ function foldResidentBlock(totalsMap, rid, rs, { dates, holidaySet, assignment, 
   totals.weekendShifts += weekendShifts;
   totals.holidayShifts += holidayShifts;
   totals.twelveHour += twelveHour;
+  totals.hours += hours;
 
   // Target reconstruction — same {...resident, isChief, blockType, targetDelta} assembly idiom
   // EmBlockAssignmentsEditor's own `target(r)` helper uses (ResidentScheduler.jsx), applied to
@@ -249,6 +258,11 @@ export function buildAyLedger({
       weekendShifts: totals.weekendShifts,
       holidayShifts: totals.holidayShifts,
       twelveHour: totals.twelveHour,
+      hours: totals.hours,
+      areaCounts: totals.areaCounts,
+      // Compact "POD 11 · MT 6 · FLEX 3" display string, busiest area first — same
+      // sort-by-count-descending idiom EquityPanel's own mixStr used.
+      areasLabel: Object.entries(totals.areaCounts).sort((a, b) => b[1] - a[1]).map(([area, n]) => `${area} ${n}`).join(' · '),
       target,
       deltaFromTarget: target != null ? totals.assigned - target : null,
     });

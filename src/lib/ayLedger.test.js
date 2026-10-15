@@ -109,6 +109,25 @@ describe('definitions are reused, not re-derived', () => {
     expect(row.holidayShifts).toBe(1);   // 07-06 only (holiday configured for that one date)
   });
 
+  it('sums hours via SHIFT_TIMING durationH and tallies per-area counts (same catalog the old EquityPanel card used)', () => {
+    const r1 = resident('r1');
+    const snap = snapshot({
+      id: 'b1', startDate: '2026-07-06', endDate: '2026-07-08',
+      schedule: {
+        r1: {
+          '2026-07-06': 'POD-D',   // POD, 9h
+          '2026-07-07': 'POD-N',   // POD, 9h
+          '2026-07-08': 'TRAUMA-D', // TRAUMA, 12h
+        },
+      },
+    });
+    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    expect(row.hours).toBe(9 + 9 + 12);
+    expect(row.areaCounts).toEqual({ POD: 2, TRAUMA: 1 });
+    expect(row.areasLabel).toBe('POD 2 · TRAUMA 1');
+  });
+
   it('counts 12h shifts via the shared TWELVE_HOUR_IDS catalog', () => {
     const r1 = resident('r1');
     const snap = snapshot({

@@ -9674,99 +9674,6 @@ function JeopardySickCallsCard({ allResidents, block, blocksHistory, appSettings
   );
 }
 
-// Read-only fairness/equity card: per-schedulable-resident nights/weekends/hours/area-mix totals
-// for the current block's academic year. Combines PUBLISHED blocksHistory snapshots in that AY
-// (same iteration/guard pattern as countPublishedJC — skip unpublished, skip the live block's own
-// id, defensive optional-chaining against untrusted snapshot shape) with the live block's own
-// schedule (same idea as countCurrentBlockJC), except walking every assigned date rather than
-// only first-Tuesdays. Display-only — no editing affordances, no updateBlock calls.
-function EquityPanel({ allResidents, block, blocksHistory }) {
-  const ay = block.academicYear;
-
-  const stats = useMemo(() => {
-    const residents = allResidents.filter(isSchedulable);
-    const byId = {};
-    for (const r of residents) {
-      byId[r.id] = { resident: r, nights: 0, weekends: 0, hours: 0, areaMix: {} };
-    }
-    if (!ay) return { rows: [], nightsMedian: 0, weekendsMedian: 0 };
-
-    function tally(residentId, dateStr, sid) {
-      const row = byId[residentId];
-      if (!row || !sid) return;
-      if (isNightShiftId(sid)) row.nights++;
-      const dow = parseDate(dateStr).getDay();
-      if (dow === 0 || dow === 6) row.weekends++;
-      row.hours += SHIFT_TIMING[sid]?.durationH || 0;
-      const area = SHIFT_MAP[sid]?.area;
-      if (area) row.areaMix[area] = (row.areaMix[area] || 0) + 1;
-    }
-
-    for (const snap of blocksHistory) {
-      if (!snap?.published || snap.id === block.id) continue;
-      if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
-      const schedule = snap.data?.schedule || {};
-      for (const residentId of Object.keys(byId)) {
-        const rs = schedule?.[residentId];
-        if (!rs) continue;
-        for (const ds of Object.keys(rs)) tally(residentId, ds, rs[ds]);
-      }
-    }
-
-    // Live (unsaved) block's own schedule — not itself a published snapshot yet.
-    const liveSchedule = block.schedule || {};
-    for (const residentId of Object.keys(byId)) {
-      const rs = liveSchedule[residentId];
-      if (!rs) continue;
-      for (const ds of Object.keys(rs)) tally(residentId, ds, rs[ds]);
-    }
-
-    const rows = Object.values(byId);
-    const median = arr => {
-      if (arr.length === 0) return 0;
-      const s = [...arr].sort((a, b) => a - b);
-      const mid = Math.floor(s.length / 2);
-      return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
-    };
-
-    return { rows, nightsMedian: median(rows.map(r => r.nights)), weekendsMedian: median(rows.map(r => r.weekends)) };
-  }, [allResidents, blocksHistory, block, ay]);
-
-  if (!ay) {
-    return (
-      <CollapsibleCard title="Equity — Nights, Weekends & Hours" prefId="dash-equity">
-        <p className="text-xs text-gray-400 italic">Set this block's academic year (Settings) to see equity stats.</p>
-      </CollapsibleCard>
-    );
-  }
-
-  return (
-    <CollapsibleCard title="Equity — Nights, Weekends & Hours (this AY)" prefId="dash-equity"
-      subtitle={`${ay} · counts published saved blocks (Dashboard tab) plus the current block`}>
-      <div className="space-y-2">
-        <div className="flex flex-wrap gap-1.5">
-          {stats.rows.map(({ resident: r, nights, weekends, hours, areaMix }) => {
-            const isOutlier = (stats.nightsMedian > 0 && nights > 1.5 * stats.nightsMedian) ||
-              (stats.weekendsMedian > 0 && weekends > 1.5 * stats.weekendsMedian);
-            const cls = isOutlier ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-gray-50 text-gray-600 border border-gray-200';
-            const mixStr = Object.entries(areaMix).sort((a, b) => b[1] - a[1]).map(([area, n]) => `${area} ${n}`).join(' · ');
-            return (
-              <span key={r.id} className={`text-[10px] font-medium px-2 py-1 rounded-full ${cls}`} title={mixStr || 'No shifts assigned this AY'}>
-                {r.lastName}, {r.firstName} · {nights}N · {weekends}WE · {hours}h{mixStr ? ` · ${mixStr}` : ''}
-              </span>
-            );
-          })}
-          {stats.rows.length === 0 && <span className="text-xs text-gray-400 italic">No schedulable residents on this roster.</span>}
-        </div>
-        <p className="text-[10px] text-gray-400">
-          Amber = nights or weekends exceed 1.5× the group median (median {stats.nightsMedian} night{stats.nightsMedian !== 1 ? 's' : ''} ·{' '}
-          {stats.weekendsMedian} weekend{stats.weekendsMedian !== 1 ? 's' : ''}). Only Published saved blocks plus the current block count.
-        </p>
-      </div>
-    </CollapsibleCard>
-  );
-}
-
 // ─── YEAR CALENDAR (Dashboard) ─────────────────────────────────────────────
 // July→July block calendar with global (day-strip) and granular (per-shift heatmap) coverage
 // visualization. Read-only over blocksHistory + the live block — never mutates a snapshot;
@@ -10134,6 +10041,7 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
 // This component only renders what that pure function already computed.
 const AY_LEDGER_EM_COLUMNS = [
   { key: 'assigned', label: 'Shifts' },
+  { key: 'hours', label: 'Hours' },
   { key: 'target', label: 'Target' },
   { key: 'deltaFromTarget', label: '+/−' },
   { key: 'nights', label: 'Nights' },
@@ -10141,6 +10049,7 @@ const AY_LEDGER_EM_COLUMNS = [
   { key: 'holidayShifts', label: 'Hol' },
   { key: 'twelveHour', label: '12h' },
   { key: 'blocks', label: 'Blocks' },
+  { key: 'areasLabel', label: 'Areas', align: 'left' },
 ];
 const AY_LEDGER_OFF_SERVICE_COLUMNS = AY_LEDGER_EM_COLUMNS.filter(c => c.key !== 'target' && c.key !== 'deltaFromTarget');
 
@@ -10178,7 +10087,7 @@ function AyLedgerGroupTable({ group }) {
               Resident{arrow('name')}
             </th>
             {columns.map(c => (
-              <th key={c.key} className="text-right py-1.5 px-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
+              <th key={c.key} className={`${c.align === 'left' ? 'text-left' : 'text-right'} py-1.5 px-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap`}
                 onClick={() => toggleSort(c.key)}>
                 {c.label}{arrow(c.key)}
               </th>
@@ -10194,10 +10103,10 @@ function AyLedgerGroupTable({ group }) {
               {columns.map(c => {
                 const v = r[c.key];
                 const isOutlier = (group.outlierIds[c.key] || []).includes(r.residentId);
-                const display = v == null ? '—' : (c.key === 'deltaFromTarget' && v > 0 ? `+${v}` : v);
+                const display = (v == null || v === '') ? '—' : (c.key === 'deltaFromTarget' && v > 0 ? `+${v}` : v);
                 return (
                   <td key={c.key}
-                    className={`text-right py-1 px-2 whitespace-nowrap ${isOutlier ? 'bg-amber-50 text-amber-700 font-semibold rounded' : 'text-gray-700'}`}>
+                    className={`${c.align === 'left' ? 'text-left' : 'text-right'} py-1 px-2 whitespace-nowrap ${isOutlier ? 'bg-amber-50 text-amber-700 font-semibold rounded' : 'text-gray-700'}`}>
                     {display}
                   </td>
                 );
@@ -10228,7 +10137,7 @@ function AyLedgerGroupTable({ group }) {
 function AyFairnessLedgerCard({ ledger }) {
   const hasRows = !!ledger && ledger.groups.some(g => g.rows.length);
   return (
-    <CollapsibleCard title="AY Fairness Ledger" prefId="ayLedger" defaultOpen={false}
+    <CollapsibleCard title="AY Fairness" prefId="ayLedger" defaultOpen={false}
       subtitle={hasRows
         ? `${ledger.ay} · published blocks + current block · display only`
         : `${ledger?.ay || ''} · no published blocks yet this academic year`}>
@@ -10520,9 +10429,6 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
           icon={Activity} tone="neutral"/>
       </div>
-
-      {/* Read-only equity/fairness card: per-resident nights/weekends/hours/area-mix for this AY */}
-      <EquityPanel allResidents={allResidents} block={block} blocksHistory={blocksHistory}/>
 
       {/* Block Overview */}
       <CollapsibleCard title="Block Overview" prefId="dash-block-overview">
