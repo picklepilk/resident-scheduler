@@ -72,7 +72,7 @@ import { addToastEntry, clearToastHistory, formatToastAge } from './lib/toastHis
 import { keysToClearOnSignOut } from './lib/signOutCleanup.js';
 import { createIdleTimer, DEFAULT_IDLE_TIMEOUT_MINUTES } from './lib/idleTimer.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
-import { buildAyLedger, DEFAULT_OUTLIER_MIN_GROUP_SIZE } from './lib/ayLedger.js';
+import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -10053,131 +10053,302 @@ function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, lo
 }
 
 // ─── AY FAIRNESS LEDGER (Dashboard card) ───────────────────────────────────
-// Thin presentation layer over lib/ayLedger.js's buildAyLedger — all the aggregation, the AY
-// population rule, and the "display only, never feeds targets/generation" guarantee live there.
-// This component only renders what that pure function already computed.
-const AY_LEDGER_EM_COLUMNS = [
-  { key: 'assigned', label: 'Shifts' },
-  { key: 'hours', label: 'Hours' },
-  { key: 'target', label: 'Target' },
-  { key: 'deltaFromTarget', label: '+/−' },
-  { key: 'nights', label: 'Nights' },
-  { key: 'weekendShifts', label: 'Wknd' },
-  { key: 'holidayShifts', label: 'Hol' },
-  { key: 'twelveHour', label: '12h' },
-  { key: 'blocks', label: 'Blocks' },
-  { key: 'areasLabel', label: 'Areas', align: 'left' },
-];
-const AY_LEDGER_OFF_SERVICE_COLUMNS = AY_LEDGER_EM_COLUMNS.filter(c => c.key !== 'target' && c.key !== 'deltaFromTarget');
+// Thin presentation layer over lib/ayLedger.js's buildAyLedger/flagLedgerRows — all the
+// aggregation, the AY population rule, the PGY grouping, the flag math, and the "never feeds
+// targets/generation" guarantee live there. This component only renders what those pure functions
+// already computed, plus purely-visual state (which flag chip is active, which disclosures are
+// open, column sort).
 
-function AyLedgerGroupTable({ group }) {
-  const columns = group.excludedFromSpread ? AY_LEDGER_OFF_SERVICE_COLUMNS : AY_LEDGER_EM_COLUMNS;
-  const [sortKey, setSortKey] = useState(group.excludedFromSpread ? 'name' : 'deltaFromTarget');
+// A resident's "Shifts vs target" cell: a compact bar + "assigned/target" + a delta that's amber
+// only when flagLedgerRows actually flagged it behind (a 1-shift gap isn't worth highlighting —
+// see DEFAULT_BEHIND_TARGET_THRESHOLD). Solid fill colors (not alpha tints) on purpose, same
+// "contrast-safe by construction on both themes" reasoning CLAUDE.md gives DAY_MARKERS' onShift
+// variant — a flat color block needs no light/dark remap.
+function ShiftsVsTargetBar({ row }) {
+  const { assigned, target, deltaFromTarget, flags } = row;
+  if (target == null) return <span className="text-gray-300">—</span>;
+  const pct = target > 0 ? Math.max(0, Math.min(100, Math.round((assigned / target) * 100))) : (assigned > 0 ? 100 : 0);
+  const behind = !!flags?.behindTarget;
+  const over = deltaFromTarget > 0;
+  const deltaText = deltaFromTarget === 0 ? '0' : (over ? `+${deltaFromTarget}` : `${deltaFromTarget}`);
+  return (
+    <span className="inline-flex items-center gap-1.5 justify-end tabular-nums">
+      <span className="h-1.5 w-14 rounded-full bg-gray-200 overflow-hidden inline-block align-middle shrink-0">
+        <span className="h-full block rounded-full" style={{ width: `${pct}%`, backgroundColor: behind ? '#d97706' : '#64748b' }}/>
+      </span>
+      <span className="text-gray-600">{assigned}/{target}</span>
+      <span title={over ? 'over target (e.g. sick-call payback)' : undefined}
+        className={behind ? 'text-amber-600 font-semibold' : 'text-gray-400'}>
+        {deltaText}
+      </span>
+    </span>
+  );
+}
+
+// Nights/Wknd cell: the raw count, plus ▲/▼ (with a tooltip naming the group's own median) only
+// when flagLedgerRows actually flagged that resident heavy/light for that column.
+function LedgerRateCell({ value, heavy, light, median, label, groupLabel }) {
+  const title = (heavy || light) ? `${value} ${label} — ${groupLabel} median ${median ?? 0}` : undefined;
+  return (
+    <span title={title} className={heavy ? 'text-amber-600 font-semibold' : light ? 'text-gray-400' : 'text-gray-700'}>
+      {value}{heavy ? ' ▲' : light ? ' ▼' : ''}
+    </span>
+  );
+}
+
+function renderLedgerCell(colKey, row, groupLabel, medians) {
+  if (colKey === 'target') return <ShiftsVsTargetBar row={row}/>;
+  if (colKey === 'nights') return <LedgerRateCell value={row.nights} heavy={row.flags?.heavyNights} light={row.flags?.lightNights} median={medians.nights} label="nights" groupLabel={groupLabel}/>;
+  if (colKey === 'weekendShifts') return <LedgerRateCell value={row.weekendShifts} heavy={row.flags?.heavyWeekends} light={row.flags?.lightWeekends} median={medians.weekendShifts} label="weekend shifts" groupLabel={groupLabel}/>;
+  const v = row[colKey];
+  return v == null ? '—' : v;
+}
+
+// Columns beyond Resident/Shifts-vs-target/Nights/Wknd/Hours only earn a place in the table when
+// at least one resident in the whole AY has a non-zero (or, for Blocks, >1) value there — see
+// lib/ayLedger.js's computeColumnVisibility and CLAUDE.md task spec item 3.
+function ledgerColumnsFor(columnVisibility) {
+  const cols = [
+    { key: 'target', label: 'Shifts vs target' },
+    { key: 'nights', label: 'Nights' },
+    { key: 'weekendShifts', label: 'Wknd' },
+    { key: 'hours', label: 'Hours', muted: true },
+  ];
+  if (columnVisibility.holidays) cols.push({ key: 'holidayShifts', label: 'Hol', muted: true });
+  if (columnVisibility.twelveHour) cols.push({ key: 'twelveHour', label: '12h', muted: true });
+  if (columnVisibility.blocks) cols.push({ key: 'blocks', label: 'Blocks', muted: true });
+  return cols;
+}
+
+// One PGY group's table (e.g. "PGY-1" within "EM Home") — compared residents only; its own
+// "Not on EM rotation" residents (no target this AY) sit in a separate collapsed line beneath.
+// Default row order is whatever flagLedgerRows already sorted (behind-target, then heavy, then
+// alphabetical — CLAUDE.md task spec item 6); clicking a column header re-sorts by that column
+// until a header is clicked again (toggle direction) — `sortKey === null` means "keep the default".
+function AyLedgerPgyGroupTable({ group, columnVisibility, activeFilterFn }) {
+  const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState(1);
+  const [noTargetOpen, setNoTargetOpen] = useState(false);
+
+  const columns = useMemo(() => ledgerColumnsFor(columnVisibility), [columnVisibility]);
+  const baseRows = activeFilterFn ? group.rows.filter(activeFilterFn) : group.rows;
+
   function toggleSort(key) {
     if (key === sortKey) setSortDir(d => -d);
     else { setSortKey(key); setSortDir(1); }
   }
   const sortedRows = useMemo(() => {
-    const list = [...group.rows];
+    if (!sortKey) return baseRows; // keep flagLedgerRows' own flagged-first default order
+    const list = [...baseRows];
     list.sort((a, b) => {
       const av = sortKey === 'name' ? a.name : a[sortKey];
       const bv = sortKey === 'name' ? b.name : b[sortKey];
       if (av == null && bv == null) return 0;
-      if (av == null) return 1;   // nulls (e.g. unknown target) always sort last
+      if (av == null) return 1;
       if (bv == null) return -1;
       if (typeof av === 'string') return sortDir * av.localeCompare(bv);
       return sortDir * (av - bv);
     });
     return list;
-  }, [group.rows, sortKey, sortDir]);
+  }, [baseRows, sortKey, sortDir]);
 
   const arrow = key => sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : '';
+  const m = group.medians;
+  const medianParts = [
+    m.assigned != null && `${m.assigned} shifts`,
+    m.nights != null && `${m.nights} nights`,
+    m.weekendShifts != null && `${m.weekendShifts} wknd`,
+  ].filter(Boolean).join(' · ');
+
+  if (sortedRows.length === 0 && group.noTargetRows.length === 0) return null;
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-gray-200">
-            <th className="text-left py-1.5 pr-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
-              onClick={() => toggleSort('name')}>
-              Resident{arrow('name')}
-            </th>
-            {columns.map(c => (
-              <th key={c.key} className={`${c.align === 'left' ? 'text-left' : 'text-right'} py-1.5 px-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap`}
-                onClick={() => toggleSort(c.key)}>
-                {c.label}{arrow(c.key)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sortedRows.map(r => (
-            <tr key={r.residentId} className="border-b border-gray-100 hover:bg-gray-50">
-              <td className="py-1 pr-2 whitespace-nowrap text-gray-700">
-                {r.name} <span className="text-gray-400">PGY-{r.pgy ?? '—'}</span>
-              </td>
-              {columns.map(c => {
-                const v = r[c.key];
-                const isOutlier = (group.outlierIds[c.key] || []).includes(r.residentId);
-                const display = (v == null || v === '') ? '—' : (c.key === 'deltaFromTarget' && v > 0 ? `+${v}` : v);
-                return (
-                  <td key={c.key}
-                    className={`${c.align === 'left' ? 'text-left' : 'text-right'} py-1 px-2 whitespace-nowrap ${isOutlier ? 'bg-amber-50 text-amber-700 font-semibold rounded' : 'text-gray-700'}`}>
-                    {display}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-        {!group.excludedFromSpread && (
-          <tfoot>
-            <tr className="border-t-2 border-gray-200 text-gray-500">
-              <td className="py-1.5 pr-2 font-medium whitespace-nowrap">Spread (min / median / max)</td>
-              {columns.map(c => {
-                const s = group.stats[c.key];
-                return (
-                  <td key={c.key} className="text-right py-1.5 px-2 whitespace-nowrap">
-                    {!s || s.count === 0 ? '—' : `${s.min} / ${s.median} / ${s.max}`}
-                  </td>
-                );
-              })}
-            </tr>
-          </tfoot>
-        )}
-      </table>
+    <div className="mb-4 last:mb-0">
+      <h5 className="text-xs font-semibold text-gray-600 mb-1">
+        {group.label}
+        {medianParts && <span className="ml-2 font-normal text-gray-400">(median: {medianParts})</span>}
+      </h5>
+      {sortedRows.length === 0 ? (
+        <p className="text-xs text-gray-300 italic mb-1">No residents in this group match the current filter.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-1 pr-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
+                  onClick={() => toggleSort('name')}>
+                  Resident{arrow('name')}
+                </th>
+                {columns.map(c => (
+                  <th key={c.key} className="text-right py-1 px-2 font-semibold text-gray-500 cursor-pointer select-none whitespace-nowrap"
+                    onClick={() => toggleSort(c.key)}>
+                    {c.label}{arrow(c.key)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRows.map(r => (
+                <tr key={r.residentId} className="border-b border-gray-100 hover:bg-gray-50">
+                  <td className="py-1 pr-2 whitespace-nowrap text-gray-700">{r.name}</td>
+                  {columns.map(c => (
+                    <td key={c.key} className={`text-right py-1 px-2 whitespace-nowrap ${c.muted ? 'text-gray-400' : ''}`}>
+                      {renderLedgerCell(c.key, r, group.label, group.medians)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {group.noTargetRows.length > 0 && (
+        <div className="mt-1">
+          <button onClick={() => setNoTargetOpen(o => !o)} className="text-xs text-gray-400 hover:text-gray-700 flex items-center gap-1">
+            {noTargetOpen ? <ChevronDown size={11}/> : <ChevronRight size={11}/>}
+            Not on EM rotation ({group.noTargetRows.length})
+          </button>
+          {noTargetOpen && (
+            <p className="text-xs text-gray-400 mt-0.5 pl-4">
+              {group.noTargetRows.map(r => `${r.name} (${r.assigned})`).join(', ')}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
+// Off-service is its own collapsed (default-closed) section at the bottom: totals only up front,
+// no target/bar/flags at all — see lib/ayLedger.js module header on why off-service residents are
+// never peer-compared.
+function AyLedgerOffServiceSection({ offService, columnVisibility }) {
+  const [open, setOpen] = useState(false);
+  if (!offService || offService.rows.length === 0) return null;
+  const totalAssigned = offService.rows.reduce((s, r) => s + r.assigned, 0);
+  const columns = [
+    { key: 'assigned', label: 'Shifts' },
+    { key: 'nights', label: 'Nights' },
+    { key: 'weekendShifts', label: 'Wknd' },
+    { key: 'hours', label: 'Hours' },
+  ];
+  if (columnVisibility.holidays) columns.push({ key: 'holidayShifts', label: 'Hol' });
+  if (columnVisibility.twelveHour) columns.push({ key: 'twelveHour', label: '12h' });
+  if (columnVisibility.blocks) columns.push({ key: 'blocks', label: 'Blocks' });
+  return (
+    <div className="pt-3 border-t border-gray-200">
+      <button onClick={() => setOpen(o => !o)} className="text-xs font-semibold text-gray-500 flex items-center gap-1">
+        {open ? <ChevronDown size={12}/> : <ChevronRight size={12}/>}
+        {offService.label} ({offService.rows.length} resident{offService.rows.length === 1 ? '' : 's'} · {totalAssigned} shifts)
+      </button>
+      <p className="text-[11px] text-gray-400 mt-0.5 pl-4">Off-service residents rotate briefly; not compared.</p>
+      {open && (
+        <div className="overflow-x-auto mt-1.5">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-1 pr-2 font-semibold text-gray-500 whitespace-nowrap">Resident</th>
+                {columns.map(c => <th key={c.key} className="text-right py-1 px-2 font-semibold text-gray-500 whitespace-nowrap">{c.label}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {offService.rows.map(r => (
+                <tr key={r.residentId} className="border-b border-gray-100">
+                  <td className="py-1 pr-2 whitespace-nowrap text-gray-700">{r.name}</td>
+                  {columns.map(c => <td key={c.key} className="text-right py-1 px-2 whitespace-nowrap text-gray-500">{r[c.key]}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Summary chip ("3 behind target"): clicking it filters every PGY table down to just the residents
+// it covers; clicking the same (now-active) chip again clears the filter (so does "Show all").
+function FairnessChip({ label, count, active, onClick }) {
+  if (!count) return null;
+  return (
+    <button onClick={onClick}
+      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+        active ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'}`}>
+      {count} {label}
+    </button>
+  );
+}
+
 function AyFairnessLedgerCard({ ledger }) {
-  const hasRows = !!ledger && ledger.groups.some(g => g.rows.length);
+  const flagged = useMemo(() => flagLedgerRows(ledger?.categories || []), [ledger]);
+  const [activeFilterKey, setActiveFilterKey] = useState(null);
+
+  const hasAnyRows = !!ledger && (
+    flagged.categories.some(c => c.pgyGroups.some(g => g.rows.length || g.noTargetRows.length)) ||
+    (ledger.offService?.rows.length > 0)
+  );
+
+  // Only the three actionable flags get a chip (CLAUDE.md task spec item 1: "keep it to what's
+  // actionable") — light nights/weekends are still shown inline (▼) but aren't chip-worthy; being
+  // under isn't a problem to chase the way being behind-target or heavy is.
+  const chips = [
+    { key: 'behindTarget', label: 'behind target', ids: flagged.summary.behindTargetIds },
+    { key: 'heavyNights', label: 'heavy nights', ids: flagged.summary.heavyNightsIds },
+    { key: 'heavyWeekends', label: 'heavy weekends', ids: flagged.summary.heavyWeekendsIds },
+  ].filter(c => c.ids.length > 0);
+
+  function toggleFilter(key) {
+    setActiveFilterKey(cur => (cur === key ? null : key));
+  }
+  const activeChip = chips.find(c => c.key === activeFilterKey);
+  const activeFilterFn = activeChip ? (r => activeChip.ids.includes(r.residentId)) : null;
+
+  // Drop whole PGY groups (and categories) that have nothing matching the active filter, rather
+  // than rendering an empty table under every header.
+  const visibleCategories = activeFilterFn
+    ? flagged.categories
+        .map(cat => ({ ...cat, pgyGroups: cat.pgyGroups.filter(g => g.rows.some(activeFilterFn) || g.noTargetRows.length) }))
+        .filter(cat => cat.pgyGroups.length)
+    : flagged.categories;
+
   return (
     <CollapsibleCard title="AY Fairness" prefId="ayLedger" defaultOpen={false}
-      subtitle={hasRows
-        ? `${ledger.ay} · published blocks + current block · display only`
+      subtitle={hasAnyRows
+        ? `${ledger.ay} · compared with same-PGY peers`
         : `${ledger?.ay || ''} · no published blocks yet this academic year`}>
-      {hasRows ? (
-        <div className="space-y-5">
-          {ledger.groups.map(g => (
-            <div key={g.key}>
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
-                {g.label}
-                {g.excludedFromSpread && (
-                  <span className="ml-2 normal-case font-normal text-gray-400">
-                    (brief rotations — shown for reference, not spread/outlier-scored)
-                  </span>
-                )}
-              </h4>
-              <AyLedgerGroupTable group={g}/>
+      {hasAnyRows ? (
+        <div className="space-y-4">
+          {chips.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {chips.map(c => (
+                <FairnessChip key={c.key} label={c.label} count={c.ids.length} active={activeFilterKey === c.key} onClick={() => toggleFilter(c.key)}/>
+              ))}
+              {activeFilterKey && (
+                <button onClick={() => setActiveFilterKey(null)} className="text-xs text-gray-400 hover:text-gray-700 underline ml-1">
+                  Show all
+                </button>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">Everyone is within range of their PGY peers.</p>
+          )}
+          <p className="text-[11px] text-gray-400">▲ more than peers · ▼ fewer · rates are per shift worked</p>
+
+          {visibleCategories.map(cat => (
+            <div key={cat.key}>
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">{cat.label}</h4>
+              {cat.pgyGroups.map(g => (
+                <AyLedgerPgyGroupTable key={g.key} group={g} columnVisibility={ledger.columnVisibility} activeFilterFn={activeFilterFn}/>
+              ))}
             </div>
           ))}
+
+          <AyLedgerOffServiceSection offService={ledger.offService} columnVisibility={ledger.columnVisibility}/>
+
           <p className="text-[11px] text-gray-400">
-            Amber = &gt;1.5×IQR beyond the group's own Q1/Q3 for that column (only flagged once a group has
-            at least {DEFAULT_OUTLIER_MIN_GROUP_SIZE} members with a value). "Target" sums each block's own
-            effective target using TODAY's Settings — a display estimate, not a time-accurate historical
-            value, and it is never read by the generator or validator.
+            "Shifts vs target" sums each block's own effective target using TODAY's Settings — a display
+            estimate, not a time-accurate historical value; it never feeds the generator or validator.
+            Behind target flags once target minus shifts worked is {DEFAULT_BEHIND_TARGET_THRESHOLD} or more.
           </p>
         </div>
       ) : (

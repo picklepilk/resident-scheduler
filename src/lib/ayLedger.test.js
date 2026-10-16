@@ -1,7 +1,10 @@
 // src/lib/ayLedger.test.js
 // Pure unit tests for the AY fairness ledger — no ResidentScheduler.jsx import, no DOM.
 import { describe, it, expect } from 'vitest';
-import { buildAyLedger, iqrOutlierIds, defaultIsEm, GROUP_LABELS, DEFAULT_OUTLIER_MIN_GROUP_SIZE } from './ayLedger.js';
+import {
+  buildAyLedger, flagLedgerRows, computeColumnVisibility, defaultIsEm, GROUP_LABELS,
+  DEFAULT_BEHIND_TARGET_THRESHOLD,
+} from './ayLedger.js';
 
 const AY = 'AY26/27';
 
@@ -27,6 +30,15 @@ function snapshot({ id, startDate, endDate, schedule, academicYear = AY, publish
   };
 }
 
+// Flattens every compared row across every category/PGY group, for assertions that don't care
+// about the grouping structure itself.
+function allComparedRows(ledger) {
+  return ledger.categories.flatMap(c => c.pgyGroups.flatMap(g => g.rows));
+}
+function allNoTargetRows(ledger) {
+  return ledger.categories.flatMap(c => c.pgyGroups.flatMap(g => g.noTargetRows));
+}
+
 describe('AY population rule: no history is excluded, never zeroed', () => {
   it('a resident absent from every in-scope block never appears in the ledger', () => {
     const r1 = resident('r1');
@@ -35,11 +47,8 @@ describe('AY population rule: no history is excluded, never zeroed', () => {
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
       schedule: { r1: { '2026-07-06': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({
-      ay: AY, allResidents: [r1, r2], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget,
-    });
-    const ids = groups.flatMap(g => g.rows.map(r => r.residentId));
-    expect(ids).toEqual(['r1']);
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1, r2], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger).map(r => r.residentId)).toEqual(['r1']);
   });
 
   it('a resident present in a snapshot with an entirely empty row still counts as history (blocks=1, assigned=0)', () => {
@@ -48,8 +57,8 @@ describe('AY population rule: no history is excluded, never zeroed', () => {
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
       schedule: { r1: {} }, // on the roster for the block, fully off/vacation — real information
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row).toBeTruthy();
     expect(row.blocks).toBe(1);
     expect(row.assigned).toBe(0);
@@ -61,8 +70,8 @@ describe('AY population rule: no history is excluded, never zeroed', () => {
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12', published: false,
       schedule: { r1: { '2026-07-06': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    expect(groups.flatMap(g => g.rows)).toHaveLength(0);
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger)).toHaveLength(0);
   });
 
   it('a different academic year is excluded entirely', () => {
@@ -71,8 +80,8 @@ describe('AY population rule: no history is excluded, never zeroed', () => {
       id: 'b1', startDate: '2025-07-06', endDate: '2025-07-12', academicYear: 'AY25/26',
       schedule: { r1: { '2025-07-06': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    expect(groups.flatMap(g => g.rows)).toHaveLength(0);
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger)).toHaveLength(0);
   });
 
   it('a resident no longer on the current roster is silently dropped, not shown zeroed', () => {
@@ -80,8 +89,9 @@ describe('AY population rule: no history is excluded, never zeroed', () => {
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
       schedule: { ghost: { '2026-07-06': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    expect(groups.flatMap(g => g.rows)).toHaveLength(0);
+    const ledger = buildAyLedger({ ay: AY, allResidents: [], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger)).toHaveLength(0);
+    expect(ledger.categories).toHaveLength(0);
   });
 });
 
@@ -101,15 +111,15 @@ describe('definitions are reused, not re-derived', () => {
       },
     });
     const ayConf = { holidays: [{ id: 'h1', name: 'Independence Day', start: '2026-07-06', end: '2026-07-06' }] };
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], ayConf, getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], ayConf, getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.assigned).toBe(3);
     expect(row.nights).toBe(2);          // 07-06 POD-N + 07-12 POD-N
     expect(row.weekendShifts).toBe(2);   // 07-11 (Sat) + 07-12 (Sun)
     expect(row.holidayShifts).toBe(1);   // 07-06 only (holiday configured for that one date)
   });
 
-  it('sums hours via SHIFT_TIMING durationH and tallies per-area counts (same catalog the old EquityPanel card used)', () => {
+  it('sums hours via SHIFT_TIMING durationH', () => {
     const r1 = resident('r1');
     const snap = snapshot({
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-08',
@@ -121,11 +131,9 @@ describe('definitions are reused, not re-derived', () => {
         },
       },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.hours).toBe(9 + 9 + 12);
-    expect(row.areaCounts).toEqual({ POD: 2, TRAUMA: 1 });
-    expect(row.areasLabel).toBe('POD 2 · TRAUMA 1');
   });
 
   it('counts 12h shifts via the shared TWELVE_HOUR_IDS catalog', () => {
@@ -134,8 +142,8 @@ describe('definitions are reused, not re-derived', () => {
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-08',
       schedule: { r1: { '2026-07-06': 'POD-D12', '2026-07-07': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.twelveHour).toBe(1);
   });
 
@@ -145,9 +153,16 @@ describe('definitions are reused, not re-derived', () => {
       id: 'b1', startDate: '2026-12-24', endDate: '2026-12-26',
       schedule: { r1: { '2026-12-25': 'POD-D' } },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], ayConf: {}, getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], ayConf: {}, getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.holidayShifts).toBe(0);
+  });
+
+  it('formats name as "Last, First" with no PGY suffix', () => {
+    const r1 = resident('r1', { firstName: 'Casey', lastName: 'Hughes' });
+    const snap = snapshot({ id: 'b1', startDate: '2026-07-06', endDate: '2026-07-06', schedule: { r1: { '2026-07-06': 'POD-D' } } });
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger)[0].name).toBe('Hughes, Casey');
   });
 });
 
@@ -155,8 +170,8 @@ describe('current (live) block is folded in regardless of save/publish state', (
   it('includes an unsaved current block', () => {
     const r1 = resident('r1');
     const currentBlock = { id: 'live', academicYear: AY, startDate: '2026-09-01', endDate: '2026-09-03', schedule: { r1: { '2026-09-01': 'POD-D' } } };
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.assigned).toBe(1);
     expect(row.blocks).toBe(1);
   });
@@ -171,8 +186,8 @@ describe('current (live) block is folded in regardless of save/publish state', (
       id: 'live', academicYear: AY, startDate: '2026-09-01', endDate: '2026-09-03',
       schedule: { r1: { '2026-09-01': 'POD-D', '2026-09-02': 'POD-E' } },
     };
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [staleSnap], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [staleSnap], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.blocks).toBe(1);   // the live version replaces the stale saved copy, not added to it
     expect(row.assigned).toBe(2); // the live (more current) count, not the stale snapshot's 1
   });
@@ -191,51 +206,72 @@ describe('target reconstruction', () => {
       schedule: { r1: { '2026-08-03': 'POD-D' } },
       emBlockAssignments: {}, // no delta this block
     };
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [snap1], getShiftTarget: fakeGetShiftTarget });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], currentBlock, blocksHistory: [snap1], getShiftTarget: fakeGetShiftTarget });
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.target).toBe(14 + 16); // 16-2 for block 1, 16 for block 2
     expect(row.deltaFromTarget).toBe(row.assigned - row.target);
   });
 
-  it('a self-cover (null target) block contributes 0 to the target sum but still counts assigned shifts', () => {
+  it('a self-cover (no getShiftTarget) block contributes 0 to the target sum but still counts assigned shifts, landing the resident in noTargetRows', () => {
     const r1 = resident('r1', { baseTarget: 16 });
     const snap1 = snapshot({
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
       schedule: { r1: { '2026-07-06': 'POD-D' } },
       emBlockAssignments: { r1: {} },
     });
-    // fakeGetShiftTarget returns null when resident.selfCover is set — simulate via a per-block
-    // assignment flag the fake doesn't actually read; instead just verify the "no getShiftTarget"
-    // path leaves target null and still counts assigned.
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap1], getShiftTarget: undefined });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: [snap1], getShiftTarget: undefined });
+    expect(allComparedRows(ledger)).toHaveLength(0);
+    const row = allNoTargetRows(ledger).find(r => r.residentId === 'r1');
     expect(row.target).toBeNull();
     expect(row.deltaFromTarget).toBeNull();
     expect(row.assigned).toBe(1);
   });
 });
 
-describe('grouping: EM Home / EM BAMC / off-service', () => {
-  it('buckets residents into the three groups and excludes off-service from spread/outlier stats', () => {
-    const emHome = resident('eh1', { category: 'EM_HOME' });
-    const emBamc = resident('eb1', { category: 'EM_BAMC' });
+describe('grouping: EM Home / EM BAMC categories, PGY subgroups, off-service kept separate', () => {
+  it('buckets residents by category then PGY, and off-service into its own top-level section', () => {
+    const emHome1 = resident('eh1', { category: 'EM_HOME', pgy: 1 });
+    const emHome2 = resident('eh2', { category: 'EM_HOME', pgy: 2 });
+    const emBamc = resident('eb1', { category: 'EM_BAMC', pgy: 2 });
     const offSvc = resident('os1', { category: 'PED_2', pgy: 2 });
     const snap = snapshot({
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-07',
       schedule: {
         eh1: { '2026-07-06': 'POD-D' },
+        eh2: { '2026-07-06': 'POD-D' },
         eb1: { '2026-07-06': 'POD-D' },
         os1: { '2026-07-06': 'PED-D' },
       },
     });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [emHome, emBamc, offSvc], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const byKey = Object.fromEntries(groups.map(g => [g.key, g]));
-    expect(byKey.EM_HOME.rows.map(r => r.residentId)).toEqual(['eh1']);
-    expect(byKey.EM_BAMC.rows.map(r => r.residentId)).toEqual(['eb1']);
-    expect(byKey.OFF_SERVICE.rows.map(r => r.residentId)).toEqual(['os1']);
-    expect(byKey.OFF_SERVICE.excludedFromSpread).toBe(true);
-    expect(byKey.OFF_SERVICE.rows[0].target).toBeNull();
-    expect(byKey.OFF_SERVICE.stats.deltaFromTarget).toBeUndefined();
+    const ledger = buildAyLedger({ ay: AY, allResidents: [emHome1, emHome2, emBamc, offSvc], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    const byKey = Object.fromEntries(ledger.categories.map(c => [c.key, c]));
+    expect(Object.keys(byKey).sort()).toEqual(['EM_BAMC', 'EM_HOME']);
+    expect(byKey.EM_HOME.pgyGroups.map(g => g.label)).toEqual(['PGY-1', 'PGY-2']);
+    expect(byKey.EM_HOME.pgyGroups[0].rows.map(r => r.residentId)).toEqual(['eh1']);
+    expect(byKey.EM_BAMC.pgyGroups[0].rows.map(r => r.residentId)).toEqual(['eb1']);
+    expect(ledger.offService.rows.map(r => r.residentId)).toEqual(['os1']);
+    expect(ledger.offService.rows[0].target).toBeNull();
+  });
+
+  it('a category absent from the AY (e.g. no BAMC residents) is omitted entirely, not shown empty', () => {
+    const emHome = resident('eh1');
+    const snap = snapshot({ id: 'b1', startDate: '2026-07-06', endDate: '2026-07-06', schedule: { eh1: { '2026-07-06': 'POD-D' } } });
+    const ledger = buildAyLedger({ ay: AY, allResidents: [emHome], blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
+    expect(ledger.categories.map(c => c.key)).toEqual(['EM_HOME']);
+  });
+
+  it('an EM resident with no target this AY (every block non-schedulable) lands in noTargetRows, not rows', () => {
+    const r1 = resident('r1', { pgy: 2 });
+    const electiveBlock = snapshot({
+      id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
+      schedule: { r1: { '2026-07-06': 'ELECTIVE' } }, emBlockAssignments: { r1: { blockType: 'ELECTIVE' } },
+    });
+    const ledger = buildAyLedger({
+      ay: AY, allResidents: [r1], blocksHistory: [electiveBlock], getShiftTarget: fakeGetShiftTarget,
+      isSchedulable: r => r.blockType !== 'ELECTIVE',
+    });
+    expect(allComparedRows(ledger)).toHaveLength(0);
+    expect(allNoTargetRows(ledger).map(r => r.residentId)).toEqual(['r1']);
   });
 
   it('defaultIsEm matches ResidentScheduler.jsx\'s isEmResident definition', () => {
@@ -250,46 +286,20 @@ describe('grouping: EM Home / EM BAMC / off-service', () => {
   });
 });
 
-describe('spread stats and IQR outlier flagging', () => {
-  function makeRoster(n) { return Array.from({ length: n }, (_, i) => resident(`r${i}`)); }
-  function makeSnap(assignedCounts) {
-    const schedule = {};
-    const dates = ['2026-07-06', '2026-07-07', '2026-07-08', '2026-07-09', '2026-07-10', '2026-07-13', '2026-07-14'];
-    Object.entries(assignedCounts).forEach(([rid, count]) => {
-      schedule[rid] = {};
-      for (let i = 0; i < count; i++) schedule[rid][dates[i]] = 'POD-D';
-    });
-    return snapshot({ id: 'b1', startDate: '2026-07-06', endDate: '2026-07-14', schedule });
-  }
-
-  it('reports min/median/max per column', () => {
-    const roster = makeRoster(3);
-    const snap = makeSnap({ r0: 1, r1: 2, r2: 3 });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: roster, blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const g = groups.find(g => g.key === 'EM_HOME');
-    expect(g.stats.assigned).toEqual({ min: 1, median: 2, max: 3, count: 3 });
+describe('computeColumnVisibility (hide-empty-column helper)', () => {
+  it('hides holidays/twelveHour/blocks columns when every row is zero/one', () => {
+    const rows = [{ holidayShifts: 0, twelveHour: 0, blocks: 1 }, { holidayShifts: 0, twelveHour: 0, blocks: 1 }];
+    expect(computeColumnVisibility(rows)).toEqual({ holidays: false, twelveHour: false, blocks: false });
   });
 
-  it('flags no outliers when the group is below DEFAULT_OUTLIER_MIN_GROUP_SIZE', () => {
-    const roster = makeRoster(3);
-    const snap = makeSnap({ r0: 1, r1: 1, r2: 7 }); // r2 would otherwise clearly be an outlier
-    const { groups } = buildAyLedger({ ay: AY, allResidents: roster, blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const g = groups.find(g => g.key === 'EM_HOME');
-    expect(g.rows.length).toBeLessThan(DEFAULT_OUTLIER_MIN_GROUP_SIZE);
-    expect(g.outlierIds.assigned).toEqual([]);
+  it('shows a column once any single row has a non-zero (or, for blocks, >1) value', () => {
+    const rows = [{ holidayShifts: 1, twelveHour: 0, blocks: 1 }, { holidayShifts: 0, twelveHour: 2, blocks: 3 }];
+    expect(computeColumnVisibility(rows)).toEqual({ holidays: true, twelveHour: true, blocks: true });
   });
 
-  it('flags a clear outlier once the group reaches the minimum size', () => {
-    const roster = makeRoster(5);
-    const snap = makeSnap({ r0: 1, r1: 1, r2: 1, r3: 1, r4: 7 });
-    const { groups } = buildAyLedger({ ay: AY, allResidents: roster, blocksHistory: [snap], getShiftTarget: fakeGetShiftTarget });
-    const g = groups.find(g => g.key === 'EM_HOME');
-    expect(g.outlierIds.assigned).toContain('r4');
-  });
-
-  it('iqrOutlierIds is directly testable and returns [] under 4 values', () => {
-    const rows = [{ residentId: 'a', x: 1 }, { residentId: 'b', x: 100 }];
-    expect(iqrOutlierIds(rows, 'x')).toEqual([]);
+  it('tolerates an empty or non-array input', () => {
+    expect(computeColumnVisibility([])).toEqual({ holidays: false, twelveHour: false, blocks: false });
+    expect(computeColumnVisibility(undefined)).toEqual({ holidays: false, twelveHour: false, blocks: false });
   });
 });
 
@@ -298,8 +308,8 @@ describe('untrusted-shape guards', () => {
     const r1 = resident('r1');
     const garbage = [null, 'nope', 42, { id: 'ok', published: true, academicYear: AY, startDate: '2026-07-06', endDate: '2026-07-07', data: { schedule: { r1: 'not-an-object' } } }];
     expect(() => buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: garbage, getShiftTarget: fakeGetShiftTarget })).not.toThrow();
-    const { groups } = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: garbage, getShiftTarget: fakeGetShiftTarget });
-    expect(groups.flatMap(g => g.rows)).toHaveLength(0); // r1's row was garbage ('not-an-object'), so no history
+    const ledger = buildAyLedger({ ay: AY, allResidents: [r1], blocksHistory: garbage, getShiftTarget: fakeGetShiftTarget });
+    expect(allComparedRows(ledger)).toHaveLength(0); // r1's row was garbage ('not-an-object'), so no history
   });
 
   it('tolerates blocksHistory being undefined entirely', () => {
@@ -307,8 +317,118 @@ describe('untrusted-shape guards', () => {
   });
 });
 
-describe('non-schedulable rotations owe no target', () => {
-  it('a block on a non-schedulable rotation adds shifts but no target', () => {
+// ─── flagLedgerRows ─────────────────────────────────────────────────────────
+
+function pgyGroupFixture({ key = 'EM_HOME_PGY2', pgy = 2, rows }) {
+  const assignedMedian = (() => { const v = rows.map(r => r.assigned).sort((a, b) => a - b); const m = v.length; return m % 2 ? v[(m - 1) / 2] : (v[m / 2 - 1] + v[m / 2]) / 2; })();
+  const nightsMedian = (() => { const v = rows.map(r => r.nights).sort((a, b) => a - b); const m = v.length; return m % 2 ? v[(m - 1) / 2] : (v[m / 2 - 1] + v[m / 2]) / 2; })();
+  const weekendMedian = (() => { const v = rows.map(r => r.weekendShifts).sort((a, b) => a - b); const m = v.length; return m % 2 ? v[(m - 1) / 2] : (v[m / 2 - 1] + v[m / 2]) / 2; })();
+  return { key, pgy, label: `PGY-${pgy}`, rows, noTargetRows: [], medians: { assigned: assignedMedian, nights: nightsMedian, weekendShifts: weekendMedian, hours: null } };
+}
+function flagRow(id, { assigned = 10, nights = 0, weekendShifts = 0, target = null, name } = {}) {
+  return { residentId: id, name: name || id, category: 'EM_HOME', pgy: 2, assigned, nights, weekendShifts, holidayShifts: 0, twelveHour: 0, hours: 0, blocks: 1, target, deltaFromTarget: target != null ? assigned - target : null };
+}
+
+describe('flagLedgerRows: behind-target', () => {
+  it(`flags behind-target once target - assigned >= ${DEFAULT_BEHIND_TARGET_THRESHOLD}, not below it`, () => {
+    const rows = [
+      flagRow('a', { assigned: 14, target: 16 }), // delta -2, flagged
+      flagRow('b', { assigned: 15, target: 16 }), // delta -1, not flagged
+    ];
+    const group = pgyGroupFixture({ rows });
+    const { categories, summary } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    const byId = Object.fromEntries(categories[0].pgyGroups[0].rows.map(r => [r.residentId, r]));
+    expect(byId.a.flags.behindTarget).toBe(true);
+    expect(byId.b.flags.behindTarget).toBe(false);
+    expect(summary.behindTargetIds).toEqual(['a']);
+  });
+});
+
+describe('flagLedgerRows: heavy/light nights and weekends use rate-per-shift-worked plus a raw-count gate', () => {
+  it('flags heavy nights for a resident whose rate AND raw count both clear the group, and light for the symmetric case', () => {
+    // 4 residents, all assigned=10. nights: [0, 2, 2, 8] -> raw median 2, rate median 0.2.
+    const rows = [
+      flagRow('light', { assigned: 10, nights: 0 }),
+      flagRow('mid1', { assigned: 10, nights: 2 }),
+      flagRow('mid2', { assigned: 10, nights: 2 }),
+      flagRow('heavy', { assigned: 10, nights: 8 }),
+    ];
+    const group = pgyGroupFixture({ rows });
+    const { categories } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    const byId = Object.fromEntries(categories[0].pgyGroups[0].rows.map(r => [r.residentId, r]));
+    expect(byId.heavy.flags.heavyNights).toBe(true);
+    expect(byId.light.flags.lightNights).toBe(true);
+    expect(byId.mid1.flags.heavyNights).toBe(false);
+    expect(byId.mid1.flags.lightNights).toBe(false);
+  });
+
+  it('does not flag heavy/light when a resident worked fewer than 2 comparable peers (no meaningful median)', () => {
+    const rows = [flagRow('solo', { assigned: 10, nights: 8 })];
+    const group = pgyGroupFixture({ rows });
+    const { categories } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    expect(categories[0].pgyGroups[0].rows[0].flags.heavyNights).toBe(false);
+  });
+
+  it('a resident who worked zero shifts is never flagged for being "light" (no reduced-block penalty)', () => {
+    const rows = [
+      flagRow('zero', { assigned: 0, nights: 0, weekendShifts: 0 }),
+      flagRow('normal1', { assigned: 10, nights: 4, weekendShifts: 2 }),
+      flagRow('normal2', { assigned: 10, nights: 4, weekendShifts: 2 }),
+    ];
+    const group = pgyGroupFixture({ rows });
+    const { categories } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    const zero = categories[0].pgyGroups[0].rows.find(r => r.residentId === 'zero');
+    expect(zero.flags.lightNights).toBe(false);
+    expect(zero.flags.lightWeekends).toBe(false);
+  });
+
+  it('flags heavy weekends symmetrically to heavy nights', () => {
+    const rows = [
+      flagRow('a', { assigned: 10, weekendShifts: 1 }),
+      flagRow('b', { assigned: 10, weekendShifts: 1 }),
+      flagRow('c', { assigned: 10, weekendShifts: 6 }),
+    ];
+    const group = pgyGroupFixture({ rows });
+    const { categories } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    const byId = Object.fromEntries(categories[0].pgyGroups[0].rows.map(r => [r.residentId, r]));
+    expect(byId.c.flags.heavyWeekends).toBe(true);
+  });
+});
+
+describe('flagLedgerRows: default sort is behind-target, then heavy, then alphabetical', () => {
+  it('orders a mixed group correctly', () => {
+    const rows = [
+      flagRow('zzNormal', { assigned: 10, target: 10, nights: 2, weekendShifts: 1 }),
+      flagRow('aaBehind', { assigned: 8, target: 10, nights: 2, weekendShifts: 1 }),
+      flagRow('mmHeavy', { assigned: 10, target: 10, nights: 8, weekendShifts: 1 }),
+      flagRow('bbNormal', { assigned: 10, target: 10, nights: 2, weekendShifts: 1 }),
+    ];
+    const group = pgyGroupFixture({ rows });
+    const { categories } = flagLedgerRows([{ key: 'EM_HOME', label: 'EM Home', pgyGroups: [group] }]);
+    expect(categories[0].pgyGroups[0].rows.map(r => r.residentId)).toEqual(['aaBehind', 'mmHeavy', 'bbNormal', 'zzNormal']);
+  });
+});
+
+describe('flagLedgerRows: summary aggregates ids across every category/PGY group', () => {
+  it('collects flagged ids from multiple groups into one summary', () => {
+    const groupA = pgyGroupFixture({ key: 'EM_HOME_PGY1', pgy: 1, rows: [flagRow('a1', { assigned: 8, target: 10 })] });
+    const groupB = pgyGroupFixture({ key: 'EM_HOME_PGY2', pgy: 2, rows: [flagRow('b1', { assigned: 8, target: 10 })] });
+    const { summary } = flagLedgerRows([
+      { key: 'EM_HOME', label: 'EM Home', pgyGroups: [groupA, groupB] },
+    ]);
+    expect(summary.behindTargetIds.sort()).toEqual(['a1', 'b1']);
+  });
+
+  it('tolerates an empty categories array', () => {
+    expect(() => flagLedgerRows([])).not.toThrow();
+    const { categories, summary } = flagLedgerRows([]);
+    expect(categories).toEqual([]);
+    expect(summary.behindTargetIds).toEqual([]);
+  });
+});
+
+describe('non-schedulable rotations owe no target (integration with buildAyLedger)', () => {
+  it('a block on a non-schedulable rotation adds shifts but no target toward that block', () => {
     const r1 = resident('r1');
     const emBlock = snapshot({
       id: 'b1', startDate: '2026-07-06', endDate: '2026-07-12',
@@ -318,11 +438,11 @@ describe('non-schedulable rotations owe no target', () => {
       id: 'b2', startDate: '2026-07-13', endDate: '2026-07-19',
       schedule: { r1: { '2026-07-13': 'POD-D' } }, emBlockAssignments: { r1: { blockType: 'ELECTIVE' } },
     });
-    const { groups } = buildAyLedger({
+    const ledger = buildAyLedger({
       ay: AY, allResidents: [r1], blocksHistory: [emBlock, offBlock], getShiftTarget: fakeGetShiftTarget,
       isSchedulable: r => r.blockType !== 'ELECTIVE',
     });
-    const row = groups.flatMap(g => g.rows).find(r => r.residentId === 'r1');
+    const row = allComparedRows(ledger).find(r => r.residentId === 'r1');
     expect(row.assigned).toBe(2);
     expect(row.target).toBe(16);
   });
