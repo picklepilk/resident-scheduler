@@ -10070,7 +10070,7 @@ function ShiftsVsTargetBar({ row }) {
   const pct = target > 0 ? Math.max(0, Math.min(100, Math.round((assigned / target) * 100))) : (assigned > 0 ? 100 : 0);
   const behind = !!flags?.behindTarget;
   const over = deltaFromTarget > 0;
-  const deltaText = deltaFromTarget === 0 ? '0' : (over ? `+${deltaFromTarget}` : `${deltaFromTarget}`);
+  const deltaText = deltaFromTarget === 0 ? '' : (over ? `+${deltaFromTarget}` : `${deltaFromTarget}`);
   return (
     <span className="inline-flex items-center gap-1.5 justify-end tabular-nums">
       <span className="h-1.5 w-14 rounded-full bg-gray-200 overflow-hidden inline-block align-middle shrink-0">
@@ -10346,9 +10346,7 @@ function AyFairnessLedgerCard({ ledger }) {
           <AyLedgerOffServiceSection offService={ledger.offService} columnVisibility={ledger.columnVisibility}/>
 
           <p className="text-[11px] text-gray-400">
-            "Shifts vs target" sums each block's own effective target using TODAY's Settings — a display
-            estimate, not a time-accurate historical value; it never feeds the generator or validator.
-            Behind target flags once target minus shifts worked is {DEFAULT_BEHIND_TARGET_THRESHOLD} or more.
+            Targets use today's settings for every block. Behind = {DEFAULT_BEHIND_TARGET_THRESHOLD}+ shifts short.
           </p>
         </div>
       ) : (
