@@ -86,6 +86,62 @@
 // roster doesn't exercise this particular jcPresentDates/grLectureDates path the same way), 1
 // variant regressed on this specific metric only. Ceilings below updated to the new exact measured
 // values (deterministic under this fixed seed, same convention as chiefBenchmark.test.js).
+// 2026-10-16, SECOND attempt (not shipped) — "nightPlanningPass" pre-pass. Rebuild of the task's
+// documented FIRST attempt (which only laid runs to coverage MIN, see that attempt's own numbers
+// below this note's sibling in git history / the task description), adding the one lever that
+// attempt was missing: letting a run claim OPTIONAL night headroom (cov.max - cov.min) too, for
+// under-target residents only, so the later day-by-day 'optional' fillDayPass pass can't scatter
+// that headroom onto unrelated residents once the run's own starter is pushed to target by OTHER
+// (day/eve) shifts elsewhere in the block.
+//
+// DESIGN: gated behind args.nightPlanning (default off, never shipped). Two passes, not one —
+// the first naive version (headroom claimed in the SAME walk as the min fill, before every OTHER
+// shift's own min phase had run) measurably violated "minimums across the whole block are
+// satisfied before any optional slot can consume a resident's target headroom" (fillDayPass's own
+// documented invariant) and was rejected after a quick A/B specifically for that reason. The
+// SECOND, corrected version split it in two: nightPlanningMinPass (night runs, min-only, inserted
+// BEFORE fillDayPass's two min phases) and nightHeadroomPass (claims cov.max headroom by
+// extending a resident who already worked the immediately preceding date on the same shift one
+// more night — never starts a fresh run — inserted AFTER both min phases, BEFORE the optional
+// phase, so the min-first invariant holds). Neither version touched score()'s nightCluster terms.
+//
+// A/B measurement (generateScheduleBest, 5 seeds [1,2,42,7,99], attempts 1 AND 20, repair:true,
+// corrected two-pass version, standard/understaffed/vacationHeavy/conferenceBlock +
+// src/lib/__fixtures__/chiefBenchmark.json as the "real schedule shape" proxy — this session had
+// no access to an actual non-committed real-block export, a prior session's own local-only
+// scratchpad harness):
+//   - twoSeg/singles: the thing this pass exists to fix, and it DID: standard twoSeg 10-14 -> 2-7,
+//     singles 6-12 -> 2-9; understaffed/vacationHeavy/conferenceBlock similarly improved on most
+//     seeds. The run-shaping half of the idea works.
+//   - BUT betterQuality-ladder regressions on 2 of 4 synthetic variants: understaffed's
+//     blockingWarnCount (rung 2 of the ladder) went from 0-1 to 4-6 on EVERY seed, both attempts=1
+//     and attempts=20 — a real, consistent regression, not noise. standard/vacationHeavy's
+//     coverageMiss (qualityVector slot 0, the HIGHEST-priority slot) also crept up a few points on
+//     most seeds.
+//   - WORSE, on chiefBenchmark (the closest available proxy for "real block"): errorCount — ALL of
+//     it classified `rule: 'underTarget'` (the hard, export-blocking shift-count floor) —
+//     ballooned from 3-9 (OFF, attempts=20, 5 seeds) to 13-16 (ON, same recipe). Isolated with a
+//     debug harness (pre-repair, single seed 42): OFF errors=13 unfilled=2; ON errors=17
+//     unfilled=36. All `underTarget`.
+//   - ROOT CAUSE: nightPlanningMinPass walks night shift ids in fixed catalog order x date order,
+//     not the MRV ("most constrained slot first") order fillDayPass's real min-phase uses — and
+//     fillDayPass's own header already documents exactly why that ordering matters ("a shift that
+//     started with 6 candidates can be down to 1 by the time a STATIC order reaches it"). On the
+//     synthetic fixtures there's enough slack that this rarely bites. On chiefBenchmark's tighter,
+//     realistically-sized roster, greedily filling night shifts in a fixed order spends a scarce
+//     composition-qualifying candidate (or a resident who's one of very few left under target) on
+//     an earlier-processed night shift/date, leaving a later, harder slot with nobody legal — and,
+//     separately, nightHeadroomPass's "extend whoever already has an adjacent run" rule hands
+//     scarce optional slots to residents by CONTIGUITY rather than by who most needs the shift
+//     count — a real tradeoff once slots are scarce, since every shift's headroom is the same
+//     zero-sum budget the chief's hard EM/BAMC under-target floor is measured against.
+//   - Fixing the ordering defect would need night shifts folded into fillDayPass's own
+//     MRV-across-all-shifts loop (not a separate pre-pass with its own fixed order) — a third,
+//     larger redesign than either attempt so far. Not attempted this session; flagging for whoever
+//     picks this up next so they don't re-derive the same two failed shapes first.
+//   - DECISION: not shipped. Reverted in full (ResidentScheduler.jsx has no nightPlanning code —
+//     check git history/PR for the exact diff if resuming this). This note is the only surviving
+//     trace, committed per this task's own "didn't win" convention.
 import { describe, it, expect } from 'vitest';
 import { generateScheduleBest, NIGHT_RULES, isNightOnlyResident } from '../ResidentScheduler.jsx';
 import { isNightShiftId } from './shifts.js';
