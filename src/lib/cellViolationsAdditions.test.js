@@ -152,15 +152,12 @@ describe('cellViolations — R3/R4 additions (2026-09-26 policy, ACGME 6.17.a + 
     expect(vs.some(x => x.rule === 'restShiftLength')).toBe(false);
   });
 
-  it('rest >= shift length, Grand Rounds adjustment: POD-N ending 08:00 Wed (this resident\'s GR day) then PED-N at 19:00 same day clears 08:00+9h but NOT Grand-Rounds-end(12:00)+9h — blocked', () => {
+  it('rest >= shift length no longer reads Grand Rounds at all (chief decision 2026-10-15): POD-N ending 08:00 Wed (this resident\'s GR day) then PED-N at 19:00 same day is an 11h gap — clears the 9h requirement, no violation', () => {
     const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
     const row = { '2026-07-07': 'POD-N' }; // Tue 23:00 -> Wed 08:00
     const b = { ...block, schedule: { r1: row } };
     const vs = cellViolations(r1, '2026-07-08', 'PED-N', b, {}, {}, {}, {}); // Wed 19:00
-    const v = vs.find(x => x.rule === 'restShiftLength');
-    expect(v).toBeTruthy();
-    expect(v.level).toBe('error');
-    expect(v.message).toMatch(/Grand Rounds/);
+    expect(vs.some(x => x.rule === 'restShiftLength')).toBe(false);
   });
 
   it('ACGME weekly caps (edWeekly60/totalWeekly72): 6 existing 12h Trauma Days + Grand Rounds inside one rolling week breaches both', () => {

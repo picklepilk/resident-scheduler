@@ -9,7 +9,7 @@
 // never import ResidentScheduler.jsx"). Business-rule mappings that live in that file (grWorkDow's
 // category->weekday, isSchedulable/isEmResident) are passed in as plain values (`grDow`) by the
 // caller rather than re-derived here, so there is exactly one place that can drift.
-import { SHIFT_TIMING, shiftStartMs } from './shifts.js';
+import { SHIFT_TIMING, SHIFT_MAP, shiftStartMs } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { JC_WINDOW_START_H, JC_WINDOW_END_H } from './shifts.js';
 
@@ -18,11 +18,19 @@ import { JC_WINDOW_START_H, JC_WINDOW_END_H } from './shifts.js';
 export const ED_WEEKLY_CAP_H = 60;
 export const TOTAL_WEEKLY_CAP_H = 72;
 
-// Grand Rounds: 08:00-12:00, both sites (EM_HOME Wed, EM_BAMC Thu — see grWorkDow in
-// ResidentScheduler.jsx). Counts toward the 72h total (EM FAQ: didactics count toward weekly hours).
+// Grand Rounds: both sites (EM_HOME Wed, EM_BAMC Thu — see grWorkDow in ResidentScheduler.jsx).
+// Counts toward the 72h total (EM FAQ: didactics count toward weekly hours) via grHoursOn/grWindowFor
+// below. Chief decision 2026-10-15: the GR window itself depends on what the resident worked the
+// calendar day immediately before GR — see grWindowFor. GR_START_H/GR_END_H remain the DEFAULT
+// window (08:00-12:00, used when there's no shift the day before, or a day shift) — GR_DURATION_H is
+// that default's length, still exported for the no-shift-before case tests/call sites reference.
+// IMPORTANT: this is now ONLY about GR HOURS counted toward the weekly caps — rest-period math
+// (checkRestViolations/validateAll in ResidentScheduler.jsx) no longer reads Grand Rounds at all
+// (chief decision 2026-10-15: "the only shifts that count towards time off ... are the actual
+// clinical shifts" — rest is always measured from the shift's own end, full stop).
 export const GR_START_H = 8;
 export const GR_END_H = 12;
-export const GR_DURATION_H = GR_END_H - GR_START_H; // 4h
+export const GR_DURATION_H = GR_END_H - GR_START_H; // 4h (default-window length)
 
 // Journal Club: 18:00-21:00 (same window shiftOverlapsJC uses) — counts toward the 72h total for
 // its presenter on their own jcPresentDates.
@@ -45,17 +53,38 @@ function isOffDate(resident, ds) {
   return (resident?.vacationDates || []).includes(ds) || (resident?.approvedDatesOff || []).includes(ds);
 }
 
-// GR hours on `ds` if it's this resident's GR weekday and they're not vacation/approved-off that
-// specific date — same exemption isStreakWorkDay/the 1-in-7 rule already apply to a GR obligation
-// day with no actual schedule evidence.
+// grWindowFor: the {startH, endH} window this resident's Grand Rounds occupies on `grDs`, given
+// `prevShiftId` — the shift (if any) assigned the CALENDAR DAY IMMEDIATELY BEFORE `grDs` (chief
+// decision 2026-10-15): "a resident working the evening before GR starts GR at 1000 the following
+// day. A resident on night shift the night before GR ending the morning of GR goes to GR from
+// 0800-1000 instead of until 1200." So: an 'eve'-type prior shift -> 10:00-GR_END_H (GR starts late,
+// still ends at the default end); a 'night'-type prior shift -> GR_START_H-10:00 (GR is cut short —
+// the resident goes straight from the overnight into the first half of GR); anything else (a 'day'
+// shift, or no shift at all) -> the default GR_START_H-GR_END_H. Returns null on a vacation/
+// approved-off date (no GR at all that date — same as before). This window is used ONLY for GR
+// hours in the weekly-hour-cap rolling sum (grHoursOn) — it has no bearing on rest-period math
+// (effectiveShiftEndMs was removed; rest is always measured from a shift's own end, never GR's).
+export function grWindowFor(resident, grDs, prevShiftId) {
+  if (isOffDate(resident, grDs)) return null;
+  const prevType = prevShiftId ? SHIFT_MAP[prevShiftId]?.type : null;
+  if (prevType === 'eve') return { startH: 10, endH: GR_END_H };
+  if (prevType === 'night') return { startH: GR_START_H, endH: 10 };
+  return { startH: GR_START_H, endH: GR_END_H };
+}
+
+// GR hours on `ds` if it's this resident's GR weekday — 0 if vacation/approved-off that date
+// (grWindowFor returning null), otherwise the resolved window's length (2h after eve/night, 4h
+// otherwise). `prevShiftId` is the shift (if any) assigned the calendar day before `ds` — see
+// grWindowFor.
 // Exported (R7, solver parity): buildSolverPayload needs the exact same GR/JC-hours-on-a-date
-// resolution to compute the `obligationHours`/`grDates` payload fields the solver's
-// weekly_hours.py rolling-7-day cap and rest.py's GR-end rest adjustment consume — one source of
-// truth for both engines, per CLAUDE.md's "payload gotcha".
-export function grHoursOn(resident, ds, grDow) {
+// resolution to compute the `obligationHours` payload field the solver's weekly_hours.py
+// rolling-7-day cap consumes — one source of truth for both engines, per CLAUDE.md's "payload
+// gotcha".
+export function grHoursOn(resident, ds, grDow, prevShiftId) {
   if (grDow == null) return 0;
   if (parseDate(ds).getDay() !== grDow) return 0;
-  return isOffDate(resident, ds) ? 0 : GR_DURATION_H;
+  const win = grWindowFor(resident, ds, prevShiftId);
+  return win ? (win.endH - win.startH) : 0;
 }
 
 export function jcHoursOn(resident, ds) {
@@ -73,8 +102,9 @@ function windowTotals(resident, row, grDow, windowStartMs) {
   let edHours = 0, totalHours = 0;
   for (let i = 0; i < WINDOW_DAYS; i++) {
     const ds = toDateStr(new Date(windowStartMs + i * DAY_MS));
+    const prevDs = toDateStr(new Date(windowStartMs + (i - 1) * DAY_MS));
     const ed = edHoursOn(row, ds);
-    const gr = grHoursOn(resident, ds, grDow);
+    const gr = grHoursOn(resident, ds, grDow, row[prevDs]);
     const jc = jcHoursOn(resident, ds);
     edHours += ed;
     totalHours += ed + gr + jc;
@@ -169,8 +199,9 @@ export function buildDailyContributions(resident, rs, prevRs, grDow, rangeDates)
   const other = new Array(n);
   for (let i = 0; i < n; i++) {
     const ds = rangeDates[i];
+    const prevDs = toDateStr(addDays(parseDate(ds), -1));
     ed[i] = edHoursOn(row, ds);
-    other[i] = grHoursOn(resident, ds, grDow) + jcHoursOn(resident, ds);
+    other[i] = grHoursOn(resident, ds, grDow, row[prevDs]) + jcHoursOn(resident, ds);
   }
   return { ed, other };
 }
@@ -225,25 +256,8 @@ export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
   return { edBreach, totalBreach };
 }
 
-// effectiveShiftEndMs: the timestamp rest-period math should measure FROM after working
-// `shiftId` on `dateStr` — normally the shift's own end, but pushed forward to Grand Rounds' own
-// end (12:00) when this resident's GR falls on the calendar date the shift ends AND the shift ends
-// before GR_END_H (EM FAQ 6.17.a.2: "a scheduled break equal to the scheduled length of the shift";
-// EM FAQ: "time off counts from the end of conference" when attended — GR is assumed attended
-// unless the resident is vacation/approved-off that date, same convention isStreakWorkDay/the 1-in-7
-// rule already use for a shift-less GR obligation day). `resident` only needs vacationDates/
-// approvedDatesOff (plain data, not ResidentScheduler.jsx logic); `grDow` is grWorkDow(resident),
-// passed in by the caller.
-export function effectiveShiftEndMs(shiftId, dateStr, resident, grDow) {
-  const t = SHIFT_TIMING[shiftId];
-  if (!t) return null;
-  const startMs = shiftStartMs(shiftId, dateStr);
-  const endMs = startMs + t.durationH * 3_600_000;
-  if (grDow == null) return endMs;
-  const endDate = new Date(endMs);
-  if (endDate.getDay() !== grDow) return endMs;
-  const endDs = toDateStr(endDate);
-  if (isOffDate(resident, endDs)) return endMs;
-  const grEndMs = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), GR_END_H, 0, 0).getTime();
-  return endMs < grEndMs ? grEndMs : endMs;
-}
+// effectiveShiftEndMs was REMOVED 2026-10-15 (chief decision — "the only shifts that count towards
+// time off before/after a shift ... are the actual clinical shifts"): rest-period math never reads
+// Grand Rounds at all now. Callers that used to push a shift's end forward to GR's own end now just
+// use lib/shifts.js's plain shiftEndMs(shiftId, dateStr) directly — see checkRestViolations and
+// validateAll's rest-period loop in ResidentScheduler.jsx.

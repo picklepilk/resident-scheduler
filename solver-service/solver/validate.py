@@ -205,20 +205,10 @@ def _check_senior_composition(payload: Payload, schedule: dict) -> list:
     return failures
 
 
-def _effective_earlier_end_min(payload: Payload, date1: str, shift1, resident) -> int:
-    """Independent re-implementation of rest.py's own `_effective_earlier_end_min` -- see that
-    module's docstring for the GR-end adjustment's rationale (R7, 2026-09-27)."""
-    end_min = timing.shift_end_min(date1, shift1)
-    if not resident.gr_dates:
-        return end_min
-    end_date = timing.shift_end_date(date1, shift1)
-    if end_date not in resident.gr_dates:
-        return end_min
-    gr_end_min = timing.hour_mark_min(end_date, payload.gr_end_h)
-    return max(end_min, gr_end_min)
-
-
 def _check_rest_gap(payload: Payload, schedule: dict) -> list:
+    """Rest gap check -- mirrors rest.py's own `add_rest_constraints` exactly, including its
+    2026-10-15 removal of the GR-end adjustment: rest is always measured from the earlier shift's
+    own end, never Grand Rounds' (see that module's docstring)."""
     failures = []
     for resident in payload.residents:
         for date1 in payload.all_dates:
@@ -227,7 +217,7 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
                 continue
             shift1 = payload.shifts[shift_id1]
             required = timing.required_rest_gap_min(shift1)
-            earlier_end = _effective_earlier_end_min(payload, date1, shift1, resident)
+            earlier_end = timing.shift_end_min(date1, shift1)
             for delta in (1, 2):
                 date2 = timing.add_days(date1, delta)
                 shift_id2 = _shift_on(payload, resident, date2, schedule)

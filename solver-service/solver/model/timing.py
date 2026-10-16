@@ -66,15 +66,16 @@ def shift_end_min(date_str: str, shift: ShiftTiming) -> int:
 
 def shift_end_date(date_str: str, shift: ShiftTiming) -> str:
     """Calendar date a shift ENDS on -- `date_str` itself if it doesn't cross midnight, the next day
-    if it does. Used by rest.py's GR-end adjustment (rule 17) to know which date's `gr_dates`
-    membership to check against a shift's own end."""
+    if it does. (Was used by rest.py's GR-end rest adjustment, removed 2026-10-15 -- kept as a
+    general-purpose timing utility.)"""
     end_min_of_day = shift.start_h * 60 + shift.duration_h * 60
     offset = end_min_of_day // MINUTES_PER_DAY
     return add_days(date_str, offset) if offset else date_str
 
 
 def hour_mark_min(date_str: str, hour: int) -> int:
-    """Absolute minute offset for a fixed clock hour (e.g. Grand Rounds' own end) on `date_str`."""
+    """Absolute minute offset for a fixed clock hour on `date_str`. (Was used by rest.py's GR-end
+    rest adjustment, removed 2026-10-15 -- kept as a general-purpose timing utility.)"""
     return _ordinal_minutes(date_str) + hour * 60
 
 

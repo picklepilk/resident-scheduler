@@ -17,36 +17,40 @@ const papaBare = {
   vacationDates: [], approvedDatesOff: [], jcPresentDates: [],
 };
 
-describe('isStreakWorkDay — post-overnight GR exemption (1.5b)', () => {
+describe('isStreakWorkDay — clinical shifts only (chief decision 2026-10-15, supersedes the earlier GR/JC-obligation-day ruling)', () => {
   // 2026-07-15 is a Wednesday (EM_HOME's GR weekday) — matches syntheticRoster.js's own
   // GR_WED_1 fixture date, same block-window assumption (2026-07-06 = Monday).
   const GR_WED = '2026-07-15';
   const PRIOR_DAY = '2026-07-14'; // Tuesday, the calendar day immediately before GR_WED
 
-  it('counts the GR weekday as worked when nothing precedes it', () => {
-    expect(isStreakWorkDay({}, papaBare, GR_WED)).toBe(true);
+  it('counts a date with an actual clinical shift assigned', () => {
+    const rs = { [GR_WED]: 'POD-D' };
+    expect(isStreakWorkDay(rs, papaBare, GR_WED)).toBe(true);
   });
 
-  it('does NOT count the GR weekday when a night shift was worked the day before', () => {
+  it('does NOT count the GR weekday on its own with no shift assigned', () => {
+    expect(isStreakWorkDay({}, papaBare, GR_WED)).toBe(false);
+  });
+
+  it('does NOT count a Journal Club presenting date on its own with no shift assigned', () => {
+    const jcResident = { ...papaBare, jcPresentDates: [GR_WED] };
+    expect(isStreakWorkDay({}, jcResident, GR_WED)).toBe(false);
+  });
+
+  it('a night shift the day before GR still leaves the shift-less GR day uncounted', () => {
     const rs = { [PRIOR_DAY]: 'TRAUMA-N' };
     expect(isStreakWorkDay(rs, papaBare, GR_WED)).toBe(false);
   });
 
-  it('still counts the GR weekday when the day before was a non-night shift', () => {
-    const rs = { [PRIOR_DAY]: 'POD-D' };
-    expect(isStreakWorkDay(rs, papaBare, GR_WED)).toBe(true);
-  });
-
-  it('honors a night shift carried in from the previous block tail (prevRs) the same way', () => {
+  it('counts a shift carried in from the previous block tail (prevRs) the same as an in-block shift', () => {
     const prevRs = { [PRIOR_DAY]: 'MT-N' };
-    expect(isStreakWorkDay({}, papaBare, GR_WED, prevRs)).toBe(false);
+    expect(isStreakWorkDay({}, papaBare, PRIOR_DAY, prevRs)).toBe(true);
   });
 
-  it('BAMC (Thursday GR) gets the same exemption', () => {
+  it('BAMC (Thursday GR): the shift-less GR weekday itself still does not count', () => {
     // 2026-07-16 is a Thursday (EM_BAMC's GR weekday).
     const bamc = { id: 'bamc_bare', category: 'EM_BAMC', pgy: 1, vacationDates: [], approvedDatesOff: [], jcPresentDates: [] };
-    const rs = { '2026-07-15': 'FLEX-N' }; // Wednesday night shift
-    expect(isStreakWorkDay(rs, bamc, '2026-07-16')).toBe(false);
+    expect(isStreakWorkDay({}, bamc, '2026-07-16')).toBe(false);
   });
 });
 
@@ -80,10 +84,9 @@ describe('sixDayRunRestViolation (1.6) — 24h rest after a maxed 6-day work run
     expect(sixDayRunRestViolation(rs, papaBare, '2026-07-11', 'POD-D')).toBeNull();
   });
 
-  it('measures from the last actual SHIFT end, not the run\'s last calendar day (GR obligation tail)', () => {
-    // 6 nights Thu(07-09)..Tue(07-14), then GR Wednesday 07-15 carries no shift (post-overnight
-    // exemption, 1.5b) — the chief-confirmed "6 nights then GR Wednesday is legal" scenario.
-    // TRAUMA-N ends 06:00 the following calendar day.
+  it('measures from the last actual SHIFT end, not a shift-less calendar day after the run', () => {
+    // 6 nights Thu(07-09)..Tue(07-14) — 6 real consecutive shift-days, already a maxed run on
+    // its own (no GR/JC fabrication involved). TRAUMA-N ends 06:00 the following calendar day.
     const rs = {};
     let d = parseDate('2026-07-09');
     for (let i = 0; i < 6; i++) { rs[toDateStr(d)] = 'TRAUMA-N'; d = addDays(d, 1); }
@@ -230,5 +233,91 @@ describe('validateAll — night stint count thresholds (1.7)', () => {
     const issues = runValidate(fixture, papa, rs);
     expect(issues.some(i => i.level === 'warn' && i.rule === 'nightStintCount' && /3 separate night stints/.test(i.message))).toBe(true);
     expect(issues.some(i => i.level === 'error' && /separate night stints/.test(i.message))).toBe(false);
+  });
+});
+
+describe('validateAll — rest length never reads Grand Rounds any more (chief decision 2026-10-15)', () => {
+  // Reproduces the reported case: a PGY-3 with Wednesday GR (syn_papa, EM_HOME) scheduled an
+  // evening shift the day before GR used to be flagged with only 3h "rest" (GR's push to 12:00
+  // ate into the gap) — a false error. Rest is now always measured from the shift's own end.
+  function papaFixture() {
+    const fixture = makeFixture('standard');
+    const papa = fixture.allResidents.find(r => r.id === 'syn_papa'); // EM_HOME PGY-3, Wed GR
+    return { fixture, papa };
+  }
+
+  function restIssues(fixture, papa, rs) {
+    const schedule = { [papa.id]: rs };
+    const issues = validateAll(
+      fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+      fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
+    );
+    return issues.filter(i => i.residentId === papa.id && i.rule === 'restShiftLength');
+  }
+
+  it('Tue POD-E + Wed POD-E: 15h gap >= POD-E\'s own 9h requirement — legal, no restShiftLength error', () => {
+    const { fixture, papa } = papaFixture();
+    const rs = { '2026-07-07': 'POD-E', '2026-07-08': 'POD-E' }; // 07-08 is Wednesday (GR)
+    expect(restIssues(fixture, papa, rs)).toEqual([]);
+  });
+
+  it('Tue POD-N (ends Wed 08:00) + Wed POD-E (15:00): 7h gap < POD-N\'s 9h requirement — still an error, measured strictly from the shift\'s own end', () => {
+    const { fixture, papa } = papaFixture();
+    const rs = { '2026-07-07': 'POD-N', '2026-07-08': 'POD-E' };
+    const issues = restIssues(fixture, papa, rs);
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toMatch(/7h/);
+    expect(issues[0].message).not.toMatch(/Grand Rounds/);
+  });
+});
+
+describe('validateAll — GR weekday / JC presenting date no longer extend the 6-consecutive-work-day streak (chief decision 2026-10-15)', () => {
+  function papaFixture() {
+    const fixture = makeFixture('standard');
+    const papa = fixture.allResidents.find(r => r.id === 'syn_papa'); // EM_HOME PGY-3, Wed GR
+    return { fixture, papa };
+  }
+
+  function streakIssues(fixture, papa, rs) {
+    const schedule = { [papa.id]: rs };
+    const issues = validateAll(
+      fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+      fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
+    );
+    return issues.filter(i => i.residentId === papa.id && i.rule === 'sixConsecutiveWorkDays');
+  }
+
+  it('sanity check: 8 real consecutive shifts (no gap) still errors — the rule itself still fires', () => {
+    const { fixture, papa } = papaFixture();
+    const rs = {};
+    let d = parseDate('2026-07-10');
+    for (let i = 0; i < 8; i++) { rs[toDateStr(d)] = 'POD-D'; d = addDays(d, 1); }
+    const issues = streakIssues(fixture, papa, rs);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues[0].level).toBe('error');
+  });
+
+  it('a shift-less GR Wednesday splits what would otherwise be an 8-day run into two legal runs of 5 and 2', () => {
+    const { fixture, papa } = papaFixture();
+    // 2026-07-15 is a Wednesday (papa's GR weekday) — deliberately left with no shift.
+    const rs = {
+      '2026-07-10': 'POD-D', '2026-07-11': 'POD-D', '2026-07-12': 'POD-D',
+      '2026-07-13': 'POD-D', '2026-07-14': 'POD-D', // Fri-Tue, 5 days
+      // '2026-07-15' (Wed GR) intentionally shift-less
+      '2026-07-16': 'POD-D', '2026-07-17': 'POD-D', // Thu-Fri, 2 days
+    };
+    expect(streakIssues(fixture, papa, rs)).toEqual([]);
+  });
+
+  it('a shift-less Journal Club presenting date splits an otherwise 8-day run the same way', () => {
+    const { fixture, papa } = papaFixture();
+    papa.jcPresentDates = ['2026-07-21']; // Tuesday, not papa's GR weekday — isolates the JC case
+    const rs = {
+      '2026-07-16': 'POD-D', '2026-07-17': 'POD-D', '2026-07-18': 'POD-D',
+      '2026-07-19': 'POD-D', '2026-07-20': 'POD-D', // Thu-Mon, 5 days
+      // '2026-07-21' (JC presenting date) intentionally shift-less
+      '2026-07-22': 'POD-D', '2026-07-23': 'POD-D', // Wed-Thu, 2 days
+    };
+    expect(streakIssues(fixture, papa, rs)).toEqual([]);
   });
 });

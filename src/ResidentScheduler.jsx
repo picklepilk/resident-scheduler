@@ -64,7 +64,7 @@ import { scanUnderTargetSlots, topBlockerReasons } from './lib/underTargetExplai
 import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
-import { effectiveShiftEndMs, worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H } from './lib/acgmeHours.js';
+import { worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import { applyScenario, compareResultSets } from './lib/whatIf.js';
@@ -780,7 +780,7 @@ function deepEqualNormalized(a, b) { return JSON.stringify(normalizeForCompare(a
 // themselves are enforced AND described entirely from DEFAULT_DAY_RULES/dayRules — see
 // describeDayRules()/describeShiftGates() in the Scheduling Rules tab, so they can't drift from
 // what's actually enforced the way static text could.
-const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a day counts as worked if a shift is assigned, OR it\'s the resident\'s Grand Rounds weekday (EM Home: Wednesday; BAMC: Thursday) UNLESS they worked a night shift the calendar day before (they sleep through GR, so it doesn\'t count — this is also why a BAMC resident may legitimately miss one Thursday GR per rotation coming straight off nights), OR their Journal Club presenting date — unless they\'re on vacation/approved off that date. Counted across the block boundary using the previous saved block. Completing a maxed 6-day run also triggers a hard 24h-rest requirement before the next shift, measured from the last actual shift\'s end (not the run\'s last calendar day, which can be a shift-less GR/JC obligation day). Enforced by the generator, the manual picker/drag-drop, and Validation.';
+const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a day counts as worked only if a clinical shift is assigned that date (chief decision 2026-10-15: a Grand Rounds weekday or Journal Club presenting date with no shift assigned no longer counts, even for a BAMC resident coming straight off nights). Counted across the block boundary using the previous saved block. Completing a maxed 6-day run also triggers a hard 24h-rest requirement before the next shift, measured from the last worked shift\'s end. Enforced by the generator, the manual picker/drag-drop, and Validation.';
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
@@ -810,7 +810,7 @@ const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight transition: an overnight 
 // same-file later-declared const would hit — this prose can safely reference them directly; an
 // import is hoisted before any of this file's own top-level code runs. 2026-09-26 policy, memory
 // acgme-em-work-hours.
-const ACGME_HOURS_RULE_NOTE = `ACGME EM weekly hour caps (6.17.a.3): while on an EM rotation, no more than ${ED_WEEKLY_CAP_H} scheduled ED hours or ${TOTAL_WEEKLY_CAP_H} total hours (ED + Grand Rounds + Journal Club) in any rolling 7 days — hard, enforced by the generator and Validation. Rest between shifts must be at least the length of the shift just worked (6.17.a.2) — always on, no setting to disable it — measured from the end of Grand Rounds (${GR_START_H}:00-${GR_END_H}:00) instead of the shift's own end when this resident's GR falls on the day the shift ends and the shift ends before GR does. Off-service residents keep only the 80-hour/4-week average rule above.`;
+const ACGME_HOURS_RULE_NOTE = `ACGME EM weekly hour caps (6.17.a.3): while on an EM rotation, no more than ${ED_WEEKLY_CAP_H} scheduled ED hours or ${TOTAL_WEEKLY_CAP_H} total hours (ED + Grand Rounds + Journal Club) in any rolling 7 days — hard, enforced by the generator and Validation. Grand Rounds' own hours toward that total depend on what's worked the calendar day before (chief decision 2026-10-15): 2h (10:00-${GR_END_H}:00) after an evening shift, 2h (${GR_START_H}:00-10:00) after a night shift ending that morning, ${GR_DURATION_H}h (${GR_START_H}:00-${GR_END_H}:00) otherwise — 0 on a vacation/approved-off date. Rest between shifts must be at least the length of the shift just worked (6.17.a.2) — always on, no setting to disable it — measured strictly from the shift's own end; Grand Rounds never extends or shortens that rest clock. Off-service residents keep only the 80-hour/4-week average rule above.`;
 
 const RULE_NOTES = {
   EM_HOME_1: {
@@ -1389,18 +1389,16 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
 
 // Returns violation strings for adding `newShiftId` on `dateStr` for a given resident.
 // Rule (ACGME EM 6.17.a.2, ALWAYS on — memory acgme-em-work-hours): after completing a shift of
-// length H, resident must have >= H hours off before the next shift, counted from the LATER of the
-// shift's own end or Grand Rounds' own end (12:00) when this resident's GR falls on the day the
-// shift ends and the shift ends before GR ends (EM FAQ: "time off counts from the end of
-// conference" when attended) — see effectiveShiftEndMs (lib/acgmeHours.js). `resident` is the full
-// resident object (not just an id) so grWorkDow/vacationDates/approvedDatesOff are available for
-// that GR adjustment.
+// length H, resident must have >= H hours off before the next shift, counted strictly from the
+// shift's OWN end (chief decision 2026-10-15: "the only shifts that count towards time off
+// before/after a shift in general are the actual clinical shifts that we are scheduling for" — Grand
+// Rounds never pushes this clock, in either direction; see lib/acgmeHours.js's grWindowFor for where
+// GR's own window DOES still matter — the weekly-hour-cap total, not rest).
 function checkRestViolations(resident, dateStr, newShiftId, schedule) {
   const violations = [];
   const nt = SHIFT_TIMING[newShiftId];
   if (!nt) return violations;
 
-  const grDow = grWorkDow(resident);
   const newStart = shiftStartMs(newShiftId, dateStr);
   const newEnd   = newStart + nt.durationH * 3_600_000;
   const rs       = schedule[resident.id] || {};
@@ -1426,26 +1424,22 @@ function checkRestViolations(resident, dateStr, newShiftId, schedule) {
 
     if (exEnd <= newStart) {
       // Existing finishes before new starts → required gap = existing shift's duration, measured
-      // from GR's own end when this resident attends GR that day and the shift ends before it.
-      const restStartMs = effectiveShiftEndMs(existSid, checkDs, resident, grDow);
-      const gapH = (newStart - restStartMs) / 3_600_000;
+      // strictly from the existing shift's own end (Grand Rounds never extends this).
+      const gapH = (newStart - exEnd) / 3_600_000;
       if (gapH < et.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning` +
-          (restStartMs > exEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
+          `that ${et.durationH}h shift requires ${et.durationH}h rest before returning`
         );
       }
     } else if (newEnd <= exStart) {
-      // New finishes before existing starts → required gap = new shift's duration, same GR
-      // adjustment applied to the shift just worked (the NEW one, in this direction).
-      const restStartMs = effectiveShiftEndMs(newShiftId, dateStr, resident, grDow);
-      const gapH = (exStart - restStartMs) / 3_600_000;
+      // New finishes before existing starts → required gap = new shift's duration, measured
+      // strictly from the new shift's own end.
+      const gapH = (exStart - newEnd) / 3_600_000;
       if (gapH < nt.durationH) {
         violations.push(
           `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off before ${existSid} on ${formatDisplayDate(checkDs)} — ` +
-          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward` +
-          (restStartMs > newEnd ? ' (counted from Grand Rounds end at 12:00, not the shift\'s own end)' : '')
+          `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward`
         );
       }
     }
@@ -2165,66 +2159,30 @@ function isSchedulable(resident) {
 
 // ─── 6-consecutive-work-day rule (ACGME 1-in-7) ────────────────────────────
 // grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
-// — used by GR-lecture validation and isStreakWorkDay below (a dedicated post-night GR rest-gap
-// check used to also read this; that check was deliberately removed — see the "no more warning
-// for a night shift running straight into Grand Rounds" release note further down this file).
-// Chief ruling (confirmed — a resident was once scheduled 8 days straight because a shift-less GR
-// Wednesday counted as a day OFF, silently splitting one real 8-day obligation run into two
-// "legal" <=6 runs): a day counts toward the streak if a shift is assigned that date, OR it's the
-// resident's own GR weekday, OR it's a Journal Club presenting date (resident.jcPresentDates) —
-// UNLESS the resident is on vacation or an approved day off that date, in which case it never
-// counts even with an otherwise-obligated GR/JC date. `prevRs` (optional) is the resident's row
-// from the immediately preceding saved block, so a shift there also counts — the walk needs to
-// see across block boundaries, not just within the live block's own dates.
+// — used by GR-lecture validation, the weekly-hour-cap GR window (lib/acgmeHours.js's grHoursOn),
+// and (historically) isStreakWorkDay below.
 function grWorkDow(resident) {
   if (resident.category === 'EM_HOME') return 3;
   if (resident.category === 'EM_BAMC') return 4;
   return null;
 }
-// `bounds` (optional {min,max} date strings) caps how far the GR/JC/weekday fallback below is
-// allowed to fabricate an obligation day with no actual schedule evidence — an assigned shift
-// (rs[ds] or prevRs[ds]) always counts regardless of bounds, since that's real data, not
-// inference. Without bounds, callers get the old unconditional behavior (every in-block caller
-// already only ever asks about in-block dates, where the fallback is intentional per chief
-// sign-off — see the comment block above grWorkDow).
-//
-// Split out of isStreakWorkDay (solver-parity fix, 2026-09-27) so buildSolverPayload can ask "is
-// `ds` this resident's own GR/JC obligation day AT ALL" independent of the post-overnight GR
-// exemption below — the exemption depends on the day-BEFORE's shift, which for a fresh solve is a
-// solver decision, not a static fact yet (see PAYLOAD_SCHEMA.md's "GR-obligation staleness"
-// finding this replaces). Returns 'jc' (JC presenting date — never exempted) or 'gr' (own GR
-// weekday — CAN be exempted by isStreakWorkDay below), or null (not an obligation day at all).
-function obligationKind(resident, ds, bounds = null) {
-  if (!resident) return null;
-  if ((resident.vacationDates || []).includes(ds) || (resident.approvedDatesOff || []).includes(ds)) return null;
-  if (bounds && (ds < bounds.min || ds > bounds.max)) return null;
-  if ((resident.jcPresentDates || []).includes(ds)) return 'jc';
-  const g = grWorkDow(resident);
-  if (g == null || parseDate(ds).getDay() !== g) return null;
-  return 'gr';
-}
+// isStreakWorkDay: does `ds` count toward the 6-consecutive-work-day streak? CLINICAL SHIFTS ONLY
+// (chief decision 2026-10-15, supersedes the earlier "GR weekday / JC presenting date also counts"
+// ruling) — a shift-less Grand Rounds weekday or Journal Club presenting date no longer extends a
+// run. `prevRs` (optional) is the resident's row from the immediately preceding saved block, so a
+// shift there also counts — the walk needs to see across block boundaries, not just within the live
+// block's own dates. `resident`/`bounds` are kept as parameters purely for call-site compatibility
+// (every caller across the validator/generator/picker already threads them positionally) even
+// though neither is read here any more.
 export function isStreakWorkDay(rs, resident, ds, prevRs = null, bounds = null) {
-  if ((rs && rs[ds]) || (prevRs && prevRs[ds])) return true;
-  const kind = obligationKind(resident, ds, bounds);
-  if (kind == null) return false;
-  if (kind === 'jc') return true;
-  // kind === 'gr': post-overnight GR exemption (chief-directed): a resident who worked a night
-  // shift the calendar day immediately before their own GR weekday sleeps through Grand Rounds —
-  // GR was never a schedule entry to begin with, so this only changes whether the day counts
-  // toward the 6-consecutive-work-day streak, not anything actually placed on the schedule. This
-  // is also the mechanism by which a BAMC resident may legitimately miss one Thursday GR per
-  // rotation when coming straight off nights (grWorkDow(EM_BAMC) = Thursday, same exemption, no
-  // extra code).
-  const prevDs = toDateStr(addDays(parseDate(ds), -1));
-  const prevSid = (rs && rs[prevDs]) || (prevRs && prevRs[prevDs]);
-  return !isNightShiftId(prevSid);
+  return !!((rs && rs[ds]) || (prevRs && prevRs[ds]));
 }
 const MAX_CONSECUTIVE_WORK_DAYS = 6;
 // Length of the consecutive work-day run containing dateStr, assuming dateStr itself is worked.
-// Walks both directions from dateStr; capped at 60 days each way as a sanity bound. `bounds` (see
-// isStreakWorkDay) stops the walk from fabricating a GR/JC obligation day past either edge of what
-// the app actually has evidence for — the block's own end date going forward, and (when no
-// previous-block snapshot exists at all) the block's own start date going backward.
+// Walks both directions from dateStr; capped at 60 days each way as a sanity bound. `bounds` is
+// accepted for call-site compatibility with isStreakWorkDay's signature but no longer changes
+// anything — isStreakWorkDay only ever reads real assigned-shift evidence now, so there's nothing
+// left to fabricate past an edge.
 function runLengthIfWorked(rs, resident, dateStr, prevRs = null, bounds = null) {
   let len = 1;
   let d = addDays(parseDate(dateStr), -1);
@@ -2235,12 +2193,11 @@ function runLengthIfWorked(rs, resident, dateStr, prevRs = null, bounds = null) 
 }
 // ─── 24h rest after a maxed 6-consecutive-work-day run (ACGME, hard) ───────
 // Once a resident completes a run of MAX_CONSECUTIVE_WORK_DAYS (6) consecutive work days (same
-// isStreakWorkDay semantics as the streak rule above — GR/JC obligation days count, subject to the
-// post-overnight GR exemption just above), their NEXT assigned shift must start >=24h after the
-// END of the last actual SHIFT in that run — not the run's last calendar day, which can be a
-// shift-less GR/JC obligation day. Distinct from the postNightRest soft rule in
-// checkCircadianViolations: this is hard (no Soft Rule Priority override), ACGME-driven, and keyed
-// off the 6-day work streak rather than a night run specifically.
+// isStreakWorkDay semantics as the streak rule above — clinical shifts only, chief decision
+// 2026-10-15), their NEXT assigned shift must start >=24h after the END of the last shift in that
+// run. Distinct from the postNightRest soft rule in checkCircadianViolations: this is hard (no Soft
+// Rule Priority override), ACGME-driven, and keyed off the 6-day work streak rather than a night run
+// specifically.
 // Backward walk (the expensive part of sixDayRunRestViolation below) split out on its own: it
 // depends only on (rs, resident, dateStr, prevRs, bounds), NEVER on the shift id being evaluated —
 // so the generator's hot loop can memoize it per (resident, dateStr) via the optional `anchorFn`
@@ -4238,8 +4195,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     }
 
     // 6-consecutive-work-day rule (ACGME 1-in-7) — see isStreakWorkDay for what counts as a
-    // worked day (shift assigned, GR weekday, or JC presenting date, unless vacation/approved
-    // off). Walk starts 14 days before the block so a run continuing from the previous saved
+    // worked day (a clinical shift assigned that date, chief decision 2026-10-15). Walk starts
+    // 14 days before the block so a run continuing from the previous saved
     // block (prevTail) is visible, but only runs ending inside this block are reported — a run
     // that lives entirely in the previous block was already reported when that block was current.
     if (isSchedulable(resident) || Object.values(rs).some(Boolean)) {
@@ -4270,9 +4227,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
 
     // Rest-period check (ACGME 6.17.a.2, ALWAYS on — no more appSettings.enforceRest gate; memory
     // acgme-em-work-hours) — sort all assignments by start time, then check each consecutive pair.
-    // Rest must be >= the length of the shift just worked, counted from Grand Rounds' own end
-    // (12:00) instead of the shift's own end when this resident's GR falls on the day the earlier
-    // shift ends and it ends before GR does (effectiveShiftEndMs, lib/acgmeHours.js) — same rule
+    // Rest must be >= the length of the shift just worked, counted strictly from that shift's own
+    // end (chief decision 2026-10-15 — Grand Rounds never extends this clock) — same rule
     // checkRestViolations enforces going forward in the generator/picker.
     const assignments = Object.entries(rs)
       .filter(([, sid]) => sid && SHIFT_TIMING[sid])
@@ -4294,8 +4250,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
           level: 'error' });
       } else {
-        const restStartMs = effectiveShiftEndMs(a.sid, a.ds, resident, grDow);
-        const gapH = (b.startMs - restStartMs) / 3_600_000;
+        const gapH = (b.startMs - a.endMs) / 3_600_000;
         if (gapH < a.durationH) {
           const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
           issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid, rule: 'restShiftLength',
@@ -5131,9 +5086,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
   // how many assignments happen ON ds — safe to compute once per (resident, day) and reuse
   // across every slot/candidate that day instead of re-walking up to 14 days each time. Uses
-  // isStreakWorkDay (not a bare truthy-shift check) so GR/JC obligation days count the same way
-  // the hard streak filter above does, and prevTail so a run continuing from the previous saved
-  // block isn't undercounted right at the start of this one.
+  // isStreakWorkDay (clinical shifts only, chief decision 2026-10-15) rather than a bare
+  // truthy-shift check purely for consistency with the hard streak filter above, and prevTail so a
+  // run continuing from the previous saved block isn't undercounted right at the start of this one.
   let streakCache = {};
   function streakBefore(r, ds) {
     if (streakCache[r.id] !== undefined) return streakCache[r.id];
@@ -7138,35 +7093,30 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // block.startDate (prevBlockTailSchedules), which is inside any 28-day rolling window that
     // also touches this block, so no further date-window filtering is needed here.
     const priorTailHours = Object.values(rPrevTail).reduce((sum, sid) => sum + (SHIFT_TIMING[sid]?.durationH || 0), 0);
-    // GR/JC obligation days inside the tail window that carry NO shift (a shift day is already
-    // covered by priorTail itself) — isStreakWorkDay does the exact same GR-weekday/JC-presenting
-    // resolution used for in-block obligations below; streakWalkBounds.min naturally floors this
-    // to block.startDate (i.e. yields nothing) when prevBlockTailSchedules found no previous block
-    // at all, so this loop is a strict no-op in that case with no separate branch needed.
-    const priorTailObligations = [];
-    for (let d = parseDate(tailWindowStart); d < parseDate(block.startDate); d = addDays(d, 1)) {
-      const ds = toDateStr(d);
-      if (rPrevTail[ds]) continue;
-      if (isStreakWorkDay(rPrevTail, r, ds, null, streakWalkBounds)) priorTailObligations.push(ds);
-    }
+    // priorTailObligations/obligations/obligationsExemptAfterNight/grDates were REMOVED 2026-10-15:
+    // the 6-consecutive-work-day streak now counts clinical shifts only (chief decision — GR
+    // weekday/JC presenting date no longer extend a run, see isStreakWorkDay), so there's no more
+    // "shift-less obligation day" for the solver's rule 19 to reify, and GR no longer pushes rest
+    // (see checkRestViolations/validateAll) so rest.py has no GR-end adjustment left to feed either.
 
     const ayPrior = ayPriorAll[r.id] || { nights: 0, weekendDates: 0, holidays: 0 };
 
-    // R7 (solver parity, gap 1/2): rolling-7-day ED/total-hour caps (6.17.a.3) need per-date
-    // GR/Journal-Club "obligation hours" — calendar facts independent of the solve, resolved here
-    // exactly like acgmeHours.js's own buildDailyContributions (grHoursOn/jcHoursOn), covering the
-    // SAME tail-window-to-block-end range that field's other tail constants already span (matches
-    // TAIL_WINDOW_DAYS on the Python side). `grDates` is the subset of dates where this resident's
-    // OWN Grand Rounds obligation lands (already vacation/off-filtered) — rest.py's rule 17 needs it
-    // to know when to measure rest from GR's own end (12:00) instead of the earlier shift's end.
+    // R7 (solver parity): rolling-7-day ED/total-hour caps (6.17.a.3) need per-date GR/Journal-Club
+    // "obligation hours" — calendar facts independent of the solve, resolved here exactly like
+    // acgmeHours.js's own buildDailyContributions (grHoursOn/jcHoursOn), covering the SAME
+    // tail-window-to-block-end range that field's other tail constants already span (matches
+    // TAIL_WINDOW_DAYS on the Python side). `shiftOn` resolves the shift (if any) assigned a given
+    // date across the tail/block boundary, so grHoursOn can see what was worked the calendar day
+    // before `ds` (chief decision 2026-10-15: GR's own hours depend on that) — see grWindowFor.
     const grDowR = grWorkDow(r);
+    const rBlockRs = block.schedule?.[r.id] || {};
+    const shiftOn = (ds) => rBlockRs[ds] || rPrevTail[ds];
     const obligationHours = {};
-    const grDates = [];
     for (let d = parseDate(tailWindowStart); d <= parseDate(block.endDate); d = addDays(d, 1)) {
       const ds = toDateStr(d);
-      const gr = grHoursOn(r, ds, grDowR);
+      const prevDs = toDateStr(addDays(d, -1));
+      const gr = grHoursOn(r, ds, grDowR, shiftOn(prevDs));
       const jc = jcHoursOn(r, ds);
-      if (gr > 0) grDates.push(ds);
       const h = gr + jc;
       if (h > 0) obligationHours[ds] = h;
     }
@@ -7197,47 +7147,21 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
         pedsCap: TRAUMA_PEDS_SPLIT.peds,
       } : null,
       priorTail: rPrevTail,
-      priorTailObligations,
       priorTailHours,
       obligationHours,
-      grDates,
       ayPrior: { nights: ayPrior.nights || 0, weekends: ayPrior.weekendDates || 0, holidays: ayPrior.holidays || 0 },
     };
   });
 
-  // ── obligations[r] / obligationsExemptAfterNight[r] — rule 19 inputs: in-block dates that count
-  // as a workday with NO shift assigned (own GR weekday, JC presenting), already excluding
-  // vacation/approved-off (obligationKind itself refuses to fabricate an obligation on those dates
-  // — see its own header). Sent UNCONDITIONALLY now (2026-09-27, GR-after-night exemption as a
-  // model decision) -- i.e. ignoring isStreakWorkDay's post-overnight GR exemption entirely, which
-  // depends on the PRECEDING day's shift. For a fresh solve that's a solver decision, not a static
-  // fact yet (`block.schedule` is empty pre-generation, so the old `isStreakWorkDay(rs, ...)` call
-  // here could never see a night shift the solver/hint itself might place the day before, and
-  // treated every GR day as an unconditional workday -- manufacturing phantom 7-8-day runs; see
-  // PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding this replaces, including the reverted
-  // "source rs from the hint" attempt). `obligationsExemptAfterNight` names the subset of each
-  // resident's own `obligations` dates where the exemption CAN apply at all (own GR weekday, per
-  // `obligationKind`'s 'gr' result) -- JC presenting dates are never exempted (JC's
-  // unconditional-true branch in isStreakWorkDay runs before the exemption check), so they only
-  // ever appear in `obligations`, never here. The solver reifies the actual exemption against its
-  // own `night[r, d-1]` decision var (`workday_limits.py`'s `_obligation_term`) instead of a static
-  // input, so it can never go stale no matter what the polisher places the day before.
+  // obligations[r]/obligationsExemptAfterNight[r] (rule 19 inputs) were REMOVED 2026-10-15: the
+  // 6-consecutive-work-day streak counts clinical shifts only now (chief decision — see
+  // isStreakWorkDay), so there's no more shift-less GR/JC "obligation day" for the solver to treat
+  // as a workday. Both payload fields are simply no longer sent; solver/model/workday_limits.py's
+  // `_obligation_term` already treats an absent/empty `obligations` entry as 0 for every date, so an
+  // older solver build reads this identically to "nobody has any obligation days" with zero Python
+  // changes needed.
   const obligations = {};
   const obligationsExemptAfterNight = {};
-  for (const r of allResidents) {
-    const rs = block.schedule?.[r.id] || {};
-    const obligDates = [];
-    const exemptDates = [];
-    for (const ds of dates) {
-      if (rs[ds]) continue;
-      const kind = obligationKind(r, ds, streakWalkBounds);
-      if (kind == null) continue;
-      obligDates.push(ds);
-      if (kind === 'gr') exemptDates.push(ds);
-    }
-    if (obligDates.length) obligations[r.id] = obligDates;
-    if (exemptDates.length) obligationsExemptAfterNight[r.id] = exemptDates;
-  }
 
   // ── locked[] — rule 14: every non-empty cell already in block.schedule (manual entries AND
   // partial-regenerate's locked/out-of-range cells alike, since both arrive via block.schedule) —
@@ -7398,10 +7322,11 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     jcWindowStartH: JC_WINDOW_START_H,
     jcWindowEndH: JC_WINDOW_END_H,
     postNightDayRestH: NIGHT_RULES.postNightDayRestH,
-    // Grand Rounds end hour (rest.py's rule 17 GR-end adjustment, R7 gap 2) — same "altitude fix"
-    // convention as the three fields directly above: an OPTIONAL field an older solver build simply
-    // ignores, falling back to its own hardcoded 12.
-    grEndH: GR_END_H,
+    // grEndH (rest.py's old rule-17 GR-end adjustment) REMOVED 2026-10-15 — rest is never measured
+    // from Grand Rounds any more (chief decision); an older solver build simply keeps its own
+    // hardcoded default (12) and never applies it, since `grDates` is no longer sent either (see
+    // the `residents[]` comment above) and its own GR-end adjustment is unconditionally a no-op
+    // once `resident.gr_dates` is empty.
     // Solver gap 1 fix: see this function's own `blockConferences` comment above.
     blockTouchesConference: blockConferences.length > 0,
   };
@@ -14191,7 +14116,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   const row = (block.schedule || {})[resident.id] || {};
   const len = runLengthIfWorked(row, resident, dateStr, prevTail[resident.id] || null, streakBounds(block, prevTail));
   if (len > MAX_CONSECUTIVE_WORK_DAYS) {
-    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS}) — Grand Rounds/JC days count as worked`, level: severityFor('sixConsecutiveWorkDays', 'validator'), rule: 'sixConsecutiveWorkDays' });
+    vs.push({ message: `${len} consecutive work days (max ${MAX_CONSECUTIVE_WORK_DAYS})`, level: severityFor('sixConsecutiveWorkDays', 'validator'), rule: 'sixConsecutiveWorkDays' });
   }
   // 6. 24h rest after a maxed 6-consecutive-work-day run (ACGME, hard) — see
   // sixDayRunRestViolation; distinct from the postNightRest soft rule already covered by the
@@ -19893,7 +19818,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             <Lock size={14} className="text-gray-400 mt-0.5 shrink-0" />
             <span>
               <span className="block text-xs font-semibold text-gray-700">Rest between shifts is always enforced</span>
-              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured from the end of Grand Rounds instead of the shift's own end when GR is attended that day. No longer a setting — this can't be turned off.</span>
+              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured strictly from that shift's own end — Grand Rounds never extends or shortens this clock. No longer a setting — this can't be turned off.</span>
             </span>
           </div>
 
