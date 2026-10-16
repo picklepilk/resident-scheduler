@@ -229,9 +229,9 @@ class Payload:
     post_night_day_rest_h: int = 24
     # ---- R7 (2026-09-27, solver parity gaps 2/3) ----
     # `gr_end_h`: same "altitude fix" convention as the three fields directly above (Grand Rounds'
-    # own end hour, src/lib/acgmeHours.js's GR_END_H) -- rest.py's rule 17 needs it for the GR-end
-    # rest adjustment. OPTIONAL, defaults to 12 (today's only real value) so an older JS build that
-    # doesn't send it keeps today's behavior unchanged.
+    # own end hour, src/lib/acgmeHours.js's GR_END_H). UNUSED since 2026-10-16: rest is measured
+    # between clinical shifts only, so rest.py no longer reads it. Still accepted (default 12) so an
+    # older JS build that sends it doesn't fail validation.
     gr_end_h: int = 12
     # `true_primary[shiftId][date]` -- SAME shape/keys as `senior_primary`, restricted to residents
     # who satisfy the area's composition as the TRUE primary PGY (never a Wellness-Wednesday/

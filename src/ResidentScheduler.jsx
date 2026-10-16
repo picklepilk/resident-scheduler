@@ -22916,6 +22916,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   async function performSignOut() {
     clearLocalDataForSignOut();
     await supabase.auth.signOut();
+    // Fresh mount for whoever signs in next: module-level flags (syncSuspended,
+    // generationInProgress) only reset on a reload, same as every other destructive action here.
+    window.location.reload();
   }
 
   // Shared by the header's Sign out button and the idle-timeout handler below. Flushes any
@@ -22928,14 +22931,21 @@ export default function ResidentScheduler({ viewer } = {}) {
   dbLiveRef.current = { dbStatus, dbReady };
 
   async function requestSignOut() {
+    if (generationInProgress) {
+      showToast('A schedule is still generating — sign out once it finishes.', 'amber');
+      return;
+    }
     await flushPendingCloudSave();
     await new Promise(r => setTimeout(r, 0));
     const live = dbLiveRef.current;
-    if (cloudConflictRef.current) { setSignOutWarning('conflict'); return; }
-    if (live.dbStatus === 'error') { setSignOutWarning('error'); return; }
+    // Each warning re-arms the idle timer, so a workstation left on a warning still times out
+    // (and warns again) rather than staying signed in indefinitely.
+    const warn = kind => { setSignOutWarning(kind); idleTimerRef.current?.notifyActivity(); };
+    if (cloudConflictRef.current) { warn('conflict'); return; }
+    if (live.dbStatus === 'error') { warn('error'); return; }
     // Never read the cloud on this device (load failed/offline): edits made here were never
     // allowed to sync, so local storage may be their only copy.
-    if (SUPABASE_ENABLED && AUTH_ENABLED && !live.dbReady) { setSignOutWarning('unsynced'); return; }
+    if (SUPABASE_ENABLED && AUTH_ENABLED && !live.dbReady) { warn('unsynced'); return; }
     await performSignOut();
   }
 
@@ -22998,6 +23008,9 @@ export default function ResidentScheduler({ viewer } = {}) {
       if (now - lastNotify < 1000) return;
       lastNotify = now;
       setIdleWarningOpen(false);
+      // Activity cancels a sign-out that was deferred until a generation finishes.
+      idlePendingSignOutRef.current = false;
+      if (idlePollRef.current) { clearInterval(idlePollRef.current); idlePollRef.current = null; }
       timer.notifyActivity();
     }
     const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart'];
