@@ -96,3 +96,43 @@ Archived content from CLAUDE.md to maintain context efficiency.
 - `getEligibleShifts` ctx: `forGenerator` gates `scope:'generator'` restrictions.
 
 ---
+
+## Archived: 2026-10-15 (Grand Rounds rest/streak rewrite)
+
+- **Prior rest rule (SUPERSEDED 2026-10-15)**: rest between shifts was measured from the LATER of a
+  shift's own end or Grand Rounds' own end (12:00), when this resident's GR fell on the day the
+  earlier shift ended and that shift ended before GR did (`effectiveShiftEndMs`, `lib/acgmeHours.js`;
+  mirrored solver-side in `rest.py`'s `_effective_earlier_end_min` via `payload.gr_end_h`/
+  `resident.gr_dates`). Chief decision 2026-10-15 removed this entirely — "the only shifts that count
+  towards time off before/after a shift ... are the actual clinical shifts" — rest is now always
+  measured strictly from the earlier shift's own end, full stop, in both engines. `effectiveShiftEndMs`
+  was deleted outright (every call site just uses `lib/shifts.js`'s plain `shiftEndMs` now).
+- **Prior Grand Rounds hour contribution (SUPERSEDED 2026-10-15)**: GR counted a flat 4h
+  (`GR_DURATION_H`, 08:00-12:00) toward the weekly-hour caps on every GR weekday, regardless of what
+  was worked the day before. Chief decision 2026-10-15: the window now depends on the calendar day
+  immediately before GR — 2h (10:00-12:00) after an eve-type shift, 2h (08:00-10:00) after a
+  night-type shift ending that morning, 4h (08:00-12:00) otherwise. New `grWindowFor(resident, grDs,
+  prevShiftId)` in `lib/acgmeHours.js`; `grHoursOn` grew a 4th `prevShiftId` param (every caller
+  threads the shift assigned the day before, looked up across the tail/block boundary where needed).
+- **Prior 6-consecutive-work-day streak (SUPERSEDED 2026-10-15)**: a day counted toward the streak if
+  a shift was assigned, OR it was the resident's own GR weekday, OR it was a Journal Club presenting
+  date (`resident.jcPresentDates`) — unless vacation/approved-off — with a post-overnight-GR exemption
+  (a resident who worked a night shift the calendar day immediately before their own GR weekday was
+  exempted, since they'd sleep through it; this was also how a BAMC resident could legitimately miss
+  one Thursday GR per rotation coming straight off nights). This whole mechanism — `obligationKind`
+  (JS), the `obligations`/`obligationsExemptAfterNight`/`priorTailObligations` payload fields, and
+  their solver-side consumption in `workday_limits.py`'s `_obligation_term` — existed because a
+  shift-less GR Wednesday that didn't count as a workday once let a resident get scheduled 8 days
+  straight (one real obligation run silently split into two "legal" <=6 runs by the gap). Chief
+  decision 2026-10-15 reversed this ruling outright: the streak now counts CLINICAL SHIFTS ONLY.
+  `isStreakWorkDay` collapsed to `!!(rs[ds] || prevRs[ds])`; `obligationKind` was deleted; the three
+  payload fields are no longer populated (still accepted/defaulted by `payload.py` for back-compat,
+  but `workday_limits.py` needed no code change at all — an empty `obligations` map already made its
+  mechanism a pure no-op). Known downstream effect: this measurably loosens `candidatePool`'s hard
+  `sixDayRunRestBlocked`/run-length filter around every GR/JC date, which shifted several generator
+  exact-number regression tests (`chiefBenchmark.test.js`, `nightContiguity.test.js`,
+  `podPgy2Substitute.test.js`, the `conferenceBlock` quality baseline) — reported, not "fixed" by
+  adjusting their thresholds, since those are empirical observations of generator behavior, not
+  independent correctness checks.
+
+---

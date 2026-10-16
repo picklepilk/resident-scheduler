@@ -98,18 +98,30 @@ only solves.**
   resident silently uncapped. Optional, defaults to `True` for back-compat with an older JS build
   that doesn't send it (matches that build's own — buggy — `target is not None` behavior exactly, so
   nothing gets narrower for a payload that predates this field).
-- `residents[].obligationHours: {date: hours}` — per-resident Grand Rounds (4h) + Journal Club (3h)
+- `residents[].obligationHours: {date: hours}` — per-resident Grand Rounds + Journal Club (3h)
   contribution, ALREADY resolved (vacation/off-filtered) by `src/lib/acgmeHours.js`'s exported
-  `grHoursOn`/`jcHoursOn`. Covers BOTH the 14-day prior-tail window and the block's own dates (same
-  range `priorTail`/`priorTailObligations` already span). Calendar facts, independent of the solve —
-  never entangled with any `x` var. Consumed only by `solver/model/weekly_hours.py`. Optional,
-  defaults to `{}` (no-op).
-- `residents[].grDates: [date]` — the subset of those same dates (tail or block) that are this
-  resident's OWN Grand Rounds obligation day (weekday match, not vacation/off). Consumed only by
-  `solver/model/rest.py`'s GR-end adjustment. Optional, defaults to `[]` (no-op — rest is measured
-  from the shift's own end only, today's behavior).
-- `grEndH: int` — Grand Rounds' own end hour (`GR_END_H`, today always 12). Same "altitude fix"
-  convention as `jcWindowStartH`/`jcWindowEndH`/`postNightDayRestH`. Optional, defaults to 12.
+  `grHoursOn`/`jcHoursOn`. Covers BOTH the 14-day prior-tail window and the block's own dates. Calendar
+  facts, independent of the solve — never entangled with any `x` var. Consumed only by
+  `solver/model/weekly_hours.py`. Optional, defaults to `{}` (no-op). **2026-10-15 update**: GR's own
+  per-date hours are no longer a flat 4h — `grHoursOn`/`grWindowFor` resolve 2h (10:00-GR_END_H) after
+  an eve-type shift the day before, 2h (GR_START_H-10:00) after a night-type shift ending that
+  morning, 4h (GR_START_H-GR_END_H) otherwise. This module is unaffected by the change — it only ever
+  reads the already-resolved per-date hour number, never recomputes the window itself.
+- `residents[].grDates`/`grEndH` **REMOVED 2026-10-15** (chief decision — "the only shifts that count
+  towards time off before/after a shift ... are the actual clinical shifts"): rest is now always
+  measured from a shift's own end, never Grand Rounds', so `rest.py`'s old GR-end adjustment
+  (`_effective_earlier_end_min`) is gone and these two fields it alone consumed are no longer sent by
+  `buildSolverPayload`. Both fields still exist on `Payload`/`Resident` (an old/rogue payload that
+  still sends them is harmlessly ignored — `resident.gr_dates` defaults to an empty frozenset either
+  way), but nothing reads them any more.
+- `obligations`/`obligationsExemptAfterNight`/`residents[].priorTailObligations` **REMOVED 2026-10-15**
+  (chief decision — the 6-consecutive-work-day streak counts CLINICAL SHIFTS ONLY now; a GR weekday or
+  JC presenting date with no shift assigned no longer extends a run — see `ResidentScheduler.jsx`'s
+  `isStreakWorkDay`). `buildSolverPayload` no longer populates any of the three. `workday_limits.py`'s
+  `_obligation_term`/`_link_work` mechanism is UNCHANGED code-wise — an absent/empty `obligations` map
+  already made it a pure no-op (`work[r,d] == has-a-shift-that-day` exactly), so this required zero
+  Python changes; the mechanism is kept (not deleted) in case a future obligation-style rule 19 input
+  ever needs it again.
 - `truePrimary[shiftId][date]: [residentId]` — SAME shape/keys as `seniorPrimary`, but restricted to
   residents who satisfy the area's hard composition as the TRUE primary PGY (never a
   Wellness-Wednesday/conference-away substitute). Built for every `SENIOR_COMPOSITION` area (POD and
@@ -1065,3 +1077,70 @@ blocking->rank, rank->quality, proving the split actually runs as 2 solves not 1
 measurably grows a later stage's actual `max_time_in_seconds` when an earlier one finishes early, and
 a wrong-length `stageSplit` degrades to the (now 4-entry) default. No JS tests run — no JS files
 changed by this fix.
+
+## Grand Rounds rest/streak semantics rewrite (2026-10-15, chief decision)
+
+Two related but separate rule changes, both effective immediately on both engines:
+
+1. **Rest between shifts never reads Grand Rounds any more.** The old "GR-end adjustment" (rest
+   measured from GR's own end instead of a shift's own end, when GR fell on the shift's end date) is
+   REMOVED from `checkRestViolations`/`validateAll` (`ResidentScheduler.jsx`) and from
+   `rest.py`/`validate.py`'s `_effective_earlier_end_min` (both simplified to call
+   `timing.shift_end_min`/`shiftEndMs` directly — see those modules' own updated docstrings). Chief's
+   own words: "the only shifts that count towards time off before/after a shift ... are the actual
+   clinical shifts that we are scheduling for." Grand Rounds' own hours still count toward the ACGME
+   weekly-hour caps (`weekly_hours.py`, via `obligationHours` — unaffected by this point).
+2. **Grand Rounds' own per-date hour contribution now depends on what was worked the calendar day
+   immediately before GR** (still only for the weekly-hour-cap total, point 1 above is unaffected):
+   an eve-type shift the day before -> 2h (10:00-`GR_END_H`); a night-type shift ending that morning
+   -> 2h (`GR_START_H`-10:00); anything else (day shift, or nothing) -> the original 4h
+   (`GR_START_H`-`GR_END_H`). New `src/lib/acgmeHours.js` export `grWindowFor(resident, grDs,
+   prevShiftId)`; `grHoursOn` grew a 4th `prevShiftId` param. Resolved entirely JS-side into
+   `obligationHours` before the payload ships — `weekly_hours.py` is unchanged, it only ever consumed
+   the already-resolved hour number.
+3. **The 6-consecutive-work-day streak (ACGME 1-in-7) now counts CLINICAL SHIFTS ONLY** — a GR
+   weekday or JC presenting date with no shift assigned no longer extends a run (superseding the
+   2026-09-27 "GR/JC obligation day counts, with a post-overnight-GR exemption" ruling).
+   `ResidentScheduler.jsx`'s `isStreakWorkDay` collapsed to `!!(rs[ds] || prevRs[ds])`. JC/1-in-7
+   "obligation day" bookkeeping (`obligations`/`obligationsExemptAfterNight`/
+   `priorTailObligations`/`obligationKind`) is now dead weight on the JS side and was deleted there;
+   `workday_limits.py` needed NO code change (see the field-removal bullets above) since an
+   absent/empty `obligations` map already made its `_obligation_term` mechanism a pure no-op.
+
+**Payload fields removed** (sent by nothing, consumed by nothing, still accepted/defaulted by
+`payload.py` for back-compat): `residents[].grDates`, `grEndH`, `obligations`,
+`obligationsExemptAfterNight`, `residents[].priorTailObligations`.
+
+**Solver-side code touched**: `solver/model/rest.py` (`_effective_earlier_end_min` deleted, inlined to
+`timing.shift_end_min`), `solver/validate.py` (same simplification, its own independent
+re-implementation). `solver/model/workday_limits.py`/`solver/io/payload.py` untouched — already
+no-ops under the new empty payload fields (see that module's updated docstring). `timing.py`'s
+`shift_end_date`/`hour_mark_min` helpers are now unused by anything in-tree but kept as general
+utilities.
+
+**Tests**: `solver-service` pytest (185 passed, same 4 pre-existing `jwt`-import collection errors as
+every other run in this doc). `test_rest.py`'s old GR-end-adjustment-fires test was rewritten to prove
+the opposite (grDates present no longer changes the outcome — FEASIBLE either way); its sibling
+"inert without grDates" test is unchanged (same assertion, now true unconditionally).
+`SOLVER_PARITY=1 npx vitest run src/lib/solverParity.test.js` passed (real CP-SAT subprocess vs JS
+`validateAll`, zero structural errors) against a fresh `--system-site-packages` `.venv` created in this
+worktree (none existed here before). JS-side: `acgmeHours.test.js` (`grWindowFor`/`grHoursOn`,
+replacing the deleted `effectiveShiftEndMs` suite), `grRestRules.test.js` (`isStreakWorkDay`
+re-written for clinical-shifts-only semantics; new `validateAll`-level rest and streak tests
+reproducing the originally-reported false-positive and proving a shift-less GR/JC date no longer
+bridges two runs into one), `cellViolationsAdditions.test.js` (one test's expectation flipped from
+blocked to legal), `solverPayload.test.js` (obligation-field tests rewritten to assert the now-always-
+empty/absent shape).
+
+**Known downstream effect, not a bug**: relaxing the streak rule widens `candidatePool`'s hard
+`sixDayRunRestBlocked`/run-length filter (`cachedRunLengthIfWorked`) on and around every GR/JC date,
+which measurably shifted `generateScheduleBest`'s own search output on several exact-number
+regression tests that encode empirically-observed-before-this-change generator behavior:
+`chiefBenchmark.test.js` (isolated single-night runs: 28 vs. a chief-benchmark+slack ceiling of 24),
+`nightContiguity.test.js` (understaffed variant's 2-segment-night-residents ceiling: 11 vs. 7),
+`podPgy2Substitute.test.js` (two tests whose hand-built setup assumed a specific fallback
+resident/seed outcome that a wider candidate pool no longer reproduces), and the
+`generator.baseline.conferenceBlock.test.js` quality baseline (errors: 10 vs. committed baseline 9,
++1 — all other three variants' baselines unaffected). None of these were adjusted here — they are
+empirical thresholds, not independent correctness checks, and re-measuring/updating them is a call for
+whoever owns the chief-facing quality bar, not this change.

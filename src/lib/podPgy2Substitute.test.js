@@ -203,7 +203,13 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
     // (not hand-authored) built with Papa excluded from POD entirely.
     const excludedFx = buildIsolatedFixture({ excludePapaFromPod: true });
     const preState = generateSchedule({ ...excludedFx, rng: mulberry32(1), repair: true });
-    const fallback = excludedFx.allResidents.find(r => preState.schedule[r.id]?.[TEST_DATE] === 'POD-D12');
+    // POD-D12 on TEST_DATE can legitimately carry TWO bodies once Papa is excluded (an ordinary
+    // PGY-1 filling plain coverage headroom alongside the PGY-2 who actually satisfies composition)
+    // — find the COMPOSITION-SATISFYING fallback specifically (EM_HOME PGY-2, the only PGY this
+    // area's fallback can be — see SENIOR_COMPOSITION.POD), not just "whichever resident `.find()`
+    // happens to hit first", which isn't guaranteed to be the one Phase 3b actually cares about.
+    const fallback = excludedFx.allResidents.find(r =>
+      preState.schedule[r.id]?.[TEST_DATE] === 'POD-D12' && r.category === 'EM_HOME' && r.pgy === 2);
     expect(fallback, 'setup sanity: some fallback must cover POD-D12 while Papa is excluded from POD').toBeTruthy();
     expect(fallback.category).toBe('EM_HOME');
     expect(fallback.pgy).toBe(2);

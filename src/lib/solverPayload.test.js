@@ -181,7 +181,6 @@ describe('buildSolverPayload', () => {
     const payload = buildSolverPayload(fixture);
     for (const r of payload.residents) {
       expect(r.priorTail).toEqual({});
-      expect(r.priorTailObligations).toEqual([]);
       expect(r.priorTailHours).toBe(0);
       expect(r.ayPrior).toEqual({ nights: 0, weekends: 0, holidays: 0 });
     }
@@ -319,61 +318,32 @@ describe('buildSolverPayload', () => {
     expect(payload.emPgy3ResidentIds).not.toContain('syn_sierra');
   });
 
-  // ── R7 (2026-09-27): ACGME EM 6.17.a.3 weekly caps + GR-end rest adjustment + PGY-3-first ──
-  it('residents[] carries obligationHours/grDates for the weekly-hour caps and GR-end rest adjustment', () => {
+  // ── R7 (2026-09-27): ACGME EM 6.17.a.3 weekly caps via obligationHours. grDates/the GR-end rest
+  // adjustment were REMOVED 2026-10-15 (chief decision — rest never reads Grand Rounds at all).
+  it('residents[] carries obligationHours for the weekly-hour caps, windowed by what was worked the day before GR', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
     const mike = payload.residents.find(p => p.id === 'syn_mike'); // EM_HOME chief PGY-3
     expect(mike).toBeTruthy();
-    expect(Array.isArray(mike.grDates)).toBe(true);
-    expect(mike.grDates).toContain('2026-07-15'); // EM_HOME's GR weekday is Wednesday
-    expect(mike.grDates.every(ds => new Date(ds + 'T00:00:00').getDay() === 3)).toBe(true);
+    expect(mike).not.toHaveProperty('grDates');
     expect(typeof mike.obligationHours).toBe('object');
+    // No shift assigned anywhere pre-generation (block.schedule is {}), so the day before GR
+    // (2026-07-14) resolves to "no shift" — the default 4h (08:00-12:00) window applies.
     expect(mike.obligationHours['2026-07-15']).toBe(4); // GR_DURATION_H
   });
 
-  // ── R9 follow-up (2026-09-27): GR-after-night exemption is now a solver decision, not a static
-  // fact baked into `obligations` up front (PAYLOAD_SCHEMA.md's "GR-obligation staleness" finding).
-  describe('obligations / obligationsExemptAfterNight', () => {
-    it('sends a GR-weekday obligation unconditionally, flagged exempt-after-night, ignoring the pre-generation schedule', () => {
-      const fixture = makeFixture('standard');
-      const payload = buildSolverPayload(fixture);
-      // syn_mike: EM_HOME chief PGY-3, GR weekday Wednesday 2026-07-15, no shift assigned there
-      // (block.schedule is {} pre-generation) — must appear in BOTH maps.
-      expect(payload.obligations.syn_mike).toContain('2026-07-15');
-      expect(payload.obligationsExemptAfterNight.syn_mike).toContain('2026-07-15');
-    });
-
-    it('sends a JC presenting-date obligation but NEVER flags it exempt-after-night (isStreakWorkDay never exempts JC)', () => {
-      const fixture = makeFixture('standard');
-      const payload = buildSolverPayload(fixture);
-      // syn_charlie: EM_HOME PGY-1, jcPresentDates: ['2026-07-07'] (syntheticRoster.js).
-      expect(payload.obligations.syn_charlie).toContain('2026-07-07');
-      expect(payload.obligationsExemptAfterNight.syn_charlie || []).not.toContain('2026-07-07');
-    });
-
-    it('never fabricates an obligation on a vacation/approved-off date, exempt-flagged or not', () => {
-      const fixture = makeFixture('standard');
-      const mike = fixture.allResidents.find(r => r.id === 'syn_mike');
-      mike.vacationDates = [...(mike.vacationDates || []), '2026-07-15'];
-      const payload = buildSolverPayload(fixture);
-      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
-      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
-    });
-
-    it('omits a date already carrying a real assigned shift from both maps (locked cells force work=1 on their own)', () => {
-      const fixture = makeFixture('standard');
-      fixture.block.schedule = { syn_mike: { '2026-07-15': 'POD-D' } };
-      const payload = buildSolverPayload(fixture);
-      expect(payload.obligations.syn_mike || []).not.toContain('2026-07-15');
-      expect(payload.obligationsExemptAfterNight.syn_mike || []).not.toContain('2026-07-15');
-    });
-  });
-
-  it('grEndH is sent (altitude fix, defaults to 12 — Grand Rounds\' own end hour)', () => {
+  // ── obligations / obligationsExemptAfterNight / priorTailObligations / grDates / grEndH were all
+  // REMOVED 2026-10-15 (chief decision): the 6-consecutive-work-day streak counts clinical shifts
+  // only now, so there's no more shift-less "obligation day" for the solver's rule 19 to treat as a
+  // workday, and rest never reads Grand Rounds either. buildSolverPayload no longer sends any of
+  // them (solver/model/workday_limits.py's own mechanism already treats an absent/empty map as a
+  // pure no-op, so this required zero Python changes).
+  it('no longer sends obligations/obligationsExemptAfterNight/grEndH', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
-    expect(payload.grEndH).toBe(12);
+    expect(payload.obligations).toEqual({});
+    expect(payload.obligationsExemptAfterNight).toEqual({});
+    expect(payload).not.toHaveProperty('grEndH');
   });
 
   it('truePrimary shares seniorPrimary\'s exact (shift,date) keys and is always a subset per date', () => {

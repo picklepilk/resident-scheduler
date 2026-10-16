@@ -48,12 +48,14 @@ def test_insufficient_gap_still_forbidden_when_enforce_rest_false():
     assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
 
 
-def test_gr_end_pushes_required_rest_start_later():
-    # A night shift ending at 08:00 normally needs only 9h rest (its own duration) before the next
-    # shift can start -- 08:00 + 9h = 17:00. But if this resident's OWN Grand Rounds obligation lands
-    # on that end date (grDates) and GR runs until 12:00 (gr_end_h default), rest must be measured
-    # from 12:00 instead: 12:00 + 9h = 21:00. A shift starting at 19:00 that day is far enough past
-    # 17:00 to be legal under the plain shift-end math, but still inside the GR-adjusted window.
+def test_gr_dates_no_longer_affect_rest():
+    # 2026-10-15 (chief decision): the old "GR-end adjustment" (rest measured from Grand Rounds' own
+    # end instead of a shift's own end, when GR fell on the shift's end date) is REMOVED -- rest is
+    # always measured from the EARLIER shift's own end, full stop. A night shift ending at 08:00
+    # needs only 9h rest (its own duration) before the next shift -- 08:00 + 9h = 17:00 <= a 19:00
+    # start is legal, REGARDLESS of whether this resident's own `grDates` includes the end date (the
+    # field is no longer sent by the app at all, but even an old/rogue payload that still sends it
+    # must not revive the adjustment).
     shifts = {
         "N": {"startH": 23, "durationH": 9, "type": "night", "area": "POD"},   # 23:00-08:00
         "E": {"startH": 19, "durationH": 4, "type": "eve", "area": "POD"},     # 19:00 start
@@ -72,7 +74,7 @@ def test_gr_end_pushes_required_rest_start_later():
     model.add(store.get_x("r1", "N", "2026-02-02") == 1)
     model.add(store.get_x("r1", "E", "2026-02-03") == 1)
     solver = cp_model.CpSolver()
-    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+    assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
 
 
 def test_gr_end_adjustment_inert_without_gr_dates():

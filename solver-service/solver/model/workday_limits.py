@@ -1,12 +1,17 @@
 """Rule 19 (work-day linking + max 6 consecutive work days) and rule 20
 (>=24h rest after a completed 6-day run).
 
-A "workday" is broader than "has a shift": it's also true on the resident's
-own obligation days (GR weekday, JC presenting) per the payload's resolved
-`obligations` map (rule 19 input, already suppressed by vacation/off in JS).
-This module owns the `work[r, d]` link for exactly that reason -- the
-obligation fact is workday-limits-specific data, not something variables.py
-or any other family needs.
+2026-10-15 (chief decision): the streak now counts CLINICAL SHIFTS ONLY -- a
+GR weekday or JC presenting date with no shift assigned no longer extends a
+run. `ResidentScheduler.jsx`'s `buildSolverPayload` was the only producer of
+the `obligations`/`obligations_exempt_after_night` maps this module reads
+below, and it now always sends them empty, which makes every `_obligation_term`
+below resolve to a plain 0 and `work[r, d]` collapse to exactly "has a shift
+that day" -- byte-identical to a shift-only streak with NO code change needed
+in this file. The mechanism (a "workday" broader than "has a shift", driven by
+those payload maps) is kept rather than deleted so a FUTURE obligation-style
+rule 19 input (should one ever come back) has a mechanism to plug into; today
+it is a documented no-op.
 
 R9 follow-up (2026-09-27): a GR-weekday obligation (never JC -- see
 `Payload.obligations_exempt_after_night`'s own docstring) only counts as
