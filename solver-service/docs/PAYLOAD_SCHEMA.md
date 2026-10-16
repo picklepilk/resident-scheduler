@@ -312,7 +312,7 @@ every pre-existing `test_weight_tiering.py` invariant stays green unchanged).
 | `errorCount` (validateAll 'error' level) | `targetDeficitCore.perUnit` (EM-core resident under shift-count target), minus the tolerated unit on a conference block — see below | Every OTHER JS 'error' (acgme/program tier, `rulePolicy.js`) is already a solver HARD constraint (circadian, trauma caps, ACGME hours, senior composition, ...) — 0 by construction in a strict-pass-1 solve, so it needs no objective term. **FIXED 2026-10-15** (was a documented gap): JS's `conferenceTolerated` exception (a 1-shift EM-core shortfall during a conference block downgrades from 'error' to blockingWarnCount) now has a solver equivalent — `payload.blockTouchesConference` (new, `buildSolverPayload`'s `blockTouchesConference`, same `getConferencesInBlock(...).length > 0` check validateAll itself runs) tells `_add_target_deficit_terms` to split an EM-core resident's `deficit` into `tolerated = min(deficit, 1)` (charged at the new `conferenceTolerated.perUnit` weight, into `TIER_BLOCKING`) and `remainder = deficit - tolerated` (still `targetDeficitCore.perUnit`, `TIER_ERRORS`) whenever the flag is set. Only the first unit moves — a 2+ shortfall still charges the remainder at full `TIER_ERRORS` weight, matching JS's own "scoped to a shortfall of exactly 1" comment. See "Two engine gaps closed" below for the full change and the re-measured `conferenceBlock` head-to-head outcome. |
 | `blockingWarnCount` (JS `EXPORT_BLOCKING_RULE_IDS`: `postNightRest` + every `rulePolicy.js` 'override'-tier rule) | `postNightRest.perViolation` | Override-tier rules (`traumaRunCap`, `podPgy3Composition`, `wellnessWednesday`, ...) are hard-never-broken by the solver's own strict pass 1 too (mirrors the JS generator, which also never breaks them) — 0 by construction, no objective term needed in `TIER_BLOCKING`. They only become genuinely violable in PASS 2 (relaxed), which is a documented gap below. |
 | `qualityVector[n0,n1,n2]` (`coverageMin`/`seniorComposition`/`postNightRest`, in `rulePriority` order) | `coverageMin.perSlack` + `overstaffCoverage.perUnit` (`TIER_RANK`) | `seniorComposition` is hard (0, no term needed). `postNightRest` is already pinned to its true minimum by `TIER_BLOCKING` above, regardless of `rulePriority` order — same as the JS side, where `blockingWarnCount` (unconditional) always outranks the quality vector (rulePriority-ordered) as a lexicographic tier, so a `postNightRest`-first `rulePriority` doesn't change WHICH count gets minimized first, only which of `coverageMin`/`postNightRest` (already both effectively pinned by earlier tiers) would be re-ranked if either weren't. `overstaffCoverage` has no `betterQuality` slot of its own in JS either (`ResidentScheduler.jsx`'s own comment on repair Phase 5) — placed here since that's its natural weight-ordering position (between ordinary soft rules and target deficit). |
-| `qualityVector[fairnessPlusShape]` | Everything else (`TIER_QUALITY`): `targetDeficit` (non-core), `fairness.*`, `isolatedNight`, `workShape.*`, `traumaSecondInRun`/`traumaMidRun`/`nightDurationAlternation`/`secondRestDay`/`pedsInternNightDeficit`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `podEmComposition`/`flexEmComposition`, `podPgy2Fallback`/`flexPgy3Fallback`, `seniorTruePrimary`, `dowPreference` | **CHANGED 2026-10-15**: now its OWN 4th solve stage (was: rolled into ONE combined stage alongside `TIER_RANK`, on the theory that JS's own `qualityVector` is a single field so a 4th CP-SAT stage would "over-split" it). Measured on a real block, that theory was wrong in practice: JS's own `compareVectors` (`scheduleQuality.js`) is a plain element-by-element lexicographic compare of `[errorCount, blockingWarnCount, n0, n1, n2, fairnessPlusShape]`, so `coverageMiss` (n0) already strictly dominates `fairnessPlusShape` on the JS side — combining them into one CP-SAT objective only ever APPROXIMATED that via weight-magnitude dominance, and on an instance big enough, CP-SAT's search needed real, undiluted, dedicated time on coverage alone to get anywhere near the bound-probe-proven optimum. See "Real-block coverage gap fix" below. |
+| `qualityVector[fairnessPlusShape]` | Everything else (`TIER_QUALITY`): `targetDeficit` (non-core), `fairness.*`, `isolatedNight`, `nightFragment` (**NEW 2026-10-16**, see "Night-stint contiguity gap closed" below), `workShape.*`, `traumaSecondInRun`/`traumaMidRun`/`nightDurationAlternation`/`secondRestDay`/`pedsInternNightDeficit`, `weekendOff`, `pedsMixMin`, `fm1Peds`, `internPair`, `podEmComposition`/`flexEmComposition`, `podPgy2Fallback`/`flexPgy3Fallback`, `seniorTruePrimary`, `dowPreference` | **CHANGED 2026-10-15**: now its OWN 4th solve stage (was: rolled into ONE combined stage alongside `TIER_RANK`, on the theory that JS's own `qualityVector` is a single field so a 4th CP-SAT stage would "over-split" it). Measured on a real block, that theory was wrong in practice: JS's own `compareVectors` (`scheduleQuality.js`) is a plain element-by-element lexicographic compare of `[errorCount, blockingWarnCount, n0, n1, n2, fairnessPlusShape]`, so `coverageMiss` (n0) already strictly dominates `fairnessPlusShape` on the JS side — combining them into one CP-SAT objective only ever APPROXIMATED that via weight-magnitude dominance, and on an instance big enough, CP-SAT's search needed real, undiluted, dedicated time on coverage alone to get anywhere near the bound-probe-proven optimum. See "Real-block coverage gap fix" below. |
 
 **Implementation** (`solver/solve.py`'s `_solve_staged`): up to 4 sequential solves on the SAME model
 (no rebuild — only the objective and an accumulating set of "stage N was already this good" bound
@@ -884,7 +884,7 @@ ineligible via EM_EMS/EM_TOX windows or ACGME caps). The measured improvement (2
 15→13 standard, 15→13 vacationHeavy, 13→11 conferenceBlock, understaffed unchanged) comes from the
 metric feeding best-of-20 selection. Detail: `src/lib/nightContiguity.test.js` header.
 
-**Solver side — GAP, documented, not mirrored**: `solver/model/objective.py`'s `_add_isolated_night_
+~~**Solver side — GAP, documented, not mirrored**: `solver/model/objective.py`'s `_add_isolated_night_
 term` (rule 36, `isolatedNight`, renamed from `nightShape` 2026-08-22) only penalizes a length-1
 isolated night (`soft_min=2`, `min_cost` per unit) — it has NO per-resident "extra night run beyond
 the first" fragmentation term at all, avoidable or forced. (`_add_work_shape_term`'s `fragment_cost`
@@ -897,7 +897,55 @@ so mirroring this exactly would need a new per-resident "total-nights-conditione
 nontrivial CP-SAT addition out of scope for this task. Since the solver only ever POLISHES a
 local-engine warm start (R9) and must strictly beat it to ship, this gap's worst case is the solver
 settling for a local schedule's existing night-stint shape rather than actively improving it — never
-a regression.
+a regression.~~ **CLOSED 2026-10-16** — see "Night-stint contiguity gap closed" below.
+
+## Night-stint contiguity gap closed (2026-10-16)
+
+Closes the "Solver side — GAP, documented, not mirrored" paragraph just above (struck through rather
+than silently rewritten, per this repo's convention). Task: the chief's contiguous-night-run
+preference is measured to fragment MORE under the 2026-10-15 clinical-shift-only streak/rest rules
+(`CLAUDE.md`'s "Max 6 consecutive work days"/"Rest between shifts" entries) — does the CP-SAT polish
+stage repair that fragmentation, and if not, can the solver's quality stage be made to prefer
+contiguous runs better without touching the lexicographic ladder?
+
+**Measured, real production block (2026-09-21..2026-10-18, 58 residents), BEFORE this fix** (fresh
+`buildSolverPayload`, current rules, `numWorkers:4`): local-first generates a schedule with 21
+isolated single-night runs and 28 non-night-only residents at exactly 2 night-run segments (every one
+of those 28 already "mergeable" — combined length `<= NIGHT_RULES.maxRun`, i.e. avoidable splits).
+Solver default-config (~30s) polish ships a TIE (identical to local, 21/28/28). Solver 120s polish
+ships and DOES improve isolated singles (21 -> 17, via the pre-existing `isolatedNight` term) but
+leaves the 2-segment count **completely unchanged (28 -> 28)** — exactly the predicted failure mode:
+the solver had an incentive to fix truly-isolated singles but literally no model term that could ever
+prefer merging two already-legal, non-isolated runs into one.
+
+**Fix**: new `solver/model/objective.py`'s `_add_night_fragment_term` (rule 36b, right after
+`_add_isolated_night_term`, same `TIER_QUALITY` stage) — mirrors `scheduleQuality.js`'s
+`nightShapePenalty` fragmentation charge exactly, never a new ranking. For each non-night-exempt
+resident: count night-run "starts" across the whole block (same boolean-indicator idiom
+`_add_night_run_segments`/`_add_work_shape_term` already use), drop the run touching date index 0
+and the run touching the last date (JS's own `interior = runs.filter(start>0 && end<lastIdx)` edge
+exemption — a run touching either edge may continue into the adjacent block, so its shape can't be
+judged from inside this one), and charge every interior run beyond the resident's first one at
+`nightFragment.avoidableCost` if this resident's TOTAL nights this block (every run, edge runs
+included) is `<= NIGHT_RUN_MAX` (the split was structurally avoidable — matches JS's
+`avoidableSplit`), else `nightFragment.forcedCost` (more nights than any one run could legally hold).
+New weights (`config/default_weights.json`): `nightFragment.avoidableCost: 115`,
+`nightFragment.forcedCost: 100` — the SAME x50 scale `isolatedNight.perUnit` (200) already uses for
+JS's len==1 charge (`nightRules.minRun - 1 == 4`), so JS's 2.3/2 keep their relative ordering and
+ratio (`115/100 == 2.3/2`) inside the solver's integer weight space. `test_weight_tiering.py`'s
+anti-fill-sum/overstaff-dominance invariants updated to include the new weights (still comfortably
+dominated — both new costs are the same order of magnitude as `isolatedNight.perUnit`).
+
+**Measured AFTER this fix** (same real block, same fresh payload regenerated per-run, `numWorkers:4`)
+and **unit tests** (`solver-service/tests/test_night_fragment.py`, 6 new tests: single contiguous run
+costs 0, an avoidable split costs `avoidableCost`, a forced split costs `forcedCost`, an edge-touching
+run is correctly excluded from the count, a night-exempt resident is skipped entirely, zero-weight
+config adds no terms): see this task's own final report for the numbers and `pytest`/`vitest` run
+counts.
+
+No change to `betterQuality`, `SCORE_WEIGHTS`, `scheduleQuality.js`, or the quality vector shape (JS
+side untouched — JS already had this term; only the solver was missing its mirror). No
+`ResidentScheduler.jsx` changes.
 
 ## Two engine gaps closed (2026-10-15)
 
