@@ -91,6 +91,7 @@ def _anti_fill_sum(weights: dict) -> int:
     stacking as weekendOff/internPair -- one assignment can only ever be
     charged once)."""
     isolated_night = weights["isolatedNight"]["perUnit"]
+    night_fragment = max(weights["nightFragment"]["avoidableCost"], weights["nightFragment"]["forcedCost"])
     work = max(weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"])
     fairness = sum(weights["fairness"].values())
     weekend_off = weights["weekendOff"]["perMissing"]
@@ -108,7 +109,7 @@ def _anti_fill_sum(weights: dict) -> int:
     # as podPgy2Fallback/flexPgy3Fallback (a single (shift,date) pair is only ever charged once).
     senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
     return (
-        isolated_night + work + fairness + weekend_off + intern_pair + dow
+        isolated_night + night_fragment + work + fairness + weekend_off + intern_pair + dow
         + trauma_second + trauma_mid + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
         + senior_true_primary
@@ -127,6 +128,8 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["postNightRest"]["perViolation"] * GENEROUS_RESIDENTS * GENEROUS_DATES * 4
         + sum(weights["fairness"].values()) * 100 * 10
         + weights["isolatedNight"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + (weights["nightFragment"]["avoidableCost"] + weights["nightFragment"]["forcedCost"])
+        * GENEROUS_RESIDENTS * GENEROUS_DATES
         + (weights["workShape"]["isolatedCost"] + weights["workShape"]["fragmentCost"])
         * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["weekendOff"]["perMissing"] * GENEROUS_RESIDENTS
@@ -174,6 +177,7 @@ def test_overstaff_coverage_dominates_ordinary_soft_rules():
     weights = load_default_weights()
     ordinary_soft_max = max(
         weights["isolatedNight"]["perUnit"],
+        weights["nightFragment"]["avoidableCost"], weights["nightFragment"]["forcedCost"],
         weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"],
         max(weights["fairness"].values()),
         weights["weekendOff"]["perMissing"],

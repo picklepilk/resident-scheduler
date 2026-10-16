@@ -8,6 +8,7 @@
   "pedsInternNightDeficit": { "perUnit": 800 },
   "fairness": { "deficit": 100, "holiday": 80, "night": 60, "weekend": 40 },
   "isolatedNight": { "perUnit": 200 },
+  "nightFragment": { "avoidableCost": 115, "forcedCost": 100 },
   "workShape": { "isolatedCost": 100, "fragmentCost": 100 },
   "traumaSecondInRun": { "perUnit": 400 },
   "traumaMidRun": { "perUnit": 400 },

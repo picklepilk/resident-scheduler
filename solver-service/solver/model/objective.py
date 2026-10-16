@@ -74,6 +74,7 @@ from pathlib import Path
 
 from solver.io.payload import Payload
 from solver.model import timing
+from solver.model.circadian import NIGHT_RUN_MAX
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
 from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
@@ -204,7 +205,8 @@ class PostNightRestPenalty:
 #                                      already pinned by TIER_BLOCKING above.
 #   TIER_QUALITY  ~ qualityVector[fairnessPlusShape] -- everything else:
 #                                      non-core targetDeficit, fairness,
-#                                      isolatedNight, workShape, band8,
+#                                      isolatedNight, nightFragment,
+#                                      workShape, band8,
 #                                      trauma-run batch 2, em-composition/
 #                                      pgy-fallback/true-primary preferences,
 #                                      dowPreference.
@@ -489,6 +491,98 @@ def _add_isolated_night_term(model, payload: Payload, store: VarStore, group: Te
             group.add(c, lit)
 
 
+# ---- rule 36b: night-run fragmentation (avoidable vs forced), closes the
+# gap docs/PAYLOAD_SCHEMA.md's "Night-stint contiguity preference" section
+# (2026-10-14) explicitly deferred ----
+#
+# Mirrors scheduleQuality.js's `nightShapePenalty` fragmentation charge
+# EXACTLY (never a new ranking) -- see that file's own "AVOIDABLE vs FORCED
+# fragmentation" comment for the full rationale. `_add_isolated_night_term`
+# above already mirrors the companion "isolated single night" shortness
+# charge (len==1); THIS charge was entirely absent from the solver before
+# 2026-10-16 -- the solver could polish away isolated singles but had zero
+# incentive to merge two already-legal 2-6-night runs into one, which is
+# exactly the chief's "bigger preference is for contiguous night runs" ask
+# (measured: the solver's 120s run cut isolated singles 21->17 on the real
+# production block but left residents-with-2-segments at 28/28 unchanged --
+# see this task's report).
+#
+# JS semantics reproduced here: for each non-night-exempt resident, every
+# INTERIOR night run (neither touching the block's first nor last date -- a
+# run touching either edge may continue into the adjacent block, so its
+# shape can't be judged from inside this one) beyond that resident's FIRST
+# interior run costs `nightFragment.avoidableCost` if the resident's TOTAL
+# nights this block (every run, edge runs included) is <= NIGHT_RUN_MAX --
+# i.e. everything could structurally have fit in one run, so the split was
+# avoidable -- or `nightFragment.forcedCost` otherwise (more total nights
+# than any single run could ever hold under the max-6-consecutive-nights
+# hard cap, so the extra run(s) are forced structure, not a miss).
+#
+# Weight scale: deliberately the SAME x50 scale `isolatedNight.perUnit`
+# (200) already uses for JS's len==1 charge (nightRules.minRun-1 == 4) --
+# JS's 2.3 -> 115, JS's 2 -> 100 (config/default_weights.json's
+# `nightFragment`). Keeping both isolatedNight-family charges on one scale
+# is what lets them trade off against each other the same way they do inside
+# scheduleQuality.js's own single `nightShapePenalty` number.
+#
+# Edge-run bookkeeping: `interior_runs = total_runs - nights[0] - nights[-1]`
+# drops the run touching date index 0 (if nights[0]==1) and the run
+# touching the last date (if nights[-1]==1) from the count, mirroring JS's
+# `interior = runs.filter(r => r.start>0 && r.end<lastIdx)` exactly. The one
+# degenerate case where a SINGLE run touches BOTH edges (the resident works
+# every night in the block) double-subtracts by exactly 1, driving
+# `interior_runs` negative -- but `fragment_extra`'s own
+# `max(interior_runs - 1, 0)` already produces the same (correct, zero)
+# answer in that case too, so no special-casing is needed.
+def _add_night_fragment_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    w = weights.get("nightFragment", {})
+    avoidable_cost = int(w.get("avoidableCost", 0))
+    forced_cost = int(w.get("forcedCost", 0))
+    if avoidable_cost == 0 and forced_cost == 0:
+        return
+    dates = payload.block.dates
+    D = len(dates)
+    if D < 2:
+        return
+
+    for resident in payload.residents:
+        if resident.night_exempt:
+            continue
+        nights = [store.night[(resident.id, d)] for d in dates]
+
+        starts = [nights[0]]
+        for idx in range(1, D):
+            cur, prev = nights[idx], nights[idx - 1]
+            start_var = model.new_bool_var(f"nightFragStart[{resident.id},{dates[idx]}]")
+            model.add_bool_and([cur, prev.negated()]).only_enforce_if(start_var)
+            model.add_bool_or([cur.negated(), prev]).only_enforce_if(start_var.negated())
+            starts.append(start_var)
+
+        total_runs = model.new_int_var(0, D, f"nightFragTotalRuns[{resident.id}]")
+        model.add(total_runs == sum(starts))
+        total_nights = model.new_int_var(0, D, f"nightFragTotalNights[{resident.id}]")
+        model.add(total_nights == sum(nights))
+
+        interior_runs = model.new_int_var(-2, D, f"nightFragInteriorRuns[{resident.id}]")
+        model.add(interior_runs == total_runs - nights[0] - nights[-1])
+
+        fragment_extra = model.new_int_var(0, D, f"nightFragExtra[{resident.id}]")
+        model.add_max_equality(fragment_extra, [interior_runs - 1, 0])
+
+        avoidable = model.new_bool_var(f"nightFragAvoidable[{resident.id}]")
+        model.add(total_nights <= NIGHT_RUN_MAX).only_enforce_if(avoidable)
+        model.add(total_nights > NIGHT_RUN_MAX).only_enforce_if(avoidable.negated())
+
+        extra_avoidable = model.new_int_var(0, D, f"nightFragExtraAvoidable[{resident.id}]")
+        model.add(extra_avoidable == fragment_extra).only_enforce_if(avoidable)
+        model.add(extra_avoidable == 0).only_enforce_if(avoidable.negated())
+        extra_forced = model.new_int_var(0, D, f"nightFragExtraForced[{resident.id}]")
+        model.add(extra_forced == fragment_extra - extra_avoidable)
+
+        group.add(avoidable_cost, extra_avoidable)
+        group.add(forced_cost, extra_forced)
+
+
 # ---- rule 37: workShape ----
 
 def _prev_work_term_before_block(payload: Payload, resident) -> int:
@@ -687,6 +781,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     post_night_rest_penalties = _add_post_night_rest_term(model, payload, store, tier_blocking, weights)
     _add_fairness_terms(model, payload, store, tier_quality, weights)
     _add_isolated_night_term(model, payload, store, tier_quality, weights)
+    _add_night_fragment_term(model, payload, store, tier_quality, weights)
     _add_work_shape_term(model, payload, store, tier_quality, weights)
     _add_band8_terms(model, payload, store, tier_quality, weights)
     _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)
