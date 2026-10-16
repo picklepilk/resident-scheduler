@@ -6059,6 +6059,36 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     budget--;
     return candidatePool(shift, ds);
   }
+  // Root-cause fix (2026-10-15, found investigating the GR/streak rule change's interaction with R5):
+  // preferTruePrimaryPass used to ask poolFor (== candidatePool) for its true-primary candidates,
+  // which runs EVERY hard stage including 'allAtTarget' — so a true primary who'd already reached
+  // their own shift-count target was invisible to Phase 3b, and the fallback PGY was kept in place
+  // even though a real primary WAS physically available. That's backwards for this one call site:
+  // the chief's own words for R5 are "replaced with a PGY-2 ONLY when no PGY-3 is actually
+  // available" — being at-target doesn't make the sole true primary unavailable, it just means
+  // placing them here would push them one shift over target (an ordinary, warn-level "Over target"
+  // outcome elsewhere in this app, never a hard error) — clearly the better trade than leaving a
+  // composition-critical shift staffed by a non-primary substitute. Every OTHER hard stage (circadian,
+  // rest, the 6-day streak, hours caps, trauma/peds caps, eligibility, jeopardy...) still applies in
+  // full; only the ordinary fairness-driven 'allAtTarget' exclusion is skipped, and only for this one
+  // search. (This gap predates the GR/streak rule change — this fixture's own comment already
+  // flagged it as a theoretical risk the empirical search never happened to hit; loosening the streak
+  // gate let residents reach their targets earlier in the block, which made this pre-existing gap
+  // newly reachable on real fixtures instead of just in theory.)
+  function poolForTruePrimary(shift, ds) {
+    streakCache = {};
+    budget--;
+    let pool = allResidents;
+    for (const stage of CANDIDATE_POOL_STAGES) {
+      if (stage.reason === 'allAtTarget') continue;
+      if (stage.applies && !stage.applies(shift, ds)) continue;
+      pool = pool.filter(r => stage.keep(r, shift, ds));
+      if (!pool.length) return { candidates: [] };
+    }
+    const circadianByResident = new Map(pool.map(r => [r, cachedCircadianViolations(r, ds, shift.id)]));
+    const candidates = pool.filter(r => circadianByResident.get(r).every(x => x.rule !== 'postNightRest'));
+    return { candidates };
+  }
   function pickBestScore(pool, shift, ds) {
     const seniorFilled = SENIOR_COMPOSITION[shift.area] ? hasSenior(shift.id, ds) : null;
     const assignedHereForSlot = allResidents.filter(x => schedule[x.id][ds] === shift.id);
@@ -6100,7 +6130,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           if (!fallback) continue; // no substitute sitting on this shift/date (or already covered by a true primary elsewhere on it)
           if (!movable(fallback.id, ds)) continue;
           unassignCell(fallback.id, ds);
-          const { candidates } = poolFor(shift, ds);
+          // poolForTruePrimary, not poolFor: an at-target true primary must still be found here —
+          // see that function's own header for why.
+          const { candidates } = poolForTruePrimary(shift, ds);
           const truePrimaries = candidates.filter(r => r.category === 'EM_HOME' && r.pgy === comp.primary);
           if (truePrimaries.length) {
             const winner = pickBestScore(truePrimaries, shift, ds);
