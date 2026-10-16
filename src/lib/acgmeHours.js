@@ -64,12 +64,21 @@ function isOffDate(resident, ds) {
 // approved-off date (no GR at all that date — same as before). This window is used ONLY for GR
 // hours in the weekly-hour-cap rolling sum (grHoursOn) — it has no bearing on rest-period math
 // (effectiveShiftEndMs was removed; rest is always measured from a shift's own end, never GR's).
-export function grWindowFor(resident, grDs, prevShiftId) {
+// grWindowForType: same resolution as grWindowFor, but keyed off the prior day's SHIFT *TYPE*
+// directly rather than a shift id — lets a caller ask "what would this window be if the day
+// before were an eve/night shift" without needing a concrete shiftId to look up (see
+// buildDailyContributions' otherIfPrevEve/otherIfPrevNight below, which precompute both
+// hypotheticals once per resident instead of re-deriving them per candidate).
+function grWindowForType(resident, grDs, prevType) {
   if (isOffDate(resident, grDs)) return null;
-  const prevType = prevShiftId ? SHIFT_MAP[prevShiftId]?.type : null;
   if (prevType === 'eve') return { startH: 10, endH: GR_END_H };
   if (prevType === 'night') return { startH: GR_START_H, endH: 10 };
   return { startH: GR_START_H, endH: GR_END_H };
+}
+
+export function grWindowFor(resident, grDs, prevShiftId) {
+  const prevType = prevShiftId ? SHIFT_MAP[prevShiftId]?.type : null;
+  return grWindowForType(resident, grDs, prevType);
 }
 
 // GR hours on `ds` if it's this resident's GR weekday — 0 if vacation/approved-off that date
@@ -80,11 +89,16 @@ export function grWindowFor(resident, grDs, prevShiftId) {
 // resolution to compute the `obligationHours` payload field the solver's weekly_hours.py
 // rolling-7-day cap consumes — one source of truth for both engines, per CLAUDE.md's "payload
 // gotcha".
-export function grHoursOn(resident, ds, grDow, prevShiftId) {
+function grHoursOnForType(resident, ds, grDow, prevType) {
   if (grDow == null) return 0;
   if (parseDate(ds).getDay() !== grDow) return 0;
-  const win = grWindowFor(resident, ds, prevShiftId);
+  const win = grWindowForType(resident, ds, prevType);
   return win ? (win.endH - win.startH) : 0;
+}
+
+export function grHoursOn(resident, ds, grDow, prevShiftId) {
+  const prevType = prevShiftId ? SHIFT_MAP[prevShiftId]?.type : null;
+  return grHoursOnForType(resident, ds, grDow, prevType);
 }
 
 export function jcHoursOn(resident, ds) {
@@ -192,18 +206,34 @@ export function wouldBreachWeeklyCaps(resident, rs, prevRs, grDow, dateStr, shif
 // crossing the block start) that every resident/call reuses, and `buildDailyContributions` walks it
 // ONCE to produce plain parallel arrays with zero further date arithmetic; `weeklyCapBreachAt` then
 // does pure integer-index array sums, no Date objects at all.
+// otherIfPrevEve/otherIfPrevNight: for each index i, what `other[i]` WOULD be if the calendar day
+// immediately before `rangeDates[i]` turned out to carry an eve- or night-type shift, regardless of
+// what `row` actually has there today. Needed because weeklyCapBreachAt (below) evaluates a
+// HYPOTHETICAL candidate placement at some index, and that candidate — if it's an eve/night shift —
+// changes index `candidateIdx + 1`'s own GR window (grWindowFor) even though `row` (built from the
+// ALREADY-ASSIGNED schedule) never saw it. `other[i]` alone is stale for that one neighbor; these two
+// alternates let the fast path correct it in O(1) instead of falling back to wouldBreachWeeklyCaps'
+// Date-heavy recompute. Only the GR component can vary this way (jcHoursOn never depends on the prior
+// day's shift), and only on `resident`'s actual GR weekday — grHoursOnForType already returns 0 for
+// every other date regardless of `prevType`, so these two arrays equal `other[i]` everywhere except
+// (at most) one date per 7-day cycle.
 export function buildDailyContributions(resident, rs, prevRs, grDow, rangeDates) {
   const row = combinedRow(rs, prevRs);
   const n = rangeDates.length;
   const ed = new Array(n);
   const other = new Array(n);
+  const otherIfPrevEve = new Array(n);
+  const otherIfPrevNight = new Array(n);
   for (let i = 0; i < n; i++) {
     const ds = rangeDates[i];
     const prevDs = toDateStr(addDays(parseDate(ds), -1));
+    const jc = jcHoursOn(resident, ds);
     ed[i] = edHoursOn(row, ds);
-    other[i] = grHoursOn(resident, ds, grDow, row[prevDs]) + jcHoursOn(resident, ds);
+    other[i] = grHoursOn(resident, ds, grDow, row[prevDs]) + jc;
+    otherIfPrevEve[i] = grHoursOnForType(resident, ds, grDow, 'eve') + jc;
+    otherIfPrevNight[i] = grHoursOnForType(resident, ds, grDow, 'night') + jc;
   }
-  return { ed, other };
+  return { ed, other, otherIfPrevEve, otherIfPrevNight };
 }
 
 // `candidateIdx` is the hypothetical placement's index into the SAME `rangeDates` array
@@ -234,11 +264,26 @@ export function buildDailyContributions(resident, rs, prevRs, grDow, rangeDates)
 // the block end too (a bigger change, not attempted here) — the property test deliberately keeps
 // grDow null and jcPresentDates in-block to test the claim above that IS provably closed, rather than
 // asserting agreement it can't actually deliver.
+// A SEPARATE staleness bug (found + fixed here, distinct from the forward-padding gap above): `other`
+// is built once from the ALREADY-ASSIGNED schedule, so `other[candidateIdx + 1]` reflects whatever
+// (if anything) was at `candidateIdx` BEFORE this hypothetical placement — stale whenever `candidateIdx
+// + 1` is this resident's GR weekday and the candidate itself is an eve/night shift (the one case where
+// grWindowFor's own prior-day-dependence would have picked a different, shorter window). Fixed via
+// otherIfPrevEve/otherIfPrevNight above, which let this function substitute the correct value at that
+// one in-range index without re-deriving anything from Dates. This does NOT depend on grDow being
+// null — the property test below now runs with a real grDow specifically to cover it.
 export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
   const t = SHIFT_TIMING[shiftId];
   if (!t) return { edBreach: false, totalBreach: false };
-  const { ed, other } = contrib;
+  const { ed, other, otherIfPrevEve, otherIfPrevNight } = contrib;
   const n = ed.length;
+  // Which precomputed `other[]` variant to read at `candidateIdx + 1` — the one neighbor whose GR
+  // contribution depends on what's placed at candidateIdx (see buildDailyContributions' header on
+  // otherIfPrevEve/otherIfPrevNight). `other` itself was built assuming nothing is assigned at
+  // candidateIdx yet (candidatePool only calls this for an empty slot), which already matches the
+  // "day or no shift" case, so a non-eve/night candidate needs no correction at all.
+  const candType = SHIFT_MAP[shiftId]?.type;
+  const nextOther = candType === 'eve' ? otherIfPrevEve : candType === 'night' ? otherIfPrevNight : other;
   let edBreach = false, totalBreach = false;
   for (let offset = -(WINDOW_DAYS - 1); offset <= 0; offset++) {
     const startIdx = candidateIdx + offset;
@@ -247,8 +292,9 @@ export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
     for (let i = startIdx; i < endIdx; i++) {
       if (i < 0 || i >= n) continue; // not-yet-precomputed day — 0-fill, don't drop the whole window
       const e = i === candidateIdx ? t.durationH : ed[i];
+      const o = i === candidateIdx + 1 ? nextOther[i] : other[i];
       edSum += e;
-      totalSum += e + other[i];
+      totalSum += e + o;
     }
     if (edSum > ED_WEEKLY_CAP_H) edBreach = true;
     if (totalSum > TOTAL_WEEKLY_CAP_H) totalBreach = true;

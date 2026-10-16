@@ -148,6 +148,100 @@ describe('buildDailyContributions/weeklyCapBreachAt agrees with wouldBreachWeekl
       }
     }
   });
+
+  it('fast and slow paths agree with a REAL grDow (neighbor-staleness regression — candidateIdx+1 landing on GR day)', () => {
+    // Covers the bug this property test originally couldn't: with grDow non-null, a candidate placed
+    // the day before this resident's GR weekday changes that GR day's own hours (grWindowFor), but
+    // `other[]` was precomputed from the schedule BEFORE the candidate was hypothetically placed.
+    // otherIfPrevEve/otherIfPrevNight (buildDailyContributions) are what let weeklyCapBreachAt correct
+    // that one neighbor instead of reading the stale default. Candidates are restricted to dates whose
+    // checked windows stay fully inside `weeklyRangeDates` (i.e. not the block's own last
+    // WINDOW_DAYS-1 dates) — that trailing region exercises a SEPARATE, pre-existing, documented gap
+    // (forward-padding past the block end — see weeklyCapBreachAt's own comment) unrelated to the
+    // neighbor-staleness fix under test here.
+    const blockStart = '2026-07-06'; // Monday
+    const blockEnd = '2026-08-02';
+    const dates = getBlockDates(blockStart, blockEnd);
+    const weeklyRangeDates = getBlockDates(toDateStr(addDays(parseDate(dates[0]), -6)), dates[dates.length - 1]);
+    const weeklyDateIndex = new Map(weeklyRangeDates.map((ds, i) => [ds, i]));
+    const tailDates = getBlockDates(toDateStr(addDays(parseDate(blockStart), -6)), toDateStr(addDays(parseDate(blockStart), -1)));
+    const grDow = 3; // Wednesday — EM_HOME
+    const checkableDates = dates.slice(0, dates.length - 6); // exclude the last WINDOW_DAYS-1 (=6) dates
+
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const rng = mulberry32(seed);
+      const prevRs = randomRow(rng, tailDates, 0.5);
+      const rs = randomRow(rng, dates, 0.3); // sparser than the null-grDow property test, leaving plenty of empty GR-eve slots
+      const resident = {
+        vacationDates: [], approvedDatesOff: [],
+        jcPresentDates: [dates[10], dates[dates.length - 6]],
+      };
+
+      const contrib = buildDailyContributions(resident, rs, prevRs, grDow, weeklyRangeDates);
+      for (const ds of checkableDates) {
+        if (rs[ds]) continue; // candidatePool only ever calls this for an empty slot
+        const idx = weeklyDateIndex.get(ds);
+        for (const shiftId of SHIFT_IDS) {
+          const fast = weeklyCapBreachAt(contrib, idx, shiftId);
+          const slow = wouldBreachWeeklyCaps(resident, rs, prevRs, grDow, ds, shiftId);
+          expect(fast, `seed ${seed} date ${ds} shift ${shiftId}`).toEqual(slow);
+        }
+      }
+    }
+  });
+
+  it('direct regression: eve shift placed the day before a GR Wednesday must NOT spuriously breach the total cap via a stale 4h GR read', () => {
+    // Exact repro from the reported bug: empty schedule, grDow=Wednesday (3), candidate POD-E on the
+    // Tuesday right before. grHoursOn(..., 'POD-E') resolves to 2h (eve-type prior shift), but before
+    // this fix `other[]` at the Wednesday index was precomputed from the EMPTY schedule (no prior
+    // shift yet), so weeklyCapBreachAt read the stale default 4h there instead. Engineer the rest of
+    // the week to sit exactly at the boundary where 4h-vs-2h flips `totalBreach`.
+    const grDow = 3; // Wednesday
+    const tuesday = '2026-07-07';
+    const wednesday = '2026-07-08';
+    const blockStart = '2026-07-06';
+    const blockEnd = '2026-08-02';
+    const dates = getBlockDates(blockStart, blockEnd);
+    const weeklyRangeDates = getBlockDates(toDateStr(addDays(parseDate(dates[0]), -6)), dates[dates.length - 1]);
+    const weeklyDateIndex = new Map(weeklyRangeDates.map((ds, i) => [ds, i]));
+    // Rest of the 7-day window containing Tuesday+Wednesday: fill every other day with enough ED
+    // hours that adding POD-E's own hours plus either a 4h or 2h GR read is the deciding factor for
+    // the 72h total cap (not already over/under regardless of which GR reading is used).
+    // Window (Sun 07-05 tail .. Sat 07-11): POD-E on 07-07 contributes... but we only control from
+    // blockStart forward here (07-06..), so anchor the window at 07-06..07-12 (offset 0 case) instead.
+    const r = resident({ jcPresentDates: [] });
+    // Other days of the window use 12h shifts (SHIFT_DOW eligibility doesn't apply here — these
+    // functions only sum hours, they don't gate who's allowed to work which day) specifically so the
+    // 4h-vs-2h GR difference is the deciding factor for the 72h total cap, not swamped by slack.
+    const rs = {
+      '2026-07-06': 'TRAUMA-D', // Monday, 12h
+      // 07-07 Tuesday: candidate POD-E (eve-type, 9h)
+      '2026-07-09': 'TRAUMA-D', // Thursday, 12h
+      '2026-07-10': 'TRAUMA-D', // Friday, 12h
+      '2026-07-11': 'TRAUMA-D', // Saturday, 12h
+      '2026-07-12': 'TRAUMA-D', // Sunday, 12h
+      // 07-08 Wednesday (GR day) deliberately left shift-less.
+    };
+    const podEHours = SHIFT_TIMING['POD-E'].durationH;
+    const otherEdHours = 5 * SHIFT_TIMING['TRAUMA-D'].durationH; // Mon/Thu/Fri/Sat/Sun
+    // Window 07-06..07-12 totals (slow, correct): otherEdHours + podEHours (Tue) + 2h GR (Wed,
+    // correct post-eve window) = 60 + 9 + 2 = 71, legal.
+    const expectedCorrectTotal = otherEdHours + podEHours + 2;
+    expect(expectedCorrectTotal).not.toBeGreaterThan(TOTAL_WEEKLY_CAP_H); // legal placement
+    expect(otherEdHours + podEHours + GR_DURATION_H).toBeGreaterThan(TOTAL_WEEKLY_CAP_H); // but the STALE 4h read would wrongly breach (60+9+4=73)
+
+    const slow = wouldBreachWeeklyCaps(r, rs, null, grDow, tuesday, 'POD-E');
+    expect(slow.totalBreach).toBe(false); // ground truth: legal
+
+    const contrib = buildDailyContributions(r, rs, null, grDow, weeklyRangeDates);
+    const idx = weeklyDateIndex.get(tuesday);
+    const fast = weeklyCapBreachAt(contrib, idx, 'POD-E');
+    expect(fast).toEqual(slow); // fast path must agree — this is what the stale other[] bug broke
+
+    // Sanity: the Wednesday GR-day index itself still reads correctly for BOTH engines once the
+    // candidate is in place (not just the window sum).
+    expect(grHoursOn(r, wednesday, grDow, 'POD-E')).toBe(2);
+  });
 });
 
 // grWindowFor/grHoursOn (chief decision 2026-10-15): Grand Rounds' own window — and therefore how
