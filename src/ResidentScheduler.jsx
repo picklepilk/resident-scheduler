@@ -22993,11 +22993,15 @@ export default function ResidentScheduler({ viewer } = {}) {
       // In local-only mode this is the only playground that can ever exist, so id === activeRowId
       // always holds here; the explicit check still guards the general (cloud, multi-playground)
       // case where the admin is deleting a DIFFERENT playground than the one live on this device.
-      if (activeRowId === id) {
+      // The res_demo_* slot holds this playground's data when it's active, when it's the
+      // local-only playground (its only copy), or when it was the last one opened here.
+      let slotOwner = null;
+      try { slotOwner = localStorage.getItem(PLAYGROUND_SLOT_KEY); } catch { /* ignore */ }
+      if (activeRowId === id || !SUPABASE_ENABLED || slotOwner === id) {
         for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
-        try { localStorage.removeItem(LOCAL_PG_META_KEY); } catch { /* best-effort */ }
-        localStorage.setItem(DEMO_MODE_KEY, 'false');
+        try { localStorage.removeItem(LOCAL_PG_META_KEY); localStorage.removeItem(PLAYGROUND_SLOT_KEY); } catch { /* best-effort */ }
       }
+      if (activeRowId === id) localStorage.setItem(DEMO_MODE_KEY, 'false');
       window.location.reload();
     } catch {
       syncSuspended = false;
