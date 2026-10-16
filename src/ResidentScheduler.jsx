@@ -19140,6 +19140,8 @@ const RES_STATE_DEMO_ROW_ID = 'demo';
 // once per mount; every enter/exit/resume/delete action below sets this then reloads the page,
 // since useLocalStorage's lazy initializer only reads localStorage on first mount.
 const DEMO_MODE_KEY = 'res_demo_mode';
+// Which playground row the res_demo_* slot currently holds (device-local, not synced).
+const PLAYGROUND_SLOT_KEY = 'res_pg_slot';
 
 const SUPABASE_URL_RAW  = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_URL__)  || '';
 const SUPABASE_ANON_RAW = (typeof globalThis !== 'undefined' && globalThis.__SUPABASE_ANON__) || '';
@@ -19691,11 +19693,13 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       }
       try { await sbDeleteState(RES_STATE_DEMO_ROW_ID); } catch { /* demo row orphaned; real data already cleared below */ }
     }
+    // Local-only mode: the res_demo_* slot is the one local playground's only copy, and clearAll
+    // promises to wipe real data only — leave it. With cloud sync the slot is just a cache.
     for (const k of LS_BACKUP_KEYS) {
       localStorage.removeItem(k);
-      localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
+      if (SUPABASE_ENABLED) localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
     }
-    localStorage.removeItem(DEMO_MODE_KEY);
+    if (SUPABASE_ENABLED) localStorage.removeItem(DEMO_MODE_KEY);
     window.location.reload();
   }
 
@@ -22293,7 +22297,23 @@ export default function ResidentScheduler({ viewer } = {}) {
   // active playground's row id. storedDemoModeValue is read once per mount, same reason the old
   // demoMode was — useLocalStorage's lazy initializer only reads localStorage on first mount.
   const storedDemoModeValue = useMemo(() => {
-    try { return localStorage.getItem(DEMO_MODE_KEY); } catch { return null; }
+    let v = null;
+    try { v = localStorage.getItem(DEMO_MODE_KEY); } catch { return null; }
+    // The res_demo_* slot must only ever hold the ACTIVE playground's data. With cloud sync, the
+    // playground's row is the source of truth, but the mount overlay skips null fields (a fresh
+    // "Blank" playground stores nulls), so a slot left over from a different playground would
+    // show through — and could then be promoted into the real schedule. Wipe it before any
+    // useLocalStorage initializer reads it. Local-only mode keeps the slot: it is that single
+    // playground's only copy.
+    if (SUPABASE_ENABLED && isPlaygroundId(v)) {
+      try {
+        if (localStorage.getItem(PLAYGROUND_SLOT_KEY) !== v) {
+          for (const k of LS_BACKUP_KEYS) localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
+          localStorage.setItem(PLAYGROUND_SLOT_KEY, v);
+        }
+      } catch { /* best-effort */ }
+    }
+    return v;
   }, []);
   // A corrupt/unrecognized stored value (anything that isn't a real playground id) is treated as
   // "not in a playground" rather than guessed at — see isPlaygroundId's own header. This also means
