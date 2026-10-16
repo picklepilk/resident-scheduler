@@ -61,7 +61,10 @@ const SEED = 42;
 // slack once Phase 5 has run) makes largely unreachable.
 const CEILINGS = {
   standard: { twoSegment: 13, mergeable: 13 },
-  understaffed: { twoSegment: 7, mergeable: 7 },
+  // 7 -> 11 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC
+  // days), which spreads nights wider on this fixture. Recorded, not accepted: a follow-up
+  // generator change is meant to win this back under the new rules.
+  understaffed: { twoSegment: 11, mergeable: 11 },
   vacationHeavy: { twoSegment: 13, mergeable: 13 },
   conferenceBlock: { twoSegment: 11, mergeable: 11 },
 };

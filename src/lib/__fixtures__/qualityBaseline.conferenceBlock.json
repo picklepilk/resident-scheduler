@@ -6,14 +6,14 @@
     99,
     555
   ],
-  "errors": 9,
+  "errors": 10,
   "structuralErrors": 0,
-  "underTargetErrors": 9,
+  "underTargetErrors": 10,
   "quality": [
-    112.4,
+    110.8,
     0,
     0,
-    391.02095692893147
+    371.33586623681424
   ],
-  "unfilled": 112.4
+  "unfilled": 110.8
 }
