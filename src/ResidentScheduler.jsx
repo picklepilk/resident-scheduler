@@ -6936,22 +6936,41 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 // the solver reaches for that one date, never competes with coverageMin/targetDeficit.
 const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
 
+// Default solver-polish budget for the plain Generate path (2026-10-16, real-block budget-sweep
+// measurement — see PAYLOAD_SCHEMA.md's dated section for the full table). Was 30s: on a real
+// 58-resident production block, 30s ties local as often as it beats it (CP-SAT's documented
+// multi-worker run-to-run nondeterminism — two back-to-back runs at the SAME 30s budget landed
+// coverageMiss 14 and 21/tie respectively), while every run at 45s+ strictly beat local. 60s
+// (not the bare-minimum 45s) is the chosen default for safety margin: this was measured on a
+// 16-core dev box; the deployed solver (fly.toml, `cpus = 2, cpu_kind = "shared"`) has far less
+// parallelism, so these local numbers are optimistic and the real Fly behavior needs more
+// wall-clock margin to reach the same search depth. A `numWorkers:2` stress run on this same
+// block plateaued at an identical (mediocre) result from 30s all the way to 120s, while the
+// production-worker-count run jumped to a materially better plateau specifically between 30s and
+// 60s — i.e. the "elbow" where extra budget starts being substantively used sits at 60s, not 30s,
+// and that elbow is the more conservative, worker-count-sensitive signal to design the default
+// around. Exported so generateViaSolverOrLocal/solverPayload.test.js share one number.
+export const DEFAULT_SOLVE_MAX_TIME_SECONDS = 60;
 // "Deep solve" (admin-facing, 2026-10-15): same solver/polisher pipeline as the default Generate
-// path, just a larger CP-SAT time budget — measured on a real block to leave 9 unfilled minimum
-// slots at 120s vs. 17 at the default 30s (buildSolverPayload's own `maxTimeSeconds: 30`, left
-// unchanged — this is an explicit opt-in override, never a global). Exported so
-// generateViaSolverOrLocal and ResidentScheduler.test.js share one number instead of two literals
-// drifting apart. solver-service has no server-side cap on `config.maxTimeSeconds` (checked
-// 2026-10-15: schemas.py/payload.py accept any float; the only hardcoded ceilings are
+// path, just a larger CP-SAT time budget. Re-measured 2026-10-16 alongside the default-budget
+// change above: on the same real block, 120s showed no further reliable gain over 90s locally,
+// and the solver has no server-side cap on `config.maxTimeSeconds` (checked 2026-10-15 and
+// reconfirmed 2026-10-16: schemas.py/payload.py accept any float; the only hardcoded ceilings are
 // hint_pin.py's unrelated 30s hint-feasibility pre-check and report/builder.py's unrelated 10s
 // verification-resolve step — neither touches the main staged solve, which reads
-// payload.config.max_time_seconds directly) — 120s needs no server change.
+// payload.config.max_time_seconds directly) — so 120s stays the Deep Solve budget; the data doesn't
+// justify spending the user's wait time pushing it toward the 180s ceiling. Exported so
+// generateViaSolverOrLocal and ResidentScheduler.test.js share one number instead of two literals
+// drifting apart.
 export const DEEP_SOLVE_MAX_TIME_SECONDS = 120;
-// solveRemote's client-side abort timeout for a deep solve — must clear the solver's own budget
-// plus network/cold-start slack (Fly scale-to-zero can add several seconds), same margin
-// CLAUDE.md's goal doc calls for. The default (non-deep) path keeps solveRemote's own 120000ms
-// default untouched.
+// solveRemote's client-side abort timeout — must clear the solver's own budget plus network/
+// cold-start slack (Fly scale-to-zero can add several seconds), same margin CLAUDE.md's goal doc
+// calls for. Both the default and deep-solve paths now pass an explicit timeoutMs computed this
+// same way (2026-10-16 — previously only the deep path did; the default path relied on
+// solveRemote's own 120000ms fallback default, which only happened to be correct by coincidence
+// while the default budget was <= 60s and stops being safe the moment either number changes again).
 const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
+const DEFAULT_SOLVE_TIMEOUT_MS = DEFAULT_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
@@ -7321,7 +7340,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   const emPgy3ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 3).map(r => r.id);
 
   const resolvedConfig = {
-    maxTimeSeconds: 30,
+    maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS,
     // R9: no hardcoded default here any more (was 8) — an explicit `numWorkers` still overrides
     // via `config`, but leaving it OFF the payload lets the solver's own default (os.cpu_count(),
     // clamped >= 1 — solver-service/solver/solve.py's `_num_workers`) actually take effect instead
@@ -14801,8 +14820,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // synchronously at the top of each call, before any await, so it can't itself trigger a render.
   const generatingRef = useRef(false);
   // ── Progress overlay (Generate/Clear & Regenerate/Regenerate Unlocked) — the solver path can
-  // legitimately run ~30s and the local-generator path can take a couple seconds (best-of-20 +
-  // repair), and with no feedback the app looked crashed. `genActive` gates the overlay's
+  // legitimately run ~60s (DEFAULT_SOLVE_MAX_TIME_SECONDS) and the local-generator path can take
+  // a couple seconds (best-of-20 + repair), and with no feedback the app looked crashed. `genActive` gates the overlay's
   // visibility; `genStageLabel` is plain text updated by generateViaSolverOrLocal as the pipeline
   // moves through its stages; `genElapsedSec` ticks once/sec off a ref-held start time so the label
   // update itself never resets the clock. Ephemeral UI state only — never persisted, never read by
@@ -15545,17 +15564,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       try {
         // Deep solve (admin opt-in, "Try harder (~2 min)"): same pipeline, just a bigger explicit
         // `config.maxTimeSeconds` override — never the default (buildSolverPayload's own
-        // `maxTimeSeconds: 30` stays the baseline for every other caller) — and a client-side
-        // solveRemote timeout wide enough to cover it (DEEP_SOLVE_TIMEOUT_MS's own header).
+        // `maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS` stays the baseline for every other
+        // caller) — and a client-side solveRemote timeout wide enough to cover either budget
+        // (DEEP_SOLVE_TIMEOUT_MS/DEFAULT_SOLVE_TIMEOUT_MS's own header).
         setGenStageLabel(deepSolve
           ? 'Deep solve — optimizing, this can take up to ~2 minutes…'
-          : 'Optimizing schedule — up to ~30s…');
+          : `Optimizing schedule — up to ~${DEFAULT_SOLVE_MAX_TIME_SECONDS}s…`);
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
           config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
         // service 401s and the catch below keeps the already-computed local result.
         const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
-        const json = await solveRemote(payload, deepSolve ? { accessToken, timeoutMs: DEEP_SOLVE_TIMEOUT_MS } : { accessToken });
+        const json = await solveRemote(payload, { accessToken,
+          timeoutMs: deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS });
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
@@ -16075,7 +16096,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               there's no solver to ask for extra time otherwise. */}
           {SOLVER_ENABLED && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
-              title="Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~30s — can fill more slots on a tight block. Only ships if it beats the regular result.">
+              title="Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~60s — can fill more slots on a tight block. Only ships if it beats the regular result.">
               Deep Solve (~2 min)
             </Button>
           )}

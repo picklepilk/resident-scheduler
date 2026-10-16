@@ -7,7 +7,7 @@
 // DOM access; window.__SUPABASE_URL__/__SOLVER_URL__ reads are typeof-guarded) — do NOT extract
 // these functions out of the monolith to work around import issues.
 import { describe, it, expect } from 'vitest';
-import { buildSolverPayload, mapSolverResult, summarizeGenerationReport, getEligibleShifts, getShiftTarget, DEEP_SOLVE_MAX_TIME_SECONDS } from '../ResidentScheduler.jsx';
+import { buildSolverPayload, mapSolverResult, summarizeGenerationReport, getEligibleShifts, getShiftTarget, DEEP_SOLVE_MAX_TIME_SECONDS, DEFAULT_SOLVE_MAX_TIME_SECONDS } from '../ResidentScheduler.jsx';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -215,8 +215,14 @@ describe('buildSolverPayload', () => {
     expect(DEEP_SOLVE_MAX_TIME_SECONDS).toBe(120);
     const deepPayload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } });
     expect(deepPayload.config.maxTimeSeconds).toBe(120);
+    // 2026-10-16 real-block budget-sweep measurement (PAYLOAD_SCHEMA.md's dated section): the
+    // plain default was 30s, raised to 60s — 30s ties local as often as it beats it (CP-SAT
+    // multi-worker nondeterminism), while 45s+ reliably won locally; 60s is chosen over the
+    // bare-minimum 45s for safety margin against the deployed solver's much weaker parallelism
+    // (fly.toml: 2 shared CPUs vs. this measurement's dev box).
+    expect(DEFAULT_SOLVE_MAX_TIME_SECONDS).toBe(60);
     const defaultPayload = buildSolverPayload(fixture);
-    expect(defaultPayload.config.maxTimeSeconds).toBe(30);
+    expect(defaultPayload.config.maxTimeSeconds).toBe(60);
   });
 
   // R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): warm-start hint.

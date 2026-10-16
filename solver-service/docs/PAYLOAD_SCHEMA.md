@@ -1192,3 +1192,121 @@ resident/seed outcome that a wider candidate pool no longer reproduces), and the
 +1 — all other three variants' baselines unaffected). None of these were adjusted here — they are
 empirical thresholds, not independent correctness checks, and re-measuring/updating them is a call for
 whoever owns the chief-facing quality bar, not this change.
+
+## Default `maxTimeSeconds` raised 30s -> 60s; Deep Solve stays 120s; stage split unchanged (2026-10-16)
+
+Closes the question left open by "Real-block coverage gap fix" (2026-10-15, just above): that fix
+measured 30s already shipping a solver win (coverageMiss 23 -> 17), but subsequent work the same day
+(the night-fragment term, this doc's "Night-stint contiguity gap closed") re-measured the SAME
+default-config pipeline TYING local (21/21 identical) rather than beating it -- CP-SAT's own
+documented multi-worker run-to-run nondeterminism, not a regression in either fix. Task: find the
+smallest default budget that *reliably* beats local on the real production block (58 residents,
+2026-09-21..10-18), and decide whether the budget split across the 4 staged-solve stages should
+change for short budgets.
+
+**Method**: fresh `buildSolverPayload` (current code, current rules), production pipeline
+(local-first -> solver-polish -> `pickEngineResult`), 2 solver runs per budget at
+`maxTimeSeconds` in {30, 45, 60, 90, 120}, `numWorkers` left UNSET (production default:
+`os.cpu_count()`) -- never pinned, since the whole point is measuring what a real request would get.
+Scored with the real JS `validateAll`/`computeQualityMetrics`/`computeQualityVector` pipeline, same
+methodology as this doc's other real-block sections. Measured on a 16-core dev box; the deployed
+solver (`fly.toml`: `cpu_kind = "shared"`, `cpus = 2`) has far less parallelism, so **these numbers
+are optimistic for the deployed service** -- see the worker-count finding below for how much that
+appears to matter, and the recommendation was chosen with that gap in mind, not by taking the local
+minimum at face value.
+
+**Headline (two runs per budget, `ships` = `pickEngineResult`'s outcome against the same
+deterministic local result)**:
+
+| budget | run 1 coverageMiss (ships) | run 2 coverageMiss (ships) | reliable win? |
+|---|---|---|---|
+| local (no solver) | 21 | 21 | n/a |
+| 30s | 14 (SOLVER) | 21 (local, TIE) | **no** -- 1 win, 1 tie |
+| 45s | 10 (SOLVER) | 15 (SOLVER) | yes |
+| 60s | 11 (SOLVER) | 7 (SOLVER) | yes |
+| 90s | 8 (SOLVER) | 9 (SOLVER) | yes |
+| 120s | 5 (SOLVER) | 9 (SOLVER) | yes |
+
+(`warnCount`/quality-vector moved in lockstep with `coverageMiss` on every run; `errorCount` stayed 0
+throughout. Isolated-night-run and 2-night-segment counts also improved with budget, consistent with
+the night-fragment term's own prior measurements.)
+
+**30s is the one budget that isn't reliable** -- it ties as often as it wins, exactly reproducing the
+tie this doc's own night-fragment section measured. 45s was the smallest budget that won on both runs.
+
+**Worker-count finding (why the default is 60s, not the bare-minimum 45s)**: a supplementary check
+re-ran the solver directly (bypassing the full JS pipeline, using the solver's own
+`report.unfilled`/`report.underTarget` as a coverage-shortfall proxy -- a different metric from
+`coverageMiss` above, not directly comparable in magnitude, but fine for a same-units before/after
+comparison) at `numWorkers: 2` (approximating the Fly machine's 2 shared CPUs) across the same 5
+budgets:
+
+| budget | numWorkers=2 proxy (`unfilled`) | wall used | production-numWorkers proxy (`unfilled`) | wall used |
+|---|---|---|---|---|
+| 30s | 15 | 8s (way under budget) | 15 | 9s (way under budget) |
+| 45s | 15 | 10s | -- | -- |
+| 60s | 15 | 15s | 6 | 66s (full budget) |
+| 90s | 15 | 17s | -- | -- |
+| 120s | 15 | 22s | 7 | 126s (full budget) |
+
+With only 2 workers, the solve plateaus at an IDENTICAL result from 30s all the way to 120s, finishing
+in well under its own budget every time -- more wall-clock time literally bought nothing once
+parallelism was the bottleneck. With production worker count, the SAME plateau-at-30s behavior shows
+up (also finishes in ~9s, also a mediocre result), but 60s unlocks a qualitatively better plateau and
+visibly spends its whole budget getting there. The "elbow" where extra budget starts being
+substantively used -- not just a quick, cheap, mediocre plateau -- sits at 60s even on fast hardware;
+on a 2-shared-CPU box that elbow is not guaranteed to be any earlier, and the measurement above shows
+it can be a LOT later (this block never found it inside 120s at `numWorkers:2`). 60s is chosen over
+the bare-measured-minimum 45s specifically as margin against this gap, while staying a reasonable
+background-task wait.
+
+**Stage-split experiment (cheap, as asked; not adopted)**: tried shifting share from `TIER_QUALITY`
+(the last stage) to `TIER_RANK` (coverage) at short budgets -- `altA = (0.15, 0.15, 0.6, 0.1)` and
+`altB = (0.15, 0.15, 0.65, 0.05)`, vs. default `(0.15, 0.15, 0.5, 0.2)` -- one run each (proxy metric,
+same caveat as above) at 30s/60s/120s. Results were inconsistent and in one case badly regressed:
+`altB` at 60s finished in 13s of its 60s budget at `unfilled=15` (vs. default's 66s/`unfilled=6`) --
+the mechanism is structural, not noise: `_solve_staged`'s budget-rollover only ever flows FORWARD
+into a *later* stage; the LAST stage has nowhere to roll its own early finish into, so shrinking its
+share risks the whole solve reaching `OPTIMAL` on a nearly-empty final objective and quitting with
+most of the budget simply unspent. `altB`'s 5% share hits this every time it gets unlucky; `altA`'s
+10% was less catastrophic but still net-worse at every budget tested. Per the task's own bar ("only
+adopt if strictly better at short budgets AND not worse at 120") neither candidate clears it, and this
+failure mode is itself a reason to prefer the existing split's bigger last-stage floor, not just an
+artifact of too few runs. **Stage split is unchanged.**
+
+**Decision**:
+- `buildSolverPayload`'s default `config.maxTimeSeconds`: 30 -> 60 (new exported
+  `DEFAULT_SOLVE_MAX_TIME_SECONDS`, `ResidentScheduler.jsx`).
+- Deep Solve stays at 120s (`DEEP_SOLVE_MAX_TIME_SECONDS`, unchanged) -- the data shows no further
+  reliable gain past ~90-120s even locally (production-numWorkers proxy: `unfilled` 6 at 60s, 7 at
+  120s -- within noise, not a monotonic further win), so there's no basis for spending more of the
+  admin's wait time pushing it toward the 180s ceiling this task allowed. Re-confirmed no server-side
+  cap exists on `config.maxTimeSeconds` below 180 (`api/schemas.py`'s `ConfigModel.maxTimeSeconds:
+  float = 30` has no `le=`; `solver/io/payload.py`'s `Config.max_time_seconds` likewise; the only
+  hardcoded ceilings anywhere are `hint_pin.py`'s unrelated 30s hint-feasibility pre-check and
+  `report/builder.py`'s unrelated 10s verification-resolve step, neither touching the main staged
+  solve) -- same finding as 2026-10-15/-16, re-checked rather than assumed stale.
+- `solveRemote`'s client-side timeout: both the default and Deep Solve paths now pass an EXPLICIT
+  `timeoutMs` (budget*1000 + 60000 cold-start/network margin) -- previously only Deep Solve did this;
+  the default path relied on `solveRemote`'s own 120000ms fallback default, which only happened to
+  cover a 30s budget by coincidence and would have silently stopped being safe the moment either
+  number changed again.
+- Progress-overlay copy ("Optimizing schedule -- up to ~Ns...") and the Deep Solve button's tooltip
+  ("...instead of ~Ns...") now read the new 60s number instead of the old 30s.
+- `src/lib/solverPayload.test.js`'s default-budget assertion updated 30 -> 60
+  (`DEFAULT_SOLVE_MAX_TIME_SECONDS` pinned alongside `DEEP_SOLVE_MAX_TIME_SECONDS`, same
+  drift-guard rationale).
+
+**Caveat repeated for emphasis**: every number in this section was measured on a 16-core dev
+workstation. The deployed solver runs on 2 shared Fly CPUs. The worker-count experiment above is the
+best available proxy for that gap (not a true reproduction -- CPU speed/contention on a shared Fly vm
+differs too), and it shows the gap can be severe (complete plateau, no improvement from 30s to 120s at
+`numWorkers:2` on this exact block). The 60s default was chosen conservatively with this in mind; it
+is not a claim that 60s reliably beats local on the actual Fly deployment, which this task could not
+directly measure.
+
+No `solver-service` Python files changed by this task (JS-only: default budget, timeout wiring,
+progress copy, one test file). `solver-service` pytest: 191 passed, 4 pre-existing unrelated
+collection failures (missing `jwt` package in this environment, confirmed pre-existing and unchanged
+by this task). `npm test`: 1442 passed, 4 skipped (SOLVER_PARITY-gated, need Python), same as before
+this task. `npm run build`: clean.
