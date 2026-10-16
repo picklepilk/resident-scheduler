@@ -22428,6 +22428,10 @@ export default function ResidentScheduler({ viewer } = {}) {
   // filters on (migrate_res_state_history.sql). Updated after every successful load/save/conflict
   // resolution. Single source of the key list is LS_BACKUP_KEYS via `syncBindings`.
   const cloudBaselineRef = useRef(null);
+  // The active playground's own `_playground` meta (name, owner, source), read from its cloud row
+  // at mount and re-sent with every save — saves are built from LS_BACKUP_KEYS only, so without
+  // this the first autosave dropped the name and the list showed "Untitled playground".
+  const playgroundMetaRef = useRef(null);
 
   // One place mapping each synced key → [current value, setter]. The cloud payload, the overlay,
   // and the baseline snapshot all derive from LS_BACKUP_KEYS through this — so a new res_* key
@@ -22469,6 +22473,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       }
       if (row && row.data) {
         const d = row.data;
+        if (demoMode && d[PLAYGROUND_META_KEY]) playgroundMetaRef.current = d[PLAYGROUND_META_KEY];
         LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
         // Baseline = the document now in sync with the cloud (applied value where present, else
         // the local value we left untouched) — so the save effect below won't re-upload what we
@@ -22557,6 +22562,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     setDbStatus('saving');
     const payload = {};
     LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+    if (demoMode && playgroundMetaRef.current) payload[PLAYGROUND_META_KEY] = playgroundMetaRef.current;
     const rowId = demoMode ? activeRowId : RES_STATE_ROW_ID;
     try {
       // Catches a wiring bug (demoMode/activeRowId drifting apart) before it reaches the network —
@@ -22625,6 +22631,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     const { rowId, remote } = cloudConflict;
     const payload = {};
     LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
+    if (demoMode && playgroundMetaRef.current) payload[PLAYGROUND_META_KEY] = playgroundMetaRef.current;
     try {
       const row = await sbSaveStateVersioned(payload, remote.version, rowId);
       if (!row) {
