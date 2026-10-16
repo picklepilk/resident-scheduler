@@ -40,6 +40,12 @@ import {
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { diffState } from './lib/stateDiff.js';
+import {
+  REAL_ROW_ID, LEGACY_DEMO_ROW_ID, PLAYGROUND_META_KEY, isPlaygroundId, isSandboxRowId,
+  ownerUidFromPlaygroundId, makePlaygroundId, isPlaygroundModeValue, resolveActiveRowId,
+  assertWriteTargetRowId, makePlaygroundMeta, shapePlaygroundListRow, filterOwnPlaygrounds,
+  findMatchingRealBlock, summarizePromoteDiff, promoteBlockSchedule,
+} from './lib/playgrounds.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
@@ -3382,6 +3388,17 @@ const CHANGELOG = [
   // Same non-interrupting insert as the entry below (see its own comment) — second position, not
   // first, so CHANGELOG[0] stays exactly as it was and no banner re-interrupts anyone who already
   // dismissed it; this still shows up in the full What's New archive tab.
+  {
+    id: '2026-10-15-playgrounds',
+    date: '2026-10-15',
+    title: 'Your own playground, separate from every other admin\'s',
+    items: [
+      'The flask icon now opens **Playgrounds** — your own disposable copies of the workspace, instead of one demo shared by every admin.',
+      'Create a playground as a **copy of the current block** or **blank**, give it a name, and come back to it later.',
+      'Inside a playground, **Use this schedule for real…** can replace the matching real block\'s schedule, with a typed confirm and undo via Settings → Version History.',
+      'An old shared demo from before this change shows up once, with the option to resume it as a new playground or delete it.',
+    ],
+  },
   {
     id: '2026-10-15-coverage-board',
     date: '2026-10-15',
@@ -19348,6 +19365,19 @@ const sbProfileEmails = async (ids) => {
   return map;
 };
 
+// Playgrounds (see src/lib/playgrounds.js for the pure id/guard/diff logic): one res_state row
+// per admin-created playground, id `pg_<ownerUid>_<rand>`. No extra RLS policy needed — res_state's
+// existing admin-wide policy (`is_admin()` on every row) already covers a brand-new row id the
+// moment it's created. Lists only `updated_at` + the doc's own `_playground` meta object, never a
+// playground's full `data` — same "metadata first, data lazily" discipline as sbFetchHistory above.
+// The `like.pg_<uid>_*` filter already scopes this to one admin's own rows server-side;
+// filterOwnPlaygrounds is defense-in-depth against a future query change silently widening it.
+const sbListPlaygrounds = async (ownerUid) => {
+  if (!SUPABASE_ENABLED || !ownerUid) return [];
+  const rows = await sbFetch(`/res_state?id=like.pg_${ownerUid}_*&select=id,updated_at,meta:data->_playground`);
+  return filterOwnPlaygrounds(rows || [], ownerUid).map(shapePlaygroundListRow);
+};
+
 // Resolves sbLoadState's null-result ambiguity (see its own comment): is_admin() is a SECURITY
 // DEFINER function checked against `profiles`, not `res_state` — it answers truthfully regardless
 // of what res_state's own RLS was willing to show the caller, so "am I actually authorized here"
@@ -19517,7 +19547,7 @@ function ImportHistoryPanel({ importLog, setImportLog }) {
   );
 }
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, activeRowId, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave }) {
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -19587,14 +19617,14 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   function importData(e) {
-    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); e.target.value = ''; return; }
+    if (demoMode) { showToast('Exit the playground first.', 'red'); e.target.value = ''; return; }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async () => {
       try {
         const parsed = JSON.parse(reader.result);
-        if (parsed.demo === true) { showToast("That file is a demo-sandbox backup — it can't be restored over real data.", 'red'); return; }
+        if (parsed.demo === true) { showToast("That file is a playground backup — it can't be restored over real data.", 'red'); return; }
         const d = parsed.data || parsed;
         // Build a clean, sync-safe object from LS_BACKUP_KEYS only — this excludes res_dark_mode
         // and any other stray keys in the file from ever reaching the shared cloud document.
@@ -19616,6 +19646,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             // ignore-duplicates-seeds if the row doesn't exist yet), so a concurrent admin's save
             // in the gap between opening this file and clicking Import surfaces as a conflict
             // instead of silently vanishing under the import.
+            assertWriteTargetRowId(RES_STATE_ROW_ID, { expectPlayground: false });
             const saved = await sbSaveStateExplicit(clean);
             if (!saved) {
               syncSuspended = false;
@@ -19639,16 +19670,19 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   }
 
   async function clearAll() {
-    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); return; }
+    if (demoMode) { showToast('Exit the playground first.', 'red'); return; }
     if (SUPABASE_ENABLED) {
       // Delete the cloud rows FIRST, and only wipe localStorage + reload if the MAIN row succeeds —
       // otherwise the reload's overlay would fetch the still-intact row and restore everything.
       // syncSuspended blocks the root's debounced auto-save from re-creating either row during our
-      // delete. Main row deleted first (not demo) so "nothing changed" stays true if it fails — the
-      // demo row is a disposable, resumable sandbox slot, not real data, so its own delete is
-      // attempted after and failing it doesn't block or misreport the real-data clear.
+      // delete. Main row deleted first (not the legacy demo row) so "nothing changed" stays true if
+      // it fails — the legacy row is a disposable, resumable sandbox slot, not real data, so its
+      // own delete is attempted after and failing it doesn't block or misreport the real-data clear.
+      // Per-playground rows are NOT touched here — clearAll wipes real data only; an admin's
+      // playgrounds survive a real-data clear (delete them individually from the manager instead).
       syncSuspended = true;
       try {
+        assertWriteTargetRowId(RES_STATE_ROW_ID, { expectPlayground: false });
         await sbDeleteState();
       } catch (err) {
         syncSuspended = false;
@@ -19679,11 +19713,13 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   const [restoreFor, setRestoreFor] = useState(null);     // lightweight history row pending restore confirmation
   const [restoring, setRestoring] = useState(false);
 
-  const historyRowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
+  // migrate_res_state_history.sql's triggers apply to every res_state row generically, so Version
+  // History already works for a playground row with no extra plumbing — it just needs the right id.
+  const historyRowId = demoMode ? activeRowId : RES_STATE_ROW_ID;
 
   // Bumped on every loadPreviewDiff() call (including Retry) — a stale response from an earlier
   // call (superseded by the admin closing this preview, opening a different one, or hitting Retry)
-  // checks this before writing state, same pattern as openDemoModal's demoCheckGenRef.
+  // checks this before writing state, same pattern as openPlaygroundManager's demoCheckGenRef.
   const previewGenRef = useRef(0);
 
   // Preview diff lazily loads a row's full data (sbFetchHistory's list never carries it — see its
@@ -19743,7 +19779,11 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
   // `row` is the lightweight list/metadata row (sbFetchHistory never carries `data` — see its own
   // comment); the full document is fetched lazily here, only for the one version actually chosen.
   async function doRestore(row) {
-    if (demoMode) { showToast('Exit the demo sandbox first.', 'red'); setRestoreFor(null); return; }
+    // Restore always targets the REAL row (sbSaveStateExplicit(..., RES_STATE_ROW_ID) below) even
+    // though historyRowId just above lets an admin BROWSE a playground's own history while inside
+    // it — refuse here rather than let a restore while viewing playground history silently land on
+    // the real workspace instead.
+    if (demoMode) { showToast('Exit the playground first.', 'red'); setRestoreFor(null); return; }
     setRestoring(true);
     let data;
     try {
@@ -19761,13 +19801,14 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
     const clean = {};
     for (const k of LS_BACKUP_KEYS) { if (data[k] !== undefined && data[k] !== null) clean[k] = data[k]; }
     // Rescues any save still pending or already in flight BEFORE syncSuspended goes up — same
-    // reason deleteDemo does this first: without it, a debounced autosave that fires in the gap
+    // reason deletePlayground does this first: without it, a debounced autosave that fires in the gap
     // could either race our write or, worse, get silently dropped by syncSuspended right under it.
     await flushPendingCloudSave();
     syncSuspended = true;
     try {
       // Restore IS a deliberate full replace — but still race-safe (sbSaveStateExplicit): see
       // importData's identical reasoning just above.
+      assertWriteTargetRowId(RES_STATE_ROW_ID, { expectPlayground: false });
       const saved = await sbSaveStateExplicit(clean, RES_STATE_ROW_ID);
       if (!saved) {
         syncSuspended = false;
@@ -22234,22 +22275,36 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [publishConfirm, setPublishConfirm] = useState(false); // block status rail's "Publish" step
 
-  // ─── DEMO SANDBOX ─────────────────────────────────────────────────────────
+  // ─── PLAYGROUNDS ──────────────────────────────────────────────────────────
   // A disposable copy of the whole workspace an admin can experiment in without risking the real
-  // schedule (see em-scheduler's own "Demo Sandbox" for the pattern this mirrors). Isolation is by
-  // PHYSICAL localStorage key (res_* vs res_demo_*) plus a second Supabase row (RES_STATE_DEMO_ROW_ID).
-  // The real res_* keys and the 'main' cloud row are reachable only through rowId's default param
-  // and the mount-load/debounced-save effects' own demoMode ternary — a discipline each call site
-  // must honor, not a structural impossibility.
+  // schedule (see em-scheduler's own "Demo Sandbox" for the pattern this mirrors, and
+  // src/lib/playgrounds.js for the pure id/guard/diff logic). Unlike the old single shared demo
+  // row, each admin gets their OWN playground(s) — one res_state row per playground, id
+  // `pg_<ownerUid>_<rand>` — so two admins never silently overwrite each other's sandbox. Isolation
+  // is still by PHYSICAL localStorage key (res_* vs res_demo_*) plus a second Supabase row, exactly
+  // like before; the only thing that changed is WHICH row id that second row is.
   //
-  // demoMode is read once per mount (useLocalStorage's lazy initializer only reads localStorage on
-  // first mount) — every enter/exit/resume/delete function below sets DEMO_MODE_KEY then calls
-  // window.location.reload(), the same "commit then reload" discipline SettingsTab's
-  // importData/clearAll already use, so a clean remount is what actually swaps which physical keys
-  // the nine hooks below resolve to.
-  const demoMode = useMemo(() => {
-    try { return localStorage.getItem(DEMO_MODE_KEY) === 'true'; } catch { return false; }
+  // Only ONE physical local slot exists at a time, for whichever playground is currently active —
+  // switching playgrounds (create/resume/exit/delete) always flushes, swaps the row id, and
+  // reloads, the same "commit then reload" discipline SettingsTab's importData/clearAll already
+  // use. res_demo_mode (device-local) now holds either the literal 'true' (the OLD shared demo —
+  // never auto-entered again under this design, only offered once in the manager as "Old shared
+  // demo": Resume migrates it into a new personal playground, Delete removes it for good) or an
+  // active playground's row id. storedDemoModeValue is read once per mount, same reason the old
+  // demoMode was — useLocalStorage's lazy initializer only reads localStorage on first mount.
+  const storedDemoModeValue = useMemo(() => {
+    try { return localStorage.getItem(DEMO_MODE_KEY); } catch { return null; }
   }, []);
+  // A corrupt/unrecognized stored value (anything that isn't a real playground id) is treated as
+  // "not in a playground" rather than guessed at — see isPlaygroundId's own header. This also means
+  // the legacy literal 'true' resolves to demoMode:false here (on purpose — see the comment above).
+  const activeRowId = isPlaygroundId(storedDemoModeValue) ? storedDemoModeValue : null;
+  const demoMode = activeRowId !== null;
+  // Device-local, single-slot descriptor for local-only installs (no Supabase) — there is nowhere
+  // to persist more than one playground's data locally while a different one is active, so
+  // local-only mode supports exactly ONE playground at a time (see lib/playgrounds.js header).
+  // NOT in LS_BACKUP_KEYS/syncBindings, same posture as res_demo_mode itself.
+  const LOCAL_PG_META_KEY = 'res_pg_local_meta';
   // Maps a base res_* key to its physical storage key for the current mode. res_dark_mode is
   // deliberately never passed through this — it's a device preference shared between real and demo.
   const physKey = k => demoMode ? k.replace(/^res_/, 'res_demo_') : k;
@@ -22382,7 +22437,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     (async () => {
       let row;
       try {
-        row = await sbLoadState(demoMode ? RES_STATE_DEMO_ROW_ID : undefined);
+        row = await sbLoadState(demoMode ? activeRowId : undefined);
       } catch (e) {
         // Load failed (network/timeout, or a genuine 401/403 — see fetchWithTimeout/sbFetch's
         // !res.ok throw) → do NOT set dbReady. Leaving it false keeps the debounced save disabled,
@@ -22482,8 +22537,12 @@ export default function ResidentScheduler({ viewer } = {}) {
     setDbStatus('saving');
     const payload = {};
     LS_BACKUP_KEYS.forEach(k => { payload[k] = syncBindings[k][0]; });
-    const rowId = demoMode ? RES_STATE_DEMO_ROW_ID : RES_STATE_ROW_ID;
+    const rowId = demoMode ? activeRowId : RES_STATE_ROW_ID;
     try {
+      // Catches a wiring bug (demoMode/activeRowId drifting apart) before it reaches the network —
+      // see src/lib/playgrounds.js's assertWriteTargetRowId. Folded into this try/catch so it's
+      // reported the same way any other save failure is (dbStatus/dbError), never thrown to the caller.
+      assertWriteTargetRowId(rowId, { expectPlayground: demoMode });
       const row = base
         ? await sbSaveStateVersioned(payload, base.version, rowId)
         : await sbSaveStateExplicit(payload, rowId);
@@ -22585,7 +22644,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog, dbReady]);
 
-  // Demo Sandbox entry/exit — see the DEMO SANDBOX comment above the useLocalStorage block for the
+  // Playground entry/exit — see the PLAYGROUNDS comment above the useLocalStorage block for the
   // isolation design. Every action here ends in window.location.reload(): demoMode is only ever
   // decided once per mount, so flipping DEMO_MODE_KEY needs a real remount to take effect.
   const [demoModalOpen, setDemoModalOpen] = useState(false);
@@ -22606,15 +22665,40 @@ export default function ResidentScheduler({ viewer } = {}) {
   };
   const unseenChangelogIds = useMemo(
     () => new Set(unseenChangelogFor(seenChangelogId).map(e => e.id)), [seenChangelogId]);
-  const [demoExisting, setDemoExisting] = useState(false); // does a resumable demo already exist?
-  const [demoCheckPending, setDemoCheckPending] = useState(true); // still checking local/cloud for an existing demo?
-  const [demoCheckError, setDemoCheckError] = useState(false); // couldn't confirm either way — don't guess
+  // My playgrounds (cloud mode) — metadata only, shaped by lib/playgrounds.js's
+  // shapePlaygroundListRow; never the full document (see sbListPlaygrounds's own comment).
+  const [pgList, setPgList] = useState([]);
+  const [pgListPending, setPgListPending] = useState(true);
+  const [pgListError, setPgListError] = useState(false); // couldn't confirm either way — don't guess
+  // The old shared demo row, if it still exists — offered once as "Old shared demo" (Resume =
+  // migrate into a new personal playground; Delete = remove for good). null = confirmed absent or
+  // not yet checked; { data, version } once loaded.
+  const [legacyDemoRow, setLegacyDemoRow] = useState(null);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [newPgName, setNewPgName] = useState(''); // manager modal's "New playground" name field
+  const [confirmDeletePg, setConfirmDeletePg] = useState(null); // the pgList row pending delete confirmation
   const demoPhysKey = k => k.replace(/^res_/, 'res_demo_');
-  // Bumped on every openDemoModal() call; a slow/stale cloud probe checks this before writing
-  // state so a reopened modal's fresh result can't be clobbered by an earlier, still-in-flight
-  // probe resolving/rejecting later (e.g. open, close, reopen — first sbLoadState finally lands).
+  // Bumped on every openPlaygroundManager() call; a slow/stale cloud probe checks this before
+  // writing state so a reopened modal's fresh result can't be clobbered by an earlier, still-in-
+  // flight probe resolving/rejecting later (e.g. open, close, reopen — first sbLoadState finally
+  // lands).
   const demoCheckGenRef = useRef(0);
+  // "Use this schedule for real…" (promote) — see promoteBlockSchedule's own header for the merge
+  // semantics. null outside the confirm flow; { real, matched, diff } once a promote target has
+  // been found and the admin is being asked to type the block name to confirm.
+  const [promoteConfirm, setPromoteConfirm] = useState(null);
+  const [promoteTypedName, setPromoteTypedName] = useState('');
+  const [promoting, setPromoting] = useState(false);
+  // Best-effort cached name for the banner — read once per mount (same reason demoMode/activeRowId
+  // are), only trusted when it's actually for THIS mount's active row (a stale cache from a since-
+  // switched-away playground is never shown as if it were the current one).
+  const activePgMeta = useMemo(() => {
+    if (!demoMode) return null;
+    try {
+      const m = JSON.parse(localStorage.getItem(LOCAL_PG_META_KEY));
+      return (m && m.id === activeRowId) ? m : null;
+    } catch { return null; }
+  }, []);
 
   // Flushes a pending or in-flight debounced cloud-save before a demo transition reloads the page.
   // Without this, an edit made shortly before clicking a demo button never gets uploaded — the
@@ -22754,108 +22838,288 @@ export default function ResidentScheduler({ viewer } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function openDemoModal() {
+  // Opens the manager and lists this admin's own playgrounds (cloud mode) or the single local-only
+  // one (no Supabase) — plus the old shared demo row, if it still exists, as a one-time migration
+  // offer. Never fetches a playground's full `data` just to list it (sbListPlaygrounds mirrors
+  // sbFetchHistory's "metadata first" discipline).
+  async function openPlaygroundManager() {
     const gen = ++demoCheckGenRef.current;
     setDemoModalOpen(true);
-    setDemoCheckPending(true);
-    setDemoCheckError(false);
-    if (LS_BACKUP_KEYS.some(k => localStorage.getItem(demoPhysKey(k)) != null)) { setDemoExisting(true); setDemoCheckPending(false); return; }
-    if (!SUPABASE_ENABLED) { setDemoExisting(false); setDemoCheckPending(false); return; }
+    setPgListPending(true);
+    setPgListError(false);
+    if (!SUPABASE_ENABLED) {
+      // Local-only: at most one playground, described by LOCAL_PG_META_KEY — its content (if any)
+      // already lives under the res_demo_* physical keys, exactly like the old single demo did.
+      let meta = null;
+      try { meta = JSON.parse(localStorage.getItem(LOCAL_PG_META_KEY)); } catch { meta = null; }
+      const hasData = LS_BACKUP_KEYS.some(k => { try { return localStorage.getItem(demoPhysKey(k)) != null; } catch { return false; } });
+      if (hasData && meta?.id) {
+        setPgList([{ id: meta.id, name: meta.name || 'Local playground', source: meta.source || 'copy', createdAt: meta.createdAt || null, updatedAt: null }]);
+        setLegacyDemoRow(null);
+      } else if (hasData) {
+        // Local demo data with no _playground meta — predates this feature. Offer it as the same
+        // one-time "Old shared demo" migration the cloud path offers below, not as a playground.
+        setPgList([]);
+        setLegacyDemoRow({ local: true });
+      } else {
+        setPgList([]);
+        setLegacyDemoRow(null);
+      }
+      setPgListPending(false);
+      return;
+    }
     try {
-      const row = await sbLoadState(RES_STATE_DEMO_ROW_ID);
-      if (gen !== demoCheckGenRef.current) return; // superseded by a later openDemoModal() call
-      setDemoExisting(!!(row && row.data));
+      const [mine, legacy] = await Promise.all([
+        sbListPlaygrounds(viewer?.userId),
+        sbLoadState(LEGACY_DEMO_ROW_ID),
+      ]);
+      if (gen !== demoCheckGenRef.current) return; // superseded by a later openPlaygroundManager() call
+      setPgList(mine);
+      setLegacyDemoRow(legacy && legacy.data ? legacy : null);
     } catch {
-      // Unknown, not "no demo" and not "a demo exists" — either guess is wrong in a different way
-      // (offering a phantom Resume vs silently enabling an overwrite of a demo we never confirmed
-      // is absent). Force the admin to retry rather than acting on an unconfirmed guess.
+      // Unknown, not "no playgrounds" — showing an empty list here would read as "you have none",
+      // which is a different wrong answer than "couldn't check". Force a retry instead of guessing.
       if (gen !== demoCheckGenRef.current) return;
-      setDemoCheckError(true);
+      setPgListError(true);
     } finally {
-      if (gen === demoCheckGenRef.current) setDemoCheckPending(false);
+      if (gen === demoCheckGenRef.current) setPgListPending(false);
     }
   }
 
-  // Copies the real, currently-live data into the res_demo_* keys (and the cloud demo row, if
-  // configured) so the sandbox starts as a full working copy — not a blank slate.
-  async function enterDemoFresh() {
+  // Creates a new playground (source: 'copy' of the live real data, or 'blank' — real app
+  // defaults) and makes it the active one on this device. Always mints a real `pg_<uid>_<rand>`
+  // id (via makePlaygroundId), cloud mode or local-only alike, so demoMode/activeRowId's
+  // isPlaygroundId check works uniformly regardless of which mode created it.
+  async function createPlayground(name, source) {
     setDemoBusy(true);
     try {
       await flushPendingCloudSave();
-      // Cloud-first discipline (same as SettingsTab.importData/clearAll): a device that hasn't
-      // confirmed what the cloud holds must not push to it — abort instead of silently degrading
-      // to a local-only demo that a later reload could overwrite with a stale cloud row.
       if (SUPABASE_ENABLED && !dbReady) {
         setDemoBusy(false);
         showToast('Cloud sync is not ready — reload and try again.', 'red');
         return;
       }
+      const ownerUid = viewer?.userId || 'local';
+      const newId = makePlaygroundId(ownerUid);
       const doc = {};
-      for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
-      // Explicit full replace (sbSaveStateExplicit), like Import Backup — "start fresh" always
-      // means replace whatever demo row exists, not negotiate with it — but still race-safe: a
-      // null result means another admin wrote the demo row in the gap since openDemoModal's probe,
-      // which aborts here with an actionable error rather than silently overwriting it.
+      // 'blank' stores null for every key — the per-key cloud/local overlay below already skips
+      // null and falls back to the exact same useLocalStorage default every device already uses,
+      // so this reproduces "real app defaults" without hand-duplicating them here.
+      for (const k of LS_BACKUP_KEYS) doc[k] = source === 'blank' ? null : syncBindings[k][0];
+      const meta = makePlaygroundMeta({ name, ownerUid, ownerEmail: viewer?.email, source });
+      doc[PLAYGROUND_META_KEY] = meta;
       if (SUPABASE_ENABLED) {
-        const saved = await sbSaveStateExplicit(doc, RES_STATE_DEMO_ROW_ID);
+        assertWriteTargetRowId(newId, { expectPlayground: true });
+        const saved = await sbSaveStateExplicit(doc, newId);
         if (!saved) {
           setDemoBusy(false);
-          showToast('Another admin changed the demo just now — reopen Demo Sandbox and try again.', 'red');
+          showToast('Could not create the playground — another write landed at the same time, try again.', 'red');
           return;
         }
       }
-      for (const k of LS_BACKUP_KEYS) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
-      localStorage.setItem(DEMO_MODE_KEY, 'true');
+      // Cached locally regardless of cloud/local-only mode — in local-only mode this IS the
+      // playground's persistent descriptor (no cloud row to hold it); in cloud mode it's just a
+      // best-effort display cache so the banner can show a name without a round-trip on every
+      // mount (the cloud row's own _playground meta stays the source of truth either way).
+      try { localStorage.setItem(LOCAL_PG_META_KEY, JSON.stringify({ id: newId, ...meta })); } catch { /* best-effort */ }
+      for (const k of LS_BACKUP_KEYS) {
+        if (doc[k] != null) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
+        else localStorage.removeItem(demoPhysKey(k));
+      }
+      localStorage.setItem(DEMO_MODE_KEY, newId);
       window.location.reload();
-    } catch {
+    } catch (e) {
+      console.error('createPlayground failed:', e);
       setDemoBusy(false);
-      showToast('Could not start the demo — try again.', 'red');
+      showToast('Could not create the playground — try again.', 'red');
     }
   }
 
   // flushPendingCloudSave never throws, and nothing else here can fail — so, unlike
-  // enterDemoFresh/deleteDemo below (which have real network ops of their own to guard), these two
-  // stay unconditional: entering/exiting the sandbox can never get stuck behind a toast.
-  async function enterDemoResume() {
+  // createPlayground/deletePlayground below (which have real network ops of their own to guard),
+  // this stays unconditional: switching/exiting a playground can never get stuck behind a toast.
+  // Takes the shaped list row (not just the id) so its name can be cached locally for the banner —
+  // see createPlayground's identical caching comment above.
+  async function resumePlayground(row) {
     setDemoBusy(true);
     await flushPendingCloudSave();
-    localStorage.setItem(DEMO_MODE_KEY, 'true');
+    try { localStorage.setItem(LOCAL_PG_META_KEY, JSON.stringify({ id: row.id, name: row.name, source: row.source, ownerUid: row.ownerUid, ownerEmail: row.ownerEmail, createdAt: row.createdAt })); } catch { /* best-effort */ }
+    localStorage.setItem(DEMO_MODE_KEY, row.id);
     window.location.reload();
   }
 
-  async function exitDemo() {
+  async function exitPlayground() {
     setDemoBusy(true);
     await flushPendingCloudSave();
     localStorage.setItem(DEMO_MODE_KEY, 'false');
     window.location.reload();
   }
 
-  // Wipes the demo keys/row only — the real res_* keys and 'main' cloud row are never touched by
-  // this path, since it only ever addresses demoPhysKey()'d keys and RES_STATE_DEMO_ROW_ID.
-  async function deleteDemo() {
+  // Deletes ONE playground's row (twice, defense-in-depth vs a raced upsert — same reasoning as
+  // the old deleteDemo). Only clears THIS device's physical local slot/flag if the playground being
+  // deleted is the one currently active here — deleting a DIFFERENT playground from the manager
+  // (reachable via the banner's "Manage" button while inside another one) must never disturb the
+  // session that's actually live on this device.
+  async function deletePlayground(id) {
     setDemoBusy(true);
     try {
-      // Rescues any save still pending or already in flight BEFORE syncSuspended goes up — this is
-      // what actually closes the resurrection race below, not the belt-and-suspenders double
-      // delete: once this resolves, no debounced upsert for the demo row can still be outstanding.
       await flushPendingCloudSave();
       syncSuspended = true;
       if (SUPABASE_ENABLED) {
-        await sbDeleteState(RES_STATE_DEMO_ROW_ID);
-        // Defense in depth: a debounced auto-save fetch that fired before syncSuspended went up
-        // (and before flushPendingCloudSave started watching it — e.g. one queued between the flush
-        // and the line above) could in principle still land and resurrect the row; delete again.
-        await sbDeleteState(RES_STATE_DEMO_ROW_ID);
+        assertWriteTargetRowId(id, { expectPlayground: true });
+        await sbDeleteState(id);
+        await sbDeleteState(id); // defense in depth, same reasoning as the old deleteDemo
       }
-      // Local demo keys are removed only after BOTH cloud deletes have succeeded — if either
-      // throws, the catch below is honest: local demo data is still intact, nothing was lost.
-      for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
-      localStorage.setItem(DEMO_MODE_KEY, 'false');
+      // In local-only mode this is the only playground that can ever exist, so id === activeRowId
+      // always holds here; the explicit check still guards the general (cloud, multi-playground)
+      // case where the admin is deleting a DIFFERENT playground than the one live on this device.
+      if (activeRowId === id) {
+        for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
+        try { localStorage.removeItem(LOCAL_PG_META_KEY); } catch { /* best-effort */ }
+        localStorage.setItem(DEMO_MODE_KEY, 'false');
+      }
       window.location.reload();
     } catch {
       syncSuspended = false;
       setDemoBusy(false);
-      showToast('Could not delete the cloud demo — try again.', 'red');
+      showToast('Could not delete the playground — try again.', 'red');
+    }
+  }
+
+  // "Old shared demo" migration offer — Resume copies the legacy row/local data into a brand-new
+  // personal playground (never edits the legacy row itself); Delete removes it for good. Neither
+  // path is reachable anymore except through this one-time offer (see the PLAYGROUNDS comment).
+  async function resumeLegacyAsPlayground() {
+    setDemoBusy(true);
+    try {
+      await flushPendingCloudSave();
+      if (SUPABASE_ENABLED && !dbReady) {
+        setDemoBusy(false);
+        showToast('Cloud sync is not ready — reload and try again.', 'red');
+        return;
+      }
+      const ownerUid = viewer?.userId || 'local';
+      const newId = makePlaygroundId(ownerUid);
+      let doc;
+      if (SUPABASE_ENABLED) {
+        const legacy = await sbLoadState(LEGACY_DEMO_ROW_ID);
+        doc = (legacy && legacy.data) ? { ...legacy.data } : {};
+      } else {
+        doc = {};
+        for (const k of LS_BACKUP_KEYS) { try { doc[k] = JSON.parse(localStorage.getItem(demoPhysKey(k))); } catch { doc[k] = null; } }
+      }
+      const meta = makePlaygroundMeta({ name: 'Resumed shared demo', ownerUid, ownerEmail: viewer?.email, source: 'copy' });
+      doc[PLAYGROUND_META_KEY] = meta;
+      if (SUPABASE_ENABLED) {
+        assertWriteTargetRowId(newId, { expectPlayground: true });
+        const saved = await sbSaveStateExplicit(doc, newId);
+        if (!saved) {
+          setDemoBusy(false);
+          showToast('Could not resume the old demo — another write landed at the same time, try again.', 'red');
+          return;
+        }
+      }
+      try { localStorage.setItem(LOCAL_PG_META_KEY, JSON.stringify({ id: newId, ...meta })); } catch { /* best-effort */ }
+      for (const k of LS_BACKUP_KEYS) {
+        if (doc[k] != null) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
+        else localStorage.removeItem(demoPhysKey(k));
+      }
+      localStorage.setItem(DEMO_MODE_KEY, newId);
+      window.location.reload();
+    } catch {
+      setDemoBusy(false);
+      showToast('Could not resume the old demo — try again.', 'red');
+    }
+  }
+
+  async function deleteLegacyDemo() {
+    setDemoBusy(true);
+    try {
+      await flushPendingCloudSave();
+      syncSuspended = true;
+      if (SUPABASE_ENABLED) {
+        await sbDeleteState(LEGACY_DEMO_ROW_ID);
+        await sbDeleteState(LEGACY_DEMO_ROW_ID);
+      }
+      // Only touch this device's local slot/flag when it isn't currently hosting a DIFFERENT,
+      // still-active playground (reachable via the banner's "Manage" button) — the legacy row and
+      // its stray local keys are unrelated to whatever playground is live right now.
+      if (!demoMode) {
+        for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
+        localStorage.setItem(DEMO_MODE_KEY, 'false');
+      }
+      window.location.reload();
+    } catch {
+      syncSuspended = false;
+      setDemoBusy(false);
+      showToast('Could not delete the old demo — try again.', 'red');
+    }
+  }
+
+  // ─── Promote to real ("Use this schedule for real…") ───────────────────────────────────────────
+  // Cloud-only (see CLAUDE.md/the brief: local-only has no Version History to undo through, so
+  // promote is hidden there with an explanation rather than built a second, unsafe way). Operates
+  // entirely on the 'main' cloud row directly — never switches this device out of its active
+  // playground, never touches local state for the real workspace.
+  const canPromote = SUPABASE_ENABLED && dbReady && demoMode;
+
+  // Step 1: load the real doc FRESH (never this device's stale view — it doesn't have one while in
+  // a playground), find its matching live block, and summarize the diff for the confirm dialog.
+  async function requestPromote() {
+    if (!canPromote) return;
+    setPromoting(true);
+    try {
+      const real = await sbLoadState(REAL_ROW_ID);
+      if (!real) {
+        setPromoting(false);
+        showToast('Could not load the real schedule — try again.', 'red');
+        return;
+      }
+      const matched = findMatchingRealBlock(real.data, block);
+      if (!matched) {
+        setPromoting(false);
+        showToast("No matching real block found — the real workspace's current block doesn't match this playground's block (by id or by dates).", 'red');
+        return;
+      }
+      const diff = summarizePromoteDiff(matched, block);
+      setPromoteTypedName('');
+      setPromoteConfirm({ real, matched, diff });
+    } catch (e) {
+      showToast('Could not load the real schedule — ' + e.message, 'red');
+    } finally {
+      setPromoting(false);
+    }
+  }
+
+  // Step 2: typed-name-gated commit. Race-safe against a concurrent chief save: PATCHes against
+  // the EXACT version loaded in step 1 (sbSaveStateVersioned), and a 0-rows-back result means
+  // someone saved the real row in between — abort with an actionable toast rather than overwrite
+  // (there's no live cloudConflict modal to open here; this device isn't in the real workspace).
+  async function confirmPromote() {
+    if (!promoteConfirm) return;
+    setPromoting(true);
+    try {
+      const merged = promoteBlockSchedule(promoteConfirm.real.data, block);
+      if (!merged) {
+        setPromoting(false);
+        setPromoteConfirm(null);
+        showToast('That block no longer exists in the real schedule — try again.', 'red');
+        return;
+      }
+      assertWriteTargetRowId(REAL_ROW_ID, { expectPlayground: false });
+      const saved = await sbSaveStateVersioned(merged, promoteConfirm.real.version, REAL_ROW_ID);
+      if (!saved) {
+        setPromoting(false);
+        setPromoteConfirm(null);
+        showToast('Another admin saved the real schedule just now — nothing was changed. Try again.', 'red');
+        return;
+      }
+      setPromoting(false);
+      setPromoteConfirm(null);
+      showToast('Real schedule updated — undo via Settings → Version History.', 'green');
+    } catch (e) {
+      setPromoting(false);
+      showToast('Could not promote — ' + e.message, 'red');
     }
   }
 
@@ -23498,7 +23762,7 @@ export default function ResidentScheduler({ viewer } = {}) {
             )}
             <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
             {!demoMode && (
-              <button onClick={openDemoModal} title="Demo Sandbox — practice on a disposable copy of your data"
+              <button onClick={openPlaygroundManager} title="Playground — your own disposable copy to practice in, separate from every other admin's"
                 className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
                 <FlaskConical size={16}/>
               </button>
@@ -23549,7 +23813,7 @@ export default function ResidentScheduler({ viewer } = {}) {
                       </button>
                       <button role="menuitem" onClick={()=>{
                           setExportMenuOpen(false);
-                          if (demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); return; }
+                          if (demoMode) { showToast('QGenda export is disabled in a playground.', 'red'); return; }
                           setQgendaPicker(true);
                         }}
                         title="One row per shift, for QGenda import"
@@ -23578,10 +23842,17 @@ export default function ResidentScheduler({ viewer } = {}) {
       {demoMode && (
         <div className="no-print shrink-0 flex items-center justify-between gap-3 px-5 py-2 text-white"
           style={{ background: 'repeating-linear-gradient(45deg, #a21caf, #a21caf 10px, #86198f 10px, #86198f 20px)' }}>
-          <span className="text-xs font-semibold">DEMO SANDBOX — you're editing a disposable copy. Your real schedules are untouched.</span>
+          <span className="text-xs font-semibold">
+            PLAYGROUND{activePgMeta?.name ? `: ${activePgMeta.name}` : ''} — the real schedule isn't affected.
+          </span>
           <div className="flex items-center gap-2 flex-none">
-            <button onClick={exitDemo} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30">Exit demo</button>
-            <button onClick={deleteDemo} disabled={demoBusy} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30 disabled:opacity-50">Delete demo &amp; exit</button>
+            <button onClick={requestPromote} disabled={!canPromote || promoting}
+              title={canPromote ? 'Replace the matching real block\'s schedule with this one (typed confirm, undoable via Version History)' : "Needs cloud sync for the undo-safety of Version History — not available in local-only mode"}
+              className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30 disabled:opacity-50">
+              Use this schedule for real…
+            </button>
+            <button onClick={openPlaygroundManager} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30">Manage</button>
+            <button onClick={exitPlayground} className="text-xs font-medium px-2.5 py-1 rounded-md bg-white/20 hover:bg-white/30">Exit</button>
           </div>
         </div>
       )}
@@ -23589,30 +23860,99 @@ export default function ResidentScheduler({ viewer } = {}) {
       {whatsNew.length > 0 && <WhatsNewModal entries={whatsNew} onClose={markChangelogSeen}/>}
 
       {demoModalOpen && (
-        <Modal title="Demo Sandbox" onClose={()=>setDemoModalOpen(false)}>
-          <div className="space-y-3 text-sm text-gray-600">
-            <p>Practice building schedules on a disposable copy of your data — your real roster, block, and rules stay untouched until you exit.</p>
-            {demoCheckPending && <p className="text-xs text-gray-400">Checking for an existing demo…</p>}
-            {demoCheckError && <p className="text-xs text-red-600">Could not confirm whether a demo already exists — close this and try again before starting or deleting one.</p>}
-            <div className="space-y-2 pt-1">
-              {demoExisting && (
-                <Button variant="primary" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={enterDemoResume}>
-                  Resume existing demo
+        <Modal title="Playgrounds" onClose={()=>setDemoModalOpen(false)}>
+          <div className="space-y-4 text-sm text-gray-600">
+            <p>Your own disposable copies of the workspace — separate from every other admin's and from the real schedule, until you promote one back.</p>
+            {pgListPending && <p className="text-xs text-gray-400">Checking your playgrounds…</p>}
+            {pgListError && <p className="text-xs text-red-600">Could not load your playgrounds — close this and try again.</p>}
+            {!pgListPending && !pgListError && (
+              <div className="space-y-2">
+                {pgList.length === 0 && <p className="text-xs text-gray-400 italic">No playgrounds yet.</p>}
+                {pgList.map(pg => (
+                  <div key={pg.id} className="flex items-center justify-between gap-2 border border-border rounded-lg px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-foreground truncate">{pg.name}{activeRowId === pg.id ? ' (active)' : ''}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {pg.source === 'blank' ? 'Blank' : 'Copy of current'}
+                        {pg.updatedAt && <> · saved {new Date(pg.updatedAt).toLocaleString()}</>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 flex-none">
+                      {activeRowId !== pg.id && (
+                        <Button variant="secondary" size="sm" disabled={demoBusy} onClick={() => resumePlayground(pg)}>Resume</Button>
+                      )}
+                      <Button variant="dangerOutline" size="sm" disabled={demoBusy} onClick={() => setConfirmDeletePg(pg)}>Delete</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {legacyDemoRow && (
+              <div className="border border-amber-200 bg-amber-50 rounded-lg px-3 py-2 space-y-1.5">
+                <div className="text-xs font-medium text-amber-800">Old shared demo</div>
+                <p className="text-[11px] text-amber-700">From before per-admin playgrounds. Resume to copy it into a new playground of your own, or delete it for good.</p>
+                <div className="flex items-center gap-2">
+                  <Button variant="secondary" size="sm" disabled={demoBusy} onClick={resumeLegacyAsPlayground}>Resume as a new playground</Button>
+                  <Button variant="dangerOutline" size="sm" disabled={demoBusy} onClick={deleteLegacyDemo}>Delete</Button>
+                </div>
+              </div>
+            )}
+            <div className="border-t border-border pt-3 space-y-2">
+              <label className="block text-xs font-medium text-gray-700">New playground</label>
+              <input className="input-field" placeholder='Name (e.g. "Block 5 what-if")' value={newPgName}
+                onChange={e => setNewPgName(e.target.value)} maxLength={60}/>
+              <div className="flex gap-2">
+                <Button variant="primary" className="flex-1 justify-center" disabled={demoBusy || !newPgName.trim()}
+                  onClick={() => createPlayground(newPgName, 'copy')} title="Starts as a full working copy of the current real data">
+                  Copy of current
                 </Button>
-              )}
-              <Button variant="secondary" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={enterDemoFresh}>
-                {demoExisting ? 'Start fresh (replaces existing demo)' : 'Start fresh — copy of current data'}
-              </Button>
-              {demoExisting && (
-                <Button variant="dangerOutline" className="w-full justify-center" disabled={demoBusy || demoCheckPending || demoCheckError} onClick={deleteDemo}>
-                  Delete demo
+                <Button variant="secondary" className="flex-1 justify-center" disabled={demoBusy || !newPgName.trim()}
+                  onClick={() => createPlayground(newPgName, 'blank')} title="Starts empty, at the app's own defaults">
+                  Blank
                 </Button>
-              )}
+              </div>
             </div>
-            {SUPABASE_ENABLED && <p className="text-xs text-gray-400">The demo is shared across your devices, in one slot — another admin's demo edits will be lost if overwritten.</p>}
+            {!SUPABASE_ENABLED && <p className="text-xs text-gray-400">Local-only mode supports one playground at a time — creating a new one replaces it.</p>}
           </div>
         </Modal>
       )}
+
+      {confirmDeletePg && (
+        <ConfirmDialog icon={Trash2} tone="danger" title={`Delete "${confirmDeletePg.name}"?`}
+          actions={
+            <>
+              <Button variant="secondary" size="sm" onClick={() => setConfirmDeletePg(null)}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={() => { const id = confirmDeletePg.id; setConfirmDeletePg(null); deletePlayground(id); }}>Delete</Button>
+            </>
+          }>
+          <p>This permanently deletes this playground. This can't be undone.</p>
+        </ConfirmDialog>
+      )}
+
+      {/* Promote ("Use this schedule for real…"): typed-name-gated, race-safe against a concurrent
+          chief save (see confirmPromote's own header) — never a silent overwrite. */}
+      {promoteConfirm && (() => {
+        const label = promoteConfirm.matched.name || promoteConfirm.matched.startDate || promoteConfirm.matched.id;
+        const matches = promoteTypedName.trim() === String(label).trim();
+        return (
+          <ConfirmDialog icon={AlertTriangle} tone="warn" title="Use this schedule for real?"
+            actions={
+              <>
+                <Button variant="secondary" size="sm" onClick={() => setPromoteConfirm(null)}>Cancel</Button>
+                <Button variant="danger" size="sm" disabled={promoting || !matches} onClick={confirmPromote}>Replace real schedule</Button>
+              </>
+            }>
+            <p>
+              Replaces <strong className="text-foreground">{label}</strong>'s real schedule with this playground's —{' '}
+              {promoteConfirm.diff.cellsChanged} cell{promoteConfirm.diff.cellsChanged === 1 ? '' : 's'} changed across{' '}
+              {promoteConfirm.diff.residentsAffected} resident{promoteConfirm.diff.residentsAffected === 1 ? '' : 's'}.
+              Roster, settings, and rules are NOT affected — only this block's schedule.
+            </p>
+            <p className="text-xs mt-2">Type the block name <strong className="text-foreground">{label}</strong> to confirm:</p>
+            <input className="input-field mt-1" value={promoteTypedName} onChange={e => setPromoteTypedName(e.target.value)} autoFocus/>
+          </ConfirmDialog>
+        );
+      })()}
 
       {/* Cloud save conflict (migrate_res_state_history.sql's optimistic concurrency) — another
           admin saved first. No onClose/backdrop dismiss on purpose: one of the three actions below
@@ -23720,7 +24060,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
