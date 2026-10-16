@@ -325,8 +325,13 @@ describe('chief benchmark — (b) generator vs benchmark', () => {
   // +1 (2026-09-26): ACGME 60h/rest/jeopardy-window hard rules cost one isolated night on this
   // fixture; chief approved.
   // +4 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC days);
-  // A/B-verified as the sole cause (old streak rule alone restores 24). Recorded, not accepted:
-  // a follow-up generator change is meant to win this back under the new rules.
+  // A/B-verified as the sole cause (old streak rule alone restores 24).
+  // Follow-up (same day): nightCluster grew a jcPresentDates/grLectureDates look-ahead (see
+  // nightContiguity.test.js's own header for the full investigation and measured numbers) that won
+  // back 3 of 4 generator.baseline.*.test.js fixtures' 2-segment-split counts. Measured ZERO effect
+  // on THIS fixture specifically (isolated runs stayed at 28) — this roster's residents don't carry
+  // jcPresentDates/grLectureDates in a way that exercises the new look-ahead path, so the ceiling
+  // stays at the already-recorded 28 rather than being silently re-lowered without evidence.
   const CHIEF_ISOLATED_RUNS = 15;
   const ISOLATED_RUN_SLACK = 13;
 

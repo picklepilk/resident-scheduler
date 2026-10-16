@@ -5463,7 +5463,29 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         // A run that can't even reach 2 nights (this would be the resident's only night shift,
         // full stop) is still discouraged as strongly as before; a run that CAN reach 2-6 is no
         // longer treated as "too short" merely for falling under the 5-night ideal.
-        if ((t - assigned[r.id]) < 2) nightCluster = -1.5;
+        //
+        // Pre-emptive stranding (2026-10-16, clinical-shift-only streak fix — see CLAUDE-Archive.md
+        // "Grand Rounds rest/streak rewrite"): relaxing isStreakWorkDay widened candidatePool's
+        // streakBlocked/sixDayRunRestBlocked filters around every GR/JC date, so more residents now
+        // reach this fresh-run decision on dates right before their OWN known schedule
+        // restrictions. Two of those restrictions are fully knowable in advance (resident-level
+        // static dates), unlike a dynamic ACGME rolling-hours projection, so they're safe to check
+        // directly rather than simulating future fill decisions — a resident hitting either one
+        // TOMORROW can never extend a run started TODAY past one night, exactly the same shape as
+        // the "(t - assigned[r.id]) < 2" case right below, just a different reason the 2nd night
+        // can't happen:
+        //   - getEligibleShifts item 6 (journalClub.js's JC-presenter strip): the generator hard-
+        //     strips ALL night-type shifts on the resident's own jcPresentDates date itself.
+        //   - getEligibleShifts item 7 (GR_LECTURE_RULE_NOTE): "no evening/night shift the day
+        //     before a lecture date" strips night/eve on the day before a grLectureDates date —
+        //     i.e. two calendar days after `ds`, since nextDs is the day being checked.
+        // Debugged against the understaffed fixture (generateScheduleBest, seed 42): the JC case is
+        // the exact traced mechanism behind one of its newly-fragmented 2-segment residents (a
+        // single night immediately followed by their own JC presenting date).
+        const strandedTomorrow =
+          (r.jcPresentDates || []).includes(nextDs) ||
+          (r.grLectureDates || []).includes(toDateStr(addDays(parseDate(ds), 2)));
+        if ((t - assigned[r.id]) < 2 || strandedTomorrow) nightCluster = -1.5;
         else if (priorRunCount >= 2) nightCluster = -2.5; // would start a 3rd+ separate run
         else if (priorRunCount === 1) nightCluster = -0.8; // would start a 2nd separate run
       }

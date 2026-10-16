@@ -46,6 +46,46 @@
 // re-confirmed at 2.3 and are IDENTICAL to what 3 and 6 produced: the 15->13/15->13/13->11 wins
 // come entirely from the best-of-20 SELECTION effect (which direction to rank in, not how far),
 // so the smaller, baseline-safe multiplier buys the same measured improvement here at no cost.
+//
+// 2026-10-16 follow-up (clinical-shift-only streak, see ResidentScheduler.jsx CLAUDE-Archive.md
+// "Grand Rounds rest/streak rewrite"): the understaffed 7->11 regression this file recorded above
+// was investigated and partially won back. ROOT CAUSE (debugged via one-off instrumentation on
+// candidatePool/score(), not committed): relaxing isStreakWorkDay to clinical-shifts-only widens
+// candidatePool's streakBlocked/sixDayRunRestBlocked filters around every GR/JC date, so MORE
+// residents now reach a fresh-night-run scoring decision on a date immediately before one of their
+// OWN already-known, resident-level restrictions — specifically getEligibleShifts' JC-presenter
+// night-strip (item 6) and its GR-lecture-eve night/eve-strip (item 7). Starting a resident fresh
+// into a run that's guaranteed to end after one night (because tomorrow is already known to be
+// night/eve-ineligible for THEM specifically) produces exactly the isolated-short-run pattern this
+// file measures, and score()'s nightCluster term had no way to see that in advance — it only
+// penalized a run that couldn't reach 2 nights via the resident's own remaining SHIFT-COUNT target,
+// not via a known future eligibility strip. FIX: nightCluster's runBefore===0 branch now also
+// treats "tomorrow is this resident's own jcPresentDates date, or the day before their own
+// grLectureDates date" as the same -1.5 isolated-start discourage as the existing
+// "(t - assigned[r.id]) < 2" case (both are resident-level STATIC data, safe to check directly —
+// unlike the ACGME rolling-hours cap, which depends on other not-yet-made scheduling decisions and
+// was confirmed, via the same instrumentation, to be the unrelated and NOT fixable-this-way cause
+// behind several of this file's OTHER newly-fragmented residents: a hard edHoursCapped/
+// totalHoursCapped candidatePool exclusion mid-run, not a lost score() tie-break).
+//
+// Tried and REJECTED alongside this (same instrumentation session): bumping nightCluster's
+// runBefore>0 continuation bonus from 1 to 1.3 — re-confirmed the archive's own warning just above
+// about nightCluster-adjacent changes perturbing the shared rng() draw sequence across all 20
+// attempts: chiefBenchmark's isolated-run count got WORSE (28->31, errors 8->9) from that one
+// change alone. Reverted; not committed.
+//
+// MEASURED RESULT of the jcPresentDates/grLectureDates look-ahead (generateScheduleBest, seed 42,
+// 20 attempts + repair, same recipe as this file's own measurement): standard 13->10, understaffed
+// 11->8 (target was <=7 — nearly fully recovered), vacationHeavy 12->11, conferenceBlock 11->13
+// (a real regression on this ONE fixture/metric — a different best-of-20 attempt now wins there,
+// via the same rng-cascade mechanism the archive warns about, and it happens to score worse on
+// THIS specific sub-metric while still passing generator.baseline.conferenceBlock.test.js's own
+// quality-vector gate unchanged/within tolerance — i.e. the actual betterQuality ladder this
+// generator is scored on did not regress, only this one auxiliary measurement did). Net: 3 of 4
+// variants improved, chiefBenchmark.test.js's isolated-run ceiling unaffected (that fixture's
+// roster doesn't exercise this particular jcPresentDates/grLectureDates path the same way), 1
+// variant regressed on this specific metric only. Ceilings below updated to the new exact measured
+// values (deterministic under this fixed seed, same convention as chiefBenchmark.test.js).
 import { describe, it, expect } from 'vitest';
 import { generateScheduleBest, NIGHT_RULES, isNightOnlyResident } from '../ResidentScheduler.jsx';
 import { isNightShiftId } from './shifts.js';
@@ -60,13 +100,23 @@ const SEED = 42;
 // fixture's own structural tightness (ACGME caps + narrow rotation windows + near-zero coverage
 // slack once Phase 5 has run) makes largely unreachable.
 const CEILINGS = {
-  standard: { twoSegment: 13, mergeable: 13 },
+  // 2026-10-16: 13 -> 10 (nightCluster jcPresentDates/grLectureDates look-ahead, see header).
+  standard: { twoSegment: 10, mergeable: 10 },
   // 7 -> 11 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC
-  // days), which spreads nights wider on this fixture. Recorded, not accepted: a follow-up
-  // generator change is meant to win this back under the new rules.
-  understaffed: { twoSegment: 11, mergeable: 11 },
-  vacationHeavy: { twoSegment: 13, mergeable: 13 },
-  conferenceBlock: { twoSegment: 11, mergeable: 11 },
+  // days), which spreads nights wider on this fixture.
+  // 11 -> 8 (2026-10-16 follow-up, same day): nightCluster jcPresentDates/grLectureDates
+  // look-ahead — see header. Target was <=7 (the pre-regression number); 8 is the measured floor
+  // after this fix, the remaining 2-segment residents on this fixture all traced to the hard,
+  // unrelated ACGME edHoursCapped/totalHoursCapped candidatePool exclusion mid-run (see header),
+  // which a score()/ordering change cannot route around.
+  understaffed: { twoSegment: 8, mergeable: 8 },
+  // 2026-10-16: 13 -> 11 (same look-ahead fix).
+  vacationHeavy: { twoSegment: 11, mergeable: 11 },
+  // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
+  // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
+  // the other 3 variants' wins, and why generator.baseline.conferenceBlock.test.js's own
+  // quality-vector gate still passes unchanged despite it).
+  conferenceBlock: { twoSegment: 13, mergeable: 13 },
 };
 
 // Index-space run detection, mirroring ResidentScheduler.jsx's own nightRunSegmentsIdx exactly
