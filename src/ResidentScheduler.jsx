@@ -7684,17 +7684,19 @@ function scoreGenerationResult(res, args, rulePriority) {
 // result per betterQuality. One explicit baseSeed is generated per call (or accepted via opts)
 // and persisted on the winning report alongside the winning seed + attempt index.
 //
-// Repair runs once, AFTER selection: the winning seed is re-run with repair enabled (deterministic
-// rng reproduces the exact same pre-repair schedule, then repair mutates from there) and the
-// repaired result is adopted only on STRICT betterQuality improvement — a tie (or worse) keeps the
-// unrepaired winner, since repair could otherwise trade away something the quality vector doesn't
-// score for zero measured benefit.
+// Repair runs AFTER selection, on the top `repairCandidates` (default 3) unrepaired attempts: each
+// seed is re-run with repair enabled (deterministic rng reproduces the exact same pre-repair
+// schedule, then repair mutates from there) and the repaired result is adopted only on STRICT
+// betterQuality improvement over its own unrepaired run — a tie (or worse) keeps the unrepaired one,
+// since repair could otherwise trade away something the quality vector doesn't score for zero
+// measured benefit. Across candidates a strictly better result wins; ties keep the earlier-ranked.
 //
 // REPLAY (report.replay, see the true-primary gap-fix block below): when `report.replay.
 // truePrimaryOnly` is false, a plain `generateSchedule({...args, rng: mulberry32(report.replay.seed),
-// repair: true})` reproduces `best` exactly. When it's true, that single call only reproduces the
+// repair: report.replay.repair})` reproduces `best` exactly (`repair` is false when the winning
+// candidate's repaired run was not adopted). When it's true, that single call only reproduces the
 // PRE-fix schedule — the actual winner needs the same second step this function itself ran:
-//   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: false });
+//   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: report.replay.repair });
 //   const winner = generateSchedule({ ...args, rng: mulberry32(report.replay.seed),
 //     repair: 'truePrimaryOnly', block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
@@ -7722,11 +7724,13 @@ export async function generateScheduleBestAsync(args, opts, onProgress) {
 }
 
 // Step generator behind generateScheduleBest/Async. Yields progress objects
-// ({phase:'attempt',done,total} | {phase:'repair'} | {phase:'finalize'}) and returns the result.
-function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true } = {}) {
+// ({phase:'attempt',done,total} | {phase:'repair',done,total} | {phase:'finalize'}) and returns the result.
+function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3 } = {}) {
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   let best = null;
+  // Top `repairCandidates` unrepaired attempts, best first; stable (earlier attempt wins ties).
+  let top = [];
 
   // Built ONCE and shared across every attempt + the repair re-run below (see
   // buildStaticGenContext's own header for why this is safe and why it's the dominant lever on
@@ -7758,15 +7762,30 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     const res = generateSchedule({ ...deferredArgs, rng: mulberry32(seed), repair: false });
     if (!res) return null;
     const score = scoreGenerationResult(res, args, rulePriority);
-    if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
+    top.push({ seed, result: res, score, repaired: false });
+    // Array.sort is stable, so equal-quality entries keep attempt order.
+    top.sort((a, b) => (betterQuality(a.score, b.score) ? -1 : betterQuality(b.score, a.score) ? 1 : 0));
+    if (top.length > Math.max(1, repairCandidates)) top.length = Math.max(1, repairCandidates);
     yield { phase: 'attempt', done: i + 1, total: attempts };
   }
+  best = top[0];
 
   if (repair) {
-    yield { phase: 'repair' };
-    const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(best.seed), repair: true });
-    const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
-    if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
+    // Selection is pre-repair, so the best unrepaired seed isn't necessarily the best repaired one:
+    // repair each of the top K. Per candidate, keep the repaired result only on strict improvement
+    // over its own unrepaired one; across candidates a strictly better result wins, ties keep the
+    // earlier-ranked.
+    const total = top.length;
+    let winner = null;
+    for (let k = 0; k < total; k++) {
+      yield { phase: 'repair', done: k + 1, total };
+      let cand = top[k];
+      const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(cand.seed), repair: true });
+      const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
+      if (betterQuality(repairedScore, cand.score)) cand = { seed: cand.seed, result: repaired, score: repairedScore, repaired: true };
+      if (!winner || betterQuality(cand.score, winner.score)) winner = cand;
+    }
+    best = winner;
   }
 
   // R5 (2026-09-27 chief decision) gap fix, memory rule-override-policy: the true-primary
@@ -7840,7 +7859,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       // path already guarantees it can't introduce a new error on its own; this stays a hard
       // backstop rather than relying on that alone.
       if (fixedScore.errorCount <= best.score.errorCount) {
-        best = { seed: best.seed, result: fixedResult, score: fixedScore };
+        best = { seed: best.seed, result: fixedResult, score: fixedScore, repaired: best.repaired };
       }
     }
   }
@@ -7868,7 +7887,9 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // block above actually replaced `best` (mirrors report.truePrimaryFixApplied, when present) —
   // false means a single seed replay with repair:true is exact; true means the two-step recipe is
   // required to reproduce this exact schedule.
-  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied };
+  // `repair` is true only when the repaired run was adopted: an unrepaired winner replays with
+  // repair:false (a repair:true replay would mutate it into a different schedule).
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired };
   return best.result;
 }
 
@@ -16140,7 +16161,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, undefined,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
-        : { phase: 'local', polishing: true }));
+        : { phase: 'local', polishing: true, done: p.done, total: p.total }));
     if (!localRes) return null;
 
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
@@ -16681,7 +16702,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               const solverElapsed = genProgress?.phase === 'solver' ? Math.max(0, Math.floor((Date.now() - genSolverStartRef.current) / 1000)) : 0;
               const pct = genProgressPct(genProgress, solverElapsed);
               const sub = genProgress?.phase === 'local'
-                ? (genProgress.polishing ? 'Polishing best attempt…' : `Attempt ${genProgress.done} of ${genProgress.total}`)
+                ? (genProgress.polishing ? (genProgress.total ? `Polishing attempt ${genProgress.done} of ${genProgress.total}` : 'Polishing best attempt…') : `Attempt ${genProgress.done} of ${genProgress.total}`)
                 : genProgress?.phase === 'solver' ? `${solverElapsed}s of ${approxMinutes(genProgress.budgetSec)}` : null;
               return (<>
                 <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>

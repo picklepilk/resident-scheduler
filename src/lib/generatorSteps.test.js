@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect } from 'vitest';
-import { generateScheduleBest, generateScheduleBestAsync, genProgressPct } from '../ResidentScheduler.jsx';
+import { mulberry32 } from './rng.js';
+import { generateSchedule, generateScheduleBest, generateScheduleBestAsync, genProgressPct } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 describe('generateScheduleBestAsync', () => {
@@ -15,7 +16,20 @@ describe('generateScheduleBestAsync', () => {
     const attempts = events.filter(e => e.phase === 'attempt');
     expect(attempts.map(e => e.done)).toEqual([1, 2, 3]);
     expect(attempts.every(e => e.total === 3)).toBe(true);
-    expect(events.some(e => e.phase === 'repair')).toBe(true);
+    const repairs = events.filter(e => e.phase === 'repair');
+    expect(repairs.map(e => e.done)).toEqual([1, 2, 3]);
+    expect(repairs.every(e => e.total === 3)).toBe(true);
+  }, 120000);
+
+  it('replay recipe reproduces the winning repair candidate', () => {
+    const args = makeFixture('standard');
+    const res = generateScheduleBest(args, { attempts: 4, baseSeed: 777, repair: true, repairCandidates: 3 });
+    const { replay } = res.report;
+    expect(typeof replay.repair).toBe('boolean');
+    if (!replay.truePrimaryOnly) {
+      const re = generateSchedule({ ...args, rng: mulberry32(replay.seed), repair: replay.repair });
+      expect(re.schedule).toEqual(res.schedule);
+    }
   }, 120000);
 });
 

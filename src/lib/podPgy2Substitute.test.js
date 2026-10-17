@@ -275,11 +275,11 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
       let replaySchedule;
       if (!res.report.replay.truePrimaryOnly) {
         // Single-step replay contract: unchanged from before this fix.
-        replaySchedule = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: true }).schedule;
+        replaySchedule = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: res.report.replay.repair }).schedule;
       } else {
         sawTruePrimaryOnly = true;
         // Two-step replay contract (the fix under test): step 1 reproduces the pre-fix winner...
-        const base = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: false });
+        const base = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: res.report.replay.repair });
         const trueKeptCells = new Set();
         for (const r of fx.allResidents) {
           for (const [ds, sid] of Object.entries(fx.block.schedule?.[r.id] || {})) {
