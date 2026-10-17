@@ -8,10 +8,51 @@ as-is, never "upgraded" by relaxing anything.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 
 from ortools.sat.python import cp_model
+
+# ─── Cancellable background solves (jobs API, api/jobs.py) ─────────────────
+# `solve()` itself knows nothing about jobs/threads -- this is a thin,
+# additive registry so a job runner thread can ask whatever CpSolver
+# instance(s) `solve()` is CURRENTLY using (there can be several across a
+# staged solve's 4 stages) to stop. Per-thread (not global) so the
+# synchronous /solve request path -- which never calls `begin_stoppable_run`
+# -- pays zero cost and sees zero behavior change; only a thread that opted
+# in via `begin_stoppable_run()` ever has entries appended to it.
+#
+# `StopSearch()` is documented by OR-Tools as safe to call from a different
+# thread while `Solve`/`solve` is running on the registered solver, and a
+# no-op if the solve has already finished -- so a cancel racing the gap
+# between two staged-solve stages just means the NEXT solver (appended right
+# before its own `.solve()` call) still gets stopped almost immediately,
+# rather than running to completion.
+_tls = threading.local()
+
+
+def begin_stoppable_run() -> list:
+    """Call once, on the thread that is about to call `solve(payload)`, before
+    doing so. Returns the (empty) list that will be appended to -- a job
+    runner keeps this list and calls `.StopSearch()` on every entry to cancel.
+    """
+    _tls.solvers = []
+    return _tls.solvers
+
+
+def end_stoppable_run() -> None:
+    """Call when the stoppable run is done (success or failure) so a later,
+    unrelated `solve()` call on the SAME pooled thread doesn't keep appending
+    into a stale list from a previous job.
+    """
+    _tls.solvers = None
+
+
+def _register_active_solver(solver: cp_model.CpSolver) -> None:
+    lst = getattr(_tls, "solvers", None)
+    if lst is not None:
+        lst.append(solver)
 
 from solver.build import BuildResult, build_model
 from solver.io.payload import Config, Payload
@@ -113,6 +154,7 @@ def _configure_solver(payload: Payload, allow_repair_hint: bool = True) -> cp_mo
         # under this model's hard constraints (a stale/locked-conflicting
         # cell) without rejecting the whole hint -- see solver/model/hint.py.
         solver.parameters.repair_hint = True
+    _register_active_solver(solver)
     return solver
 
 
@@ -367,9 +409,24 @@ class SolveResult:
     feasibility: dict = None
 
 
-def solve(payload: Payload) -> SolveResult:
+def solve(payload: Payload, cancel_event: "threading.Event | None" = None) -> SolveResult:
+    """`cancel_event` (optional, used only by api/jobs.py's background runner):
+    when a stage-1 solve is stopped early via `begin_stoppable_run()`'s
+    registry + `CpSolver.stop_search()`, CP-SAT can come back with status
+    UNKNOWN (no incumbent yet) -- `_solve_pass1` maps anything outside
+    OPTIMAL/FEASIBLE to `status="INFEASIBLE"`, which would otherwise make
+    `solve()` kick off a SECOND full solve (`run_pass2`'s elastic rebuild) for
+    a job that was just asked to stop. Checking the event here (rather than
+    inside `_solve_pass1`, which has no concept of jobs/cancellation) skips
+    that second solve when the caller already knows this run was cancelled.
+    The synchronous /solve request path never passes this, so it's an exact
+    no-op there -- "INFEASIBLE from a genuine pass-1 search" still always
+    falls through to pass 2 as before.
+    """
     result = _solve_pass1(payload)
     if result.status != "INFEASIBLE":
+        return result
+    if cancel_event is not None and cancel_event.is_set():
         return result
     return run_pass2(payload)
 

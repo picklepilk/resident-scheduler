@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import AuthResult
+from api.jobs import router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
@@ -90,3 +91,12 @@ def solve_endpoint(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return build_response(payload.version, result)
+
+
+# "Long solve in the background" (prototype): POST /jobs / GET /jobs/{id} /
+# DELETE /jobs/{id} -- see api/jobs.py's module docstring for the full
+# contract (same auth/rate-limit/body-limit posture as /solve on submit,
+# in-memory job store with a 2h post-finish TTL, one job at a time per
+# process). Included after /solve/.health so the OpenAPI doc order matches
+# this file's own route declaration order.
+app.include_router(jobs_router)

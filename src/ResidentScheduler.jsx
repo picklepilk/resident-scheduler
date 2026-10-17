@@ -33,6 +33,7 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote } from './lib/solverClient.js';
+import { submitSolveJob, pollSolveJob, cancelSolveJob } from './lib/solverJobs.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
@@ -6971,6 +6972,18 @@ export const DEEP_SOLVE_MAX_TIME_SECONDS = 120;
 // while the default budget was <= 60s and stops being safe the moment either number changes again).
 const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 const DEFAULT_SOLVE_TIMEOUT_MS = DEFAULT_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
+
+// "Long solve in the background" (2026-10-16 prototype, solver-service/api/jobs.py): a bigger time
+// budget than Generate/Deep Solve's own synchronous ~60s/120s, submitted as a background job and
+// polled instead of blocking a request for that long. Minutes, not seconds, to match the admin
+// choice UI; converted to `config.maxTimeSeconds` at submit time. Exported so the UI and any test
+// share one list instead of hand-copying it.
+export const LONG_SOLVE_BUDGET_MINUTES = [5, 15, 30];
+// How often the pill polls GET /jobs/{id} while mounted — frequent enough that the admin sees
+// progress, infrequent enough to comfortably clear /jobs' own rate limiting (which, unlike /solve,
+// is NOT the strict per-minute bucket for GET/DELETE — see solver-service/api/jobs.py's module
+// docstring) and to keep genuinely blunting Fly traffic-based autostop without hammering it.
+const LONG_SOLVE_POLL_MS = 15000;
 
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
@@ -14700,7 +14713,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -14844,6 +14857,165 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     if (genTimerRef.current) { clearInterval(genTimerRef.current); genTimerRef.current = null; }
   }
   useEffect(() => () => { if (genTimerRef.current) clearInterval(genTimerRef.current); }, []);
+
+  // ── Long solve in the background (2026-10-16 prototype, solver-service/api/jobs.py) ────────────
+  // A bigger CP-SAT time budget (5/15/30 min) than Generate/Deep Solve's own synchronous ~60s/120s,
+  // run as a background job instead of blocking a request for that long. The local generator still
+  // runs FIRST, synchronously, exactly like generateViaSolverOrLocal's own pipeline — only the
+  // SOLVER half moves to a job; the admin keeps working (switch tabs, edit other blocks, even
+  // reload) while it runs, and reviews the result in a brand-new PLAYGROUND when ready — this never
+  // writes the real schedule directly (see onCreatePlaygroundFromSolve, owned by the root
+  // component).
+  // Persisted in a device-local key — NOT LS_BACKUP_KEYS/syncBindings, per CLAUDE.md's device-local
+  // key rule — so a pending job survives a reload. `genBlock`/`localRes` ride along so the eventual
+  // pickEngineResult comparison and playground merge have exactly what they need even after a
+  // reload, without re-running the local generator a second time; this is bookkeeping about an
+  // in-flight background solve, never the admin's real schedule/report, so it's fine that it's
+  // heavier than a bare jobId.
+  const [longSolveJob, setLongSolveJob] = useLocalStorage('res_long_solve_job', null);
+  const [longSolveStatus, setLongSolveStatus] = useState(null); // latest GET /jobs/{id} view | 'lost' | null
+  const [longSolveMenuOpen, setLongSolveMenuOpen] = useState(false);
+  const [longSolveSubmitting, setLongSolveSubmitting] = useState(false);
+  const [longSolveReview, setLongSolveReview] = useState(null); // {schedule, lockedCells} once "Review" is confirmed-pending
+  const [longSolveReviewName, setLongSolveReviewName] = useState('');
+  const longSolvePollingRef = useRef(false); // guards against overlapping fetches if one is slow
+  const longSolveNotifiedRef = useRef(null); // last {jobId,status} this tab already toasted about
+
+  // Polls while a job is pending AND this component is mounted (i.e. the Schedule tab is open) —
+  // the job itself keeps running server-side regardless; re-mounting (switching back to this tab,
+  // or a full reload) immediately re-polls and resumes showing accurate progress. See this app's
+  // goal doc for why "only polls while mounted" is an acceptable scope for a prototype — polling is
+  // also what keeps Fly's traffic-based autostart/autostop from idling the machine out from under a
+  // genuinely running job (see solver-service/CLAUDE.md's "Background jobs" section).
+  useEffect(() => {
+    if (!longSolveJob?.jobId) { setLongSolveStatus(null); return; }
+    let stopped = false;
+    async function pollOnce() {
+      if (longSolvePollingRef.current) return;
+      longSolvePollingRef.current = true;
+      try {
+        const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
+        const view = await pollSolveJob(longSolveJob.jobId, { accessToken });
+        if (stopped) return;
+        setLongSolveStatus(view.lost ? 'lost' : view);
+      } catch (e) {
+        if (!stopped) console.warn('Long solve poll failed:', e);
+      } finally {
+        longSolvePollingRef.current = false;
+      }
+    }
+    pollOnce();
+    const t = setInterval(pollOnce, LONG_SOLVE_POLL_MS);
+    return () => { stopped = true; clearInterval(t); };
+  }, [longSolveJob?.jobId]);
+
+  // One-time toast per terminal status per job — polling itself re-fires every LONG_SOLVE_POLL_MS,
+  // so without this a done/failed/lost job would re-toast on every subsequent poll until dismissed.
+  useEffect(() => {
+    if (!longSolveJob?.jobId || !longSolveStatus) return;
+    const statusKey = longSolveStatus === 'lost' ? 'lost' : longSolveStatus.status;
+    if (!['done', 'failed', 'cancelled', 'lost'].includes(statusKey)) return;
+    const key = `${longSolveJob.jobId}:${statusKey}`;
+    if (longSolveNotifiedRef.current === key) return;
+    longSolveNotifiedRef.current = key;
+    if (statusKey === 'lost') {
+      showToast('The optimizer stopped before finishing — run it again. (The server likely went idle and lost the job; see solver-service/CLAUDE.md.)', 'red');
+    } else if (statusKey === 'failed') {
+      showToast(`Long solve failed: ${longSolveStatus.error || 'unknown error'}`, 'red');
+    } else if (statusKey === 'cancelled') {
+      showToast('Long solve cancelled.', 'amber');
+    } else if (statusKey === 'done') {
+      showToast('Long solve finished — review it below.', 'green');
+    }
+  }, [longSolveJob?.jobId, longSolveStatus, showToast]);
+
+  // Ticks once/sec purely to re-render the pill's elapsed-time readout between polls (ref-held
+  // startedAt is the source of truth, same "interval just forces a render" shape as genElapsedSec).
+  const [, setLongSolveTick] = useState(0);
+  useEffect(() => {
+    if (!longSolveJob?.jobId) return;
+    const t = setInterval(() => setLongSolveTick(x => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [longSolveJob?.jobId]);
+  const longSolveElapsedSec = longSolveJob?.startedAt ? Math.max(0, Math.floor((Date.now() - longSolveJob.startedAt) / 1000)) : 0;
+  const longSolveSpinning = !longSolveStatus || (longSolveStatus !== 'lost' && (longSolveStatus.status === 'running' || longSolveStatus.status === 'queued'));
+
+  async function requestLongSolve(minutes) {
+    setLongSolveMenuOpen(false);
+    if (longSolveJob?.jobId) { showToast('A long solve is already running.', 'amber'); return; }
+    if (!getBlockDates(block.startDate, block.endDate).length) { showToast('Set block dates first', 'red'); return; }
+    setLongSolveSubmitting(true);
+    try {
+      const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
+      const genBlock = { ...block };
+      setGenStageLabel('Preparing long solve (running the built-in engine first)…');
+      await yieldToPaint();
+      const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst: false });
+      if (!localRes) { showToast('Set block dates first', 'red'); return; }
+      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
+        config: { maxTimeSeconds: minutes * 60 } });
+      const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
+      const { jobId } = await submitSolveJob(payload, { accessToken });
+      longSolveNotifiedRef.current = null;
+      setLongSolveJob({ jobId, startedAt: Date.now(), budgetSeconds: minutes * 60, genBlock, localRes });
+      setLongSolveStatus(null);
+      showToast(`Long solve started (~${minutes} min) — locked cells are kept. Keep working; come back to review when it's done.`, 'green');
+    } catch (e) {
+      showToast(`Could not start the long solve: ${e.message}`, 'red');
+    } finally {
+      setLongSolveSubmitting(false);
+      setGenStageLabel('');
+    }
+  }
+
+  async function cancelLongSolve() {
+    if (!longSolveJob?.jobId) return;
+    const jobId = longSolveJob.jobId;
+    setLongSolveJob(null);
+    setLongSolveStatus(null);
+    setLongSolveReview(null);
+    const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
+    await cancelSolveJob(jobId, { accessToken }); // best-effort — never throws, see solverJobs.js
+  }
+
+  function dismissLongSolve() {
+    setLongSolveJob(null);
+    setLongSolveStatus(null);
+    setLongSolveReview(null);
+  }
+
+  // Compares the finished job's solver schedule against the ALREADY-COMPUTED local result from when
+  // the job was submitted, via the exact same pickEngineResult semantics generateViaSolverOrLocal
+  // uses elsewhere — "better" means the same thing everywhere in this app (ties go local).
+  function reviewLongSolve() {
+    if (!longSolveJob || !longSolveStatus || longSolveStatus === 'lost' || longSolveStatus.status !== 'done') return;
+    const json = longSolveStatus.result;
+    if (!json || (json.status !== 'OPTIMAL' && json.status !== 'FEASIBLE' && json.status !== 'RELAXED')) {
+      showToast(`Long solve finished with no usable result (status "${json?.status || 'unknown'}").`, 'red');
+      return;
+    }
+    const solverRes = mapSolverResult(json, { block: longSolveJob.genBlock, allResidents, appSettings, ayConf });
+    const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
+    const { result, winner } = pickEngineResult(solverRes, longSolveJob.localRes, { ...baseArgs, block: longSolveJob.genBlock });
+    if (winner !== 'cpsat') {
+      showToast("No improvement found over the current schedule — the long solve didn't beat the built-in engine's result.", 'amber');
+      return;
+    }
+    const now = new Date();
+    setLongSolveReviewName(`Long solve ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+    setLongSolveReview({ schedule: result.schedule, lockedCells: longSolveJob.genBlock.lockedCells });
+  }
+
+  function confirmLongSolveReview() {
+    if (!longSolveReview || !longSolveJob) return;
+    onCreatePlaygroundFromSolve?.(longSolveReviewName, longSolveJob.genBlock, longSolveReview.schedule, longSolveReview.lockedCells);
+    // onCreatePlaygroundFromSolve reloads the page on success (same as createPlayground) — clear the
+    // job bookkeeping now so a reload that lands back here (e.g. a save failure) doesn't re-offer a
+    // stale review.
+    setLongSolveJob(null);
+    setLongSolveStatus(null);
+    setLongSolveReview(null);
+  }
   // Yields one animation frame so React can paint the overlay/stage-text update BEFORE a
   // synchronous, CPU-bound call (generateScheduleBest) blocks the main thread — without this the
   // "Generating…" label set immediately before that call would never actually appear on screen.
@@ -16076,6 +16248,39 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           </div>
         </div>
       )}
+      {/* Long solve progress pill (2026-10-16 prototype) — NON-blocking (no backdrop, doesn't gate
+          the rest of the UI the way the overlay above does): the whole point is the admin keeps
+          working while this runs. Sits just under the generate-actions row rather than fixed/
+          floating, since it only needs to be visible while this tab itself is open (see the
+          component-level comment on longSolveJob for why "only while mounted" is an acceptable
+          prototype scope) — z-ladder/overlay machinery is reserved for things that must stay
+          visible over the grid itself. */}
+      {longSolveJob?.jobId && (
+        <div className="no-print mb-3 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 flex-wrap" role="status" aria-live="polite">
+          <RefreshCw size={16} className={`flex-none text-primary ${longSolveSpinning ? 'animate-spin' : ''}`}/>
+          <span className="text-xs font-medium text-foreground">
+            {longSolveStatus === 'lost'
+              ? 'Long solve lost — the optimizer stopped before finishing, run it again.'
+              : longSolveStatus?.status === 'failed'
+              ? `Long solve failed: ${longSolveStatus.error || 'unknown error'}`
+              : longSolveStatus?.status === 'cancelled'
+              ? 'Long solve cancelled.'
+              : longSolveStatus?.status === 'done'
+              ? 'Long solve finished — locked cells were kept.'
+              : `Long solve running — ${longSolveElapsedSec}s of ~${Math.round((longSolveJob.budgetSeconds||0)/60)} min elapsed. Locked cells are kept; you can keep working.`}
+          </span>
+          {longSolveStatus?.status === 'done' ? (
+            <>
+              <Button variant="primary" size="sm" onClick={reviewLongSolve}>Review</Button>
+              <Button variant="ghost" size="sm" onClick={dismissLongSolve}>Dismiss</Button>
+            </>
+          ) : longSolveStatus === 'lost' || longSolveStatus?.status === 'failed' || longSolveStatus?.status === 'cancelled' ? (
+            <Button variant="ghost" size="sm" onClick={dismissLongSolve}>Dismiss</Button>
+          ) : (
+            <Button variant="dangerOutline" size="sm" onClick={cancelLongSolve}>Cancel</Button>
+          )}
+        </div>
+      )}
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
@@ -16099,6 +16304,30 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               title="Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~60s — can fill more slots on a tight block. Only ships if it beats the regular result.">
               Deep Solve (~2 min)
             </Button>
+          )}
+          {/* Long solve (2026-10-16 prototype): runs in the BACKGROUND (solver-service/api/jobs.py)
+              with a much bigger budget than Deep Solve — the admin picks 5/15/30 min, keeps working,
+              and reviews the result in a playground when it's done (never straight into the real
+              schedule). Same gate as Deep Solve: no solver, no job to submit. Disabled while one is
+              already pending — see requestLongSolve's own guard. */}
+          {SOLVER_ENABLED && appSettings.useSolverService !== false && (
+            <span className="relative">
+              <Button variant="secondary" size="sm" icon={Clock} disabled={!!longSolveJob?.jobId || longSolveSubmitting}
+                onClick={() => setLongSolveMenuOpen(o => !o)}
+                title="Runs the optimizer for much longer (5/15/30 min) as a background job — keep working while it runs, then review the result in a playground. Locked cells are kept.">
+                Long Solve…
+              </Button>
+              {longSolveMenuOpen && (
+                <div className="absolute z-20 top-full mt-1 left-0 bg-card border border-border rounded-lg shadow-lg py-1 min-w-[9rem]">
+                  {LONG_SOLVE_BUDGET_MINUTES.map(m => (
+                    <button key={m} onClick={() => requestLongSolve(m)}
+                      className="block w-full text-left px-3 py-1.5 text-sm text-foreground hover:bg-muted">
+                      ~{m} min
+                    </button>
+                  ))}
+                </div>
+              )}
+            </span>
           )}
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
             title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
@@ -16357,6 +16586,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             </>
           }>
           <p>Every locked cell in this block becomes unlocked and eligible for Regenerate Unlocked / Regenerate Range to overwrite. The assignments themselves are not changed.</p>
+        </ConfirmDialog>
+      )}
+
+      {/* Long solve "Review in a playground" — reviewLongSolve() already confirmed the solver result
+          beats the local one (pickEngineResult) before opening this; this step only names the new
+          playground. Creating it (onCreatePlaygroundFromSolve) never touches the real schedule —
+          same posture as every other playground-creation path in this app. */}
+      {longSolveReview && (
+        <ConfirmDialog icon={FlaskConical} tone="info" title="Review the long solve in a playground"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setLongSolveReview(null)}>Cancel</Button>
+              <Button variant="primary" size="sm" icon={FlaskConical} disabled={!longSolveReviewName.trim()} onClick={confirmLongSolveReview}>
+                Create Playground
+              </Button>
+            </>
+          }>
+          <p>Creates a new playground — a copy of the current real workspace — with this block's schedule replaced by the long solve's result. Locked cells are kept. The real schedule is never changed; use "Use this schedule for real…" from inside the playground afterward if you want to keep it.</p>
+          <label className="block text-xs font-medium text-gray-700 mt-2">Playground name</label>
+          <input type="text" value={longSolveReviewName} onChange={e=>setLongSolveReviewName(e.target.value)} autoFocus
+            className="w-full mt-1 text-sm border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary bg-white"/>
         </ConfirmDialog>
       )}
 
@@ -23144,6 +23394,56 @@ export default function ResidentScheduler({ viewer } = {}) {
     }
   }
 
+  // "Review in a playground" for a finished Long Solve job (ScheduleGrid's long-solve pill) — same
+  // shape as createPlayground's 'copy' path, but the new playground's matched block gets its
+  // schedule (and lockedCells) overwritten with the solver's result BEFORE the first save, via the
+  // exact same merge promoteBlockSchedule already uses for the opposite direction (playground ->
+  // real) — here the "pgBlock" side is just the long-solve's own output. Never touches the real
+  // workspace; `genBlock` is whatever block the job was actually submitted against (its own id/
+  // dates), matched against this fresh copy's `res_current_block` the same way promote matches a
+  // playground's block against the real one — if the real block has since changed (id AND dates no
+  // longer match, e.g. the admin loaded a different block while the job ran), nothing is patched and
+  // the playground opens as a plain copy, same as createPlayground('copy').
+  async function createPlaygroundFromSolve(name, genBlock, solverSchedule, lockedCells) {
+    setDemoBusy(true);
+    try {
+      await flushPendingCloudSave();
+      if (SUPABASE_ENABLED && !dbReady) {
+        setDemoBusy(false);
+        showToast('Cloud sync is not ready — reload and try again.', 'red');
+        return;
+      }
+      const ownerUid = viewer?.userId || 'local';
+      const newId = makePlaygroundId(ownerUid);
+      const doc = {};
+      for (const k of LS_BACKUP_KEYS) doc[k] = syncBindings[k][0];
+      const patched = promoteBlockSchedule(doc, { ...genBlock, schedule: solverSchedule, lockedCells });
+      if (patched) doc.res_current_block = patched.res_current_block;
+      const meta = makePlaygroundMeta({ name, ownerUid, ownerEmail: viewer?.email, source: 'copy' });
+      doc[PLAYGROUND_META_KEY] = meta;
+      if (SUPABASE_ENABLED) {
+        assertWriteTargetRowId(newId, { expectPlayground: true });
+        const saved = await sbSaveStateExplicit(doc, newId);
+        if (!saved) {
+          setDemoBusy(false);
+          showToast('Could not create the playground — another write landed at the same time, try again.', 'red');
+          return;
+        }
+      }
+      try { localStorage.setItem(LOCAL_PG_META_KEY, JSON.stringify({ id: newId, ...meta })); } catch { /* best-effort */ }
+      for (const k of LS_BACKUP_KEYS) {
+        if (doc[k] != null) localStorage.setItem(demoPhysKey(k), JSON.stringify(doc[k]));
+        else localStorage.removeItem(demoPhysKey(k));
+      }
+      localStorage.setItem(DEMO_MODE_KEY, newId);
+      window.location.reload();
+    } catch (e) {
+      console.error('createPlaygroundFromSolve failed:', e);
+      setDemoBusy(false);
+      showToast('Could not create the playground — try again.', 'red');
+    }
+  }
+
   // flushPendingCloudSave never throws, and nothing else here can fail — so, unlike
   // createPlayground/deletePlayground below (which have real network ops of their own to guard),
   // this stays unconditional: switching/exiting a playground can never get stuck behind a toast.
@@ -24267,7 +24567,8 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
+            onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
