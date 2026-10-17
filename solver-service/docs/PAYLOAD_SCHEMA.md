@@ -275,14 +275,14 @@ second, wasted local run any more.
 
 - `config.objectiveMode`: `"staged"` (new default) or `"weighted"` (the pre-R9 single-shot solve on
   the flat weighted sum, kept for comparison/rollback).
-- `config.stageSplit`: `[float, float, float]`, default `[0.15, 0.15, 0.7]` — fraction of
-  `maxTimeSeconds` given to each of the 3 staged-solve stages (see below). Renormalized defensively
-  if it doesn't sum to 1; skewed hard toward stage 3 because stages 1-2 are typically ALREADY at
+- `config.stageSplit`: `[float, float, float, float]`, default `[0.15, 0.15, 0.5, 0.2]` — fraction of
+  `maxTimeSeconds` given to each of the 4 staged-solve stages (see below; `Config.stage_split`
+  in `solver/io/payload.py`). Renormalized defensively
+  if it doesn't sum to 1; stages 1-2 keep 15% each because they are typically ALREADY at
   their optimum straight from the warm-start hint (a good local schedule has 0 target deficit and 0
-  rest violations) and only need enough time to CONFIRM that via presolve, not to search — stage 3
-  (coverage + every quality term) is where the real combinatorial work happens. The original
-  30/20/50 split under-resourced stage 3 badly enough to cause a real head-to-head loss (see the
-  measurement below).
+  rest violations) and need enough time to CONFIRM that via presolve — stage 3 (coverage) gets the
+  largest share, stage 4 (quality) the remainder. The earlier 3-stage 15/15/70 and 30/20/50
+  splits were superseded (see the 2026-10-15 "Real-block coverage gap fix" section below).
 - `config.symmetryLevel`: optional int, `CpSolverParameters.symmetry_level` override. This codebase
   has no hand-written symmetry-breaking constraints to conflict with it, so this is a pure search
   knob — left unset (OR-Tools' own default) unless a caller has a specific reason to change it.

@@ -95,8 +95,8 @@ fly secrets set SOLVER_MAX_BODY_BYTES=5242880
 
 ## Run on your own computer
 
-The deployed Fly service is sized for a low, occasional load (`fly.toml`: `cpu_kind = "shared"`,
-`cpus = 2`) — fine for its cost, but a real CP-SAT solve is CPU-bound and scales with cores (see
+The deployed service (Fly is the current host; Modal, see `DEPLOY-MODAL.md`, is the planned replacement)
+is sized in `fly.toml` as `cpu_kind = "performance"`, `cpus = 4`, `memory_mb = 8192`. A real CP-SAT solve is CPU-bound and scales with cores (see
 `PERF_NOTES.md`). If you have a multi-core machine handy and only solve a few times a month, it's
 faster to run a copy of the solver locally and point the app at it for those runs, instead of
 waiting on the shared cloud instance.

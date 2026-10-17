@@ -47,14 +47,3 @@ primary_region = "iad"
   cpu_kind = "performance"
   cpus = 4
   memory_mb = 8192
-
-# ─── CORS ───────────────────────────────────────────────────────────────────────────────────────
-# TODO(solver-service owner): api/main.py does not currently set up CORSMiddleware at all (checked
-# 2026-08-21 — no `from fastapi.middleware.cors import CORSMiddleware` anywhere in api/). A browser
-# calling this service directly from the app's own origin (src/lib/solverClient.js's `fetch`) will
-# be blocked by the browser's CORS preflight once this is deployed somewhere cross-origin from the
-# app, even though a plain `curl`/server-to-server call works fine today. Add CORSMiddleware in
-# api/main.py, gated by a `SOLVER_CORS_ORIGINS` env var (comma-separated allowed origins — the
-# deployed app's own origin(s), not `*`, since this is meant to be called by one specific frontend)
-# once solver-service/api/ is no longer being actively edited elsewhere. Not fixed here because
-# api/main.py is owned by another concurrent change at the time this file was written.
