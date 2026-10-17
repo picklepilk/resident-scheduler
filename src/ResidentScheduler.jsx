@@ -56,6 +56,7 @@ import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.
 import { normalizeActivityLog, appendActivity, lastActivity, unseenByOthers, summarizeActivity, actorLabel, relativeTime } from './lib/blockActivity.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
+import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -8836,7 +8837,7 @@ const BUTTON_SIZES = {
 function Button({ variant = 'secondary', size = 'md', icon: Icon, children, className = '', ...rest }) {
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${BUTTON_VARIANTS[variant] || BUTTON_VARIANTS.secondary} ${BUTTON_SIZES[size] || BUTTON_SIZES.md} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed ${BUTTON_VARIANTS[variant] || BUTTON_VARIANTS.secondary} ${BUTTON_SIZES[size] || BUTTON_SIZES.md} ${className}`}
       {...rest}
     >
       {Icon && <Icon size={size === 'sm' ? 13 : 14} />}
@@ -9002,7 +9003,7 @@ function SaveStatePill({ state }) {
   const s = SAVE_STATE_PILL[state] || SAVE_STATE_PILL.never;
   return (
     <span title="Compared against this block's saved copy on the Dashboard. Autosave (top right) covers your browser/cloud copy either way."
-      className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0 ${s.className}`}>
+      className={`inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full shrink-0 ${s.className}`}>
       {state === 'dirty' && <span className="w-1.5 h-1.5 rounded-full bg-amber-500"/>}
       {s.text}
     </span>
@@ -9890,250 +9891,352 @@ function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameByI
   );
 }
 
-// One row of the year calendar — a saved blocksHistory snapshot, OR the live block (either
-// standing in for a saved snapshot it also matches, with coverage always computed from the LIVE
-// schedule rather than that snapshot's own stale copy, or as an extra "unsaved" row when the live
-// block hasn't been saved at all). Owns its own coverage memo so switching AY/expanding one row
-// never recomputes another row's numbers.
-function BlockCalendarRow({ row, coverage, allResidents, expanded, onToggleExpand, onOpenBlock, onTogglePublished, onGoToSchedule, onDelete, blockSaveState, ayConf }) {
-  const { snap, isLive, unsaved } = row;
-  // Keyed on the row's own schedule object identity (stable for a saved snapshot until
-  // blocksHistory itself changes; equal to the live block.schedule reference for the live row) —
-  // this recomputes exactly when that one block's own data changes, never on an unrelated re-render.
-  const dates = useMemo(() => getBlockDates(row.startDate, row.endDate), [row.startDate, row.endDate]);
-  // computeCoverageByDate only ever reads `r.id` off the resident list it's given (see its
-  // definition) — so rather than the LIVE roster (which can disagree with an older snapshot's
-  // own residents, over- or under-counting fills for anyone added/removed since), build the
-  // resident list straight from the snapshot's own schedule keys. Correct for every snapshot,
-  // not just the live block.
-  const residentsForCoverage = useMemo(() => Object.keys(row.schedule).map(id => ({ id })), [row.schedule]);
-  const coverageByDate = useMemo(
-    () => computeCoverageByDate(dates, row.schedule, coverage || {}, residentsForCoverage, ayConf),
-    [dates, row.schedule, coverage, residentsForCoverage, ayConf]
-  );
-  // Saved, non-live rows show the snapshot's OWN stored counts (same fields HomeTab's Saved
-  // Blocks list already displays) rather than a second, differently-scoped recomputation — the
-  // live row has no stored count to show, so it falls back to a live count in that case only.
-  const liveShiftCount = dates.reduce((s, ds) => s + (coverageByDate[ds]?.filled || 0), 0);
-  const shiftCount = isLive ? liveShiftCount : (snap.shiftCount ?? liveShiftCount);
-  const residentCount = isLive ? allResidents.length : (snap.residentCount ?? residentsForCoverage.length);
-  const activeShifts = useMemo(() => getActiveCoverageShifts(dates, coverageByDate), [dates, coverageByDate]);
-  const nameById = useMemo(() => {
-    const m = {}; for (const r of allResidents) m[r.id] = `${r.lastName}, ${r.firstName}`; return m;
-  }, [allResidents]);
+// ─── BLOCK RAIL + PANEL (Dashboard) ─────────────────────────────────────────
+// Year rail + attached panel: one tab per block of the selected academic year, the live block's tab
+// is raised and its 2px Star Blue outline flows unbroken into the BlockPanel below (file-folder
+// tab). Row data comes from lib/blockRail.js; selection delegates to loadBlock (which owns the
+// unsaved-work guard), so this layer holds no block state of its own.
+//
+// JOINED-TAB TECHNIQUE: the scroller is overflow-x:auto, which clips negative-margin overlap, so
+// the outline is assembled from segments instead: every NON-active cell wrapper draws its own
+// border-b-2, the active wrapper has side/top borders only (+ pb-0.5 so its sides reach the same
+// baseline), and a trailing flex-1 filler carries border-b-2 to the edge. The panel below has
+// border-2 border-t-0. Together: one continuous outline that opens upward into the active tab.
+
+// 108 (not 96): "Jul 29–Aug 25" in 11px mono needs it without clipping.
+const RAIL_MIN_CELL_W = 108;
+
+function todayLocalIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function prefersReducedMotion() {
+  try { return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches; }
+  catch { return false; }
+}
+
+// Small accessible popup menu (button aria-haspopup="menu"; Escape / outside click / scroll /
+// resize close it; arrows move between items). Positioned `fixed` from the trigger's rect because
+// the rail's scroller clips absolutely positioned descendants.
+const POP_MENU_W = 208;
+function PopMenu({ items, triggerClassName, triggerTitle, triggerLabel, children }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      const left = Math.max(8, Math.min(r.right - POP_MENU_W, window.innerWidth - POP_MENU_W - 8));
+      setPos({ top: r.bottom + 4, left });
+    }
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = e => {
+      if (menuRef.current?.contains(e.target) || btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); btnRef.current?.focus(); } };
+    const dismiss = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('scroll', dismiss, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('scroll', dismiss, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
+  }, [open]);
+
+  const onMenuKeyDown = e => {
+    if (e.key === 'Tab') { setOpen(false); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const els = [...menuRef.current.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+    if (!els.length) return;
+    const i = els.indexOf(document.activeElement);
+    const next = e.key === 'ArrowDown' ? (i + 1) % els.length : (i - 1 + els.length) % els.length;
+    els[next].focus({ preventScroll: true });
+  };
 
   return (
-    <div className={`border border-border rounded-xl overflow-hidden bg-card ${isLive ? 'ring-2 ring-inset ring-primary' : ''}`}>
-      <div role="button" tabIndex={0} onClick={() => onToggleExpand(row.key)}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpand(row.key); } }}
-        className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent transition-colors">
-        <ChevronDown size={14} className={`text-muted-foreground shrink-0 transition-transform ${expanded ? 'rotate-180' : '-rotate-90'}`}/>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="font-medium text-sm text-foreground truncate">{snap.name || 'Unnamed Block'}</span>
-            {snap.published && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700 shrink-0">Published</span>
-            )}
-            {isLive && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${blockSaveState === 'saved' ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-600'}`}>
-                {blockSaveState === 'never' ? 'Unsaved · Current' : blockSaveState === 'dirty' ? 'Open · Unsaved changes' : 'Currently Open'}
-              </span>
-            )}
-            {!unsaved && snap.id?.startsWith('blk_import_') && (
-              <span title="Created by Master Matrix import — re-importing updates it in place"
-                className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-muted text-muted-foreground shrink-0">
-                Imported
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            {prettyDate(row.startDate)} → {prettyDate(row.endDate)} · {shiftCount} shift{shiftCount !== 1 ? 's' : ''} · {residentCount} resident{residentCount !== 1 ? 's' : ''}
-          </div>
+    <>
+      <button ref={btnRef} type="button" onClick={toggle} title={triggerTitle} aria-label={triggerLabel}
+        aria-haspopup="menu" aria-expanded={open} className={triggerClassName}>
+        {children}
+      </button>
+      {open && pos && (
+        <div ref={menuRef} role="menu" aria-label={triggerLabel} onKeyDown={onMenuKeyDown}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: POP_MENU_W }}
+          className="z-[55] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg py-1 no-print">
+          {items.map((it, i) => it.separator
+            ? <div key={`sep${i}`} role="separator" className="my-1 border-t border-border"/>
+            : (
+              <button key={it.key} type="button" role="menuitem" disabled={it.disabled}
+                onClick={() => { setOpen(false); it.onClick(); }}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium focus-visible:outline-none focus-visible:bg-accent hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed ${it.danger ? 'text-destructive' : 'text-popover-foreground'}`}>
+                {it.icon && <it.icon size={13} className="shrink-0"/>}
+                {it.label}
+              </button>
+            ))}
         </div>
-        <div className="flex gap-px shrink-0" onClick={e => e.stopPropagation()}>
-          {dates.map(ds => {
-            const cov = coverageByDate[ds];
-            const status = coverageDayStatus(cov);
-            return (
-              <div key={ds} title={`${formatDisplayDate(ds)}: ${cov?.filled ?? 0}/${cov?.minTotal ?? 0} filled`}
-                className={`w-2 h-5 rounded-[1px] ${COVERAGE_DOT_CLASS[status]}`}/>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
-          {!unsaved && (
-            <button onClick={() => onTogglePublished(snap.id)}
-              title="Published blocks count toward each resident's 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts"
-              className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${snap.published ? 'bg-green-50 border-green-300 text-green-700' : 'bg-card border-border text-muted-foreground hover:border-green-300'}`}>
-              {snap.published ? 'Published' : 'Publish'}
-            </button>
-          )}
-          {!isLive && <Button variant="secondary" size="sm" onClick={() => onOpenBlock(snap)}>Open Block</Button>}
-          {unsaved && <Button variant="secondary" size="sm" onClick={onGoToSchedule}>Go to Schedule</Button>}
-          {!unsaved && (
-            <button onClick={() => onDelete(snap)} title="Delete this saved block"
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
-              <Trash2 size={14}/>
-            </button>
-          )}
-        </div>
-      </div>
+      )}
+    </>
+  );
+}
 
-      {expanded && (
-        <div className="border-t border-border p-3 no-print">
-          {activeShifts.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic px-1">No coverage requirements or assignments recorded for this block.</p>
-          ) : (
-            <BlockMonthGrid dates={dates} coverageByDate={coverageByDate} activeShifts={activeShifts} schedule={row.schedule} nameById={nameById}/>
-          )}
+function railEditorChip(log, viewer) {
+  const last = lastActivity(log);
+  if (!last) return null;
+  const who = actorLabel(last, viewer);
+  const text = who === 'You' ? 'You' : who === 'This device' ? 'Local' : who.slice(0, 2).toUpperCase();
+  return { text, title: `Edited by ${who} · ${relativeTime(last.at)}` };
+}
+
+function railStatus(row, blockSaveState) {
+  if (row.isLive && (blockSaveState === 'dirty' || row.unsaved)) {
+    return { dot: 'bg-amber-500', text: row.unsaved ? 'Not saved yet' : 'Unsaved changes' };
+  }
+  if (row.published) return { dot: 'bg-green-500', text: 'Published' };
+  return { dot: 'bg-muted-foreground/40', text: 'Saved' };
+}
+
+function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, onOpen, onTogglePublished, onDeleteSnapshot,
+  marker, coverage, ayConf, blockSaveState, viewer }) {
+  const active = row.isLive;
+  const dates = useMemo(() => getBlockDates(row.startDate, row.endDate), [row.startDate, row.endDate]);
+  // computeCoverageByDate only reads `r.id` off the resident list - build it from the row's own
+  // schedule keys so an old snapshot is never judged against today's roster.
+  const residents = useMemo(() => Object.keys(row.schedule).map(id => ({ id })), [row.schedule]);
+  const coverageByDate = useMemo(
+    () => computeCoverageByDate(dates, row.schedule, coverage || {}, residents, ayConf),
+    [dates, row.schedule, coverage, residents, ayConf]
+  );
+  const numeral = railNumeral(row.name, index);
+  const range = shortDateRange(row.startDate, row.endDate);
+  const status = railStatus(row, blockSaveState);
+  const chip = railEditorChip(row.activityLog, viewer);
+  const label = [`Block ${numeral}`, row.name && !/^\s*block\s*\d+\s*$/i.test(row.name) ? row.name : null, range, status.text,
+    row.imported ? 'imported' : null, active ? 'currently editing' : null].filter(Boolean).join(', ');
+  const kebabItems = [
+    { key: 'pub', label: row.published ? 'Unpublish' : 'Publish', icon: row.published ? EyeOff : Eye, onClick: () => onTogglePublished(row.id) },
+    { key: 'del', label: 'Delete saved copy', icon: Trash2, danger: true, onClick: () => onDeleteSnapshot(row.snap) },
+  ];
+
+  return (
+    <div role="presentation" style={{ flex: '0 0 auto', width: cellWidth }}
+      className={`group relative snap-start ${active
+        ? 'border-2 border-primary border-b-0 rounded-t-xl bg-card pb-0.5'
+        : 'border-b-2 border-primary pt-1.5'}`}>
+      <button ref={btnRef} type="button" role="tab" id={`rail-tab-${row.key}`} aria-selected={active}
+        aria-controls="block-panel" tabIndex={tabbable ? 0 : -1} aria-label={label}
+        title={[status.text, row.imported ? 'Created by Master Matrix import' : null, chip?.title].filter(Boolean).join(' · ')}
+        onFocus={() => onFocusKey(row.key)}
+        onClick={() => { if (!active) onOpen(row); }}
+        className={`block w-full text-left px-2.5 pt-2 pb-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${active
+          ? 'rounded-t-[10px] text-foreground cursor-default'
+          : 'rounded-t-lg bg-muted border border-border border-b-0 text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+        <span className="flex items-center gap-1.5">
+          <span className="font-display font-bold text-2xl leading-none tabular-nums">{numeral}</span>
+          <span aria-hidden="true" className={`w-2 h-2 rounded-full shrink-0 ${status.dot}`}/>
+        </span>
+        <span className="mt-1 block font-mono tabular-nums text-[11px] whitespace-nowrap">{range || 'No dates'}</span>
+        <span aria-hidden="true" className="mt-1.5 flex gap-px h-1 rounded-full overflow-hidden">
+          {dates.map(ds => (
+            <span key={ds} className={`flex-1 min-w-px ${COVERAGE_DOT_CLASS[coverageDayStatus(coverageByDate[ds])]}`}/>
+          ))}
+        </span>
+        <span className="mt-1.5 flex items-center justify-between gap-1 min-h-[16px] text-[11px]">
+          {active ? <span className="font-semibold text-primary">Editing</span> : <span/>}
+          {chip && <span className="font-mono rounded px-1 bg-secondary text-secondary-foreground">{chip.text}</span>}
+        </span>
+      </button>
+      {marker && (
+        <span aria-hidden="true" title="Today" style={{ left: `${marker.fraction * 100}%` }}
+          className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-omaha z-[1]"/>
+      )}
+      {!row.unsaved && !active && (
+        <div className="absolute top-2.5 right-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+          <PopMenu items={kebabItems} triggerLabel={`Actions for block ${numeral}`} triggerTitle="Publish or delete this saved block"
+            triggerClassName="p-1 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <MoreHorizontal size={14}/>
+          </PopMenu>
         </div>
       )}
     </div>
   );
 }
 
-// AY selector + July→July timeline of every blocksHistory snapshot for that AY (plus the live
-// block, always computed from its own live schedule). Purely a navigation/visualization layer —
-// "Open Block"/"Publish" delegate to loadBlock/toggleBlockPublished, which already own every bit
-// of the actual state transition (unsaved-work guard, hydrate, tab switch, published flag).
-function BlockCalendarSection({ block, allResidents, coverage, blocksHistory, loadBlock, toggleBlockPublished, onDeleteSnapshot, setTab, ayData, updateAyData, blockSaveState }) {
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const ayOptions = useMemo(() => {
-    const set = new Set(blocksHistory.map(b => b.academicYear || 'Unknown'));
-    if (block.academicYear) set.add(block.academicYear);
-    return [...set].sort((a, b) => b.localeCompare(a));
-  }, [blocksHistory, block.academicYear]);
+function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveState, viewer, coverage, ayConf,
+  onOpen, onTogglePublished, onDeleteSnapshot, aboveCells, headerRight }) {
+  const scrollerRef = useRef(null);
+  const tabRefs = useRef({});
+  const [focusKey, setFocusKey] = useState(null);
+  const [width, setWidth] = useState(0);
+  const firstScroll = useRef(true);
 
-  const [selectedAy, setSelectedAy] = useState(() =>
-    (block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || '')
-  );
-  // ayOptions itself never changes after mount for a given DashboardTab lifetime in practice
-  // (blocksHistory/academicYear are localStorage-backed, already loaded by first render) — this
-  // guard only covers the edge case of the selected AY's last block being deleted elsewhere.
   useEffect(() => {
-    if (selectedAy && !ayOptions.includes(selectedAy)) {
-      setSelectedAy((block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || ''));
+    const el = scrollerRef.current;
+    if (!el) return undefined;
+    setWidth(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const activeKey = (blocks.find(b => b.isLive) || {}).key ?? null;
+  useEffect(() => {
+    setFocusKey(null);
+    const el = activeKey ? tabRefs.current[activeKey] : null;
+    if (!el) return;
+    const behavior = firstScroll.current || prefersReducedMotion() ? 'auto' : 'smooth';
+    firstScroll.current = false;
+    // scrollIntoView on the tab would also nudge the page vertically; scroll only the rail.
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      const target = el.closest('[role="presentation"]') || el;
+      const left = target.offsetLeft - (scroller.clientWidth - target.offsetWidth) / 2;
+      scroller.scrollTo({ left: Math.max(0, left), behavior });
     }
-  }, [ayOptions, selectedAy, block.academicYear]);
+  }, [activeKey, liveBlockId]);
 
-  const [expandedKey, setExpandedKey] = useState(null);
+  const n = Math.max(1, blocks.length);
+  const cellWidth = Math.max(RAIL_MIN_CELL_W, width ? Math.floor(width / n) : RAIL_MIN_CELL_W);
+  const marker = useMemo(() => todayMarker(blocks, todayLocalIso()), [blocks]);
+  const tabbableKey = focusKey ?? activeKey ?? (blocks[0] && blocks[0].key);
 
-  const snapsForAy = useMemo(() =>
-    blocksHistory.filter(b => (b.academicYear || 'Unknown') === selectedAy)
-      .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || '')),
-    [blocksHistory, selectedAy]);
+  const idx = ayOptions.indexOf(ay);
+  const older = idx >= 0 && idx < ayOptions.length - 1 ? ayOptions[idx + 1] : null;
+  const newer = idx > 0 ? ayOptions[idx - 1] : null;
 
-  const liveMatchesAy = block.academicYear === selectedAy && !!block.startDate;
-  const liveMatchesSnapshot = liveMatchesAy && snapsForAy.some(s => s.id === block.id);
+  const onKeyDown = e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) || !blocks.length) return;
+    e.preventDefault();
+    const keys = blocks.map(b => b.key);
+    const curIdx = keys.findIndex(k => tabRefs.current[k] === document.activeElement);
+    const base = curIdx >= 0 ? curIdx : Math.max(0, keys.indexOf(tabbableKey));
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? keys.length - 1
+      : Math.min(keys.length - 1, Math.max(0, base + (e.key === 'ArrowRight' ? 1 : -1)));
+    const el = tabRefs.current[keys[next]];
+    setFocusKey(keys[next]);
+    el?.focus();
+  };
 
-  const rows = useMemo(() => {
-    const list = snapsForAy.map(snap => {
-      const isLive = liveMatchesAy && snap.id === block.id;
-      return {
-        key: snap.id, snap, isLive, unsaved: false,
-        schedule: isLive ? (block.schedule || {}) : (snap.data?.schedule || {}),
-        startDate: snap.startDate || snap.data?.startDate, endDate: snap.endDate || snap.data?.endDate,
-      };
-    });
-    if (liveMatchesAy && !liveMatchesSnapshot) {
-      list.push({
-        key: `__live_${block.id}`,
-        snap: { id: block.id, name: block.name, published: false },
-        isLive: true, unsaved: true,
-        schedule: block.schedule || {},
-        startDate: block.startDate, endDate: block.endDate,
-      });
-    }
-    return list.sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
-  }, [snapsForAy, liveMatchesAy, liveMatchesSnapshot, block]);
-
-  const ayWindow = ayWindowFor(selectedAy);
-  const selectedAyConf = ayData[selectedAy] || { ...DEFAULT_AY_CONF };
+  const stepBtn = 'p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
-    <div className="no-print">
-      <SectionCard title="Block Calendar" subtitle={ayWindow ? `${prettyDate(ayWindow.start)} → ${prettyDate(ayWindow.end)}` : 'July→July view of every saved block'}
-        action={ayOptions.length > 0 && (
-          <select value={selectedAy} onChange={e => setSelectedAy(e.target.value)}
-            className="text-sm px-2.5 py-1.5 rounded-lg border border-border bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring">
-            {ayOptions.map(ay => <option key={ay} value={ay}>{ay}</option>)}
-          </select>
-        )}>
-        {/* Per-AY conference & ITE dates — co-located with the AY's own blocks below rather than
-            edited in a separate place (the old Home tab's per-AY folder), so browsing this AY's
-            blocks and editing its conference dates happen in the same spot. */}
-        {selectedAy && (
-          <div className="rounded-lg overflow-hidden border border-primary/20 mb-3">
-            <AYConferenceEditor
-              ay={selectedAy}
-              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
-              onUpdate={conf => updateAyData(selectedAy, conf)}
-            />
-            <JournalClubDatesEditor
-              ay={selectedAy}
-              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
-              onUpdate={conf => updateAyData(selectedAy, conf)}
-              blockStart={block.startDate}
-            />
-            <HolidayDatesEditor
-              ay={selectedAy}
-              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
-              onUpdate={conf => updateAyData(selectedAy, conf)}
-            />
-            <TwelveHourWindowsEditor
-              ay={selectedAy}
-              conf={ayData[selectedAy] || { ...DEFAULT_AY_CONF }}
-              onUpdate={conf => updateAyData(selectedAy, conf)}
-            />
+    <section aria-label="Academic year block rail" className="no-print">
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 mb-2">
+        <div>
+          <div className="font-display text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">Academic year</div>
+          <div className="flex items-center gap-1 -ml-1.5">
+            <button type="button" className={stepBtn} disabled={!older} onClick={() => older && onAyChange(older)} aria-label="Older academic year">
+              <ChevronLeft size={16}/>
+            </button>
+            <select value={ay} onChange={e => onAyChange(e.target.value)} aria-label="Academic year"
+              className="font-display font-bold text-2xl leading-none text-foreground bg-transparent rounded-md py-0.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {ayOptions.length === 0 && <option value={ay}>{ay || '—'}</option>}
+              {ayOptions.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <button type="button" className={stepBtn} disabled={!newer} onClick={() => newer && onAyChange(newer)} aria-label="Newer academic year">
+              <ChevronRight size={16}/>
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-[11px] font-mono tabular-nums text-muted-foreground">
+          {headerRight}
+          <span>{blocks.length} block{blocks.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+
+      <div ref={scrollerRef} className="overflow-x-auto snap-x snap-proximity overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {aboveCells && aboveCells({ blocks, cellWidth })}
+        {blocks.length === 0 ? (
+          <div className="border-b-2 border-primary px-1 pb-3 text-sm italic text-muted-foreground">
+            No saved blocks for this academic year yet {'—'} set dates in the panel below or import the Master Matrix.
+          </div>
+        ) : (
+          <div role="tablist" aria-label="Blocks in academic year" onKeyDown={onKeyDown} className="flex items-end">
+            {blocks.map((row, i) => (
+              <BlockRailCell key={row.key} row={row} index={i} cellWidth={cellWidth}
+                tabbable={row.key === tabbableKey}
+                btnRef={el => { if (el) tabRefs.current[row.key] = el; else delete tabRefs.current[row.key]; }}
+                onFocusKey={setFocusKey} onOpen={onOpen}
+                onTogglePublished={onTogglePublished} onDeleteSnapshot={onDeleteSnapshot}
+                marker={marker && marker.key === row.key ? marker : null}
+                coverage={coverage} ayConf={ayConf} blockSaveState={blockSaveState} viewer={viewer}/>
+            ))}
+            <div aria-hidden="true" className="flex-1 self-stretch border-b-2 border-primary min-w-0"/>
           </div>
         )}
-        <div className="space-y-2">
-          {rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">No saved blocks for this academic year yet.</p>
-          ) : (
-            rows.map(row => (
-              <BlockCalendarRow key={row.key} row={row} coverage={coverage} allResidents={allResidents}
-                expanded={expandedKey === row.key}
-                onToggleExpand={k => setExpandedKey(p => p === k ? null : k)}
-                onOpenBlock={loadBlock} onTogglePublished={toggleBlockPublished}
-                onGoToSchedule={() => setTab('schedule')}
-                onDelete={snap => setDeleteConfirm(snap)}
-                blockSaveState={blockSaveState}
-                ayConf={selectedAyConf}
-              />
-            ))
-          )}
-        </div>
-      </SectionCard>
+      </div>
+    </section>
+  );
+}
 
-      {deleteConfirm && (
-        <ConfirmDialog icon={Trash2} tone="danger" title="Delete saved block?"
-          actions={
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
-              <Button variant="danger" size="sm" icon={Trash2} onClick={() => { onDeleteSnapshot(deleteConfirm.id); setDeleteConfirm(null); }}>
-                Delete Block
-              </Button>
-            </>
-          }>
-          <div className="rounded-lg bg-muted border border-border px-4 py-3">
-            <div className="font-semibold text-foreground">{deleteConfirm.name || 'Unnamed Block'}</div>
-            <div className="text-xs text-muted-foreground/70 mt-0.5">
-              {prettyDate(deleteConfirm.startDate)} → {prettyDate(deleteConfirm.endDate)}
-              {deleteConfirm.savedAt && <> · saved {new Date(deleteConfirm.savedAt).toLocaleDateString()}</>}
-            </div>
+// Attached panel: the live block's workspace. Its border is the other half of the joined-tab
+// outline (border-t-0 - the rail's baseline is its top edge).
+function BlockPanel({ labelledBy, eyebrow, name, dateText, blockSaveState, viewer, activityLog,
+  primaryActions, menuItems, banner, footer, children }) {
+  return (
+    <div id="block-panel" role="tabpanel" aria-labelledby={labelledBy}
+      className="border-2 border-t-0 border-primary rounded-b-xl bg-card text-card-foreground no-print">
+      <div className="px-5 pt-4 pb-3 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+        <div className="min-w-0">
+          <div className="font-display text-[13px] font-bold uppercase tracking-[0.14em] text-primary">{eyebrow}</div>
+          <h2 className="text-xl font-semibold text-foreground break-words">{name || 'Unnamed block'}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            {dateText && <span className="font-mono tabular-nums text-muted-foreground">{dateText}</span>}
+            <SaveStatePill state={blockSaveState}/>
+            <LastEditedLine log={activityLog} viewer={viewer}/>
           </div>
-          <p className="mt-3">This permanently removes the saved copy. Rosters, rules, and other blocks are not affected.</p>
-          {deleteConfirm.id === block.id && (
-            <p className="mt-2">This block is currently open — it stays open and keeps all its data, but will no longer have a saved copy until you save it again.</p>
-          )}
-          {deleteConfirm.published && (
-            <p className="mt-2 text-amber-600">This block is published. Deleting it removes it from journal-club history counts used by validation.</p>
-          )}
-        </ConfirmDialog>
-      )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {primaryActions}
+          <PopMenu items={menuItems} triggerLabel="More block actions" triggerTitle="More block actions"
+            triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
+            <MoreHorizontal size={13}/> More
+          </PopMenu>
+        </div>
+      </div>
+      <div className="px-5 pb-5 space-y-4">
+        {banner}
+        {children}
+      </div>
+      {footer}
     </div>
   );
+}
+
+// Coverage heatmap for the live block. Its own component so the (heavy-ish) coverage + grid work
+// only happens while its CollapsibleCard is open.
+function LiveBlockHeatmap({ block, allResidents, coverage, ayConf }) {
+  const dates = useMemo(() => getBlockDates(block.startDate, block.endDate), [block.startDate, block.endDate]);
+  const coverageByDate = useMemo(
+    () => computeCoverageByDate(dates, block.schedule || {}, coverage || {}, allResidents, ayConf),
+    [dates, block.schedule, coverage, allResidents, ayConf]
+  );
+  const activeShifts = useMemo(() => getActiveCoverageShifts(dates, coverageByDate), [dates, coverageByDate]);
+  const nameById = useMemo(() => {
+    const m = {}; for (const r of allResidents) m[r.id] = `${r.lastName}, ${r.firstName}`; return m;
+  }, [allResidents]);
+  if (!dates.length || activeShifts.length === 0) {
+    return <p className="text-xs text-muted-foreground italic">No coverage requirements or assignments recorded for this block.</p>;
+  }
+  return <BlockMonthGrid dates={dates} coverageByDate={coverageByDate} activeShifts={activeShifts} schedule={block.schedule || {}} nameById={nameById}/>;
 }
 
 // ─── AY FAIRNESS LEDGER (Dashboard card) ───────────────────────────────────
@@ -10441,7 +10544,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover, viewer }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover, viewer, stepHandlers }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -10480,8 +10583,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const sd           = block.specialDays || {};
   const schedule     = block.schedule || {};
 
-  // ── Current Block editor state (relocated from the old Home tab) ──
-  const [blockOpen, setBlockOpen] = useState(true);
+  // ── Block editor state ──
   const [showImportMatrix, setShowImportMatrix] = useState(false);
   const [showImportQGenda, setShowImportQGenda] = useState(false);
   const [confirmClearSchedule, setConfirmClearSchedule] = useState(false);
@@ -10489,15 +10591,35 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const dashPrefs = { blockSeen: dashPrefsData.blockSeen, markBlockSeen: dashMarkBlockSeen };
   const [confirmResetBlock, setConfirmResetBlock] = useState(false);
   const [confirmDeleteBlock, setConfirmDeleteBlock] = useState(false);
-  // Raw counts for the Current Block card's own header subtitle — distinct from the
-  // coverage-derived "Shifts Filled" stat tile below (see that tile's own comment): this is
-  // every resident + every filled cell on the block regardless of min-coverage targets, exactly
-  // as the old Home tab displayed it.
+  const [deleteSnapConfirm, setDeleteSnapConfirm] = useState(null);
+  // Raw count for the Clear Schedule enable state: every filled cell on the block regardless of
+  // min-coverage targets (distinct from the coverage-derived "Shifts Filled" stat tile below).
   const curShiftCount = Object.values(block.schedule || {}).reduce((s,d) => s + Object.values(d).filter(Boolean).length, 0);
-  const curResCount   = emRoster.length + (block.offServiceResidents || []).length;
 
   function setBlockField(f, v) { updateBlock(b => ({ ...b, [f]: v })); }
   function onStartDateChange(s) { applyStartDate(updateBlock, appSettings, s); }
+
+  // ── Year rail state (local to the Dashboard, initialised to the live block's AY) ──
+  const ayOptions = useMemo(() => ayOptionsFor(blocksHistory, block), [blocksHistory, block.academicYear]);
+  const [selectedAy, setSelectedAy] = useState(() =>
+    (block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || '')
+  );
+  // Guard for the edge case of the selected AY's last block being deleted elsewhere.
+  useEffect(() => {
+    if (selectedAy && !ayOptions.includes(selectedAy)) {
+      setSelectedAy((block.academicYear && ayOptions.includes(block.academicYear)) ? block.academicYear : (ayOptions[0] || ''));
+    }
+  }, [ayOptions, selectedAy, block.academicYear]);
+  const railBlocks = useMemo(
+    () => buildRailBlocks({ blocksHistory, liveBlock: block, ay: selectedAy }),
+    [blocksHistory, block, selectedAy]
+  );
+  const selectedAyConf = ayData[selectedAy] || { ...DEFAULT_AY_CONF };
+  const liveRailIdx = railBlocks.findIndex(r => r.isLive);
+  const liveRailRow = liveRailIdx >= 0 ? railBlocks[liveRailIdx] : null;
+  const panelNumeral = liveRailRow ? railNumeral(block.name, liveRailIdx)
+    : (/\d/.test(block.name || '') ? railNumeral(block.name, 0) : null);
+  const liveAyMismatch = !!block.academicYear && block.academicYear !== selectedAy;
 
   // Reuses the same computeCoverageByDate the Schedule tab's coverage footer runs, so the
   // "Shifts Filled" tile can never drift from what the grid shows. shiftCount is derived from
@@ -10513,18 +10635,18 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
 
   // AY Fairness Ledger (display only — see lib/ayLedger.js header). getShiftTarget/isEmResident
   // are module-scope functions in this same file (not props) since lib/ayLedger.js can't import
-  // either directly (lib may not import ResidentScheduler.jsx).
+  // either directly (lib may not import ResidentScheduler.jsx). Follows the rail's selected AY.
   const ayLedger = useMemo(() => buildAyLedger({
-    ay: block.academicYear || getAcademicYear(),
+    ay: selectedAy || block.academicYear || getAcademicYear(),
     allResidents,
     currentBlock: block,
     blocksHistory,
-    ayConf,
+    ayConf: selectedAyConf,
     appSettings,
     getShiftTarget,
     isEm: isEmResident,
     isSchedulable,
-  }), [block, allResidents, blocksHistory, ayConf, appSettings]);
+  }), [selectedAy, block, allResidents, blocksHistory, selectedAyConf, appSettings]);
 
   function updSD(field, newDates) {
     updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: newDates } }));
@@ -10533,114 +10655,268 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const CONF_COLORS = { acep:'bg-red-100 text-red-700 border-red-200', ite:'bg-amber-100 text-amber-700 border-amber-200',
                         aaem:'bg-blue-100 text-blue-700 border-blue-200', saem:'bg-purple-100 text-purple-700 border-purple-200' };
 
+  // Year-section subtitle: simple, robust-to-missing-fields counts.
+  const aySummary = (() => {
+    const c = selectedAyConf || {};
+    const confs = ['acepStart', 'iteDate', 'aaemStart', 'saemStart'].filter(f => c[f]).length;
+    const jc = resolveJcDates(selectedAy, c).length;
+    const hol = resolveHolidays(c).length;
+    const tw = resolveTwelveHourWindows(c).length;
+    const p = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    return `${p(confs, 'conference')} · ${p(jc, 'JC date')} · ${p(hol, 'holiday')} · ${p(tw, '12-h window')}`;
+  })();
+
+  const menuItems = [
+    { key: 'new', label: 'New Block', icon: Plus, onClick: onNewBlock },
+    { key: 'matrix', label: 'Import Master Matrix', icon: Upload, onClick: () => setShowImportMatrix(true) },
+    { key: 'qgenda', label: 'Import QGenda Schedule', icon: Upload, onClick: () => setShowImportQGenda(true) },
+    { separator: true },
+    { key: 'clear', label: 'Clear Schedule', icon: Trash2, danger: true, disabled: curShiftCount === 0, onClick: () => setConfirmClearSchedule(true) },
+    { key: 'reset', label: 'Reset Block', icon: RefreshCw, danger: true, onClick: () => setConfirmResetBlock(true) },
+    { key: 'delete', label: 'Delete Block', icon: Trash2, danger: true, onClick: () => setConfirmDeleteBlock(true) },
+  ];
+
+  const hasSnapshot = blockSaveState !== 'never';
+  const primaryActions = (
+    <>
+      <Button variant="primary" size="sm" icon={Save} onClick={onSaveBlock} disabled={blockSaveState === 'saved'}>Save Block</Button>
+      <Button variant="secondary" size="sm" onClick={() => setTab('schedule')} disabled={!block.startDate}>
+        Open schedule <ChevronRight size={13}/>
+      </Button>
+      {hasSnapshot && (
+        <button type="button" onClick={() => toggleBlockPublished(block.id)} aria-pressed={!!currentSnapPublished}
+          title="Published blocks count toward each resident's 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts"
+          className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_SIZES.sm} border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${currentSnapPublished
+            ? 'bg-green-500/10 border-green-600/40 text-green-700 dark:text-green-400' : 'bg-card border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+          {currentSnapPublished && <Check size={13}/>}
+          {currentSnapPublished ? 'Published' : 'Publish'}
+        </button>
+      )}
+    </>
+  );
+
   return (
-    <div className="space-y-5 max-w-5xl">
+    <div className="space-y-5 max-w-6xl">
 
-      {/* July→July block calendar with global (day-strip) + granular (per-shift heatmap)
-          coverage visualization — read-only navigation layer over blocksHistory + the live
-          block, see the "YEAR CALENDAR" section above DashboardTab. */}
-      <BlockCalendarSection block={block} allResidents={allResidents} coverage={coverage}
-        blocksHistory={blocksHistory} loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished}
-        onDeleteSnapshot={deleteBlockSnapshot}
-        setTab={setTab} ayData={ayData} updateAyData={updateAyData} blockSaveState={blockSaveState}/>
-
-      {/* AY Fairness Ledger — cumulative per-resident load across this AY's published blocks +
-          the current block, so the chief can balance the NEXT block. Display only; see
-          lib/ayLedger.js. */}
-      <AyFairnessLedgerCard ledger={ayLedger}/>
-
-      {/* Current Block — inline editable form, relocated from the old Home tab (now removed —
-          the Block Calendar above replaced its Saved Blocks list, and AYConferenceEditor moved
-          into that calendar's own AY dropdown). */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden no-print">
-        <CollapsibleHeader
-          title="Current Block"
-          subtitle={curResCount > 0 || curShiftCount > 0
-            ? `${curResCount} resident${curResCount !== 1 ? 's' : ''} · ${curShiftCount} shift${curShiftCount !== 1 ? 's' : ''} assigned`
-            : 'Set dates below to start scheduling'}
-          open={blockOpen} onToggle={() => setBlockOpen(p => !p)}
-          action={<>
-            <button onClick={onSaveBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors">
-              <Save size={12}/> Save Block
-            </button>
-            <button onClick={onNewBlock}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-              <Plus size={12}/> New Block
-            </button>
-            <button onClick={() => setShowImportMatrix(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-              <Upload size={12}/> Import Master Matrix
-            </button>
-            <button onClick={() => setShowImportQGenda(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors">
-              <Upload size={12}/> Import QGenda Schedule
-            </button>
-            <Button variant="dangerOutline" size="sm" icon={Trash2} disabled={curShiftCount === 0}
-              onClick={() => setConfirmClearSchedule(true)}>
-              Clear Schedule
-            </Button>
-            <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={() => setConfirmResetBlock(true)}>
-              Reset Block
-            </Button>
-            <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={() => setConfirmDeleteBlock(true)}>
-              Delete Block
-            </Button>
-          </>}
-        />
-
-        {blockOpen && <>
-        <div className="px-5 pt-4 empty:hidden">
-          <UnseenEditsBanner log={block.activityLog} viewer={viewer} seenAt={dashPrefs.blockSeen?.[block.id || '_current']}
-            onDismiss={() => dashPrefs.markBlockSeen(block.id || '_current')}/>
-        </div>
-        {/* Block identity + dates grid — always visible, always editable */}
-        <div className="px-5 pt-4 pb-3">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-gray-500 mb-1">Block Name</label>
-              <input className="input-field" placeholder="e.g. Block 3 — Jun/Jul 2026"
-                value={block.name || ''} onChange={e => setBlockField('name', e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Academic Year</label>
-              <input className="input-field" placeholder={getAcademicYear()}
-                value={block.academicYear || ''} onChange={e => setBlockField('academicYear', e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Start Date</label>
-              <input type="date" className="input-field"
-                value={block.startDate || ''} onChange={e => onStartDateChange(e.target.value)}/>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">End Date</label>
-              <input type="date" className="input-field"
-                value={block.endDate || ''} onChange={e => setBlockField('endDate', e.target.value)}/>
-            </div>
-          </div>
-
-          {/* Days-in-block indicator */}
-          {blockDates.length > 0 && (
-            <p className="text-xs text-gray-400 mt-2">
-              {blockDates.length} days · {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
-            </p>
-          )}
-        </div>
-
-        <BlockActivityList log={block.activityLog} viewer={viewer}/>
-
-        {/* Go to Schedule */}
-        <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
-          <span className="text-xs text-gray-400">
-            {!block.startDate ? 'Set start date above to begin' : `Ready · ${blockDates.length} day block`}
-          </span>
-          <button onClick={() => setTab('schedule')} disabled={!block.startDate}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg transition-colors">
-            Go to Schedule <ChevronRight size={14}/>
+      {liveAyMismatch && (
+        <div className="no-print flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs text-foreground">
+          <span>Editing <strong>{block.name || 'an unnamed block'}</strong> (AY {block.academicYear})</span>
+          <button type="button" onClick={() => setSelectedAy(block.academicYear)}
+            className="font-semibold text-primary hover:underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            show
           </button>
         </div>
-        </>}
+      )}
+
+      <div>
+        <BlockRail ay={selectedAy} ayOptions={ayOptions} onAyChange={setSelectedAy}
+          blocks={railBlocks} liveBlockId={liveRailRow ? liveRailRow.id : null}
+          blockSaveState={blockSaveState} viewer={viewer} coverage={coverage} ayConf={selectedAyConf}
+          onOpen={row => loadBlock(row.snap, { stayOnTab: true })}
+          onTogglePublished={toggleBlockPublished}
+          onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}/>
+
+        <BlockPanel
+          labelledBy={liveRailRow ? `rail-tab-${liveRailRow.key}` : undefined}
+          eyebrow={panelNumeral ? `Block ${panelNumeral}${liveAyMismatch ? ` · AY ${block.academicYear}` : ''}` : (block.startDate ? 'Current block' : 'New block')}
+          name={block.name}
+          dateText={block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : ''}
+          blockSaveState={blockSaveState} viewer={viewer} activityLog={block.activityLog}
+          primaryActions={primaryActions} menuItems={menuItems}
+          banner={
+            <div className="empty:hidden">
+              <UnseenEditsBanner log={block.activityLog} viewer={viewer} seenAt={dashPrefs.blockSeen?.[block.id || '_current']}
+                onDismiss={() => dashPrefs.markBlockSeen(block.id || '_current')}/>
+            </div>
+          }
+          footer={<BlockActivityList log={block.activityLog} viewer={viewer}/>}>
+
+          {stepHandlers && (
+            <BlockStepsRow block={block} hasReport={!!block.generationReport} errorCount={issueCounts.errors}
+              published={!!currentSnapPublished} hasSnapshot={hasSnapshot} handlers={{ ...stepHandlers, onSave: onSaveBlock }}/>
+          )}
+
+          {/* Block identity + dates - always visible, always editable */}
+          <div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Block Name</label>
+                <input className="input-field" placeholder="e.g. Block 3 — Jun/Jul 2026"
+                  value={block.name || ''} onChange={e => setBlockField('name', e.target.value)}/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Academic Year</label>
+                <input className="input-field" placeholder={getAcademicYear()}
+                  value={block.academicYear || ''} onChange={e => setBlockField('academicYear', e.target.value)}/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Start Date</label>
+                <input type="date" className="input-field"
+                  value={block.startDate || ''} onChange={e => onStartDateChange(e.target.value)}/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">End Date</label>
+                <input type="date" className="input-field"
+                  value={block.endDate || ''} onChange={e => setBlockField('endDate', e.target.value)}/>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              {blockDates.length > 0 ? <span className="font-mono tabular-nums">{blockDates.length} days</span> : 'Set a start date to begin scheduling'}
+            </p>
+          </div>
+
+          {/* Stat tiles */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard label="Schedulable Residents" value={schedulableCount} sub={`of ${allResidents.length} on block`}
+              icon={Users} tone="primary"/>
+            <StatCard label="Shifts Filled" value={block.startDate ? shiftCount : '—'}
+              sub={block.startDate ? `of ${minTotal} min coverage slots` : 'set block dates'}
+              icon={CalendarDays} tone={block.startDate && minTotal > 0 && shiftCount >= minTotal ? 'success' : 'warn'}
+              bar={block.startDate && minTotal > 0 ? { pct: fillPct, color: shiftCount >= minTotal ? 'success' : 'warn' } : null}/>
+            <StatCard label="Violations" value={block.startDate ? issueCounts.errors : '—'}
+              sub={block.startDate ? `${issueCounts.warns} warning${issueCounts.warns !== 1 ? 's' : ''}` : 'set block dates'}
+              icon={AlertCircle} tone={issueCounts.errors > 0 ? 'danger' : 'success'}/>
+            <StatCard label="Days Remaining"
+              value={progress ? progress.remaining : '—'}
+              sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
+              icon={Activity} tone="neutral"/>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+            {/* Conferences in this block */}
+            <CollapsibleCard title="Conferences This Block" prefId="dash-conferences"
+              subtitle={confsInBlock.length === 0 ? 'No conferences fall within this block period.' : `${confsInBlock.length} conference${confsInBlock.length !== 1 ? 's' : ''} overlap this block — modified shift schedule applies to non-attending EM Home residents.`}>
+              {confsInBlock.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">
+                  {AY_CONF_DATE_FIELDS.some(f => ayConf[f])
+                    ? 'All AY conferences fall outside this block period.'
+                    : 'No conference dates set for this academic year — add them under AY settings below.'}
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {confsInBlock.map(c => (
+                    <div key={c.key} className={`flex flex-col px-3 py-2 rounded-xl border text-sm font-medium ${CONF_COLORS[c.key] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                      <span className="font-bold">{c.name}</span>
+                      <span className="text-xs opacity-75">{prettyDate(c.start)}{c.end && c.end !== c.start ? ` – ${prettyDate(c.end)}` : ''}</span>
+                      <span className="text-xs opacity-75">{c.who}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CollapsibleCard>
+
+            {/* 12h windows active in this block — the whole point is that an EMPTY list says so out loud,
+                rather than the chief generating a schedule and silently getting no 12h shifts. */}
+            <CollapsibleCard title="12-Hour Shift Days This Block" prefId="dash-12h-days"
+              subtitle={twelveHourDaysInBlock.length === 0
+                ? 'None — every day of this block runs the normal 9h shifts.'
+                : `${twelveHourDayCount} day${twelveHourDayCount === 1 ? '' : 's'} across ${twelveHourDaysInBlock.length} window${twelveHourDaysInBlock.length === 1 ? '' : 's'} run 12h shifts.`}>
+              {twelveHourDaysInBlock.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">
+                  No 12h window covers this block. Set one under AY settings below
+                  (12-Hour Shift Windows) — conference dates seed them automatically.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {twelveHourDaysInBlock.map(g => (
+                    <div key={g.key} className="flex flex-col px-3 py-2 rounded-xl border bg-indigo-50 border-indigo-200 text-indigo-700 text-sm font-medium">
+                      <span className="font-bold">{g.label}</span>
+                      <span className="text-xs opacity-75">{prettyDate(g.start)}{g.end !== g.start ? ` – ${prettyDate(g.end)}` : ''} · {g.days} day{g.days === 1 ? '' : 's'}</span>
+                      <span className="text-xs opacity-75">{g.areas.join(', ')} · {g.mode === 'add' ? 'alongside 9h' : 'replacing 9h'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CollapsibleCard>
+
+            {/* 1st Fridays */}
+            {firstFridays.length > 0 && (
+              <CollapsibleCard title="First Fridays This Block" prefId="dash-first-fridays"
+                subtitle="Anesthesia: never schedulable (social hour) — enforced automatically.">
+                <div className="flex flex-wrap gap-2">
+                  {firstFridays.map(d => (
+                    <span key={d} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-sm font-medium text-purple-700">
+                      <CalendarDays size={13}/>
+                      {formatDisplayDate(d)}
+                    </span>
+                  ))}
+                </div>
+              </CollapsibleCard>
+            )}
+
+            {/* Special days for this block — editable */}
+            <CollapsibleCard title="Special Days" prefId="dash-special-days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
+              <div className="space-y-5">
+                <SpecialDaysList
+                  label="IM Code Blue Days"
+                  hint="IM resident off night before + day of"
+                  dates={sd.codeBlueDays || []}
+                  onUpdate={d => updSD('codeBlueDays', d)}
+                  chipClass="bg-red-100 text-red-700 border border-red-200"
+                />
+                <SpecialDaysList
+                  label="BAMC Procedure Days"
+                  hint="BAMC resident off night before + day of (may work night-of if critical)"
+                  dates={sd.procDays || []}
+                  onUpdate={d => updSD('procDays', d)}
+                  chipClass="bg-blue-100 text-blue-700 border border-blue-200"
+                />
+                <SpecialDaysList
+                  label="Anesthesia US Days"
+                  hint="Anesthesia resident off these days (email the ultrasound coordinator annually for dates)"
+                  dates={sd.anesDays || []}
+                  onUpdate={d => updSD('anesDays', d)}
+                  chipClass="bg-purple-100 text-purple-700 border border-purple-200"
+                />
+              </div>
+            </CollapsibleCard>
+
+            <div className="lg:col-span-2">
+              {/* Journal Club presenter planning + worked-JC caps */}
+              <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}
+                ayConf={ayConf} onAssignPresenter={assignJcPresenter}/>
+            </div>
+
+            <div className="lg:col-span-2">
+              {/* Jeopardy activations / sick-call log + advisory buy-down ledger */}
+              <JeopardySickCallsCard allResidents={allResidents} block={block} blocksHistory={blocksHistory}
+                appSettings={appSettings} setAppSettings={setAppSettings} onRequestSickCallCover={onRequestSickCallCover}/>
+            </div>
+
+            <div className="lg:col-span-2">
+              <CollapsibleCard title="Coverage heatmap" prefId="dash.heatmap" defaultOpen={false}
+                subtitle="Per-shift coverage for every day of this block.">
+                <LiveBlockHeatmap block={block} allResidents={allResidents} coverage={coverage} ayConf={ayConf}/>
+              </CollapsibleCard>
+            </div>
+          </div>
+        </BlockPanel>
       </div>
+
+      {/* Year - settings + fairness ledger for the rail's selected academic year */}
+      <section className="space-y-3 no-print">
+        <div className="font-display text-[11px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+          Academic year {selectedAy ? selectedAy.replace('-', '–') : ''}
+        </div>
+        {selectedAy && (
+          <CollapsibleCard title="AY settings" subtitle={aySummary} prefId="dash.aySettings" defaultOpen={false}>
+            <div className="rounded-lg overflow-hidden border border-primary/20">
+              <AYConferenceEditor ay={selectedAy} conf={selectedAyConf}
+                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+              <JournalClubDatesEditor ay={selectedAy} conf={selectedAyConf}
+                onUpdate={conf => updateAyData(selectedAy, conf)} blockStart={block.startDate}/>
+              <HolidayDatesEditor ay={selectedAy} conf={selectedAyConf}
+                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+              <TwelveHourWindowsEditor ay={selectedAy} conf={selectedAyConf}
+                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+            </div>
+          </CollapsibleCard>
+        )}
+        {/* AY Fairness Ledger — cumulative per-resident load across this AY's published blocks +
+            the current block, so the chief can balance the NEXT block. Display only; see
+            lib/ayLedger.js. */}
+        <AyFairnessLedgerCard ledger={ayLedger}/>
+      </section>
 
       {showImportMatrix && (
         <ImportMatrixModal
@@ -10691,156 +10967,32 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         </ConfirmDialog>
       )}
 
-      {/* Stat tiles */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Schedulable Residents" value={schedulableCount} sub={`of ${allResidents.length} on block`}
-          icon={Users} tone="primary"/>
-        <StatCard label="Shifts Filled" value={block.startDate ? shiftCount : '—'}
-          sub={block.startDate ? `of ${minTotal} min coverage slots` : 'set block dates'}
-          icon={CalendarDays} tone={block.startDate && minTotal > 0 && shiftCount >= minTotal ? 'success' : 'warn'}
-          bar={block.startDate && minTotal > 0 ? { pct: fillPct, color: shiftCount >= minTotal ? 'success' : 'warn' } : null}/>
-        <StatCard label="Violations" value={block.startDate ? issueCounts.errors : '—'}
-          sub={block.startDate ? `${issueCounts.warns} warning${issueCounts.warns !== 1 ? 's' : ''}` : 'set block dates'}
-          icon={AlertCircle} tone={issueCounts.errors > 0 ? 'danger' : 'success'}/>
-        <StatCard label="Days Remaining"
-          value={progress ? progress.remaining : '—'}
-          sub={progress ? (progress.elapsed === 0 ? 'Not started yet' : progress.remaining === 0 ? 'Block complete' : `Day ${progress.elapsed} of ${progress.total}`) : 'No dates set'}
-          icon={Activity} tone="neutral"/>
-      </div>
-
-      {/* Block Overview */}
-      <CollapsibleCard title="Block Overview" prefId="dash-block-overview">
-        {!block.startDate ? (
-          <p className="text-sm text-gray-400 italic">No block dates set — go to Settings to set start/end dates.</p>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <div>
-                <p className="font-semibold text-gray-900 text-base">{block.name || 'Unnamed Block'}</p>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  {prettyDate(block.startDate)} → {prettyDate(block.endDate)}
-                  <span className="text-gray-400 ml-2">· {block.academicYear}</span>
-                </p>
-              </div>
-              {progress && (
-                <div className="text-right shrink-0">
-                  {progress.elapsed === 0
-                    ? <p className="text-sm text-gray-500">Starts in {progress.remaining} day{progress.remaining !== 1 ? 's' : ''}</p>
-                    : progress.remaining === 0
-                    ? <p className="text-sm text-gray-500">Block complete</p>
-                    : <p className="text-sm text-gray-700 font-medium">Day {progress.elapsed} of {progress.total}</p>
-                  }
-                  <p className="text-xs text-gray-400">{progress.remaining} day{progress.remaining !== 1 ? 's' : ''} remaining</p>
-                </div>
-              )}
+      {deleteSnapConfirm && (
+        <ConfirmDialog icon={Trash2} tone="danger" title="Delete saved block?"
+          actions={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setDeleteSnapConfirm(null)}>Cancel</Button>
+              <Button variant="danger" size="sm" icon={Trash2} onClick={() => { deleteBlockSnapshot(deleteSnapConfirm.id); setDeleteSnapConfirm(null); }}>
+                Delete Block
+              </Button>
+            </>
+          }>
+          <div className="rounded-lg bg-muted border border-border px-4 py-3">
+            <div className="font-semibold text-foreground">{deleteSnapConfirm.name || 'Unnamed Block'}</div>
+            <div className="text-xs text-muted-foreground/70 mt-0.5">
+              {prettyDate(deleteSnapConfirm.startDate)} → {prettyDate(deleteSnapConfirm.endDate)}
+              {deleteSnapConfirm.savedAt && <> · saved {new Date(deleteSnapConfirm.savedAt).toLocaleDateString()}</>}
             </div>
-            {progress && (
-              <div>
-                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${progress.pct}%` }}/>
-                </div>
-                <p className="text-xs text-gray-400 mt-0.5">{progress.pct}% complete</p>
-              </div>
-            )}
           </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Conferences in this block */}
-      <CollapsibleCard title="Conferences This Block" prefId="dash-conferences"
-        subtitle={confsInBlock.length === 0 ? 'No conferences fall within this block period.' : `${confsInBlock.length} conference${confsInBlock.length !== 1 ? 's' : ''} overlap this block — modified shift schedule applies to non-attending EM Home residents.`}>
-        {confsInBlock.length === 0 ? (
-          <p className="text-xs text-gray-400 italic">
-            {AY_CONF_DATE_FIELDS.some(f => ayConf[f])
-              ? 'All AY conferences fall outside this block period.'
-              : 'No conference dates set for this academic year — add them in the Block Calendar above (select this AY, then Conference & ITE Dates).'}
-          </p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {confsInBlock.map(c => (
-              <div key={c.key} className={`flex flex-col px-3 py-2 rounded-xl border text-sm font-medium ${CONF_COLORS[c.key] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-                <span className="font-bold">{c.name}</span>
-                <span className="text-xs opacity-75">{prettyDate(c.start)}{c.end && c.end !== c.start ? ` – ${prettyDate(c.end)}` : ''}</span>
-                <span className="text-xs opacity-75">{c.who}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* 12h windows active in this block — the whole point is that an EMPTY list says so out loud,
-          rather than the chief generating a schedule and silently getting no 12h shifts. */}
-      <CollapsibleCard title="12-Hour Shift Days This Block" prefId="dash-12h-days"
-        subtitle={twelveHourDaysInBlock.length === 0
-          ? 'None — every day of this block runs the normal 9h shifts.'
-          : `${twelveHourDayCount} day${twelveHourDayCount === 1 ? '' : 's'} across ${twelveHourDaysInBlock.length} window${twelveHourDaysInBlock.length === 1 ? '' : 's'} run 12h shifts.`}>
-        {twelveHourDaysInBlock.length === 0 ? (
-          <p className="text-xs text-gray-400 italic">
-            No 12h window covers this block. Set one in the Block Calendar above (select this AY, then
-            12-Hour Shift Windows) — conference dates seed them automatically.
-          </p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {twelveHourDaysInBlock.map(g => (
-              <div key={g.key} className="flex flex-col px-3 py-2 rounded-xl border bg-indigo-50 border-indigo-200 text-indigo-700 text-sm font-medium">
-                <span className="font-bold">{g.label}</span>
-                <span className="text-xs opacity-75">{prettyDate(g.start)}{g.end !== g.start ? ` – ${prettyDate(g.end)}` : ''} · {g.days} day{g.days === 1 ? '' : 's'}</span>
-                <span className="text-xs opacity-75">{g.areas.join(', ')} · {g.mode === 'add' ? 'alongside 9h' : 'replacing 9h'}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </CollapsibleCard>
-
-      {/* Journal Club presenter planning + worked-JC caps */}
-      <JournalClubPlanner allResidents={allResidents} block={block} blocksHistory={blocksHistory}
-        ayConf={ayConf} onAssignPresenter={assignJcPresenter}/>
-
-      {/* Jeopardy activations / sick-call log + advisory buy-down ledger */}
-      <JeopardySickCallsCard allResidents={allResidents} block={block} blocksHistory={blocksHistory}
-        appSettings={appSettings} setAppSettings={setAppSettings} onRequestSickCallCover={onRequestSickCallCover}/>
-
-      {/* 1st Fridays */}
-      {firstFridays.length > 0 && (
-        <CollapsibleCard title="First Fridays This Block" prefId="dash-first-fridays"
-          subtitle="Anesthesia: never schedulable (social hour) — enforced automatically.">
-          <div className="flex flex-wrap gap-2">
-            {firstFridays.map(d => (
-              <span key={d} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-sm font-medium text-purple-700">
-                <CalendarDays size={13}/>
-                {formatDisplayDate(d)}
-              </span>
-            ))}
-          </div>
-        </CollapsibleCard>
+          <p className="mt-3">This permanently removes the saved copy. Rosters, rules, and other blocks are not affected.</p>
+          {deleteSnapConfirm.id === block.id && (
+            <p className="mt-2">This block is currently open — it stays open and keeps all its data, but will no longer have a saved copy until you save it again.</p>
+          )}
+          {deleteSnapConfirm.published && (
+            <p className="mt-2 text-amber-600">This block is published. Deleting it removes it from journal-club history counts used by validation.</p>
+          )}
+        </ConfirmDialog>
       )}
-
-      {/* Special days for this block — editable */}
-      <CollapsibleCard title="Special Days" prefId="dash-special-days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
-        <div className="space-y-5">
-          <SpecialDaysList
-            label="IM Code Blue Days"
-            hint="IM resident off night before + day of"
-            dates={sd.codeBlueDays || []}
-            onUpdate={d => updSD('codeBlueDays', d)}
-            chipClass="bg-red-100 text-red-700 border border-red-200"
-          />
-          <SpecialDaysList
-            label="BAMC Procedure Days"
-            hint="BAMC resident off night before + day of (may work night-of if critical)"
-            dates={sd.procDays || []}
-            onUpdate={d => updSD('procDays', d)}
-            chipClass="bg-blue-100 text-blue-700 border border-blue-200"
-          />
-          <SpecialDaysList
-            label="Anesthesia US Days"
-            hint="Anesthesia resident off these days (email the ultrasound coordinator annually for dates)"
-            dates={sd.anesDays || []}
-            onUpdate={d => updSD('anesDays', d)}
-            chipClass="bg-purple-100 text-purple-700 border border-purple-200"
-          />
-        </div>
-      </CollapsibleCard>
 
     </div>
   );
@@ -10848,7 +11000,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
 
 // ─── MATRIX IMPORT + AY CONFERENCE EDITOR ──────────────────────────────────────
 // (Formerly "Home Tab" — the tab itself is gone; ImportMatrixModal and AYConferenceEditor below
-// are now consumed by DashboardTab / BlockCalendarSection instead.)
+// are now consumed by DashboardTab instead.)
 
 // Sheet-name regex matching (/home/i, /off.?service/i) breaks the moment a chief's export uses
 // generic tab names ("Sheet1"/"Sheet2") instead of descriptive ones — falling back to positional
@@ -22712,7 +22864,9 @@ function BlockActivityList({ log, viewer }) {
 // this component only supplies the inputs it already has as props and renders the result. The
 // error count comes from the ROOT `issues`/`issueCounts` memo the caller already computed once for
 // the whole app (see ResidentScheduler()'s `issueCounts`) — never a second validateAll pass here.
-function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+// Shared by the Schedule tab's BlockContextBar and the Dashboard's BlockPanel so the two step
+// rails can never drift. `handlers` = { onGoToGenerate, onGoToErrors, onPublish, onExport, onSave }.
+function BlockStepsRow({ block, hasReport, errorCount, published, hasSnapshot, handlers }) {
   const steps = useMemo(() => deriveBlockSteps({
     hasDates: !!(block.startDate && block.endDate),
     hasReport,
@@ -22723,15 +22877,25 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
   }), [block.startDate, block.endDate, hasReport, errorCount, published, hasSnapshot, block.lastExportedAt]);
 
   const stepActions = {
-    generated: onGoToGenerate,
-    errors: onGoToErrors,
-    // 'publish' doubles as "Save block first" while unsaved (see deriveBlockSteps) — either way the
+    generated: handlers.onGoToGenerate,
+    errors: handlers.onGoToErrors,
+    // 'publish' doubles as "Save block first" while unsaved (see deriveBlockSteps) - either way the
     // current step's button always needs SOME handler, so route to save whenever there's no snapshot
     // yet, exactly like the Dashboard's own "Go to Schedule"/"Publish" split does.
-    publish: hasSnapshot ? onPublish : onSave,
-    export: onExport,
+    publish: hasSnapshot ? handlers.onPublish : handlers.onSave,
+    export: handlers.onExport,
   };
 
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs" role="group" aria-label="Block status">
+      {steps.map((step, i) => (
+        <BlockStatusRailStep key={step.id} step={step} onAction={stepActions} isLast={i === steps.length - 1}/>
+      ))}
+    </div>
+  );
+}
+
+function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
   return (
     <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
       <div className="flex items-center gap-2 min-w-0 shrink-0">
@@ -22744,11 +22908,8 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
         <LastEditedLine log={block.activityLog} viewer={viewer}/>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Block status">
-        {steps.map((step, i) => (
-          <BlockStatusRailStep key={step.id} step={step} onAction={stepActions} isLast={i === steps.length - 1}/>
-        ))}
-      </div>
+      <BlockStepsRow block={block} hasReport={hasReport} errorCount={errorCount} published={published}
+        hasSnapshot={hasSnapshot} handlers={{ onGoToGenerate, onGoToErrors, onPublish, onExport, onSave }}/>
 
       <div className="ml-auto flex items-center gap-2">
         <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
@@ -22974,6 +23135,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [toastHistory, setToastHistory] = useState([]);
   const [toastHistoryOpen, setToastHistoryOpen] = useState(false);
   const [switchPending, setSwitchPending] = useState(null);
+  const [switchStay, setSwitchStay] = useState(false);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
   // any) had no confirmed QGenda task and fell back to their on-screen label. exportConfirm itself
@@ -24250,13 +24412,16 @@ export default function ResidentScheduler({ viewer } = {}) {
     showToast('Block deleted','amber');
   }
 
-  function loadBlock(snap) {
+  // opts.stayOnTab: Dashboard rail selection - switch the live block without leaving the Dashboard.
+  // The save-first dialog carries it through via switchStay.
+  function loadBlock(snap, opts) {
+    setSwitchStay(!!(opts && opts.stayOnTab === true));
     const hasCurrent=block.startDate||(block.offServiceResidents||[]).length>0||Object.keys(block.schedule||{}).length>0;
     const needsGuard = blockSaveState === 'dirty' || (blockSaveState === 'never' && hasCurrent);
-    needsGuard ? setSwitchPending(snap) : doLoadBlock(snap);
+    needsGuard ? setSwitchPending(snap) : doLoadBlock(snap, opts);
   }
 
-  function doLoadBlock(snap) {
+  function doLoadBlock(snap, opts) {
     const d=snap.data||{};
     setBlock({ id:snap.id, name:snap.name||d.name||'', academicYear:snap.academicYear||d.academicYear||getAcademicYear(),
       startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
@@ -24276,7 +24441,8 @@ export default function ResidentScheduler({ viewer } = {}) {
         pgy3: (d.jeopardySchedule?.pgy3 && typeof d.jeopardySchedule.pgy3 === 'object' && !Array.isArray(d.jeopardySchedule.pgy3)) ? d.jeopardySchedule.pgy3 : {},
       },
       metroJeopardyRanges: Array.isArray(d.metroJeopardyRanges) ? d.metroJeopardyRanges : [] });
-    setSwitchPending(null); setTab('schedule');
+    setSwitchPending(null);
+    if (!(opts && opts.stayOnTab === true)) setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
 
@@ -24858,7 +25024,8 @@ export default function ResidentScheduler({ viewer } = {}) {
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
-              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}/>
+              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
+              stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
@@ -24889,10 +25056,10 @@ export default function ResidentScheduler({ viewer } = {}) {
           actions={
             <>
               <Button variant="ghost" size="sm" onClick={()=>setSwitchPending(null)}>Cancel</Button>
-              <Button variant="secondary" size="sm" onClick={()=>{isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}}>
+              <Button variant="secondary" size="sm" onClick={()=>{isSwitchNew?doNewBlock():doLoadBlock(pendingSnap,{stayOnTab:switchStay});}}>
                 {isSwitchNew?'Discard & New':'Switch Without Saving'}
               </Button>
-              <Button variant="primary" size="sm" icon={Save} onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap);}}>
+              <Button variant="primary" size="sm" icon={Save} onClick={()=>{saveBlock();isSwitchNew?doNewBlock():doLoadBlock(pendingSnap,{stayOnTab:switchStay});}}>
                 Save &amp; {isSwitchNew?'New':'Switch'}
               </Button>
             </>
