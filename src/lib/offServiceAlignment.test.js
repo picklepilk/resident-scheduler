@@ -63,13 +63,30 @@ describe('buildOffServiceAlignment', () => {
     expect(one(out).blockIds).toEqual(['b1', 'b3']);
   });
 
-  it('precedence: bound-exact B1+B3 records with differing ranges read as legacyClamped, not split', () => {
+  it('bound-exact records in non-consecutive blocks (B1, B3) are split, not legacyClamped', () => {
     const out = run([
       snap(B.b1, [rec('Ann', [{ start: B.b1.start, end: B.b1.end }])]),
       snap(B.b2, []),
       snap(B.b3, [rec('Ann', [{ start: B.b3.start, end: B.b3.end }])]),
     ]);
-    expect(one(out).status).toBe('legacyClamped');
+    expect(one(out).status).toBe('split');
+  });
+
+  it('straddles when window ends mid-block only', () => {
+    const out = run([snap(B.b1, [rec('Ann', [{ start: '2026-07-01', end: '2026-07-14' }])])]);
+    const r = one(out);
+    expect(r.status).toBe('straddles');
+    expect(r.segments).toEqual([{ blockId: 'b1', start: '2026-07-01', end: '2026-07-14', days: 14, daysBefore: 0, daysAfter: 0 }]);
+    expect(r.notes[0]).toMatch(/ends mid-block in Block 1/);
+  });
+
+  it('missing or invalid ay yields empty result', () => {
+    const snaps = [snap(B.b1, [rec('Ann', [{ start: B.b1.start, end: B.b1.end }])])];
+    for (const ay of [undefined, null, 'bogus']) {
+      const out = buildOffServiceAlignment({ snapshots: snaps, ay });
+      expect(out.blocks).toEqual([]);
+      expect(out.residents).toEqual([]);
+    }
   });
 
   it('outside: days before the first block', () => {

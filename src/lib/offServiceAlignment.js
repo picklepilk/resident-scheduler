@@ -5,7 +5,9 @@
 // `ay` is the app's format ("AY26/27", see dates.js formatAY). Dates are ISO, inclusive.
 // Status precedence (first match wins): noWindow, legacyClamped, outside, split, straddles, aligned.
 // Interpretation choices:
-//  - legacyClamped requires every record to carry exactly one range equal to its own block bounds.
+//  - legacyClamped requires every record to carry exactly one range equal to its own block bounds,
+//    in CONSECUTIVE blocks (a clamped legacy import of one window lands in adjacent blocks).
+//    Bound-exact records in non-consecutive blocks are separate genuine rotations -> split.
 //  - A person is ONE resident row; distinct windows are listed in `windows` (no `#n` key suffix).
 //  - segments cover every AY block a window overlaps, whether or not the person has a record there.
 
@@ -108,6 +110,7 @@ export function buildOffServiceAlignment({ snapshots = [], liveBlock = null, ay 
       status = 'noWindow';
     } else if (
       p.recs.length >= 2 && blockIds.length >= 2 &&
+      (() => { const ix = blockIds.map(id => idx.get(id)).sort((a, b) => a - b); return ix.every((v, i) => i === 0 || v === ix[i - 1] + 1); })() &&
       p.recs.every(r => r.ranges.length === 1 && r.ranges[0].start === r.block.start && r.ranges[0].end === r.block.end) &&
       new Set(p.recs.map(r => `${r.ranges[0].start}|${r.ranges[0].end}`)).size > 1
     ) {
