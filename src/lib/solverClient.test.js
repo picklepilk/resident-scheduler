@@ -227,3 +227,20 @@ describe('solverClient — resolveSolverTarget (pure fallback decision)', () => 
       .toEqual({ url: 'https://solver.example.com', usingLocal: false });
   });
 });
+
+describe('getSolverJobsMode', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('reads /health jobs, caches per url, failure -> memory uncached', async () => {
+    vi.resetModules();
+    const { getSolverJobsMode } = await import('./solverClient.js');
+    const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jobs: 'durable' }) });
+    vi.stubGlobal('fetch', f);
+    expect(await getSolverJobsMode('https://a.test')).toBe('durable');
+    expect(await getSolverJobsMode('https://a.test')).toBe('durable');
+    expect(f).toHaveBeenCalledTimes(1);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('x')));
+    expect(await getSolverJobsMode('https://b.test')).toBe('memory');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    expect(await getSolverJobsMode('https://b.test')).toBe('memory');
+  });
+});

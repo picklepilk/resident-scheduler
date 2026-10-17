@@ -32,8 +32,8 @@ import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } fro
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget } from './lib/solverClient.js';
-import { submitSolveJob, pollSolveJob, cancelSolveJob } from './lib/solverJobs.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode } from './lib/solverClient.js';
+import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
@@ -7006,7 +7006,8 @@ const approxMinutes = (seconds) => {
 };
 
 // Generate-overlay bar width (0..100). progress: null | {phase:'local', done, total} (attempts) |
-// {phase:'local', polishing:true} (repair/finalize) | {phase:'solver', budgetSec} | {phase:'validate'}.
+// {phase:'local', polishing:true} (repair/finalize) | {phase:'solver', budgetSec, elapsed?, budget?, stage?, stages?}
+// (elapsed/budget/stage/stages come from a durable job's server progress) | {phase:'validate'}.
 // Local attempts own 5..55, polishing sits at 58, the solver fills 60..97 against its time budget.
 export function genProgressPct(progress, elapsedSinceSolverStartSec = 0) {
   if (!progress) return 0;
@@ -7016,8 +7017,11 @@ export function genProgressPct(progress, elapsedSinceSolverStartSec = 0) {
     return total > 0 ? Math.round(5 + 50 * Math.min(done, total) / total) : 5;
   }
   if (progress.phase === 'solver') {
-    const budget = progress.budgetSec > 0 ? progress.budgetSec : 1;
-    return Math.min(97, Math.max(60, Math.round(60 + 37 * elapsedSinceSolverStartSec / budget)));
+    // Durable-job path: the server reports its own elapsed/budget; prefer them over the client clock.
+    const serverBased = progress.budget > 0 && progress.elapsed >= 0;
+    const budget = serverBased ? progress.budget : (progress.budgetSec > 0 ? progress.budgetSec : 1);
+    const elapsed = serverBased ? progress.elapsed : elapsedSinceSolverStartSec;
+    return Math.min(97, Math.max(60, Math.round(60 + 37 * elapsed / budget)));
   }
   if (progress.phase === 'validate') return 99;
   return 0;
@@ -15304,6 +15308,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [genElapsedSec, setGenElapsedSec] = useState(0);
   const [genProgress, setGenProgress] = useState(null); // see genProgressPct
   const genSolverStartRef = useRef(0);
+  const genSolveAbortRef = useRef(null); // AbortController of an in-flight durable solve job; aborted on unmount
+  useEffect(() => () => { genSolveAbortRef.current?.abort(); }, []);
   const genTimerRef = useRef(null);
   function startGenProgress(label) {
     generationInProgress = true; // read by the root's idle sign-out handler — see its declaration
@@ -16254,8 +16260,25 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         // the local target: it runs with SOLVER_AUTH_MODE=off (loopback-only, see run-local.ps1/.sh)
         // and there's no reason to hand a real session token to a process on the same machine.
         const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
-        const json = await solveRemote(payload, { url: solverTargetUrl, accessToken,
-          timeoutMs: deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS });
+        const solveTimeoutMs = deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS;
+        const solveBudgetSec = deepSolve ? DEEP_SOLVE_MAX_TIME_SECONDS : DEFAULT_SOLVE_MAX_TIME_SECONDS;
+        // Durable backend (Modal: POST /solve disabled) => submit-then-poll; legacy Fly and the
+        // local run-local target keep the synchronous solveRemote path exactly as before.
+        const durable = !usingLocal && (await getSolverJobsMode(solverTargetUrl)) === 'durable';
+        let json;
+        if (durable) {
+          const ac = new AbortController();
+          genSolveAbortRef.current = ac;
+          try {
+            json = await solveViaJob(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs, signal: ac.signal,
+              onProgress: pr => setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec,
+                elapsed: pr.elapsed, budget: pr.budget, stage: pr.stage, stages: pr.stages }) });
+          } finally {
+            if (genSolveAbortRef.current === ac) genSolveAbortRef.current = null;
+          }
+        } else {
+          json = await solveRemote(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs });
+        }
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
@@ -16754,7 +16777,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               const pct = genProgressPct(genProgress, solverElapsed);
               const sub = genProgress?.phase === 'local'
                 ? (genProgress.polishing ? (genProgress.total ? `Polishing attempt ${genProgress.done} of ${genProgress.total}` : 'Polishing best attempt…') : `Attempt ${genProgress.done} of ${genProgress.total}`)
-                : genProgress?.phase === 'solver' ? `${solverElapsed}s of ${approxMinutes(genProgress.budgetSec)}` : null;
+                : genProgress?.phase === 'solver' ? `${genProgress.stages > 0 ? `Stage ${genProgress.stage} of ${genProgress.stages} · ` : ''}${solverElapsed}s of ${approxMinutes(genProgress.budgetSec)}` : null;
               return (<>
                 <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
                   <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none" style={{ width: pct + '%' }}/>

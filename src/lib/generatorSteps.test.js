@@ -44,5 +44,8 @@ describe('genProgressPct', () => {
     expect(genProgressPct({ phase: 'solver', budgetSec: 100 }, 50)).toBe(79);
     expect(genProgressPct({ phase: 'solver', budgetSec: 100 }, 999)).toBe(97);
     expect(genProgressPct({ phase: 'validate' }, 0)).toBe(99);
+    // durable job: server elapsed/budget win over the client clock
+    expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: 50, budget: 100 }, 0)).toBe(79);
+    expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: 0, budget: 100 }, 999)).toBe(60);
   });
 });

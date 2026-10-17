@@ -130,3 +130,52 @@ export async function cancelSolveJob(jobId, { accessToken = null, timeoutMs = 10
     clearTimeout(timer);
   }
 }
+
+// Submit-then-poll for the durable (Modal) backend, where POST /solve is disabled (400 use_jobs) and
+// every cloud solve must be a job. Resolves with the finished job's `result` — the exact JSON shape
+// solveRemote returns from /solve — so callers can swap one for the other. Rejects on failed /
+// cancelled / lost (Modal reports lost as HTTP 200 status 'lost'; a 404 is the in-memory form) /
+// timeout / abort / repeated poll network errors; the caller keeps its local result on any rejection.
+// A `transientError` field on a running view is a backend hiccup, not a failure: keep polling.
+// On abort or timeout the job is cancelled best-effort (cancelSolveJob never throws).
+export async function solveViaJob(payload, {
+  url = null, accessToken = null, pollMs = 2000, timeoutMs = 600000, onProgress = null, signal = null,
+  maxPollErrors = 3,
+} = {}) {
+  if (signal?.aborted) throw new Error('Solve cancelled');
+  const { jobId } = await submitSolveJob(payload, { accessToken, url });
+  if (!jobId) throw new Error('Job submission returned no jobId');
+  const deadline = Date.now() + timeoutMs;
+  const cancel = () => cancelSolveJob(jobId, { accessToken, url });
+
+  // Sleep that wakes early on abort.
+  const sleep = ms => new Promise(resolve => {
+    const done = () => { clearTimeout(t); signal?.removeEventListener?.('abort', done); resolve(); };
+    const t = setTimeout(done, ms);
+    signal?.addEventListener?.('abort', done, { once: true });
+  });
+
+  let pollErrors = 0;
+  for (;;) {
+    if (signal?.aborted) { await cancel(); throw new Error('Solve cancelled'); }
+    if (Date.now() >= deadline) { await cancel(); throw new Error(`Solve job timed out after ${timeoutMs}ms`); }
+    let view;
+    try {
+      view = await pollSolveJob(jobId, { accessToken, url });
+      pollErrors = 0;
+    } catch (e) {
+      if (++pollErrors >= maxPollErrors) { await cancel(); throw e; }
+      await sleep(pollMs);
+      continue;
+    }
+    if (view?.lost || view?.status === 'lost') throw new Error('Solve job was lost (the optimizer stopped before finishing)');
+    if (view?.status === 'done') {
+      if (!view.result) throw new Error('Solve job finished without a result');
+      return view.result;
+    }
+    if (view?.status === 'failed') throw new Error(`Solve job failed${view.error ? `: ${String(view.error).slice(0, 300)}` : ''}`);
+    if (view?.status === 'cancelled') throw new Error('Solve job was cancelled');
+    if (view?.progress && onProgress) { try { onProgress(view.progress); } catch { /* UI callback must not break polling */ } }
+    await sleep(pollMs);
+  }
+}

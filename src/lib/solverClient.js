@@ -119,3 +119,27 @@ export function resolveSolverTarget({ preference, localHealthy }) {
   if (preference === 'local' && localHealthy) return { url: LOCAL_SOLVER_URL, usingLocal: true };
   return { url: getSolverUrl(), usingLocal: false };
 }
+
+// Which job backend the cloud solver runs: 'durable' (Modal — POST /solve disabled, every solve is a
+// submit-then-poll job) or 'memory' (legacy Fly — synchronous /solve). Fetched once per URL per
+// session (module scope); ANY failure reads as 'memory' so behavior stays exactly the legacy
+// solveRemote path. Failures are not cached, so a transient blip retries next Generate.
+const jobsModeCache = new Map();
+export async function getSolverJobsMode(url, { timeoutMs = 5000 } = {}) {
+  if (!url) return 'memory';
+  if (jobsModeCache.has(url)) return jobsModeCache.get(url);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url}/health`, { signal: controller.signal });
+    if (!res.ok) return 'memory';
+    const json = await res.json();
+    const mode = json?.jobs === 'durable' ? 'durable' : 'memory';
+    jobsModeCache.set(url, mode);
+    return mode;
+  } catch {
+    return 'memory';
+  } finally {
+    clearTimeout(timer);
+  }
+}
