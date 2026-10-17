@@ -57,6 +57,11 @@ export const RULE_POLICY = {
   // not just date D — see src/lib/jeopardyWindow.js. Distinct from jeopardyCollision (same-day
   // clinical shift on D itself, which stays its own rule id/message).
   jeopardyWindow: { tier: 'program', label: 'Overnight shift running into a jeopardy call window' },
+  // 2026-10-16 bug fix: "Trauma Day is only for residents on a Trauma/Peds or Peds/Trauma month"
+  // (chief rule) — structural, not chief-overridable by hand (unlike pedNightSwingOwnerGuard
+  // below, which IS an 'override' tier), so this lives in 'program', not 'override'. See
+  // ResidentScheduler.jsx's stripTraumaDayForNonTraumaBlock / getEffectiveEligibility.
+  traumaDayRotationGuard: { tier: 'program', label: 'Trauma Day given to a resident off a Trauma/Peds rotation' },
 
   // ─── Tier: override ───────────────────────────────────────────────────────
   nightsTotalBlock: { tier: 'override', label: 'More than 6 night shifts total this block' },

@@ -819,7 +819,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: [SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -3280,6 +3280,25 @@ function stripPedGuardedShifts(list, key) {
   });
 }
 
+// TRAUMA-D is structurally restricted to residents currently on a Trauma/Peds-mix rotation
+// (TRAUMA_BLOCKS: PEDS_TRAUMA/TRAUMA_PEDS, or the chief's dayRules.TRAUMA_BLOCKS override) — chief
+// rule (2026-10-16 real-data bug): "trauma day shifts are only for those on trauma/peds or
+// peds/trauma month." This runs here, at the same post-resolution choke point as
+// stripPedGuardedShifts, rather than only as a DEFAULT_DAY_RULES shiftGate (EM_HOME_1's existing
+// 'trauma_strip_non_trauma_block' gate stays in place, now redundant-but-harmless for the no-
+// override case): getEffectiveDayRules REPLACES a key's shiftGates array WHOLESALE the moment a
+// chief saves ANY dayRules override for that key, so a gate living only in DEFAULT_DAY_RULES
+// silently vanishes for anyone with an older saved override — which is exactly how this shipped as
+// a live bug (EM_HOME_1's override predated the gate, so every PGY-1 EM/US_EM rotator kept
+// TRAUMA-D). Being outside the shiftGates mechanism entirely makes it override-immune by
+// construction, same as the PED guard above. TRAUMA-N is untouched (chief only spoke about Trauma
+// Day) — see isTraumaPedsSplitResident (reused here, already the single predicate for "is this
+// resident on a TRAUMA_BLOCKS rotation").
+function stripTraumaDayForNonTraumaBlock(list, resident, traumaBlocks) {
+  if (!list.includes('TRAUMA-D') || isTraumaPedsSplitResident(resident, traumaBlocks)) return list;
+  return list.filter(id => id !== 'TRAUMA-D');
+}
+
 // Chief-saved eligibility overrides are stored as a DIFF against the current defaults
 // ({added, removed}, see src/lib/eligibilityOverrides.js), not as a snapshot of the shift list.
 //
@@ -3308,17 +3327,19 @@ function eligBaseFor(key, eligOverrides = {}) {
   return parent ? eligCategoryList(parent, eligOverrides) : (BASE_ELIGIBILITY[key] || []);
 }
 
-function getEffectiveEligibility(resident, eligOverrides = {}) {
+function getEffectiveEligibility(resident, eligOverrides = {}, dayRules = {}) {
   const key = `${resident.category}_${resident.pgy}`;
   const isEM = isEmResident(resident);
+  const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+  const finalize = list => stripTraumaDayForNonTraumaBlock(stripPedGuardedShifts(list, key), resident, traumaBlocks);
   if (isEM && resident.blockType) {
     const rotKey = `${key}__${resident.blockType}`;
     if (eligOverrides[rotKey] != null) {
       const list = resolveEligibilityList(eligOverrides[rotKey], eligCategoryList(key, eligOverrides));
-      return { list: stripPedGuardedShifts(list, key), rotationSpecific: true };
+      return { list: finalize(list), rotationSpecific: true };
     }
   }
-  return { list: stripPedGuardedShifts(eligCategoryList(key, eligOverrides), key), rotationSpecific: false };
+  return { list: finalize(eligCategoryList(key, eligOverrides)), rotationSpecific: false };
 }
 
 // ─── WHAT'S NEW ───────────────────────────────────────────────────────────────
@@ -3683,7 +3704,7 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   const key = `${category}_${pgy}`;
 
   // Matrix resolution: rotation-specific override > category override > base default
-  const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides);
+  const { list, rotationSpecific } = getEffectiveEligibility(resident, eligOverrides, dayRules);
   let eligible = list;
 
   // Per-resident work restrictions (partial-day/recurring — see findBlockingRestriction) — placed
@@ -3864,6 +3885,8 @@ export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
   const key = `${resident.category}_${resident.pgy}`;
   if (!stripPedGuardedShifts([shiftId], key).includes(shiftId))
     return { rule: 'pedNightSwingOwnerGuard', tier: 'override', label: RULE_POLICY.pedNightSwingOwnerGuard.label };
+  if (!stripTraumaDayForNonTraumaBlock([shiftId], resident, ctx.dayRules?.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS).includes(shiftId))
+    return { rule: 'traumaDayRotationGuard', tier: 'program', label: RULE_POLICY.traumaDayRotationGuard.label };
   const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(type)
     ? (getEffectiveDayRules(key, ctx.dayRules || {}).computedDayRules || []).find(c => c.type === 'wellnessWednesday')?.ordinal
     : null;
@@ -3897,6 +3920,8 @@ function eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appS
         ? `Wellness Wednesday (custom date) — PGY-${resident.pgy} shouldn't work day/eve`
         : `Wellness Wednesday (${ORDINAL_WORD[wwOrdinal] || `${wwOrdinal}th`} of block) — PGY-${resident.pgy} shouldn't work day/eve`;
     }
+    case 'traumaDayRotationGuard':
+      return 'Trauma Day — only for residents on a Trauma/Peds or Peds/Trauma rotation (fixed rule)';
     case 'academicChiefTueEveNight':
       return 'Academic Chief — no Tuesday evening/night shifts';
     case 'finalSundayOvernight':
@@ -21269,9 +21294,9 @@ const HEATMAP_LEGEND = [
 ];
 
 // Shift ids (from `candidates`) whose effectively-eligible roster is non-empty and all PGY-1.
-function pgy1OnlyNow(candidates, allResidents, eligOverrides) {
+function pgy1OnlyNow(candidates, allResidents, eligOverrides, dayRules) {
   return candidates.filter(sid => {
-    const elig = (allResidents || []).filter(r => getEffectiveEligibility(r, eligOverrides).list.includes(sid));
+    const elig = (allResidents || []).filter(r => getEffectiveEligibility(r, eligOverrides, dayRules || {}).list.includes(sid));
     return elig.length > 0 && elig.every(r => Number(r.pgy) === 1);
   });
 }
@@ -21279,7 +21304,7 @@ function pgy1OnlyNow(candidates, allResidents, eligOverrides) {
 // Builds expectedFillerFor's `seniorityRules` param exactly per that file's own ADAPTER comment
 // (src/lib/expectedFiller.js, bottom) — resolved once per (block/appSettings/ayConf), never
 // per shift/date call, since none of these three change per shift or per date.
-function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides) {
+function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides, dayRules) {
   const ownerLabel = (key) => {
     const m = /^(.+)_(\d+)$/.exec(key);
     if (!m) return key;
@@ -21294,7 +21319,7 @@ function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverr
   return {
     // Live, not hardcoded: a chief override can grant TRAUMA-D beyond PGY-1, and the banner must
     // not contradict the candidate list under it.
-    pgy1OnlyShiftIds: pgy1OnlyNow(['TRAUMA-D'], allResidents, eligOverrides),
+    pgy1OnlyShiftIds: pgy1OnlyNow(['TRAUMA-D'], allResidents, eligOverrides, dayRules),
     pedGuardOwnerLabels,
     composition: SENIOR_COMPOSITION,
     isCompositionExempt: (shift, ds) => seniorCompositionExempt(shift, ds),
@@ -21501,13 +21526,13 @@ function SlotPanel({ dateStr, dates, shiftId, block, allResidents, residentById,
     return n;
   }, [sched, isNightOrWeekendShift]);
 
-  const seniorityRules = useMemo(() => buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides), [block.startDate, appSettings, ayConf, allResidents, eligOverrides]);
+  const seniorityRules = useMemo(() => buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverrides, dayRules), [block.startDate, appSettings, ayConf, allResidents, eligOverrides, dayRules]);
   const expected = useMemo(() => expectedFillerFor({
     shiftId, dateStr, residents: allResidents,
-    effectiveEligibleShifts: r => getEffectiveEligibility(r, eligOverrides).list,
+    effectiveEligibleShifts: r => getEffectiveEligibility(r, eligOverrides, dayRules || {}).list,
     isEligibleOnDate: (r, ds, sid) => cellHelpers.isEligible(r.id, ds, sid),
     isAvailableOnDate, categories: CATEGORIES, seniorityRules,
-  }), [shiftId, dateStr, allResidents, eligOverrides, cellHelpers, seniorityRules]);
+  }), [shiftId, dateStr, allResidents, eligOverrides, dayRules, cellHelpers, seniorityRules]);
 
   const candidates = useMemo(() => findSlotCandidates({
     dateStr, shiftId, residents: allResidents, schedule: sched, lockedCells: cellHelpers.lockedCells,
