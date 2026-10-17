@@ -55,6 +55,7 @@ cancelled|lost, `startedAt`, `budgetSeconds`, `elapsedSeconds`, `result`,
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -65,13 +66,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import AuthResult, require_auth
-from api.ratelimit import _client_ip, enforce_preauth_ip_limit, enforce_rate_limit
+from api.ratelimit import _client_ip, enforce_poll_ip_limit, enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import SolveRequest
 from solver.io.payload import PayloadError, parse_payload
 from solver.io.result import build_response
 from solver.solve import begin_stoppable_run, end_stoppable_run, solve
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 # TTL for a FINISHED job (done/failed/cancelled) -- swept opportunistically
 # (piggybacked on the next submit/poll, like ratelimit.py's own idle sweep)
@@ -85,6 +87,10 @@ _FINISHED_STATUSES = ("done", "failed", "cancelled")
 
 class JobNotFound(Exception):
     """Unknown job id, or the caller does not own it (same outcome on purpose)."""
+
+
+class JobBackendError(Exception):
+    """The backend could not perform the operation (e.g. Modal cancel failed). Route -> 502."""
 
 
 class JobConflict(Exception):
@@ -335,14 +341,25 @@ class ModalJobs:
         if self._classify is not None:
             return self._classify(exc)
         import modal.exception as mex
-        # OutputExpiredError subclasses modal.exception.TimeoutError -- check it FIRST.
+        # Order matters: OutputExpiredError and FunctionTimeoutError both subclass
+        # modal.exception.TimeoutError, which is how "still running" surfaces.
         if isinstance(exc, mex.OutputExpiredError):
             return "expired"
-        if isinstance(exc, (mex.NotFoundError, mex.InvalidError)):
+        if isinstance(exc, mex.NotFoundError):
             return "unknown_id"
+        # The solve function itself failed: Modal re-raises the function's own exception from
+        # get() (RemoteError if it can't be unpickled), ExecutionError = container crash/OOM,
+        # FunctionTimeoutError = exceeded the 35 min limit. All terminal.
+        if isinstance(exc, (mex.FunctionTimeoutError, mex.ExecutionError, mex.RemoteError, mex.InvalidError)):
+            return None
         if isinstance(exc, (TimeoutError, mex.TimeoutError)):
             return "pending"
-        return None
+        # Modal client/infra trouble while polling (connection drops, service/internal errors,
+        # auth refresh, gRPC wrappers, socket errors): the solve is unaffected, so don't fail it.
+        mod = type(exc).__module__ or ""
+        if isinstance(exc, (mex.Error, OSError)) or mod.startswith(("grpclib", "aiohttp", "asyncio")):
+            return "transient"
+        return None  # anything else is the solve function's own re-raised exception
 
     # -- interface --------------------------------------------------------------------------
     def submit(self, payload, owner: str, raw: Optional[dict] = None) -> str:
@@ -391,6 +408,10 @@ class ModalJobs:
             kind = self._classify_exc(exc)
             if kind == "pending":
                 return {**base, "status": "running"}
+            if kind == "transient":
+                # Not persisted anywhere: the next poll just asks Modal again.
+                log.warning("modal poll error for %s: %r", job_id, exc)
+                return {**base, "status": "running", "transientError": str(exc) or exc.__class__.__name__}
             if kind in ("expired", "unknown_id"):
                 return {**base, "status": "lost"}
             return {**base, "status": "failed", "error": str(exc) or exc.__class__.__name__}
@@ -408,8 +429,10 @@ class ModalJobs:
             # terminate_containers: CP-SAT is a long native call that a plain cancel may not
             # interrupt; solve_fn containers are single-call so terminating is safe.
             self._from_id(job_id).cancel(terminate_containers=True)
-        except Exception:
-            pass  # best effort; the meta flag below is what the API reports
+        except Exception as exc:
+            log.warning("modal cancel failed for %s: %r", job_id, exc)
+            # Do NOT mark cancelled: the solve may still be running (and billing).
+            raise JobBackendError("could not cancel the job; try again") from exc
         meta = {**meta, "cancelled": True, "finished_at": time.time()}
         self._meta_dict().put(job_id, meta)
         return self._view(job_id, meta)
@@ -473,7 +496,7 @@ def _owner_to_enforce(req: Request, auth: AuthResult) -> Optional[str]:
 def get_job(
     job_id: str,
     req: Request,
-    _preauth: None = Depends(enforce_preauth_ip_limit),
+    _preauth: None = Depends(enforce_poll_ip_limit),
     auth: AuthResult = Depends(require_auth),
 ) -> dict:
     try:
@@ -486,13 +509,15 @@ def get_job(
 def cancel_job(
     job_id: str,
     req: Request,
-    _preauth: None = Depends(enforce_preauth_ip_limit),
+    _preauth: None = Depends(enforce_poll_ip_limit),
     auth: AuthResult = Depends(require_auth),
 ) -> dict:
     try:
         return get_backend().cancel(job_id, _owner_to_enforce(req, auth))
     except JobNotFound as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
+    except JobBackendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def reset_jobs_store() -> None:

@@ -23,17 +23,12 @@ decides which path to use.
    modal secret create resident-scheduler-solver \
      SOLVER_AUTH_MODE=supabase \
      SUPABASE_URL=<Supabase dashboard -> Project Settings -> API -> Project URL> \
-     SOLVER_CORS_ORIGINS=https://residentscheduling.netlify.app,http://localhost:5173 \
-     SOLVER_PREAUTH_RATE_PER_MIN=600 \
-     SOLVER_PREAUTH_RATE_BURST=100
+     SOLVER_CORS_ORIGINS=https://residentscheduling.netlify.app,http://localhost:5173
    ```
    Optional keys: `SUPABASE_JWT_SECRET` (only if the project still signs with legacy HS256: Project Settings -> API
    -> JWT Secret), `SOLVER_RATE_PER_MIN` / `SOLVER_RATE_BURST` (default 6 / 3, per-user bucket on `POST /jobs`),
-   `SOLVER_MAX_BODY_BYTES` (default 5 MiB).
-   - Raise the PREAUTH values as shown: the app polls `GET /jobs/{id}` every ~2 s (~30/min) and the defaults
-     (30/min, burst 10) would 429 a single browser. Auth is the real gate; this bucket is only an IP flood guard.
-     Behind Modal's proxy the service cannot see real client IPs (it deliberately ignores `X-Forwarded-For`), so
-     all callers may share one preauth bucket; keep it generous.
+   `SOLVER_MAX_BODY_BYTES` (default 5 MiB), `SOLVER_PREAUTH_RATE_PER_MIN` / `SOLVER_PREAUTH_RATE_BURST` (default 30 / 10, POST routes only), `SOLVER_POLL_RATE_PER_MIN` / `SOLVER_POLL_RATE_BURST` (default 300 / 60, per-IP bucket for job polling/cancel).
+   - Job polling (`GET`/`DELETE /jobs/{id}`, ~every 2 s) has its own generous per-IP bucket, so no tuning is needed. Behind Modal's proxy the service can't see real client IPs (it ignores `X-Forwarded-For` on purpose), so callers may share one bucket; auth is the real gate.
    - `SOLVER_JOBS_BACKEND=modal` and `SOLVER_NUM_WORKERS=8` are set in `modal_app.py`'s images, not the secret.
 3. Deploy (from `solver-service/`):
    ```

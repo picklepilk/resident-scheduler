@@ -157,6 +157,10 @@ _main_limiter = _ConfiguredLimiter("SOLVER_RATE_PER_MIN", "6", "SOLVER_RATE_BURS
 _preauth_limiter = _ConfiguredLimiter(
     "SOLVER_PREAUTH_RATE_PER_MIN", "30", "SOLVER_PREAUTH_RATE_BURST", "10"
 )
+# GET/DELETE /jobs/{id}: the app polls every ~2 s (~30/min), which would exhaust the 30/min preauth
+# bucket on its own. Polls get their own generous per-IP bucket (still IP-capped against floods);
+# POST routes keep the strict preauth bucket. require_auth still gates every poll.
+_poll_limiter = _ConfiguredLimiter("SOLVER_POLL_RATE_PER_MIN", "300", "SOLVER_POLL_RATE_BURST", "60")
 
 
 def _get_limiter() -> TokenBucketLimiter:
@@ -173,6 +177,7 @@ def reset_rate_limiter() -> None:
     """
     _main_limiter.reset()
     _preauth_limiter.reset()
+    _poll_limiter.reset()
 
 
 def _rate_limit_key(request: Request, auth: AuthResult) -> str:
@@ -197,6 +202,13 @@ def enforce_preauth_ip_limit(request: Request) -> None:
     amplification, not to be the real per-caller cap.
     """
     wait_seconds = _get_preauth_limiter().check(f"preauth:{_client_ip(request)}")
+    if wait_seconds is not None:
+        _raise_429(wait_seconds)
+
+
+def enforce_poll_ip_limit(request: Request) -> None:
+    """Preauth-style IP bucket for job polling/cancel (see `_poll_limiter`)."""
+    wait_seconds = _poll_limiter.get().check(f"poll:{_client_ip(request)}")
     if wait_seconds is not None:
         _raise_429(wait_seconds)
 

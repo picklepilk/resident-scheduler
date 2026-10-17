@@ -266,3 +266,70 @@ def test_solve_is_400_use_jobs_on_modal(monkeypatch):
     resp = TestClient(app).post("/solve", json=make_payload())
     assert resp.status_code == 400
     assert resp.json() == {"error": "use_jobs"}
+
+
+# ---- review fixes: error classification, cancel failure, poll bucket ----------------------------
+def _real_classify_backend(exc, store_state=None):
+    """ModalJobs using its REAL classifier (needs the modal package) with get() raising `exc`."""
+    class Call:
+        object_id = "fc-1"
+
+        def get(self, timeout=None):
+            raise exc
+
+        def cancel(self, terminate_containers=False):
+            raise exc
+
+    b = ModalJobs(solve_fn=None, call_from_id=lambda _i: Call(), meta=FakeDict(), progress=FakeDict())
+    b._meta["fc-1"] = {"owner": "o", "submitted_at": 0.0, "budget": 5}
+    return b
+
+
+def test_real_classifier_transient_vs_failed_vs_lost():
+    mex = pytest.importorskip("modal.exception")
+    cases = [
+        (mex.ConnectionError("net down"), "running", True),
+        (mex.InternalError("oops"), "running", True),
+        (OSError("socket reset"), "running", True),
+        (mex.TimeoutError("pending"), "running", False),
+        (mex.FunctionTimeoutError("35 min"), "failed", False),
+        (mex.ExecutionError("container crashed"), "failed", False),
+        (RuntimeError("solver validate mismatch"), "failed", False),
+        (mex.OutputExpiredError("gone"), "lost", False),
+        (mex.NotFoundError("no such call"), "lost", False),
+        (mex.InvalidError("bad request"), "failed", False),  # no longer treated as 'lost'
+    ]
+    for exc, status, transient in cases:
+        v = _real_classify_backend(exc).status("fc-1", "o")
+        assert v["status"] == status, (exc, v)
+        assert ("transientError" in v) == transient, (exc, v)
+
+
+def test_cancel_failure_is_502_and_not_marked_cancelled(monkeypatch):
+    backend, store, _fn, calls = _modal_backend()
+    monkeypatch.setenv("SOLVER_JOBS_BACKEND", "modal")
+    jobs_module.set_backend(backend, "modal")
+    client = TestClient(app)
+    jid = client.post("/jobs", json=make_payload()).json()["jobId"]
+
+    def boom(terminate_containers=False):
+        raise RuntimeError("modal unreachable")
+
+    backend._from_id(jid).cancel = boom
+    assert client.delete(f"/jobs/{jid}").status_code == 502
+    assert not backend._meta[jid].get("cancelled")
+    assert client.get(f"/jobs/{jid}").json()["status"] == "running"
+
+
+def test_job_polling_is_not_limited_by_preauth_bucket(monkeypatch):
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_PER_MIN", "30")
+    monkeypatch.setenv("SOLVER_PREAUTH_RATE_BURST", "10")
+    monkeypatch.delenv("SOLVER_POLL_RATE_PER_MIN", raising=False)
+    monkeypatch.delenv("SOLVER_POLL_RATE_BURST", raising=False)
+    ratelimit_module.reset_rate_limiter()
+    client = TestClient(app)
+    # 40 polls in a burst would blow the preauth bucket (burst 10) but not the poll bucket (60).
+    assert all(client.get("/jobs/nope").status_code == 404 for _ in range(40))
+    # ...while POST routes still hit the strict preauth bucket.
+    codes = [client.post("/jobs", json={}).status_code for _ in range(15)]
+    assert 429 in codes
