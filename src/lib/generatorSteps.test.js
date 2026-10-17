@@ -47,5 +47,8 @@ describe('genProgressPct', () => {
     // durable job: server elapsed/budget win over the client clock
     expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: 50, budget: 100 }, 0)).toBe(79);
     expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: 0, budget: 100 }, 999)).toBe(60);
+    // null/missing server fields fall back to the client clock
+    expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: null, budget: null }, 50)).toBe(79);
+    expect(genProgressPct({ phase: 'solver', budgetSec: 100, elapsed: null, budget: 100 }, 50)).toBe(79);
   });
 });

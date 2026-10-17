@@ -32,7 +32,7 @@ import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } fro
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable } from './lib/solverClient.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
@@ -7018,7 +7018,7 @@ export function genProgressPct(progress, elapsedSinceSolverStartSec = 0) {
   }
   if (progress.phase === 'solver') {
     // Durable-job path: the server reports its own elapsed/budget; prefer them over the client clock.
-    const serverBased = progress.budget > 0 && progress.elapsed >= 0;
+    const serverBased = Number.isFinite(progress.budget) && progress.budget > 0 && Number.isFinite(progress.elapsed) && progress.elapsed >= 0;
     const budget = serverBased ? progress.budget : (progress.budgetSec > 0 ? progress.budgetSec : 1);
     const elapsed = serverBased ? progress.elapsed : elapsedSinceSolverStartSec;
     return Math.min(97, Math.max(60, Math.round(60 + 37 * elapsed / budget)));
@@ -16265,19 +16265,29 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         // Durable backend (Modal: POST /solve disabled) => submit-then-poll; legacy Fly and the
         // local run-local target keep the synchronous solveRemote path exactly as before.
         const durable = !usingLocal && (await getSolverJobsMode(solverTargetUrl)) === 'durable';
-        let json;
-        if (durable) {
+        const runJob = async () => {
           const ac = new AbortController();
           genSolveAbortRef.current = ac;
           try {
-            json = await solveViaJob(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs, signal: ac.signal,
+            return await solveViaJob(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs, signal: ac.signal,
               onProgress: pr => setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec,
                 elapsed: pr.elapsed, budget: pr.budget, stage: pr.stage, stages: pr.stages }) });
           } finally {
             if (genSolveAbortRef.current === ac) genSolveAbortRef.current = null;
           }
+        };
+        let json;
+        if (durable) {
+          json = await runJob();
         } else {
-          json = await solveRemote(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs });
+          try {
+            json = await solveRemote(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs });
+          } catch (e) {
+            // Health probe missed a durable backend (cold start): /solve says use_jobs — retry once as a job.
+            if (usingLocal || !/use_jobs/.test(String(e?.message))) throw e;
+            markSolverJobsDurable(solverTargetUrl);
+            json = await runJob();
+          }
         }
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);

@@ -37,12 +37,13 @@ function authHeaders(accessToken) {
 // buildSolverPayload) to `${url}/jobs`. Resolves with `{ jobId }`. Throws on: solver not configured,
 // network failure, a 409 (a job is already running on this server — caller should tell the admin to
 // wait or try again shortly), or any other non-200.
-export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 15000, url: urlOverride = null } = {}) {
+export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 15000, url: urlOverride = null, signal = null } = {}) {
   const url = urlOverride || getSolverUrl();
   if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (signal) { if (signal.aborted) controller.abort(); else signal.addEventListener('abort', () => controller.abort(), { once: true }); }
   let res;
   try {
     res = await fetch(`${url}/jobs`, {
@@ -75,12 +76,13 @@ export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 
 //     error }` (same shape solver-service/api/jobs.py's `_job_view` returns).
 // Throws only on network failure / timeout / a non-200-non-404 response — same "fall back to a
 // normal rejected promise" contract as solverClient.solveRemote.
-export async function pollSolveJob(jobId, { accessToken = null, timeoutMs = 15000, url: urlOverride = null } = {}) {
+export async function pollSolveJob(jobId, { accessToken = null, timeoutMs = 15000, url: urlOverride = null, signal = null } = {}) {
   const url = urlOverride || getSolverUrl();
   if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (signal) { if (signal.aborted) controller.abort(); else signal.addEventListener('abort', () => controller.abort(), { once: true }); }
   let res;
   try {
     res = await fetch(`${url}/jobs/${encodeURIComponent(jobId)}`, {
@@ -143,7 +145,7 @@ export async function solveViaJob(payload, {
   maxPollErrors = 3,
 } = {}) {
   if (signal?.aborted) throw new Error('Solve cancelled');
-  const { jobId } = await submitSolveJob(payload, { accessToken, url });
+  const { jobId } = await submitSolveJob(payload, { accessToken, url, signal });
   if (!jobId) throw new Error('Job submission returned no jobId');
   const deadline = Date.now() + timeoutMs;
   const cancel = () => cancelSolveJob(jobId, { accessToken, url });
@@ -161,9 +163,10 @@ export async function solveViaJob(payload, {
     if (Date.now() >= deadline) { await cancel(); throw new Error(`Solve job timed out after ${timeoutMs}ms`); }
     let view;
     try {
-      view = await pollSolveJob(jobId, { accessToken, url });
+      view = await pollSolveJob(jobId, { accessToken, url, signal });
       pollErrors = 0;
     } catch (e) {
+      if (signal?.aborted) { await cancel(); throw new Error('Solve cancelled'); }
       if (++pollErrors >= maxPollErrors) { await cancel(); throw e; }
       await sleep(pollMs);
       continue;

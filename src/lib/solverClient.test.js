@@ -244,3 +244,16 @@ describe('getSolverJobsMode', () => {
     expect(await getSolverJobsMode('https://b.test')).toBe('memory');
   });
 });
+
+describe('markSolverJobsDurable', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('overrides a memory read without another health fetch', async () => {
+    vi.resetModules();
+    const { getSolverJobsMode, markSolverJobsDurable } = await import('./solverClient.js');
+    markSolverJobsDurable('https://c.test');
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    expect(await getSolverJobsMode('https://c.test')).toBe('durable');
+    expect(f).not.toHaveBeenCalled();
+  });
+});

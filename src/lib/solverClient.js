@@ -125,7 +125,7 @@ export function resolveSolverTarget({ preference, localHealthy }) {
 // session (module scope); ANY failure reads as 'memory' so behavior stays exactly the legacy
 // solveRemote path. Failures are not cached, so a transient blip retries next Generate.
 const jobsModeCache = new Map();
-export async function getSolverJobsMode(url, { timeoutMs = 5000 } = {}) {
+export async function getSolverJobsMode(url, { timeoutMs = 20000 } = {}) {
   if (!url) return 'memory';
   if (jobsModeCache.has(url)) return jobsModeCache.get(url);
   const controller = new AbortController();
@@ -142,4 +142,10 @@ export async function getSolverJobsMode(url, { timeoutMs = 5000 } = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Called when a synchronous /solve answers 400 use_jobs: the backend is durable even though the
+// health probe missed it (e.g. cold container timeout). Future Generates go straight to jobs.
+export function markSolverJobsDurable(url) {
+  if (url) jobsModeCache.set(url, 'durable');
 }

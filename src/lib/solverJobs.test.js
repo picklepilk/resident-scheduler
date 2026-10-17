@@ -261,3 +261,23 @@ describe('solverJobs — solveViaJob', () => {
     await expect(solveViaJob({}, { pollMs: 1 })).rejects.toThrow(/net/);
   });
 });
+
+describe('solveViaJob — abort during in-flight poll', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  it('aborting while a poll fetch hangs sends DELETE promptly', async () => {
+    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn((u, init) => {
+      calls.push(init.method);
+      if (init.method === 'POST') return Promise.resolve({ ok: true, status: 200, json: async () => ({ jobId: 'j1' }) });
+      if (init.method === 'DELETE') return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('a'), { name: 'AbortError' }))));
+    }));
+    const { solveViaJob } = await freshModule();
+    const ac = new AbortController();
+    const p = solveViaJob({}, { pollMs: 5, signal: ac.signal });
+    setTimeout(() => ac.abort(), 20);
+    await expect(p).rejects.toThrow(/cancelled/);
+    expect(calls).toContain('DELETE');
+  });
+});
