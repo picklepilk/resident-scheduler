@@ -144,6 +144,22 @@ const UNDERSTAFFED_REMOVE = new Set(['syn_foxtrot', 'syn_kilo', 'syn_papa', 'syn
 // VACATION_WEEK added, for ~8 total residents out during that week.
 const VACATION_HEAVY_ADD = new Set(['syn_alpha', 'syn_charlie', 'syn_golf', 'syn_hotel', 'syn_mike', 'syn_sierra']);
 
+// `feasible`: the standard roster plus extra plain residents (no date chips) in every tier, so full
+// minimum coverage is attainable. The other variants are capacity-limited (every error is
+// underTarget), which hides algorithm gains; this one has headroom to expose them.
+const FEASIBLE_EXTRAS = [
+  { category: 'EM_HOME', pgy: 1, names: ['Zulu', 'Ash', 'Birch', 'Cedar', 'Dune'] },
+  { category: 'EM_HOME', pgy: 1, blockType: 'TRAUMA_PEDS', names: ['Tern', 'Wren'] }, // TRAUMA-D is rotation-only
+  { category: 'EM_HOME', pgy: 2, names: ['Elm', 'Fir', 'Gum', 'Holly', 'Iris'] },
+  { category: 'EM_HOME', pgy: 3, names: ['Juniper', 'Kelp', 'Larch', 'Maple', 'Nettle'] },
+  { category: 'EM_BAMC', pgy: 1, names: ['Olive', 'Pine'] },
+  { category: 'FM', pgy: 3, names: ['Quince', 'Rowan'] },
+];
+function buildFeasibleExtras(n = 3) {
+  return FEASIBLE_EXTRAS.flatMap(({ category, pgy, blockType, names }) =>
+    names.slice(0, n).map(firstName => makeResident({ firstName, category, pgy, blockType })));
+}
+
 function makeDefaultAppSettings() {
   return {};
 }
@@ -186,7 +202,7 @@ function makeBlock(variant) {
 const CONFERENCE_AY_CONF = { acepStart: '2026-07-20', acepEnd: '2026-07-23' };
 
 /**
- * @param {'standard'|'understaffed'|'vacationHeavy'|'conferenceBlock'} variant
+ * @param {'standard'|'understaffed'|'vacationHeavy'|'conferenceBlock'|'feasible'} variant
  * @returns {{allResidents:object[], block:object, coverage:object, eligOverrides:object,
  *   appSettings:object, dayRules:object, blocksHistory:object[], ayConf:object}}
  */
@@ -201,6 +217,8 @@ export function makeFixture(variant = 'standard') {
         ? { ...r, vacationDates: [...new Set([...r.vacationDates, ...VACATION_WEEK])].sort() }
         : r
     );
+  } else if (variant === 'feasible') {
+    allResidents = [...allResidents, ...buildFeasibleExtras()];
   } else if (variant !== 'standard' && variant !== 'conferenceBlock') {
     // conferenceBlock differs only in ayConf (below), not in the roster.
     throw new Error(`makeFixture: unknown variant "${variant}"`);
@@ -209,7 +227,9 @@ export function makeFixture(variant = 'standard') {
   return {
     allResidents,
     block: makeBlock(variant),
-    coverage: {},
+    // `feasible` waives the TRAUMA-D minimum: only the TRAUMA_PEDS-rotation residents may staff it and
+    // the generator's trauma/peds split leaves ~8 days uncoverable regardless of roster size.
+    coverage: variant === 'feasible' ? { 'TRAUMA-D': { min: 0, max: 1 } } : {},
     eligOverrides: {},
     appSettings: makeDefaultAppSettings(),
     dayRules: {},

@@ -1,0 +1,19 @@
+{
+  "seeds": [
+    42,
+    7,
+    1234,
+    99,
+    555
+  ],
+  "errors": 25,
+  "structuralErrors": 0,
+  "underTargetErrors": 25,
+  "quality": [
+    4,
+    0,
+    0,
+    597.0454295594616
+  ],
+  "unfilled": 4
+}
