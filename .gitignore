@@ -28,3 +28,16 @@ supabase/.temp/
 
 # Playwright MCP screenshots/snapshots from local browser checks
 .playwright-mcp/
+
+# Generated / local tool state
+graphify-out/
+*.tmp
+CC-Session-Logs/
+solver-service/CC-Session-Logs/
+.env.*
+!.env.example
+coverage-heatmap.png
+.claude/.session-end-stamp.json
+.remember/
+.superpowers/
+.impeccable/
