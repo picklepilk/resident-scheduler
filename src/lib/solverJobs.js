@@ -25,12 +25,20 @@ function authHeaders(accessToken) {
   return headers;
 }
 
+// Every function below takes an optional `url` override, mirroring solverClient.solveRemote's own
+// `url` param — the caller (ScheduleGrid's requestLongSolve) resolves "cloud vs. this computer" via
+// solverClient.resolveSolverTarget exactly once, at submit time, and the SAME resolved url is what
+// must be used for every later poll/cancel of that specific job: a job submitted to the local
+// run-local solver only exists on that loopback process, never on the cloud deployment, and vice
+// versa. Falls back to getSolverUrl() (the configured cloud VITE_SOLVER_URL) when no override is
+// given, same default as solveRemote.
+
 // POSTs `payload` (identical shape to solveRemote's /solve payload — see PAYLOAD_SCHEMA.md and
 // buildSolverPayload) to `${url}/jobs`. Resolves with `{ jobId }`. Throws on: solver not configured,
 // network failure, a 409 (a job is already running on this server — caller should tell the admin to
 // wait or try again shortly), or any other non-200.
-export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 15000 } = {}) {
-  const url = getSolverUrl();
+export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 15000, url: urlOverride = null } = {}) {
+  const url = urlOverride || getSolverUrl();
   if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
@@ -67,8 +75,8 @@ export async function submitSolveJob(payload, { accessToken = null, timeoutMs = 
 //     error }` (same shape solver-service/api/jobs.py's `_job_view` returns).
 // Throws only on network failure / timeout / a non-200-non-404 response — same "fall back to a
 // normal rejected promise" contract as solverClient.solveRemote.
-export async function pollSolveJob(jobId, { accessToken = null, timeoutMs = 15000 } = {}) {
-  const url = getSolverUrl();
+export async function pollSolveJob(jobId, { accessToken = null, timeoutMs = 15000, url: urlOverride = null } = {}) {
+  const url = urlOverride || getSolverUrl();
   if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
@@ -101,8 +109,8 @@ export async function pollSolveJob(jobId, { accessToken = null, timeoutMs = 1500
 // `{ lost: true }` too — the caller's intent ("stop showing this as pending") is satisfied either
 // way, and a stuck cancel button is worse than a cancel that silently no-ops against an already-dead
 // job. Never throws.
-export async function cancelSolveJob(jobId, { accessToken = null, timeoutMs = 10000 } = {}) {
-  const url = getSolverUrl();
+export async function cancelSolveJob(jobId, { accessToken = null, timeoutMs = 10000, url: urlOverride = null } = {}) {
+  const url = urlOverride || getSolverUrl();
   if (!url) return { lost: true };
 
   const controller = new AbortController();

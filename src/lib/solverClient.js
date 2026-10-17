@@ -45,9 +45,12 @@ export const SOLVER_ENABLED = Boolean(getSolverUrl());
 // required once the service runs with SOLVER_AUTH_MODE=supabase (solver-service/CLAUDE.md). Passed
 // in rather than fetched here because a src/lib/ module stays free of the auth client; a missing
 // token just means the service may 401, which callers already treat as "fall back to local".
-export async function solveRemote(payload, { timeoutMs = 120000, accessToken = null } = {}) {
-  const url = getSolverUrl();
-  if (!url) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
+// `url` (optional): overrides getSolverUrl() — used for the "run on this computer" target
+// (LOCAL_SOLVER_URL below), which is never read from VITE_SOLVER_URL/build config since it's the
+// same fixed loopback address on every machine that runs solver-service/run-local.ps1|sh.
+export async function solveRemote(payload, { timeoutMs = 120000, accessToken = null, url = null } = {}) {
+  const target = url || getSolverUrl();
+  if (!target) throw new Error('Solver is not configured (VITE_SOLVER_URL unset)');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -55,7 +58,7 @@ export async function solveRemote(payload, { timeoutMs = 120000, accessToken = n
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   let res;
   try {
-    res = await fetch(`${url}/solve`, {
+    res = await fetch(`${target}/solve`, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -74,4 +77,45 @@ export async function solveRemote(payload, { timeoutMs = 120000, accessToken = n
     throw new Error(`Solver returned ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
   return res.json();
+}
+
+// ─── "Run the optimizer on this computer" ──────────────────────────────────────────────────────
+// Fixed loopback port solver-service/run-local.ps1 and run-local.sh both bind uvicorn to. Not
+// configurable from the app side — these scripts own the port choice, this is just the matching
+// client-side constant. 127.0.0.1 only (never 0.0.0.0): the local server is reachable from this
+// machine's own browser only, never another device on the network.
+export const LOCAL_SOLVER_URL = 'http://127.0.0.1:8765';
+
+// Pings the local run-local solver's /health. Resolves `null` on ANY failure (not running, wrong
+// port, connection refused, timeout, non-200 JSON) rather than throwing or rejecting — this is a
+// liveness probe for a Settings-tab status line and for generateViaSolverOrLocal's own pre-flight
+// check, never something a caller should have to try/catch. Short default timeout: a real local
+// process answers in milliseconds, so a slow non-answer should read as "not running" quickly
+// rather than hang the Settings status indicator or delay Generate.
+export async function checkLocalSolverHealth({ timeoutMs = 1500 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${LOCAL_SOLVER_URL}/health`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return { ortools: json?.ortools ?? null, cpus: json?.cpus ?? null };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Pure decision: given the device-local "where to run" preference (res_solver_target: 'cloud' |
+// 'local') and whether a just-run health check found the local solver alive, which URL should
+// THIS generate call target? Exported and kept side-effect-free (no fetch here) so the actual
+// fallback policy — "local" falls back to the cloud URL when the local solver isn't reachable
+// right now, "cloud" (the default, and any other/unset value) always targets the configured
+// VITE_SOLVER_URL — is unit-testable without mocking fetch or React. `url: ''` means neither
+// target is available; callers already treat that the same as the pre-existing
+// !SOLVER_ENABLED case (skip the solver, keep the already-computed local JS result).
+export function resolveSolverTarget({ preference, localHealthy }) {
+  if (preference === 'local' && localHealthy) return { url: LOCAL_SOLVER_URL, usingLocal: true };
+  return { url: getSolverUrl(), usingLocal: false };
 }

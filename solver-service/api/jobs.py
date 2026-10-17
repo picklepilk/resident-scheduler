@@ -212,9 +212,17 @@ def cancel_job(
 ) -> dict:
     job = _get_owned_job(job_id, req, auth)
     with _lock:
-        if job.status in _FINISHED_STATUSES:
-            return _job_view(job)
-        job.cancel_event.set()
+        # `_job_view` takes `_lock` itself -- must never be called while THIS lock is already
+        # held (threading.Lock is non-reentrant; a nested acquire from the same thread deadlocks
+        # it forever, wedging every future /jobs request process-wide, not just this one -- a real
+        # bug caught by hand during manual smoke testing, see solver-service/CLAUDE.md's
+        # "Background jobs" section). Decide what to do INSIDE the lock, call `_job_view` AFTER
+        # releasing it.
+        already_finished = job.status in _FINISHED_STATUSES
+        if not already_finished:
+            job.cancel_event.set()
+    if already_finished:
+        return _job_view(job)
 
     # Stop whatever CpSolver(s) are registered for this job's worker thread
     # right now. A cancel racing the brief gap between two staged-solve
@@ -228,10 +236,21 @@ def cancel_job(
     while time.time() < deadline:
         with _lock:
             status = job.status
-            solvers = list(job.solvers)
+            # Only the MOST RECENTLY registered solver -- never the full history. The staged
+            # solve (solver/solve.py's _solve_staged) re-solves the SAME underlying CpModel up to
+            # 4 times, mutating it (new bound, new hint) between stages; calling .stop_search() on
+            # an OLDER, already-finished solver tied to an earlier mutation of that same model --
+            # on top of whatever the CURRENT stage's solver is doing -- risks exactly the kind of
+            # native-level instability solve.py's own module docstring already warns about for
+            # "repeated solve on the same, mutated model" (an observed native abort during manual
+            # testing of this cancel path motivated this restriction; see solver-service/CLAUDE.md's
+            # "Background jobs" section). The current stage's solver is always the LAST entry
+            # appended (solvers are appended immediately before their own .solve() call), so this
+            # still reliably reaches whichever solve is actually in flight right now.
+            latest = job.solvers[-1:] if job.solvers else []
         if status in _FINISHED_STATUSES:
             break
-        for s in solvers:
+        for s in latest:
             try:
                 s.stop_search()
             except Exception:

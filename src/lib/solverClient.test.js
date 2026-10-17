@@ -122,4 +122,108 @@ describe('solverClient — solveRemote', () => {
     await expect(solveRemote({})).rejects.toThrow(/not configured/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('an explicit `url` option overrides getSolverUrl() (the "run on this computer" target)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { solveRemote, LOCAL_SOLVER_URL } = await freshModule();
+
+    await solveRemote({ version: 1 }, { url: LOCAL_SOLVER_URL });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${LOCAL_SOLVER_URL}/solve`);
+  });
+
+  it('`url` override works even when VITE_SOLVER_URL (cloud) is unset', async () => {
+    delete globalThis.__SOLVER_URL__;
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { solveRemote, LOCAL_SOLVER_URL } = await freshModule();
+
+    await solveRemote({ version: 1 }, { url: LOCAL_SOLVER_URL });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${LOCAL_SOLVER_URL}/solve`);
+  });
+});
+
+describe('solverClient — checkLocalSolverHealth', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves {ortools, cpus} on a 200 JSON response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'ok', ortools: '9.15.6755', cpus: 16 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { checkLocalSolverHealth, LOCAL_SOLVER_URL } = await freshModule();
+
+    const result = await checkLocalSolverHealth();
+
+    expect(result).toEqual({ ortools: '9.15.6755', cpus: 16 });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${LOCAL_SOLVER_URL}/health`);
+  });
+
+  it('resolves null (never throws) on a non-200 response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal('fetch', fetchMock);
+    const { checkLocalSolverHealth } = await freshModule();
+    await expect(checkLocalSolverHealth()).resolves.toBeNull();
+  });
+
+  it('resolves null (never throws) when fetch rejects (e.g. connection refused — not running)', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { checkLocalSolverHealth } = await freshModule();
+    await expect(checkLocalSolverHealth()).resolves.toBeNull();
+  });
+
+  it('resolves null on timeout rather than hanging', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, opts) => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { checkLocalSolverHealth } = await freshModule();
+    await expect(checkLocalSolverHealth({ timeoutMs: 10 })).resolves.toBeNull();
+  });
+});
+
+describe('solverClient — resolveSolverTarget (pure fallback decision)', () => {
+  afterEach(() => {
+    globalThis.__SOLVER_URL__ = ORIGINAL_URL;
+  });
+
+  it('preference "local" + healthy local solver: targets the local URL', async () => {
+    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
+    const { resolveSolverTarget, LOCAL_SOLVER_URL } = await freshModule();
+    expect(resolveSolverTarget({ preference: 'local', localHealthy: true }))
+      .toEqual({ url: LOCAL_SOLVER_URL, usingLocal: true });
+  });
+
+  it('preference "local" + unreachable local solver: falls back to the configured cloud URL', async () => {
+    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
+    const { resolveSolverTarget } = await freshModule();
+    expect(resolveSolverTarget({ preference: 'local', localHealthy: false }))
+      .toEqual({ url: 'https://solver.example.com', usingLocal: false });
+  });
+
+  it('preference "local" + unreachable local solver + no cloud configured: targets nothing (caller keeps the already-computed local JS result)', async () => {
+    delete globalThis.__SOLVER_URL__;
+    const { resolveSolverTarget } = await freshModule();
+    expect(resolveSolverTarget({ preference: 'local', localHealthy: false }))
+      .toEqual({ url: '', usingLocal: false });
+  });
+
+  it('preference "cloud" (or unset/default): always targets the configured cloud URL regardless of localHealthy', async () => {
+    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
+    const { resolveSolverTarget } = await freshModule();
+    expect(resolveSolverTarget({ preference: 'cloud', localHealthy: true }))
+      .toEqual({ url: 'https://solver.example.com', usingLocal: false });
+    expect(resolveSolverTarget({ preference: undefined, localHealthy: true }))
+      .toEqual({ url: 'https://solver.example.com', usingLocal: false });
+  });
 });

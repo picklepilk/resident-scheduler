@@ -93,6 +93,46 @@ fly secrets set SOLVER_RATE_PER_MIN=6 SOLVER_RATE_BURST=3
 fly secrets set SOLVER_MAX_BODY_BYTES=5242880
 ```
 
+## Run on your own computer
+
+The deployed Fly service is sized for a low, occasional load (`fly.toml`: `cpu_kind = "shared"`,
+`cpus = 2`) — fine for its cost, but a real CP-SAT solve is CPU-bound and scales with cores (see
+`PERF_NOTES.md`). If you have a multi-core machine handy and only solve a few times a month, it's
+faster to run a copy of the solver locally and point the app at it for those runs, instead of
+waiting on the shared cloud instance.
+
+```powershell
+# Windows (PowerShell), from solver-service/
+.\run-local.ps1
+```
+
+```bash
+# macOS/Linux (bash), from solver-service/
+./run-local.sh
+```
+
+Either script: creates/reuses `solver-service/.venv`, installs `requirements.txt` if needed, then
+starts uvicorn bound to **127.0.0.1:8765 only** — reachable from this machine's own browser, never
+from another device on the network. It prints "Optimizer running on this computer — leave this
+window open" once it's up; `Ctrl+C` stops it.
+
+In the app: **Settings → Optimizer → "Where to run"**, pick **This computer**. The Settings tab
+polls `http://127.0.0.1:8765/health` and shows a live status line ("Connected · OR-Tools x · N
+cores" or "Not running — start it with run-local.ps1/.sh"). If the local solver isn't reachable at
+the moment you click Generate, the app falls back to Cloud (or the built-in generator, if Cloud
+isn't configured either) with a toast — a generate request never fails just because the local
+solver happened to be stopped.
+
+Why auth is off and CORS still matters: the scripts set `SOLVER_AUTH_MODE=off`, which is safe
+*because* the server binds only to the loopback interface (127.0.0.1) — nothing outside this
+machine can ever open a connection to it, so there's no real remote caller to authenticate against.
+`SOLVER_CORS_ORIGINS` is still set (to the deployed app's origin plus local dev origins) because
+CORS is a browser-side restriction independent of auth: it's what stops some other, unrelated web
+page open in the same browser from quietly POSTing to this local solver. See `run-local.ps1`'s
+header comment for the full rationale, including why no `numWorkers` override is needed — the
+server already defaults to every core on whatever machine it runs on (`solver/solve.py`'s
+`_num_workers`), and the app's payload no longer pins a Fly-sized worker count (R9, 2026-09-27).
+
 ### Tests
 
 ```bash
