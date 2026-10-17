@@ -11,14 +11,18 @@
 //  - A person is ONE resident row; distinct windows are listed in `windows` (no `#n` key suffix).
 //  - segments cover every AY block a window overlaps, whether or not the person has a record there.
 
-import { parseDate, addDays, toDateStr, ayWindowFor } from './dates.js';
+import { parseDate, ayWindowFor } from './dates.js';
 import { offServiceStraddle } from './offServiceWindow.js';
 
 const DAY_MS = 86_400_000;
 const isIso = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(parseDate(s).getTime());
-const dayCount = (a, b) => Math.round((parseDate(b) - parseDate(a)) / DAY_MS) + 1;
-const nextDay = ds => toDateStr(addDays(parseDate(ds), 1));
-const prevDay = ds => toDateStr(addDays(parseDate(ds), -1));
+// Pure UTC math on the ISO string: dates.js parseDate is local-midnight but toDateStr is UTC, which
+// breaks east of UTC. Never route day arithmetic here through those.
+const utcDay = ds => { const [y, m, d] = ds.split('-').map(Number); return Date.UTC(y, m - 1, d); };
+const shiftDay = (ds, n) => new Date(utcDay(ds) + n * DAY_MS).toISOString().slice(0, 10);
+const dayCount = (a, b) => Math.round((utcDay(b) - utcDay(a)) / DAY_MS) + 1;
+export const nextDay = ds => shiftDay(ds, 1);
+export const prevDay = ds => shiftDay(ds, -1);
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmt = ds => `${MONTHS[Number(ds.slice(5, 7)) - 1]} ${Number(ds.slice(8, 10))}`;
 const fmtRange = (s, e) => `${fmt(s)}–${fmt(e)}`;

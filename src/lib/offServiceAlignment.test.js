@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildOffServiceAlignment, mergeWindows } from './offServiceAlignment.js';
+import { buildOffServiceAlignment, mergeWindows, nextDay, prevDay } from './offServiceAlignment.js';
 
 const AY = 'AY26/27';
 const B = {
@@ -186,5 +186,17 @@ describe('stint merging', () => {
     ]);
     expect(one(out).status).toBe('legacyClamped');
     expect(one(out).windows).toHaveLength(1);
+  });
+});
+
+describe('day helpers are timezone independent (pure UTC string math)', () => {
+  // Vitest can't reliably change TZ in-process, so assert month/year boundary outputs; the old
+  // parseDate(local)+toDateStr(UTC) path returned the same day east of UTC.
+  it('nextDay/prevDay cross month, year and Feb boundaries', () => {
+    expect(nextDay('2026-07-31')).toBe('2026-08-01');
+    expect(nextDay('2026-12-31')).toBe('2027-01-01');
+    expect(prevDay('2027-03-01')).toBe('2027-02-28');
+    expect(prevDay('2027-01-01')).toBe('2026-12-31');
+    expect(nextDay('2026-07-10')).not.toBe('2026-07-10');
   });
 });
