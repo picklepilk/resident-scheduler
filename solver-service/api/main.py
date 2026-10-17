@@ -15,9 +15,10 @@ from importlib.metadata import version as _pkg_version
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.auth import AuthResult
-from api.jobs import router as jobs_router
+from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from api.pna import PrivateNetworkAccessMiddleware
 from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
@@ -78,7 +79,14 @@ def health() -> dict:
     # Deliberately open: no auth, no rate limit -- Fly's health check (and
     # anyone else) must always be able to reach this. `cpus` lets a caller (the app's "This
     # computer" Settings status line) show real parallelism without guessing.
-    return {"status": "ok", "ortools": ORTOOLS_VERSION, "cpus": os.cpu_count() or 1}
+    # `jobs`: "durable" (Modal: jobs survive container/tab loss, and /solve is disabled -- web
+    # requests cap at 150s) or "memory" (Fly/local). The app reads it to pick submit-then-poll.
+    return {
+        "status": "ok",
+        "ortools": ORTOOLS_VERSION,
+        "cpus": os.cpu_count() or 1,
+        "jobs": "durable" if jobs_backend_name() == "modal" else "memory",
+    }
 
 
 @app.post("/solve", response_model=SolveResponse)
@@ -86,7 +94,11 @@ def solve_endpoint(
     request: SolveRequest,
     _preauth: None = Depends(enforce_preauth_ip_limit),
     auth: AuthResult = Depends(enforce_rate_limit),
-) -> dict:
+):
+    if jobs_backend_name() == "modal":
+        # Modal web endpoints cap one HTTP request at 150s (then a 303 that CORS browsers can't
+        # follow), so a synchronous solve can't finish reliably -- callers must use POST /jobs.
+        return JSONResponse(status_code=400, content={"error": "use_jobs"})
     raw = request.model_dump(mode="python")
 
     try:

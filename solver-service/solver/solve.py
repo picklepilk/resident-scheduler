@@ -32,12 +32,18 @@ from ortools.sat.python import cp_model
 _tls = threading.local()
 
 
-def begin_stoppable_run() -> list:
+def begin_stoppable_run(on_progress=None) -> list:
     """Call once, on the thread that is about to call `solve(payload)`, before
     doing so. Returns the (empty) list that will be appended to -- a job
     runner keeps this list and calls `.StopSearch()` on every entry to cancel.
+
+    `on_progress` (optional): in-process progress sink for this thread's solve
+    -- `solve()` falls back to it when no explicit `on_progress=` is passed, so
+    a job runner can get progress without changing `solve()`'s call shape. See
+    `ProgressReporter` for the payload it receives.
     """
     _tls.solvers = []
+    _tls.on_progress = on_progress
     return _tls.solvers
 
 
@@ -47,6 +53,7 @@ def end_stoppable_run() -> None:
     into a stale list from a previous job.
     """
     _tls.solvers = None
+    _tls.on_progress = None
 
 
 def _register_active_solver(solver: cp_model.CpSolver) -> None:
@@ -99,6 +106,70 @@ PROBE_TIME_SECONDS = 5.0
 _STAGE_NAMES = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_QUALITY)
 
 
+PROGRESS_MIN_INTERVAL_SECONDS = 2.0
+
+
+class ProgressReporter:
+    """Optional progress hook for a solve (jobs API). Calls
+    `on_progress({stage, stages, elapsed, budget, best})` at every staged-solve
+    stage boundary (always) and from CP-SAT's solution callback (at most once
+    per PROGRESS_MIN_INTERVAL_SECONDS). `stage` is 1-based and never decreases;
+    `stages` is 4 for the staged objective, 1 for `objectiveMode: 'weighted'`;
+    `best` is the CURRENT stage's incumbent objective (stage-local, tiebreak
+    weighted -- not comparable across stages), None before the first solution.
+    A failing sink never affects the solve.
+    """
+
+    def __init__(self, on_progress, budget: float, stages: int):
+        self._cb = on_progress
+        self.budget = float(budget)
+        self.stages = stages
+        self.stage = 0
+        self.best = None
+        self._t0 = time.time()
+        self._last_emit = 0.0
+
+    def emit(self) -> None:
+        self._last_emit = time.time()
+        try:
+            self._cb({
+                "stage": self.stage,
+                "stages": self.stages,
+                "elapsed": round(time.time() - self._t0, 1),
+                "budget": self.budget,
+                "best": self.best,
+            })
+        except Exception:
+            pass
+
+    def begin_stage(self, stage: int) -> None:
+        self.stage = max(self.stage, stage)
+        self.best = None
+        self.emit()
+
+    def finish(self) -> None:
+        self.stage = self.stages
+        self.emit()
+
+    def solution_callback(self):
+        reporter = self
+
+        class _Cb(cp_model.CpSolverSolutionCallback):
+            def on_solution_callback(self):
+                reporter.best = self.objective_value
+                if time.time() - reporter._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+                    reporter.emit()
+
+        return _Cb()
+
+
+def _solve_with_progress(solver: cp_model.CpSolver, model, progress):
+    """`solver.solve(model)`, plus the solution callback when a reporter is set."""
+    if progress is None:
+        return solver.solve(model)
+    return solver.solve(model, progress.solution_callback())
+
+
 def _num_workers(payload: Payload) -> int:
     """Requested worker count, clamped to what the machine actually has --
     production runs on a small box, and an unclamped high count just thrashes
@@ -110,7 +181,16 @@ def _num_workers(payload: Payload) -> int:
     cpu_count = os.cpu_count() or 1
     requested = payload.config.num_workers
     if requested <= 0:
-        return cpu_count
+        # SOLVER_NUM_WORKERS: deploy-time override of "every core". Inside containers
+        # (Modal, Docker with CPU limits) os.cpu_count() can report the HOST's cores,
+        # oversubscribing CP-SAT -- modal_app.py sets this to the container's real vCPUs.
+        # Only consulted when the payload leaves numWorkers at 0/absent; an explicit
+        # positive config.numWorkers still wins (clamped to cpu_count as always).
+        try:
+            env_workers = int(os.environ.get("SOLVER_NUM_WORKERS", "0") or 0)
+        except ValueError:
+            env_workers = 0
+        return env_workers if env_workers > 0 else cpu_count
     return max(1, min(requested, cpu_count))
 
 
@@ -221,7 +301,7 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None):
     """Runs the 4-stage lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -343,8 +423,10 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None):
         # still reapplied every stage.
         solver = _configure_solver(payload, allow_repair_hint=False)
         solver.parameters.max_time_in_seconds = budget
+        if progress is not None:
+            progress.begin_stage(i + 1)
         t0 = time.time()
-        status = solver.solve(model)
+        status = _solve_with_progress(solver, model, progress)
         elapsed_seconds = time.time() - t0
         total_time_ms += int(elapsed_seconds * 1000)
         status_name = solver.status_name(status)
@@ -409,7 +491,7 @@ class SolveResult:
     feasibility: dict = None
 
 
-def solve(payload: Payload, cancel_event: "threading.Event | None" = None) -> SolveResult:
+def solve(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
     """`cancel_event` (optional, used only by api/jobs.py's background runner):
     when a stage-1 solve is stopped early via `begin_stoppable_run()`'s
     registry + `CpSolver.stop_search()`, CP-SAT can come back with status
@@ -423,7 +505,15 @@ def solve(payload: Payload, cancel_event: "threading.Event | None" = None) -> So
     no-op there -- "INFEASIBLE from a genuine pass-1 search" still always
     falls through to pass 2 as before.
     """
-    result = _solve_pass1(payload)
+    if on_progress is None:
+        on_progress = getattr(_tls, "on_progress", None)
+    progress = None
+    if on_progress is not None:
+        stages = len(_STAGE_NAMES) if payload.config.objective_mode == "staged" else 1
+        progress = ProgressReporter(on_progress, payload.config.max_time_seconds, stages)
+    result = _solve_pass1(payload, progress)
+    if progress is not None:
+        progress.finish()
     if result.status != "INFEASIBLE":
         return result
     if cancel_event is not None and cancel_event.is_set():
@@ -457,7 +547,7 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
     return {"applied": True, "hintFeasible": True, "pinned": hint_eval.components}, hint_eval
 
 
-def _solve_pass1(payload: Payload) -> SolveResult:
+def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
     build_result = build_model(payload)
     store = build_result.store
     objective = build_result.objective
@@ -470,12 +560,14 @@ def _solve_pass1(payload: Payload) -> SolveResult:
     # `model.minimize(objective.total_expr)` as its own default, so the
     # weighted branch needs no further setup beyond solving as before.
     if payload.config.objective_mode == "staged":
-        status_name, solver, solve_time_ms = _solve_staged(payload, build_result, hint_eval)
+        status_name, solver, solve_time_ms = _solve_staged(payload, build_result, hint_eval, progress)
     else:
         solver = _configure_solver(payload)
         solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
+        if progress is not None:
+            progress.begin_stage(1)
         t0 = time.time()
-        status = solver.solve(build_result.model)
+        status = _solve_with_progress(solver, build_result.model, progress)
         solve_time_ms = int((time.time() - t0) * 1000)
         status_name = solver.status_name(status)
 

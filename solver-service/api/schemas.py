@@ -175,3 +175,6 @@ class HealthResponse(BaseModel):
     # guess, and so `solver/solve.py`'s `_num_workers()` default ("use every core") is directly
     # visible without reading server logs.
     cpus: int
+    # "durable" = Modal-backed jobs (client must submit-then-poll; /solve answers 400 use_jobs),
+    # "memory" = in-process jobs (Fly / local). Defaulted so older clients/tests are unaffected.
+    jobs: str = "memory"
