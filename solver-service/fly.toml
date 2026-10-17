@@ -39,10 +39,9 @@ primary_region = "iad"
     path = "/health"
 
 [[vm]]
-  # CP-SAT is CPU-bound and payload.config.numWorkers defaults to 8 (see docs/PAYLOAD_SCHEMA.md) —
-  # size the machine to roughly match, or numWorkers is requesting more parallelism than the
-  # machine actually has. Adjust both together if you change this. 2026-10-16: moved from 2 shared
-  # to 4 dedicated CPUs (machine-size comparison on a real block: 4 workers at 120s gave clearly
+  # CP-SAT is CPU-bound; payload.config.numWorkers defaults to os.cpu_count() (see
+  # docs/PAYLOAD_SCHEMA.md), so worker count follows whatever this block sets. 2026-10-16: moved
+  # from 2 shared to 4 dedicated CPUs (machine-size comparison on a real block: 4 workers at 120s gave clearly
   # better night shapes than 2). performance-4x requires >= 8 GB. Billed only while running —
   # auto_stop above scales to zero between solves.
   cpu_kind = "performance"

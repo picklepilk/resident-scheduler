@@ -204,7 +204,7 @@ describe('buildSolverPayload', () => {
     expect(payload.config.numWorkers).toBe(2);
   });
 
-  // "Deep solve" (2026-10-15): the admin-facing "Try harder (~5 min)" option passes
+  // "Deep solve" (2026-10-15): the admin-facing "Deep Solve" button passes
   // DEEP_SOLVE_MAX_TIME_SECONDS through generateViaSolverOrLocal as an explicit
   // buildSolverPayload `config.maxTimeSeconds` override — never the default. Pinning the exported
   // constant's value here (rather than just re-checking the generic override path above) means a
@@ -215,12 +215,8 @@ describe('buildSolverPayload', () => {
     expect(DEEP_SOLVE_MAX_TIME_SECONDS).toBe(300);
     const deepPayload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } });
     expect(deepPayload.config.maxTimeSeconds).toBe(300);
-    // 2026-10-16 real-block budget-sweep measurement (PAYLOAD_SCHEMA.md's dated section): the
-    // plain default was 30s, raised to 60s — 30s ties local as often as it beats it (CP-SAT
-    // multi-worker nondeterminism), while 45s+ reliably won locally; 60s is chosen over the
-    // bare-minimum 45s for safety margin against the deployed solver's much weaker parallelism
-    // (fly.toml: 2 shared CPUs vs. this measurement's dev box). Raised to 120s alongside the
-    // move to 4 dedicated Fly CPUs (machine-size comparison, 2026-10-16).
+    // Plain default pinned too — rationale lives on the constant (and PAYLOAD_SCHEMA.md's dated
+    // budget-sweep section).
     expect(DEFAULT_SOLVE_MAX_TIME_SECONDS).toBe(120);
     const defaultPayload = buildSolverPayload(fixture);
     expect(defaultPayload.config.maxTimeSeconds).toBe(120);

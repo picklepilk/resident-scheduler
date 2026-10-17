@@ -6982,39 +6982,27 @@ const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
 // share one number.
 export const DEFAULT_SOLVE_MAX_TIME_SECONDS = 120;
 // "Deep solve" (admin-facing, 2026-10-15): same solver/polisher pipeline as the default Generate
-// path, just a larger CP-SAT time budget. Re-measured 2026-10-16 alongside the default-budget
-// change above: on the same real block, 120s showed no further reliable gain over 90s locally,
-// and the solver has no server-side cap on `config.maxTimeSeconds` (checked 2026-10-15 and
-// reconfirmed 2026-10-16: schemas.py/payload.py accept any float; the only hardcoded ceilings are
-// hint_pin.py's unrelated 30s hint-feasibility pre-check and report/builder.py's unrelated 10s
-// verification-resolve step — neither touches the main staged solve, which reads
-// payload.config.max_time_seconds directly) — so 120s stays the Deep Solve budget; the data doesn't
-// justify spending the user's wait time pushing it toward the 180s ceiling. Exported so
-// generateViaSolverOrLocal and ResidentScheduler.test.js share one number instead of two literals
-// drifting apart. Raised to 300s (2026-10-16) when the default itself became 120s — Deep Solve has
-// to stay a real step up; the same comparison's best night shapes came from 300s runs.
+// path, just a larger CP-SAT time budget — cloud and "This computer" targets alike. 300s since
+// 2026-10-16 (raised with the 120s default so Deep Solve stays a real step up; the same
+// machine-size comparison's best night shapes came from 300s runs). The solver has no server-side
+// cap on `config.maxTimeSeconds` (schemas.py/payload.py accept any float; hint_pin.py's 30s
+// pre-check and report/builder.py's 10s verify step don't touch the main staged solve). Exported
+// so generateViaSolverOrLocal and the tests share one number instead of literals drifting apart.
 export const DEEP_SOLVE_MAX_TIME_SECONDS = 300;
-// "Run the optimizer on this computer" (2026-10-16): Deep Solve run against the local run-local
-// solver gets a materially longer budget than the cloud path's 120s, because the local target has
-// no Fly/Netlify proxy timeout and no shared-CPU contention to worry about — the only limit is how
-// long the admin is willing to wait. 5 minutes, same spirit as the cloud default-vs-deep gap.
-export const LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS = 300;
 // solveRemote's client-side abort timeout — must clear the solver's own budget plus network/
-// cold-start slack (Fly scale-to-zero can add several seconds), same margin CLAUDE.md's goal doc
-// calls for. Both the default and deep-solve paths now pass an explicit timeoutMs computed this
-// same way (2026-10-16 — previously only the deep path did; the default path relied on
-// solveRemote's own 120000ms fallback default, which only happened to be correct by coincidence
-// while the default budget was <= 60s and stops being safe the moment either number changes again).
+// cold-start slack (Fly scale-to-zero can add several seconds). Both paths pass it explicitly;
+// never rely on solveRemote's own fallback default.
 const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 const DEFAULT_SOLVE_TIMEOUT_MS = DEFAULT_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
-// Local target's own Deep Solve timeout — same "budget plus margin" shape as the two above, built
-// off LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS instead. The 60s margin is generous overkill for a
-// same-machine loopback call (no cold start, no network), but there's no cost to keeping it —
-// simpler than inventing a second margin constant for one path.
-const LOCAL_DEEP_SOLVE_TIMEOUT_MS = LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
+// "~2 minutes" style copy for a solver budget, so UI text derives from the constants above
+// instead of hand-copied literals that go stale every time a budget changes.
+const approxMinutes = (seconds) => {
+  const m = Math.round(seconds / 60);
+  return `~${m} minute${m === 1 ? '' : 's'}`;
+};
 
 // "Long solve in the background" (2026-10-16 prototype, solver-service/api/jobs.py): a bigger time
-// budget than Generate/Deep Solve's own synchronous ~2/5 min, submitted as a background job and
+// budget than Generate/Deep Solve's own synchronous budgets, submitted as a background job and
 // polled instead of blocking a request for that long. Minutes, not seconds, to match the admin
 // choice UI; converted to `config.maxTimeSeconds` at submit time. Exported so the UI and any test
 // share one list instead of hand-copying it.
@@ -14873,7 +14861,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // synchronously at the top of each call, before any await, so it can't itself trigger a render.
   const generatingRef = useRef(false);
   // ── Progress overlay (Generate/Clear & Regenerate/Regenerate Unlocked) — the solver path can
-  // legitimately run ~60s (DEFAULT_SOLVE_MAX_TIME_SECONDS) and the local-generator path can take
+  // legitimately run for DEFAULT_SOLVE_MAX_TIME_SECONDS and the local-generator path can take
   // a couple seconds (best-of-20 + repair), and with no feedback the app looked crashed. `genActive` gates the overlay's
   // visibility; `genStageLabel` is plain text updated by generateViaSolverOrLocal as the pipeline
   // moves through its stages; `genElapsedSec` ticks once/sec off a ref-held start time so the label
@@ -14899,7 +14887,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   useEffect(() => () => { if (genTimerRef.current) clearInterval(genTimerRef.current); }, []);
 
   // ── Long solve in the background (2026-10-16 prototype, solver-service/api/jobs.py) ────────────
-  // A bigger CP-SAT time budget (5/15/30 min) than Generate/Deep Solve's own synchronous ~60s/120s,
+  // A bigger CP-SAT time budget (5/15/30 min) than Generate/Deep Solve's own synchronous budgets,
   // run as a background job instead of blocking a request for that long. The local generator still
   // runs FIRST, synchronously, exactly like generateViaSolverOrLocal's own pipeline — only the
   // SOLVER half moves to a job; the admin keeps working (switch tabs, edit other blocks, even
@@ -15811,25 +15799,22 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     }
     if (solverAllowed && solverTargetUrl) {
       try {
-        // Deep solve (admin opt-in, "Try harder"): same pipeline, just a bigger explicit
+        // Deep solve (admin opt-in): same pipeline, just a bigger explicit
         // `config.maxTimeSeconds` override — never the default (buildSolverPayload's own
         // `maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS` stays the baseline for every other
-        // caller) — and a client-side solveRemote timeout wide enough to cover either budget. The
-        // local target gets its own, longer Deep Solve budget (no proxy timeout to respect there).
-        const deepBudgetSeconds = usingLocal ? LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS : DEEP_SOLVE_MAX_TIME_SECONDS;
-        const deepTimeoutMs = usingLocal ? LOCAL_DEEP_SOLVE_TIMEOUT_MS : DEEP_SOLVE_TIMEOUT_MS;
+        // caller) — and a client-side solveRemote timeout wide enough to cover it.
         setGenStageLabel(deepSolve
-          ? `Deep solve — optimizing, this can take up to ~${Math.round(deepBudgetSeconds / 60)} minute${deepBudgetSeconds >= 120 ? 's' : ''}…`
-          : `Optimizing schedule — up to ~${Math.round(DEFAULT_SOLVE_MAX_TIME_SECONDS / 60)} minutes…`);
+          ? `Deep solve — optimizing, this can take up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)}…`
+          : `Optimizing schedule — up to ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)}…`);
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
-          config: deepSolve ? { maxTimeSeconds: deepBudgetSeconds } : {} });
+          config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
         // service 401s and the catch below keeps the already-computed local result. Never sent to
         // the local target: it runs with SOLVER_AUTH_MODE=off (loopback-only, see run-local.ps1/.sh)
         // and there's no reason to hand a real session token to a process on the same machine.
         const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
         const json = await solveRemote(payload, { url: solverTargetUrl, accessToken,
-          timeoutMs: deepSolve ? deepTimeoutMs : DEFAULT_SOLVE_TIMEOUT_MS });
+          timeoutMs: deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS });
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
@@ -16376,17 +16361,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             Generate Schedule
           </Button>
           {/* Deep solve (2026-10-15): same Generate pipeline, just a bigger CP-SAT time budget
-              (DEEP_SOLVE_MAX_TIME_SECONDS, or LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS when "This computer"
-              is selected — see generateViaSolverOrLocal) passed as an explicit buildSolverPayload
-              config override — the default Generate button above is untouched. Gated the same as
+              (DEEP_SOLVE_MAX_TIME_SECONDS, either run target — see generateViaSolverOrLocal) passed
+              as an explicit buildSolverPayload config override — the default Generate button above is untouched. Gated the same as
               the Settings → "Use optimizer service" toggle, OR'd with solverRunTarget === 'local'
               since the local target never depends on VITE_SOLVER_URL/SOLVER_ENABLED. */}
           {(SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
-              title={solverRunTarget === 'local'
-                ? 'Same as Generate Schedule, but lets the optimizer on this computer search for up to ~5 minutes — can fill more slots on a tight block. Only ships if it beats the regular result.'
-                : 'Same as Generate Schedule, but lets the optimizer search for up to ~5 minutes instead of ~2 — can fill more slots on a tight block. Only ships if it beats the regular result.'}>
-              Deep Solve (~5 min)
+              title={`Same as Generate Schedule, but lets the optimizer${solverRunTarget === 'local' ? ' on this computer' : ''} search for up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)} instead of ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)} — can fill more slots on a tight block. Only ships if it beats the regular result.`}>
+              Deep Solve (~{Math.round(DEEP_SOLVE_MAX_TIME_SECONDS / 60)} min)
             </Button>
           )}
           {/* Long solve (2026-10-16 prototype): runs in the BACKGROUND (solver-service/api/jobs.py)
