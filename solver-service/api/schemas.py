@@ -170,3 +170,8 @@ class SolveResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     ortools: str
+    # Logical CPU count this process sees (os.cpu_count()) -- surfaced so a client (the app's
+    # Settings → Optimizer "This computer" status line) can show real parallelism instead of a
+    # guess, and so `solver/solve.py`'s `_num_workers()` default ("use every core") is directly
+    # visible without reading server logs.
+    cpus: int

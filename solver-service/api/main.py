@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import AuthResult
 from api.limits import MaxBodySizeMiddleware
+from api.pna import PrivateNetworkAccessMiddleware
 from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
 from solver.io.payload import PayloadError, parse_payload
@@ -59,13 +60,20 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
 )
+# Outside (added last, so outermost per the comment above) CORSMiddleware -- needs to see and
+# rewrite the preflight response CORSMiddleware answers itself. See api/pna.py's own docstring for
+# why this exists: Chrome's Private Network Access check on a public-HTTPS-page-fetches-loopback
+# request (exactly "run the optimizer on this computer", http://127.0.0.1:8765), which plain CORS
+# has no header for.
+app.add_middleware(PrivateNetworkAccessMiddleware)
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> dict:
     # Deliberately open: no auth, no rate limit -- Fly's health check (and
-    # anyone else) must always be able to reach this.
-    return {"status": "ok", "ortools": ORTOOLS_VERSION}
+    # anyone else) must always be able to reach this. `cpus` lets a caller (the app's "This
+    # computer" Settings status line) show real parallelism without guessing.
+    return {"status": "ok", "ortools": ORTOOLS_VERSION, "cpus": os.cpu_count() or 1}
 
 
 @app.post("/solve", response_model=SolveResponse)

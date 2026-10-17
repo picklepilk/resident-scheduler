@@ -75,3 +75,35 @@ serving the built bundle and the dev server under the exact policy (generate, Gr
 PDF matrix): the only violation found was Vite's inlined `data:` fonts, now allowed. If the
 Supabase project or solver host changes, update `connect-src` in `netlify.toml` or those
 requests will be blocked.
+
+## "Run the optimizer on this computer" (2026-10-16)
+
+Settings → Optimizer → "This computer" (see `solver-service/run-local.ps1`/`run-local.sh` and
+`solver-service/README.md`'s "Run on your own computer" section) sends solve requests from the
+deployed, HTTPS `residentscheduling.netlify.app` page to a solver running on the admin's own
+machine at a fixed loopback address.
+
+- **`connect-src` allows `http://127.0.0.1:8765` and `http://localhost:8765`** (both — the
+  health-check probe and the solve call can resolve either depending on how the browser handles
+  `localhost`). This is a plain, non-TLS `http://` origin inside an otherwise HTTPS-only policy —
+  intentional: a loopback address is a "potentially trustworthy origin" per browsers' own mixed
+  -content rules (same reasoning that lets `https://` pages talk to `http://localhost` dev
+  servers), so Chrome/Firefox do not block this fetch as mixed content the way they would a real
+  `http://` third-party host.
+- **Chrome's Private Network Access (PNA) check** is the other half of this story, and it is
+  *not* something this CSP line controls. A public HTTPS page fetching a private/loopback address
+  triggers an extra CORS-preflight-level signal: the browser's preflight `OPTIONS` request carries
+  `Access-Control-Request-Private-Network: true`, and Chrome requires the response to answer back
+  `Access-Control-Allow-Private-Network: true` or it blocks the real request even once ordinary
+  CORS has already passed. The local solver answers this itself (`solver-service/api/pna.py`,
+  wired in `api/main.py` outside `CORSMiddleware` so it can rewrite the preflight response CORS
+  already produced) — nothing in the app's own CSP/headers needs to change for PNA specifically.
+  Firefox/Safari don't implement PNA as of this writing and ignore the extra header either way.
+- **Auth stays off for this target, deliberately**: the local server runs with
+  `SOLVER_AUTH_MODE=off` because it's bound to `127.0.0.1` only (see `run-local.ps1`'s header
+  comment) — there is no real remote caller to authenticate against. The app's client code
+  (`generateViaSolverOrLocal` in `src/ResidentScheduler.jsx`) also deliberately never sends the
+  Supabase session JWT to the local target, even though doing so would be harmless (loopback-only)
+  — simplest to just not hand a real token to a process on the same machine for no benefit.
+- If the fixed local port (8765) ever changes, update both `run-local.ps1`/`run-local.sh`,
+  `src/lib/solverClient.js`'s `LOCAL_SOLVER_URL`, and this `connect-src` line together.

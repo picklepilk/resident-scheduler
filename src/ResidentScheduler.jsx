@@ -32,7 +32,7 @@ import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } fro
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget } from './lib/solverClient.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
@@ -6963,6 +6963,11 @@ export const DEFAULT_SOLVE_MAX_TIME_SECONDS = 60;
 // generateViaSolverOrLocal and ResidentScheduler.test.js share one number instead of two literals
 // drifting apart.
 export const DEEP_SOLVE_MAX_TIME_SECONDS = 120;
+// "Run the optimizer on this computer" (2026-10-16): Deep Solve run against the local run-local
+// solver gets a materially longer budget than the cloud path's 120s, because the local target has
+// no Fly/Netlify proxy timeout and no shared-CPU contention to worry about — the only limit is how
+// long the admin is willing to wait. 5 minutes, same spirit as the cloud default-vs-deep gap.
+export const LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS = 300;
 // solveRemote's client-side abort timeout — must clear the solver's own budget plus network/
 // cold-start slack (Fly scale-to-zero can add several seconds), same margin CLAUDE.md's goal doc
 // calls for. Both the default and deep-solve paths now pass an explicit timeoutMs computed this
@@ -6971,6 +6976,11 @@ export const DEEP_SOLVE_MAX_TIME_SECONDS = 120;
 // while the default budget was <= 60s and stops being safe the moment either number changes again).
 const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 const DEFAULT_SOLVE_TIMEOUT_MS = DEFAULT_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
+// Local target's own Deep Solve timeout — same "budget plus margin" shape as the two above, built
+// off LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS instead. The 60s margin is generous overkill for a
+// same-machine loopback call (no cold start, no network), but there's no cost to keeping it —
+// simpler than inventing a second margin constant for one path.
+const LOCAL_DEEP_SOLVE_TIMEOUT_MS = LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
@@ -14700,7 +14710,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, solverRunTarget }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -15551,32 +15561,53 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // Local FIRST, always — see this function's own header for why (both the warm-start source
     // AND, on any solver failure, the final answer itself; generateScheduleBest's own null return
     // for an invalid date range is already handled by the hasValidDates guard just above).
-    setGenStageLabel(SOLVER_ENABLED ? 'Generating (built-in engine)…' : 'Preparing…');
+    setGenStageLabel((SOLVER_ENABLED || solverRunTarget === 'local') ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
     const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
     if (!localRes) return null;
 
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
     // `!== false` so an old backup/cloud row with no such key keeps the solver ON — the env-var
-    // (VITE_SOLVER_URL) stays the deploy-level switch, this one needs no redeploy.
+    // (VITE_SOLVER_URL) stays the deploy-level switch for the CLOUD target only; "This computer"
+    // (solverRunTarget) never depends on it, since the local run-local solver has a fixed address.
     const solverAllowed = appSettings.useSolverService !== false;
-    if (SOLVER_ENABLED && solverAllowed) {
+    // "Where to run" (Settings → Optimizer, device-local — see res_solver_target's own comment):
+    // when 'local' is selected, probe the local run-local solver right before this Generate call
+    // (cheap, ~ms when it's running) rather than trusting a stale earlier status read — the whole
+    // point is "reachable right now". resolveSolverTarget is the pure fallback decision: 'local'
+    // falls back to the configured cloud URL when unreachable, never straight to failure.
+    const wantsLocalSolver = solverRunTarget === 'local';
+    const localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
+    const { url: solverTargetUrl, usingLocal } = resolveSolverTarget({
+      preference: solverRunTarget, localHealthy,
+    });
+    if (wantsLocalSolver && !usingLocal) {
+      showToast(solverTargetUrl
+        ? 'Local optimizer not running — using the cloud optimizer instead. Start it on this computer with run-local.ps1 (or run-local.sh).'
+        : 'Local optimizer not running — using the built-in generator. Start it on this computer with run-local.ps1 (or run-local.sh).',
+        'amber');
+    }
+    if (solverAllowed && solverTargetUrl) {
       try {
-        // Deep solve (admin opt-in, "Try harder (~2 min)"): same pipeline, just a bigger explicit
+        // Deep solve (admin opt-in, "Try harder"): same pipeline, just a bigger explicit
         // `config.maxTimeSeconds` override — never the default (buildSolverPayload's own
         // `maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS` stays the baseline for every other
-        // caller) — and a client-side solveRemote timeout wide enough to cover either budget
-        // (DEEP_SOLVE_TIMEOUT_MS/DEFAULT_SOLVE_TIMEOUT_MS's own header).
+        // caller) — and a client-side solveRemote timeout wide enough to cover either budget. The
+        // local target gets its own, longer Deep Solve budget (no proxy timeout to respect there).
+        const deepBudgetSeconds = usingLocal ? LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS : DEEP_SOLVE_MAX_TIME_SECONDS;
+        const deepTimeoutMs = usingLocal ? LOCAL_DEEP_SOLVE_TIMEOUT_MS : DEEP_SOLVE_TIMEOUT_MS;
         setGenStageLabel(deepSolve
-          ? 'Deep solve — optimizing, this can take up to ~2 minutes…'
+          ? `Deep solve — optimizing, this can take up to ~${Math.round(deepBudgetSeconds / 60)} minute${deepBudgetSeconds >= 120 ? 's' : ''}…`
           : `Optimizing schedule — up to ~${DEFAULT_SOLVE_MAX_TIME_SECONDS}s…`);
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
-          config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
+          config: deepSolve ? { maxTimeSeconds: deepBudgetSeconds } : {} });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
-        // service 401s and the catch below keeps the already-computed local result.
-        const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
-        const json = await solveRemote(payload, { accessToken,
-          timeoutMs: deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS });
+        // service 401s and the catch below keeps the already-computed local result. Never sent to
+        // the local target: it runs with SOLVER_AUTH_MODE=off (loopback-only, see run-local.ps1/.sh)
+        // and there's no reason to hand a real session token to a process on the same machine.
+        const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
+        const json = await solveRemote(payload, { url: solverTargetUrl, accessToken,
+          timeoutMs: deepSolve ? deepTimeoutMs : DEFAULT_SOLVE_TIMEOUT_MS });
         if (json?.status !== 'OPTIMAL' && json?.status !== 'FEASIBLE' && json?.status !== 'RELAXED') {
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
@@ -16090,14 +16121,17 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             Generate Schedule
           </Button>
           {/* Deep solve (2026-10-15): same Generate pipeline, just a bigger CP-SAT time budget
-              (DEEP_SOLVE_MAX_TIME_SECONDS) passed as an explicit buildSolverPayload config override —
-              the default Generate button above is untouched. Gated on the same condition as the
-              Settings → "Use optimizer service" toggle (SOLVER_ENABLED && useSolverService !== false):
-              there's no solver to ask for extra time otherwise. */}
-          {SOLVER_ENABLED && appSettings.useSolverService !== false && (
+              (DEEP_SOLVE_MAX_TIME_SECONDS, or LOCAL_DEEP_SOLVE_MAX_TIME_SECONDS when "This computer"
+              is selected — see generateViaSolverOrLocal) passed as an explicit buildSolverPayload
+              config override — the default Generate button above is untouched. Gated the same as
+              the Settings → "Use optimizer service" toggle, OR'd with solverRunTarget === 'local'
+              since the local target never depends on VITE_SOLVER_URL/SOLVER_ENABLED. */}
+          {(SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
-              title="Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~60s — can fill more slots on a tight block. Only ships if it beats the regular result.">
-              Deep Solve (~2 min)
+              title={solverRunTarget === 'local'
+                ? 'Same as Generate Schedule, but lets the optimizer on this computer search for up to ~5 minutes — can fill more slots on a tight block. Only ships if it beats the regular result.'
+                : 'Same as Generate Schedule, but lets the optimizer search for up to ~2 minutes instead of ~60s — can fill more slots on a tight block. Only ships if it beats the regular result.'}>
+              {solverRunTarget === 'local' ? 'Deep Solve (~5 min)' : 'Deep Solve (~2 min)'}
             </Button>
           )}
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
@@ -19718,7 +19752,20 @@ function ImportHistoryPanel({ importLog, setImportLog }) {
   );
 }
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, activeRowId, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, activeRowId, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave, solverRunTarget, setSolverRunTarget }) {
+  // Live "This computer" status (Optimizer settings below) — polled only while Settings is mounted
+  // (this component unmounts when the tab changes, see the `{tab==='settings' && <SettingsTab.../>}`
+  // call site), so there's no background polling cost the rest of the app pays. undefined =
+  // "checking" (first render, before the first probe resolves), null = unreachable, an object =
+  // {ortools, cpus} from a healthy /health response.
+  const [localSolverStatus, setLocalSolverStatus] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => { checkLocalSolverHealth().then(r => { if (!cancelled) setLocalSolverStatus(r); }); };
+    poll();
+    const id = setInterval(poll, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
   const fileRef = useRef(null);
@@ -20044,9 +20091,11 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </div>
           </div>
 
-          {/* Optimizer engine toggle — only meaningful when a solver service is configured for this
-              build (VITE_SOLVER_URL); hidden otherwise, same posture as the feedback widget. */}
-          {SOLVER_ENABLED && (
+          {/* Optimizer engine toggle — meaningful whenever EITHER a cloud solver is configured for
+              this build (VITE_SOLVER_URL) OR "This computer" is selected below (which never needs
+              VITE_SOLVER_URL — see solverClient.js's LOCAL_SOLVER_URL); hidden only when neither
+              target could ever be reached, same posture as the feedback widget. */}
+          {(SOLVER_ENABLED || solverRunTarget === 'local') && (
             <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input type="checkbox" checked={appSettings.useSolverService !== false}
                 onChange={e=>updS('useSolverService', e.target.checked)} className="rounded mt-0.5"/>
@@ -20056,6 +20105,39 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               </span>
             </label>
           )}
+
+          {/* "Run the optimizer on this computer" (2026-10-16): device-local choice of solver
+              target, never synced (see res_solver_target's own comment at its useLocalStorage call).
+              Shown even when this build has no cloud solver configured (SOLVER_ENABLED false) — the
+              local target is always a real option once the admin runs solver-service/run-local.ps1
+              or run-local.sh on this machine. */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Optimizer — where to run</label>
+            <p className="text-xs text-gray-400 mb-2">Cloud runs on the shared, low-power server (always on, no setup). This computer uses a copy of the optimizer running locally on this machine — much faster on a multi-core laptop, but only while you've started it here and only for this device (this choice is not synced to other admins).</p>
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { v: 'cloud', l: 'Cloud', d: 'Shared server (default)' },
+                { v: 'local', l: 'This computer', d: 'Faster, must be running' },
+              ].map(({ v, l, d }) => (
+                <button key={v} onClick={()=>setSolverRunTarget(v)}
+                  className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 text-left transition-all ${solverRunTarget===v?'border-purple-500 bg-purple-50':'border-gray-200 hover:border-purple-300 bg-white'}`}>
+                  <span className={`text-xs font-bold ${solverRunTarget===v?'text-purple-700':'text-gray-700'}`}>{l}</span>
+                  <span className="text-xs text-gray-400 mt-0.5">{d}</span>
+                </button>
+              ))}
+            </div>
+            {solverRunTarget === 'local' && (
+              <p className="text-xs mt-2">
+                {localSolverStatus === undefined && <span className="text-gray-400">Checking…</span>}
+                {localSolverStatus === null && (
+                  <span className="text-amber-600">Not running at {LOCAL_SOLVER_URL} — start it with <code className="font-mono">run-local.ps1</code> (or <code className="font-mono">run-local.sh</code>) in <code className="font-mono">solver-service/</code>. Generate will fall back to {SOLVER_ENABLED ? 'Cloud' : 'the built-in generator'} until it's reachable.</span>
+                )}
+                {localSolverStatus && typeof localSolverStatus === 'object' && (
+                  <span className="text-green-700">Connected · OR-Tools {localSolverStatus.ortools} · {localSolverStatus.cpus} core{localSolverStatus.cpus === 1 ? '' : 's'}</span>
+                )}
+              </p>
+            )}
+          </div>
 
           {/* Rest rule — no longer a toggle (2026-09-26 policy: ACGME 6.17.a.2 is always hard) */}
           <div className="flex items-start gap-2.5">
@@ -22517,6 +22599,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [importLog, setImportLog]         = useLocalStorage(physKey('res_import_log'), []);
   // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
   const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
+  // "Run the optimizer on this computer" (2026-10-16): which solver target Generate/Deep Solve
+  // send to — 'cloud' (default) or 'local' (the run-local.ps1/.sh solver on THIS machine, see
+  // solverClient.js's LOCAL_SOLVER_URL). Device-local by necessity, same posture as res_dark_mode/
+  // res_demo_mode: another admin's machine doesn't have this device's local solver running, so this
+  // preference must never sync — NOT in LS_BACKUP_KEYS/syncBindings.
+  const [solverRunTarget, setSolverRunTarget] = useLocalStorage('res_solver_target', 'cloud');
 
   // Cross-device cloud sync (see the SUPABASE SYNC section). dbStatus/dbError feed
   // AutosaveIndicator's cloud states. dbReady gates the debounced cloud-save effect so it never
@@ -24267,13 +24355,13 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}/>}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)} solverRunTarget={solverRunTarget}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
