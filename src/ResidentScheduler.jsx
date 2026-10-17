@@ -57,6 +57,8 @@ import { normalizeActivityLog, appendActivity, lastActivity, unseenByOthers, sum
 import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
 import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
+import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
+import { laneBar } from './lib/offServiceLanes.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -9804,10 +9806,11 @@ function shiftCellStatus(info) {
 }
 const COVERAGE_DOT_CLASS = { red: 'bg-destructive', amber: 'bg-amber-500', green: 'bg-green-500', gray: 'bg-muted' };
 // Dark-mode-safe tint for the month-grid day cells below — a flat bg-red-50/bg-amber-50 palette
-// (like COVERAGE_DOT_CLASS's sibling used to be) has no `.dark` override.
+// (like COVERAGE_DOT_CLASS's sibling used to be) has no `.dark` override. The cov-day-* marker
+// classes carry the dark text colors in index.css's `.dark` sheet (never Tailwind `dark:`).
 const COVERAGE_DAY_BG = {
-  red: 'bg-destructive/10 text-destructive', amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  green: 'bg-green-500/10 text-green-700 dark:text-green-400', gray: 'bg-muted/40 text-muted-foreground',
+  red: 'bg-destructive/10 text-destructive', amber: 'cov-day-amber bg-amber-500/10 text-amber-600',
+  green: 'cov-day-green bg-green-500/10 text-green-700', gray: 'bg-muted/40 text-muted-foreground',
 };
 const MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -10068,8 +10071,118 @@ function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, on
   );
 }
 
+// ─── OFF-SERVICE LANES (Dashboard year rail) ────────────────────────────────
+// One lane per off-service resident above the rail's tabs, sharing the tabs' x axis so a window
+// that starts/ends mid-block is visible at a glance (hatched end cap = "not synced with our block
+// edges"). Display-only. Geometry in lib/offServiceLanes.js, classification in
+// lib/offServiceAlignment.js. The name sits inside the bar (no sticky label column inside the
+// horizontal scroller); the readable/accessible version is OffServiceLaneList.
+const OFF_LANE_H = 22;
+const OFF_STATUS_LABEL = {
+  aligned: 'Aligned', straddles: 'Straddles block edge', split: 'Split', outside: 'Outside saved blocks',
+  noWindow: 'No dates', legacyClamped: 'Re-import to verify',
+};
+// Hatched cap, 8px wide, drawn in the bar's own text colour (sky-700, dark override in index.css).
+const OFF_HATCH = 'repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px)';
+
+function offSegText(r, nameOf) {
+  return r.segments.map(sg => `${sg.days} day${sg.days === 1 ? '' : 's'} in ${nameOf[sg.blockId] || 'a block'}`).join(', ');
+}
+
+function offLaneTitle(r, nameOf) {
+  const win = r.windows.map(w => `${prettyDate(w.start)}–${prettyDate(w.end)}`).join(', ');
+  return [`${r.name} (${r.category}-${r.pgy})`, win, offSegText(r, nameOf), ...r.notes].filter(Boolean).join(' · ');
+}
+
+function OffServiceLanes({ alignment, residents, cellWidth }) {
+  const { blocks } = alignment;
+  const n = blocks.length;
+  if (!n || !residents.length) return null;
+  const nameOf = {};
+  blocks.forEach((b, i) => { nameOf[b.id] = b.name || `Block ${railNumeral(b.name, i)}`; });
+  return (
+    <div role="group" aria-label="Off-service rotation windows against block edges"
+      className="relative py-1" style={{
+        width: n * cellWidth,
+        backgroundImage: 'linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px)',
+        backgroundSize: `${cellWidth}px 100%`,
+      }}>
+      {residents.filter(r => r.windows.length > 0).map(r => {
+        const title = offLaneTitle(r, nameOf);
+        return (
+          <div key={r.key} className="relative my-0.5" style={{ height: OFF_LANE_H }}>
+            {r.windows.map((w, wi) => {
+              const g = laneBar(blocks, w, cellWidth);
+              if (!g) return null;
+              const dashed = r.status === 'legacyClamped';
+              const boxW = g.outside ? 18 : Math.max(g.x1 - g.x0, 12);
+              const left = g.outside && g.contRight ? g.x0 - 18 : g.x0;
+              return (
+                <div key={wi} role="img" aria-label={title} title={title}
+                  className="absolute top-0 flex items-stretch overflow-hidden rounded-[5px] bg-sky-100 text-sky-700 text-[10px] font-medium leading-none"
+                  style={{ left, width: boxW, height: OFF_LANE_H, border: `1px ${dashed ? 'dashed' : 'solid'} currentColor` }}>
+                  {g.contLeft && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'◀'}</span>}
+                  {g.startMid && <span aria-hidden="true" className="w-2 shrink-0 border-r border-current" style={{ backgroundImage: OFF_HATCH }}/>}
+                  {!g.outside && <span className="flex-1 min-w-0 truncate self-center px-1">{r.name}</span>}
+                  {g.endMid && <span aria-hidden="true" className="w-2 shrink-0 border-l border-current" style={{ backgroundImage: OFF_HATCH }}/>}
+                  {g.contRight && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'▶'}</span>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function OffServiceLaneList({ alignment, residents, railBlocks, onOpen }) {
+  const nameOf = {};
+  alignment.blocks.forEach((b, i) => { nameOf[b.id] = b.name || `Block ${railNumeral(b.name, i)}`; });
+  return (
+    <ul aria-label="Off-service rotations" className="mb-2 max-h-56 overflow-y-auto divide-y divide-border/60 rounded-lg border border-border bg-card text-xs">
+      {residents.map(r => {
+        const target = railBlocks.find(rb => !rb.isLive && r.segments.some(sg => sg.blockId === rb.id));
+        const tone = r.status === 'aligned' ? 'bg-muted text-muted-foreground' : 'bg-sky-100 text-sky-700';
+        return (
+          <li key={r.key}>
+            <button type="button" disabled={!target} onClick={() => target && onOpen(target)}
+              title={target ? `Open ${target.name || 'block'}` : 'Already open, or no other saved block overlaps'}
+              className="flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left enabled:hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+              <span className="font-medium text-foreground">{r.name}</span>
+              <span className="font-mono text-[11px] text-muted-foreground">{r.category}-{r.pgy}</span>
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${tone}`}>{OFF_STATUS_LABEL[r.status]}</span>
+              <span className="text-muted-foreground">{[offSegText(r, nameOf), ...r.notes].filter(Boolean).join(' · ')}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function OffServiceLaneToggle({ counts, open, onToggle, onlyMisaligned, onToggleOnly }) {
+  const n = counts.misaligned;
+  return (
+    <span className="flex items-center gap-2 font-sans">
+      <button type="button" onClick={onToggle} aria-pressed={open}
+        title={`${n} off-service rotation${n === 1 ? '' : 's'} ${n === 1 ? "doesn't" : "don't"} line up with our block edges`}
+        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${open ? 'border-primary text-primary bg-accent' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+        Off-service windows
+        <span className={`rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${n > 0 ? 'bg-sky-100 text-sky-700' : 'bg-muted text-muted-foreground'}`}>{n}</span>
+      </button>
+      {open && (
+        <button type="button" onClick={onToggleOnly} aria-pressed={onlyMisaligned}
+          className={`rounded-full border px-2 py-0.5 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${onlyMisaligned ? 'border-primary text-primary bg-accent' : 'border-border text-muted-foreground hover:bg-accent'}`}>
+          Only misaligned
+        </button>
+      )}
+    </span>
+  );
+}
+
 function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveState, viewer, coverage, ayConf,
-  onOpen, onTogglePublished, onDeleteSnapshot, aboveCells, headerRight }) {
+  onOpen, onTogglePublished, onDeleteSnapshot, aboveCells, aboveScroller, headerRight }) {
   const scrollerRef = useRef(null);
   const tabRefs = useRef({});
   const [focusKey, setFocusKey] = useState(null);
@@ -10151,6 +10264,8 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
           <span>{blocks.length} block{blocks.length === 1 ? '' : 's'}</span>
         </div>
       </div>
+
+      {aboveScroller}
 
       <div ref={scrollerRef} className="overflow-x-auto snap-x snap-proximity overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {aboveCells && aboveCells({ blocks, cellWidth })}
@@ -10623,6 +10738,20 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
     [blocksHistory, block, selectedAy]
   );
   const selectedAyConf = ayData[selectedAy] || { ...DEFAULT_AY_CONF };
+  // Off-service lanes (display-only). Open state + "only misaligned" ride the shared ui-prefs
+  // cardOpen store (device-local, same as CollapsibleCard prefId): lanes default OFF, filter default ON.
+  const { prefs: lanePrefs, setCardOpen: setLanePref } = useUiPrefsContext();
+  const lanesOpen = lanePrefs.cardOpen['dash.offLanes'] === true;
+  const lanesOnlyMis = lanePrefs.cardOpen['dash.offLanesMisaligned'] !== false;
+  const offAlign = useMemo(
+    () => buildOffServiceAlignment({ snapshots: blocksHistory, liveBlock: block, ay: selectedAy }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [blocksHistory, block.id, block.name, block.startDate, block.endDate, block.academicYear, block.offServiceResidents, selectedAy]
+  );
+  const laneResidents = useMemo(
+    () => offAlign.residents.filter(r => !lanesOnlyMis || (r.status !== 'aligned' && r.status !== 'noWindow')),
+    [offAlign, lanesOnlyMis]
+  );
   const liveRailIdx = railBlocks.findIndex(r => r.isLive);
   const liveRailRow = liveRailIdx >= 0 ? railBlocks[liveRailIdx] : null;
   const panelNumeral = liveRailRow ? railNumeral(block.name, liveRailIdx)
@@ -10722,7 +10851,25 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           blockSaveState={blockSaveState} viewer={viewer} coverage={coverage} ayConf={selectedAyConf}
           onOpen={row => loadBlock(row.snap, { stayOnTab: true })}
           onTogglePublished={toggleBlockPublished}
-          onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}/>
+          onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}
+          headerRight={
+            <OffServiceLaneToggle counts={offAlign.counts} open={lanesOpen}
+              onToggle={() => setLanePref('dash.offLanes', !lanesOpen)}
+              onlyMisaligned={lanesOnlyMis} onToggleOnly={() => setLanePref('dash.offLanesMisaligned', !lanesOnlyMis)}/>
+          }
+          aboveScroller={lanesOpen && (
+            laneResidents.length > 0
+              ? <OffServiceLaneList alignment={offAlign} residents={laneResidents} railBlocks={railBlocks}
+                  onOpen={row => loadBlock(row.snap, { stayOnTab: true })}/>
+              : <p className="mb-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  {offAlign.residents.some(r => r.status !== 'noWindow')
+                    ? `All ${offAlign.residents.filter(r => r.status !== 'noWindow').length} off-service rotations line up with block edges.`
+                    : "No off-service rotations in this academic year's saved blocks."}
+                </p>
+          )}
+          aboveCells={lanesOpen ? ({ cellWidth }) => (
+            <OffServiceLanes alignment={offAlign} residents={laneResidents} cellWidth={cellWidth}/>
+          ) : undefined}/>
 
         <BlockPanel
           labelledBy={liveRailRow ? `rail-tab-${liveRailRow.key}` : undefined}
@@ -22688,7 +22835,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   }
 
   return (
-    <aside className={`w-52 shrink-0 bg-navy border-r border-white/10 flex flex-col py-2 overflow-y-auto no-print
+    <aside className={`w-52 shrink-0 bg-navy border-r border-white/10 flex flex-col py-2 overflow-y-auto overflow-x-hidden no-print
       fixed inset-y-0 left-0 z-40 shadow-xl transition-transform duration-200
       md:static md:z-auto md:shadow-none md:translate-x-0
       ${mobileOpen ? 'translate-x-0 visible' : '-translate-x-full invisible md:visible'}`}>
@@ -22903,7 +23050,20 @@ function BlockStepsRow({ block, hasReport, errorCount, published, hasSnapshot, h
   );
 }
 
-function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, blocksHistory, onPickBlock, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+  // In-place switcher: the live block's AY blocks; picking one keeps the current tab (loadBlock's
+  // save-first guard still applies), the last item is the old "go to the Dashboard" behaviour.
+  const switchItems = useMemo(() => {
+    const rows = buildRailBlocks({ blocksHistory, liveBlock: block, ay: block.academicYear });
+    const items = rows.map((r, i) => ({
+      key: r.key, icon: r.isLive ? Check : undefined, disabled: r.isLive,
+      label: `${railNumeral(r.name, i)} · ${shortDateRange(r.startDate, r.endDate) || 'No dates'}${r.isLive ? ' (open)' : ''}`,
+      onClick: () => onPickBlock(r.snap),
+    }));
+    if (items.length) items.push({ separator: true });
+    items.push({ key: '__all', label: 'All blocks on Dashboard', onClick: onSwitch });
+    return items;
+  }, [blocksHistory, block, onPickBlock, onSwitch]);
   return (
     <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
       <div className="flex items-center gap-2 min-w-0 shrink-0">
@@ -22921,7 +23081,10 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
 
       <div className="ml-auto flex items-center gap-2">
         <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
-        <Button variant="ghost" size="sm" onClick={onSwitch}>Switch block…</Button>
+        <PopMenu items={switchItems} triggerLabel="Switch block" triggerTitle={`Switch block within ${block.academicYear || 'this academic year'}`}
+          triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.ghost} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
+          Switch block <ChevronDown size={13}/>
+        </PopMenu>
       </div>
     </div>
   );
@@ -25001,6 +25164,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           hasReport={!!block.generationReport} errorCount={issueCounts.errors}
           published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
           onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
+          blocksHistory={blocksHistory} onPickBlock={snap => loadBlock(snap, { stayOnTab: true })}
           onGoToGenerate={goToGenerateStep} onGoToErrors={goToErrorsStep}
           onPublish={requestPublishStep} onExport={goToExportStep}/>
       )}

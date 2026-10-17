@@ -214,6 +214,11 @@
   .dark .text-sky-700 { color: #7dd3fc; }
   .dark .text-sky-800 { color: #bae6fd; }
 
+  /* COVERAGE_DAY_BG day-cell text (was Tailwind dark: variants). Higher specificity than the
+     generic .dark .text-amber-600 / .text-green-700 rules so the original -400 shades stay. */
+  .dark .cov-day-amber.text-amber-600 { color: #fbbf24; }
+  .dark .cov-day-green.text-green-700 { color: #4ade80; }
+
   /* Additional shades of the 8 hues actually used in ResidentScheduler.jsx
      (verified by grepping every bg-/text-/border-*-N class in the file) that
      the block above doesn't cover yet — mainly text colors that sit on -50
