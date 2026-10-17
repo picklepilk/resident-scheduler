@@ -7002,6 +7002,24 @@ const approxMinutes = (seconds) => {
   return `~${m} minute${m === 1 ? '' : 's'}`;
 };
 
+// Generate-overlay bar width (0..100). progress: null | {phase:'local', done, total} (attempts) |
+// {phase:'local', polishing:true} (repair/finalize) | {phase:'solver', budgetSec} | {phase:'validate'}.
+// Local attempts own 5..55, polishing sits at 58, the solver fills 60..97 against its time budget.
+export function genProgressPct(progress, elapsedSinceSolverStartSec = 0) {
+  if (!progress) return 0;
+  if (progress.phase === 'local') {
+    if (progress.polishing) return 58;
+    const { done = 0, total = 0 } = progress;
+    return total > 0 ? Math.round(5 + 50 * Math.min(done, total) / total) : 5;
+  }
+  if (progress.phase === 'solver') {
+    const budget = progress.budgetSec > 0 ? progress.budgetSec : 1;
+    return Math.min(97, Math.max(60, Math.round(60 + 37 * elapsedSinceSolverStartSec / budget)));
+  }
+  if (progress.phase === 'validate') return 99;
+  return 0;
+}
+
 // "Long solve in the background" (2026-10-16 prototype, solver-service/api/jobs.py): a bigger time
 // budget than Generate/Deep Solve's own synchronous budgets, submitted as a background job and
 // polled instead of blocking a request for that long. Minutes, not seconds, to match the admin
@@ -7679,7 +7697,30 @@ function scoreGenerationResult(res, args, rulePriority) {
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
 // See CLAUDE.md's Generator section for the one-line version of this contract.
-export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = true } = {}) {
+export function generateScheduleBest(args, opts) {
+  const it = generateScheduleBestSteps(args, opts);
+  let r;
+  do { r = it.next(); } while (!r.done);
+  return r.value;
+}
+
+// Same as generateScheduleBest (identical result for the same baseSeed) but yields to the event
+// loop between steps so the UI can repaint a live progress bar. setTimeout, not rAF: rAF is paused
+// in background tabs and would stall generation when the user switches tabs.
+export async function generateScheduleBestAsync(args, opts, onProgress) {
+  const it = generateScheduleBestSteps(args, opts);
+  let r = it.next();
+  while (!r.done) {
+    if (onProgress) onProgress(r.value);
+    await new Promise(res => setTimeout(res, 0));
+    r = it.next();
+  }
+  return r.value;
+}
+
+// Step generator behind generateScheduleBest/Async. Yields progress objects
+// ({phase:'attempt',done,total} | {phase:'repair'} | {phase:'finalize'}) and returns the result.
+function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true } = {}) {
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   let best = null;
@@ -7715,9 +7756,11 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
     if (!res) return null;
     const score = scoreGenerationResult(res, args, rulePriority);
     if (!best || betterQuality(score, best.score)) best = { seed, result: res, score };
+    yield { phase: 'attempt', done: i + 1, total: attempts };
   }
 
   if (repair) {
+    yield { phase: 'repair' };
     const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(best.seed), repair: true });
     const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
     if (betterQuality(repairedScore, best.score)) best = { seed: best.seed, result: repaired, score: repairedScore };
@@ -7751,6 +7794,7 @@ export function generateScheduleBest(args, { attempts = 20, baseSeed, repair = t
   // preferTruePrimaryPass itself uses (fallbackCompositionAt, via this scan) so the gate can never
   // skip a case the pass below would actually have fixed.
   if (repair && hasFallbackComposition(best.result.schedule, args.allResidents, args.block, args.appSettings, args.ayConf)) {
+    yield { phase: 'finalize' };
     const trueKeptCells = new Set();
     for (const r of args.allResidents) {
       for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
@@ -14879,11 +14923,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [genActive, setGenActive] = useState(false);
   const [genStageLabel, setGenStageLabel] = useState('');
   const [genElapsedSec, setGenElapsedSec] = useState(0);
+  const [genProgress, setGenProgress] = useState(null); // see genProgressPct
+  const genSolverStartRef = useRef(0);
   const genTimerRef = useRef(null);
   function startGenProgress(label) {
     generationInProgress = true; // read by the root's idle sign-out handler — see its declaration
     setGenStageLabel(label);
     setGenElapsedSec(0);
+    setGenProgress(null);
     setGenActive(true);
     if (genTimerRef.current) clearInterval(genTimerRef.current);
     genTimerRef.current = setInterval(() => setGenElapsedSec(s => s + 1), 1000);
@@ -14891,6 +14938,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   function stopGenProgress() {
     generationInProgress = false;
     setGenActive(false);
+    setGenProgress(null);
     if (genTimerRef.current) { clearInterval(genTimerRef.current); genTimerRef.current = null; }
   }
   useEffect(() => () => { if (genTimerRef.current) clearInterval(genTimerRef.current); }, []);
@@ -15782,7 +15830,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // for an invalid date range is already handled by the hasValidDates guard just above).
     setGenStageLabel((SOLVER_ENABLED || solverRunTarget === 'local') ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
-    const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst });
+    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, undefined,
+      p => setGenProgress(p.phase === 'attempt'
+        ? { phase: 'local', done: p.done, total: p.total }
+        : { phase: 'local', polishing: true }));
     if (!localRes) return null;
 
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
@@ -15815,6 +15866,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         setGenStageLabel(deepSolve
           ? `Deep solve — optimizing, this can take up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)}…`
           : `Optimizing schedule — up to ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)}…`);
+        genSolverStartRef.current = Date.now();
+        setGenProgress({ phase: 'solver', budgetSec: deepSolve ? DEEP_SOLVE_MAX_TIME_SECONDS : DEFAULT_SOLVE_MAX_TIME_SECONDS });
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
           config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
@@ -15828,6 +15881,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           throw new Error(`Solver returned status "${json?.status || 'unknown'}"`);
         }
         setGenStageLabel('Validating…');
+        setGenProgress({ phase: 'validate' });
         const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf });
         // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
         // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
@@ -16316,9 +16370,19 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           <div className="bg-card border border-border rounded-xl shadow-xl px-8 py-6 flex flex-col items-center gap-3 w-full max-w-sm mx-4">
             <RefreshCw size={30} className="animate-spin text-primary flex-none"/>
             <div className="text-sm font-medium text-foreground text-center">{genStageLabel}</div>
-            <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
-              <div className="h-full w-1/3 rounded-full bg-primary animate-pulse"/>
-            </div>
+            {(() => {
+              const solverElapsed = genProgress?.phase === 'solver' ? Math.max(0, Math.floor((Date.now() - genSolverStartRef.current) / 1000)) : 0;
+              const pct = genProgressPct(genProgress, solverElapsed);
+              const sub = genProgress?.phase === 'local'
+                ? (genProgress.polishing ? 'Polishing best attempt…' : `Attempt ${genProgress.done} of ${genProgress.total}`)
+                : genProgress?.phase === 'solver' ? `${solverElapsed}s of ${approxMinutes(genProgress.budgetSec)}` : null;
+              return (<>
+                <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+                  <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none" style={{ width: pct + '%' }}/>
+                </div>
+                {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+              </>);
+            })()}
             <div className="text-xs text-muted-foreground font-mono tabular-nums">{genElapsedSec}s elapsed</div>
           </div>
         </div>
