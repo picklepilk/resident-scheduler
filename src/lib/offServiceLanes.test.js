@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { laneBar, laneBoundaries } from './offServiceLanes.js';
+import { laneBar, laneBoundaries, serviceTone, servicesPresent, stintCount, stintLabel, hasSeparateStints } from './offServiceLanes.js';
 
 const blocks = [
   { start: '2026-07-01', end: '2026-07-28' }, // 28 days
@@ -54,5 +54,40 @@ describe('laneBar', () => {
     expect(laneBar([], { start: '2026-07-01', end: '2026-07-02' }, 100)).toBeNull();
     expect(laneBar(blocks, { start: 'x', end: '2026-07-02' }, 100)).toBeNull();
     expect(laneBar(blocks, { start: '2026-07-05', end: '2026-07-02' }, 100)).toBeNull();
+  });
+});
+
+describe('service colouring', () => {
+  it('derives family from the category palette', () => {
+    expect(serviceTone('IM')).toMatchObject({ family: 'orange', shortLabel: 'IM', label: 'Internal Medicine' });
+    expect(serviceTone('IM').bar).toContain('bg-orange-100');
+    expect(serviceTone('PEDS').family).toBe('green');
+    expect(serviceTone('PSYCH').family).toBe('amber');
+  });
+  it('every known category gets a non-neutral tone', async () => {
+    const { CATEGORIES } = await import('./parse.js');
+    for (const c of CATEGORIES) expect(serviceTone(c.id).family).not.toBeNull();
+  });
+  it('unknown category is neutral', () => {
+    const t = serviceTone('WAT');
+    expect(t.family).toBeNull();
+    expect(t.bar).toContain('bg-muted');
+    expect(t.badge).toBeNull();
+  });
+  it('servicesPresent is distinct in first-seen order', () => {
+    expect(servicesPresent([{ category: 'IM' }, { category: 'FM' }, { category: 'IM' }]).map(s => s.id)).toEqual(['IM', 'FM']);
+    expect(servicesPresent(null)).toEqual([]);
+  });
+});
+
+describe('ER stints', () => {
+  it('counts windows', () => {
+    expect(stintCount({ windows: [{}, {}] })).toBe(2);
+    expect(stintCount({})).toBe(0);
+    expect(hasSeparateStints({ windows: [{}] })).toBe(false);
+    expect(hasSeparateStints({ windows: [{}, {}, {}] })).toBe(true);
+    expect(stintLabel({ windows: [{}, {}] })).toBe('2 ER stints');
+    expect(stintLabel({ windows: [{}, {}, {}] })).toBe('3 ER stints');
+    expect(stintLabel({ windows: [{}] })).toBe('');
   });
 });

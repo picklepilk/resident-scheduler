@@ -58,7 +58,7 @@ import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
 import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
 import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
-import { laneBar } from './lib/offServiceLanes.js';
+import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -10103,7 +10103,8 @@ const OFF_STATUS_LABEL = {
   aligned: 'Aligned', straddles: 'Straddles block edge', split: 'Split', outside: 'Outside saved blocks',
   noWindow: 'No dates', legacyClamped: 'Re-import to verify',
 };
-// Hatched cap, 8px wide, drawn in the bar's own text colour (sky-700, dark override in index.css).
+// Hatched cap, 8px wide, drawn in the bar's own text colour (the service's -700 shade, so it shows on
+// every tint; colour pairs come from lib/offServiceLanes.js serviceTone, derived from CATEGORIES).
 const OFF_HATCH = 'repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px)';
 
 function offSegText(r, nameOf) {
@@ -10112,7 +10113,8 @@ function offSegText(r, nameOf) {
 
 function offLaneTitle(r, nameOf) {
   const win = r.windows.map(w => `${prettyDate(w.start)}–${prettyDate(w.end)}`).join(', ');
-  return [`${r.name} (${r.category}-${r.pgy})`, win, offSegText(r, nameOf), ...r.notes].filter(Boolean).join(' · ');
+  const svc = serviceTone(r.category);
+  return [`${r.name} (${svc.label}, PGY-${r.pgy})`, stintLabel(r), win, offSegText(r, nameOf), ...r.notes].filter(Boolean).join(' · ');
 }
 
 function OffServiceLanes({ alignment, residents, cellWidth }) {
@@ -10130,29 +10132,67 @@ function OffServiceLanes({ alignment, residents, cellWidth }) {
       }}>
       {residents.filter(r => r.windows.length > 0).map(r => {
         const title = offLaneTitle(r, nameOf);
+        const svc = serviceTone(r.category);
+        const textCls = svc.bar.split(' ').find(c => c.startsWith('text-'));
+        const dashed = r.status === 'legacyClamped';
+        const multi = hasSeparateStints(r);
+        const bars = r.windows.map((w, wi) => {
+          const g = laneBar(blocks, w, cellWidth);
+          if (!g) return null;
+          const boxW = g.outside ? 18 : Math.max(g.x1 - g.x0, 12);
+          const left = g.outside && g.contRight ? g.x0 - 18 : g.x0;
+          return { g, wi, boxW, left };
+        }).filter(Boolean);
+        const sorted = [...bars].sort((x, y) => x.left - y.left);
         return (
           <div key={r.key} className="relative my-0.5" style={{ height: OFF_LANE_H }}>
-            {r.windows.map((w, wi) => {
-              const g = laneBar(blocks, w, cellWidth);
-              if (!g) return null;
-              const dashed = r.status === 'legacyClamped';
-              const boxW = g.outside ? 18 : Math.max(g.x1 - g.x0, 12);
-              const left = g.outside && g.contRight ? g.x0 - 18 : g.x0;
-              return (
-                <div key={wi} role="img" aria-label={title} title={title}
-                  className="absolute top-0 flex items-stretch overflow-hidden rounded-[5px] bg-sky-100 text-sky-700 text-[10px] font-medium leading-none"
-                  style={{ left, width: boxW, height: OFF_LANE_H, border: `1px ${dashed ? 'dashed' : 'solid'} currentColor` }}>
-                  {g.contLeft && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'◀'}</span>}
-                  {g.startMid && <span aria-hidden="true" className="w-2 shrink-0 border-r border-current" style={{ backgroundImage: OFF_HATCH }}/>}
-                  {!g.outside && <span className="flex-1 min-w-0 truncate self-center px-1">{r.name}</span>}
-                  {g.endMid && <span aria-hidden="true" className="w-2 shrink-0 border-l border-current" style={{ backgroundImage: OFF_HATCH }}/>}
-                  {g.contRight && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'▶'}</span>}
-                </div>
-              );
+            {multi && sorted.slice(1).map((bar, i) => {
+              const prevEnd = sorted[i].left + sorted[i].boxW;
+              return bar.left - prevEnd > 1 ? (
+                <span key={`c${i}`} aria-hidden="true" data-stint-connector
+                  className={`absolute border-t border-dashed border-current ${textCls}`}
+                  style={{ left: prevEnd, width: bar.left - prevEnd, top: OFF_LANE_H / 2 }}/>
+              ) : null;
             })}
+            {sorted.map(({ g, wi, boxW, left }) => (
+              <div key={wi} role="img" aria-label={title} title={title}
+                className={`absolute top-0 flex items-stretch overflow-hidden rounded-[5px] ${svc.bar} text-[10px] font-medium leading-none`}
+                style={{ left, width: boxW, height: OFF_LANE_H, border: `1px ${dashed ? 'dashed' : 'solid'} currentColor` }}>
+                {g.contLeft && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'◀'}</span>}
+                {g.startMid && <span aria-hidden="true" className="w-2 shrink-0 border-r border-current" style={{ backgroundImage: OFF_HATCH }}/>}
+                {multi && !g.outside && (
+                  <span aria-hidden="true" data-stint-index
+                    className="ml-0.5 self-center flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-current text-[9px] font-bold">{wi + 1}</span>
+                )}
+                {!g.outside && <span className="flex-1 min-w-0 truncate self-center px-1">{svc.shortLabel} · {r.name}</span>}
+                {g.endMid && <span aria-hidden="true" className="w-2 shrink-0 border-l border-current" style={{ backgroundImage: OFF_HATCH }}/>}
+                {g.contRight && <span aria-hidden="true" className="flex items-center px-0.5 font-bold">{'▶'}</span>}
+              </div>
+            ))}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function OffServiceLaneLegend({ residents }) {
+  const services = servicesPresent(residents);
+  if (!services.length) return null;
+  return (
+    <div aria-label="Lane legend" className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      {services.map(sv => (
+        <span key={sv.id} className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${sv.chip}`}>{sv.label}</span>
+      ))}
+      <span className="inline-flex items-center gap-1">
+        <span aria-hidden="true" className="inline-block h-3 w-2 rounded-sm border border-current" style={{ backgroundImage: OFF_HATCH }}/>
+        starts/ends mid-block
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span aria-hidden="true" className="inline-block h-3 w-5 rounded-[3px] border border-dashed border-current"/>
+        re-import to verify
+      </span>
+      <span className="inline-flex items-center gap-1"><span aria-hidden="true" className="font-bold">{'▶'}</span>continues outside saved blocks</span>
     </div>
   );
 }
@@ -10165,15 +10205,23 @@ function OffServiceLaneList({ alignment, residents, railBlocks, onOpen }) {
       {residents.map(r => {
         const target = railBlocks.find(rb => !rb.isLive && r.segments.some(sg => sg.blockId === rb.id));
         const tone = r.status === 'aligned' ? 'bg-muted text-muted-foreground' : 'bg-sky-100 text-sky-700';
+        const svc = serviceTone(r.category);
+        const multi = hasSeparateStints(r);
         return (
           <li key={r.key}>
             <button type="button" disabled={!target} onClick={() => target && onOpen(target)}
               title={target ? `Open ${target.name || 'block'}` : 'Already open, or no other saved block overlaps'}
               className="flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-left enabled:hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
               <span className="font-medium text-foreground">{r.name}</span>
-              <span className="font-mono text-[11px] text-muted-foreground">{r.category}-{r.pgy}</span>
+              <span title={svc.label} className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold whitespace-nowrap ${svc.badge || 'bg-muted text-muted-foreground'}`}>{svc.shortLabel}-{r.pgy}</span>
               <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${tone}`}>{OFF_STATUS_LABEL[r.status]}</span>
+              {multi && <span data-stint-badge className="rounded-full border border-current px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap text-foreground">{stintLabel(r)}</span>}
               <span className="text-muted-foreground">{[offSegText(r, nameOf), ...r.notes].filter(Boolean).join(' · ')}</span>
+              {multi && (
+                <span className="basis-full text-muted-foreground">
+                  {r.windows.map((w, i) => `Stint ${i + 1}: ${prettyDate(w.start)}–${prettyDate(w.end)}`).join(' · ')}
+                </span>
+              )}
             </button>
           </li>
         );
@@ -10182,12 +10230,12 @@ function OffServiceLaneList({ alignment, residents, railBlocks, onOpen }) {
   );
 }
 
-function OffServiceLaneToggle({ counts, open, onToggle, onlyMisaligned, onToggleOnly }) {
+function OffServiceLaneToggle({ counts, stints = 0, open, onToggle, onlyMisaligned, onToggleOnly }) {
   const n = counts.misaligned;
   return (
     <span className="flex items-center gap-2 font-sans">
       <button type="button" onClick={onToggle} aria-pressed={open}
-        title={`${n} off-service rotation${n === 1 ? '' : 's'} ${n === 1 ? "doesn't" : "don't"} line up with our block edges`}
+        title={`${n} off-service rotation${n === 1 ? '' : 's'} ${n === 1 ? "doesn't" : "don't"} line up with our block edges${stints > 0 ? ` · ${stints} resident${stints === 1 ? ' has' : 's have'} 2+ ER stints` : ''}`}
         className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${open ? 'border-primary text-primary bg-accent' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
         Off-service windows
         <span className={`rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${n > 0 ? 'bg-sky-100 text-sky-700' : 'bg-muted text-muted-foreground'}`}>{n}</span>
@@ -10874,14 +10922,17 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           onTogglePublished={toggleBlockPublished}
           onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}
           headerRight={
-            <OffServiceLaneToggle counts={offAlign.counts} open={lanesOpen}
+            <OffServiceLaneToggle counts={offAlign.counts} stints={offAlign.residents.filter(hasSeparateStints).length} open={lanesOpen}
               onToggle={() => setLanePref('dash.offLanes', !lanesOpen)}
               onlyMisaligned={lanesOnlyMis} onToggleOnly={() => setLanePref('dash.offLanesMisaligned', !lanesOnlyMis)}/>
           }
           aboveScroller={lanesOpen && (
             laneResidents.length > 0
-              ? <OffServiceLaneList alignment={offAlign} residents={laneResidents} railBlocks={railBlocks}
-                  onOpen={row => loadBlock(row.snap, { stayOnTab: true })}/>
+              ? <>
+                  <OffServiceLaneLegend residents={laneResidents}/>
+                  <OffServiceLaneList alignment={offAlign} residents={laneResidents} railBlocks={railBlocks}
+                    onOpen={row => loadBlock(row.snap, { stayOnTab: true })}/>
+                </>
               : <p className="mb-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
                   {offAlign.residents.some(r => r.status !== 'noWindow')
                     ? `All ${offAlign.residents.filter(r => r.status !== 'noWindow').length} off-service rotations line up with block edges.`

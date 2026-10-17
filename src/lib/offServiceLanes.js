@@ -74,3 +74,57 @@ export function laneBar(blocks, window, cellWidth) {
   if (x1 < x0) x1 = x0;
   return { x0, x1, startMid, endMid, contLeft, contRight, outside: x1 === x0 };
 }
+
+// ── Service colouring ────────────────────────────────────────────────────────────────────────
+// Service = resident category. The colour family is DERIVED from CATEGORIES.rowBg (the app's single
+// category palette), so there is no second palette. Class strings are spelled out in full (Tailwind
+// can't see interpolated names) and use only -100/-700 shades, which already have .dark overrides in
+// index.css. Bar border + hatch caps draw in currentColor, so they show on every tint.
+import { CAT_MAP } from './parse.js';
+
+const FAMILY_TONE = {
+  blue:   { bar: 'bg-blue-100 text-blue-700',     chip: 'bg-blue-100 text-blue-700' },
+  green:  { bar: 'bg-green-100 text-green-700',   chip: 'bg-green-100 text-green-700' },
+  yellow: { bar: 'bg-yellow-100 text-yellow-700', chip: 'bg-yellow-100 text-yellow-700' },
+  orange: { bar: 'bg-orange-100 text-orange-700', chip: 'bg-orange-100 text-orange-700' },
+  purple: { bar: 'bg-purple-100 text-purple-700', chip: 'bg-purple-100 text-purple-700' },
+  amber:  { bar: 'bg-amber-100 text-amber-700',   chip: 'bg-amber-100 text-amber-700' },
+  gray:   { bar: 'bg-gray-100 text-gray-700',     chip: 'bg-gray-100 text-gray-700' },
+};
+const NEUTRAL_TONE = { bar: 'bg-muted text-muted-foreground', chip: 'bg-muted text-muted-foreground' };
+
+/** @returns {{family:string|null,bar:string,chip:string,label:string,shortLabel:string,badge:string|null}} */
+export function serviceTone(categoryId) {
+  const cat = CAT_MAP[categoryId];
+  const family = cat ? (/^bg-([a-z]+)-\d+$/.exec(cat.rowBg || '') || [])[1] || null : null;
+  const tone = (family && FAMILY_TONE[family]) || NEUTRAL_TONE;
+  return {
+    family: FAMILY_TONE[family] ? family : null,
+    bar: tone.bar, chip: tone.chip,
+    label: cat ? cat.label : String(categoryId || 'Unknown'),
+    shortLabel: cat ? cat.shortLabel : String(categoryId || '?'),
+    badge: cat ? cat.badge : null,
+  };
+}
+
+/** Distinct services (by category id, first-seen order) present in `residents`. */
+export function servicesPresent(residents) {
+  const seen = new Set();
+  const out = [];
+  for (const r of residents || []) {
+    if (!r || seen.has(r.category)) continue;
+    seen.add(r.category);
+    out.push({ id: r.category, ...serviceTone(r.category) });
+  }
+  return out;
+}
+
+/** Number of separate ER stints (windows with valid dates). */
+export function stintCount(r) {
+  return Array.isArray(r?.windows) ? r.windows.length : 0;
+}
+export const hasSeparateStints = r => stintCount(r) >= 2;
+export function stintLabel(r) {
+  const n = stintCount(r);
+  return n >= 2 ? `${n} ER stints` : '';
+}
