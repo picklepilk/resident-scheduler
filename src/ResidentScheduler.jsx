@@ -10001,8 +10001,8 @@ function railEditorChip(log, viewer) {
   const last = lastActivity(log);
   if (!last) return null;
   const who = actorLabel(last, viewer);
-  const text = who === 'You' ? 'You' : who === 'This device' ? 'Local' : who.slice(0, 2).toUpperCase();
-  return { text, title: `Edited by ${who} · ${relativeTime(last.at)}` };
+  const text = who === 'You' ? 'Y' : who === 'This device' ? 'D' : who.slice(0, 2).toUpperCase();
+  return { text, title: `Last edited by ${who} · ${relativeTime(last.at)}` };
 }
 
 function railStatus(row, blockSaveState) {
@@ -10013,7 +10013,7 @@ function railStatus(row, blockSaveState) {
   return { dot: 'bg-muted-foreground/40', text: 'Saved' };
 }
 
-function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, onOpen, onTogglePublished, onDeleteSnapshot,
+function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, onOpen,
   marker, coverage, ayConf, blockSaveState, viewer }) {
   const active = row.isLive;
   const dates = useMemo(() => getBlockDates(row.startDate, row.endDate), [row.startDate, row.endDate]);
@@ -10030,10 +10030,6 @@ function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, on
   const chip = railEditorChip(row.activityLog, viewer);
   const label = [`Block ${numeral}`, row.name && !/^\s*block\s*\d+\s*$/i.test(row.name) ? row.name : null, range, status.text,
     row.imported ? 'imported' : null, active ? 'currently editing' : null].filter(Boolean).join(', ');
-  const kebabItems = [
-    { key: 'pub', label: row.published ? 'Unpublish' : 'Publish', icon: row.published ? EyeOff : Eye, onClick: () => onTogglePublished(row.id) },
-    { key: 'del', label: 'Delete saved copy', icon: Trash2, danger: true, onClick: () => onDeleteSnapshot(row.snap) },
-  ];
 
   return (
     <div role="presentation" style={{ flex: '0 0 auto', width: cellWidth }}
@@ -10060,20 +10056,13 @@ function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, on
         </span>
         <span className="mt-1.5 flex items-center justify-between gap-1 min-h-[16px] text-[11px]">
           {active ? <span className="font-semibold text-primary">Editing</span> : <span/>}
-          {chip && <span className="font-mono rounded px-1 bg-secondary text-secondary-foreground">{chip.text}</span>}
+          {chip && <span role="img" aria-label={chip.title} title={chip.title}
+            className="inline-flex items-center justify-center w-[18px] h-[18px] rounded-full bg-card text-foreground ring-1 ring-border text-[10px] font-semibold leading-none">{chip.text}</span>}
         </span>
       </button>
       {marker && (
         <span aria-hidden="true" title="Today" style={{ left: `${marker.fraction * 100}%` }}
           className="pointer-events-none absolute top-0 bottom-0 w-0.5 bg-omaha z-[1]"/>
-      )}
-      {!row.unsaved && !active && (
-        <div className="absolute top-2.5 right-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
-          <PopMenu items={kebabItems} triggerLabel={`Actions for block ${numeral}`} triggerTitle="Publish or delete this saved block"
-            triggerClassName="p-1 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <MoreHorizontal size={14}/>
-          </PopMenu>
-        </div>
       )}
     </div>
   );
@@ -10123,6 +10112,7 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
   const newer = idx > 0 ? ayOptions[idx - 1] : null;
 
   const onKeyDown = e => {
+    if (e.target.getAttribute?.('role') !== 'tab') return;
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) || !blocks.length) return;
     e.preventDefault();
     const keys = blocks.map(b => b.key);
@@ -10169,16 +10159,34 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
             No saved blocks for this academic year yet {'—'} set dates in the panel below or import the Master Matrix.
           </div>
         ) : (
+          <div className="flex items-end">
+          <div className="relative flex items-end">
           <div role="tablist" aria-label="Blocks in academic year" onKeyDown={onKeyDown} className="flex items-end">
             {blocks.map((row, i) => (
               <BlockRailCell key={row.key} row={row} index={i} cellWidth={cellWidth}
                 tabbable={row.key === tabbableKey}
                 btnRef={el => { if (el) tabRefs.current[row.key] = el; else delete tabRefs.current[row.key]; }}
                 onFocusKey={setFocusKey} onOpen={onOpen}
-                onTogglePublished={onTogglePublished} onDeleteSnapshot={onDeleteSnapshot}
                 marker={marker && marker.key === row.key ? marker : null}
                 coverage={coverage} ayConf={ayConf} blockSaveState={blockSaveState} viewer={viewer}/>
             ))}
+          </div>
+          {/* Row actions live OUTSIDE the tablist (it may only contain tabs), overlaid on each cell. */}
+          <div className="absolute inset-0 pointer-events-none">
+            {blocks.map((row, i) => (!row.unsaved && !row.isLive) && (
+              <div key={row.key} className="absolute top-2.5 pointer-events-auto" style={{ left: i * cellWidth + cellWidth - 28 }}>
+                <PopMenu items={[
+                    { key: 'pub', label: row.published ? 'Unpublish' : 'Publish', icon: row.published ? EyeOff : Eye, onClick: () => onTogglePublished(row.id) },
+                    { key: 'del', label: 'Delete saved copy', icon: Trash2, danger: true, onClick: () => onDeleteSnapshot(row.snap) },
+                  ]}
+                  triggerLabel={`Actions for ${row.name || `block ${railNumeral(row.name, i)}`}`} triggerTitle="Publish or delete this saved block"
+                  triggerClassName="p-1 rounded-md text-muted-foreground opacity-60 hover:opacity-100 focus-visible:opacity-100 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <MoreHorizontal size={14}/>
+                </PopMenu>
+              </div>
+            ))}
+          </div>
+          </div>
             <div aria-hidden="true" className="flex-1 self-stretch border-b-2 border-primary min-w-0"/>
           </div>
         )}
@@ -10687,7 +10695,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         <button type="button" onClick={() => toggleBlockPublished(block.id)} aria-pressed={!!currentSnapPublished}
           title="Published blocks count toward each resident's 3-journal-club-per-year cap, year-to-date fairness carryover, and holiday/trauma-night yearly counts"
           className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_SIZES.sm} border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${currentSnapPublished
-            ? 'bg-green-500/10 border-green-600/40 text-green-700 dark:text-green-400' : 'bg-card border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
+            ? 'bg-green-500/10 border-green-600/40 text-green-700' : 'bg-card border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
           {currentSnapPublished && <Check size={13}/>}
           {currentSnapPublished ? 'Published' : 'Publish'}
         </button>
@@ -24423,7 +24431,7 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   function doLoadBlock(snap, opts) {
     const d=snap.data||{};
-    setBlock({ id:snap.id, name:snap.name||d.name||'', academicYear:snap.academicYear||d.academicYear||getAcademicYear(),
+    setBlock({ id:snap.id, name:snap.name||d.name||'', academicYear:snap.academicYear||d.academicYear||((snap.startDate||d.startDate)?getAcademicYearFor(snap.startDate||d.startDate):getAcademicYear()),
       startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
