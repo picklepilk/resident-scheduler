@@ -33,6 +33,7 @@ export const DEFAULT_UI_PREFS = {
   gridZoom: GRID_ZOOM_DEFAULT, gridColExtra: 0,
   gridGroupBy: GRID_GROUP_MODE_DEFAULT,
   reviewPanelOpen: true,
+  blockSeen: {},
 };
 
 // Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
@@ -72,5 +73,13 @@ export function normalizeUiPrefs(raw) {
   // being passed through to render an empty grid.
   const gridGroupBy = GRID_GROUP_MODES.includes(raw?.gridGroupBy) ? raw.gridGroupBy : GRID_GROUP_MODE_DEFAULT;
   const reviewPanelOpen = typeof raw?.reviewPanelOpen === 'boolean' ? raw.reviewPanelOpen : true;
-  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy, reviewPanelOpen };
+  // blockSeen: { [blockId]: ISO } — when THIS viewer last marked a block's activity as seen (drives
+  // the "changed by someone else" banner). Per-viewer like everything here; never LS_BACKUP_KEYS.
+  const blockSeen = {};
+  if (raw?.blockSeen && typeof raw.blockSeen === 'object' && !Array.isArray(raw.blockSeen)) {
+    for (const [k, v] of Object.entries(raw.blockSeen)) {
+      if (typeof v === 'string' && Number.isFinite(Date.parse(v))) blockSeen[k] = v;
+    }
+  }
+  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy, reviewPanelOpen, blockSeen };
 }

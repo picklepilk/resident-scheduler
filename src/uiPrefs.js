@@ -158,13 +158,21 @@ export function useUiPrefs(viewer) {
     setPrefs(p => ({ ...p, reviewPanelOpen: !!(typeof v === 'function' ? v(p.reviewPanelOpen) : v) }));
   }, []);
 
+  // Marks a block's activity log as seen by this viewer (banner dismissal). Store the CURRENT time,
+  // not the newest entry's time, so an entry stamped slightly in the future by clock skew still clears.
+  const markBlockSeen = useCallback(blockId => {
+    if (!blockId) return;
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => ({ ...p, blockSeen: { ...p.blockSeen, [blockId]: new Date().toISOString() } }));
+  }, []);
+
   // Memoized so consumers reading this via UiPrefsContext (~20 CollapsibleCard call sites plus
   // SidebarNav) don't all re-render on every root render — only when prefs actually change (the
   // callbacks are already stable via useCallback([]), so in practice this only changes when
   // `prefs` does).
   return useMemo(
-    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen }),
-    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen]
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, markBlockSeen }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, markBlockSeen]
   );
 }
 
@@ -184,7 +192,7 @@ export function UiPrefsProvider({ value, children }) {
   return createElement(UiPrefsContext.Provider, { value }, children);
 }
 
-const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {}, setReviewPanelOpen: () => {} };
+const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {}, setReviewPanelOpen: () => {}, markBlockSeen: () => {} };
 
 export function useUiPrefsContext() {
   return useContext(UiPrefsContext) || NOOP_UI_PREFS;

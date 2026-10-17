@@ -2,14 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { normalizeUiPrefs, DEFAULT_UI_PREFS, clampGridZoom, clampGridColExtra, GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './uiPrefs.js';
 
 describe('normalizeUiPrefs', () => {
+  it('guards blockSeen shape', () => {
+    expect(normalizeUiPrefs({ blockSeen: ['x'] }).blockSeen).toEqual({});
+    expect(normalizeUiPrefs({ blockSeen: 'x' }).blockSeen).toEqual({});
+    expect(normalizeUiPrefs({ blockSeen: { b1: '2026-10-16T20:00:00.000Z', b2: 5, b3: 'junk' } }).blockSeen)
+      .toEqual({ b1: '2026-10-16T20:00:00.000Z' });
+  });
+
   it('defaults on null/undefined', () => {
-    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
-    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
+    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
+    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
   });
 
   it('passes through a well-formed shape', () => {
     const raw = { tabOverflow: ['guide', 'whatsnew'], cardOpen: { 'dash-equity': false, 'settings-qgenda': true }, showUnscheduled: true };
-    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true });
+    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
   });
 
   // gridGroupBy is validated by SET MEMBERSHIP, not coerced — an unknown mode (one removed in a

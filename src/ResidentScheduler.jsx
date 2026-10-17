@@ -53,6 +53,7 @@ import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sam
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
 import { GRID_ZOOM_MIN, GRID_ZOOM_MAX, GRID_COL_EXTRA_MAX } from './lib/uiPrefs.js';
+import { normalizeActivityLog, appendActivity, lastActivity, unseenByOthers, summarizeActivity, actorLabel, relativeTime } from './lib/blockActivity.js';
 import { groupResidents } from './lib/scheduleGrouping.js';
 import { deriveBlockSteps } from './lib/blockStatus.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
@@ -10396,7 +10397,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover, viewer }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -10440,6 +10441,8 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const [showImportMatrix, setShowImportMatrix] = useState(false);
   const [showImportQGenda, setShowImportQGenda] = useState(false);
   const [confirmClearSchedule, setConfirmClearSchedule] = useState(false);
+  const { prefs: dashPrefsData, markBlockSeen: dashMarkBlockSeen } = useUiPrefsContext();
+  const dashPrefs = { blockSeen: dashPrefsData.blockSeen, markBlockSeen: dashMarkBlockSeen };
   const [confirmResetBlock, setConfirmResetBlock] = useState(false);
   const [confirmDeleteBlock, setConfirmDeleteBlock] = useState(false);
   // Raw counts for the Current Block card's own header subtitle — distinct from the
@@ -10543,6 +10546,10 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         />
 
         {blockOpen && <>
+        <div className="px-5 pt-4 empty:hidden">
+          <UnseenEditsBanner log={block.activityLog} viewer={viewer} seenAt={dashPrefs.blockSeen?.[block.id || '_current']}
+            onDismiss={() => dashPrefs.markBlockSeen(block.id || '_current')}/>
+        </div>
         {/* Block identity + dates grid — always visible, always editable */}
         <div className="px-5 pt-4 pb-3">
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -10575,6 +10582,8 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
             </p>
           )}
         </div>
+
+        <BlockActivityList log={block.activityLog} viewer={viewer}/>
 
         {/* Go to Schedule */}
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between gap-3">
@@ -10612,7 +10621,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
       {confirmClearSchedule && (
         <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
           onConfirm={() => {
-            updateBlock(b => ({ ...b, schedule: {}, generationReport: null }));
+            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null }, { kind: 'clear' }, viewer));
             setConfirmClearSchedule(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -14741,7 +14750,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, viewer }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -15858,7 +15867,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, clearFirst, deepSolve);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       const u = res.report.unfilled.length;
       const rc = res.report.restCompromises.length;
       // Filling with a <24h-rest candidate is a real safety-relevant tradeoff (default Soft Rule
@@ -15916,7 +15925,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, false);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: res.report }));
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
         ? (u === 0
@@ -16638,7 +16647,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           onConfirm={() => {
             // lockedCells must clear alongside schedule — otherwise a lock entry points at a cell
             // that no longer exists, invisible with no UI to find or remove it (see CLAUDE.md).
-            updateBlock(b => ({ ...b, schedule: {}, generationReport: null, lockedCells: {} }));
+            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {} }, { kind: 'clear' }, viewer));
             setConfirmClear(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -22558,12 +22567,88 @@ function BlockStatusRailStep({ step, onAction, isLast }) {
   );
 }
 
+// ─── BLOCK ACTIVITY UI ──────────────────────────────────────────────────────
+// Standalone, plain-prop components (a later Dashboard redesign relocates them). `log` is
+// block.activityLog (untrusted shape — every read goes through lib/blockActivity normalizers).
+const ACTIVITY_FMT = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+
+function activityVerb(e) {
+  const n = e.cells;
+  switch (e.kind) {
+    case 'generate': return 'generated';
+    case 'lock': return `locked ${n} cell${n === 1 ? '' : 's'}`;
+    case 'undo': return e.note === 'redo' ? 'redid' : 'undid';
+    case 'clear': return 'cleared the schedule';
+    case 'import': return 'imported';
+    default: return `edited ${n} cell${n === 1 ? '' : 's'}`;
+  }
+}
+
+function LastEditedLine({ log, viewer }) {
+  const last = lastActivity(log);
+  if (!last) return null;
+  const who = actorLabel(last, viewer);
+  const verb = last.kind === 'generate' ? 'Generated' : 'Edited';
+  return (
+    <span className="text-muted-foreground whitespace-nowrap" title={new Date(last.at).toLocaleString()}>
+      {verb} by {who} · {relativeTime(last.at)}
+    </span>
+  );
+}
+
+function UnseenEditsBanner({ log, viewer, seenAt, onDismiss }) {
+  const unseen = unseenByOthers(log, viewer?.userId ?? null, seenAt);
+  if (!unseen.length) return null;
+  const sum = summarizeActivity(unseen);
+  const parts = [];
+  if (sum.edits > 0) parts.push(`${sum.edits} cell edit${sum.edits === 1 ? '' : 's'}`);
+  if (sum.generates > 0) parts.push(`${sum.generates} generate${sum.generates === 1 ? '' : 's'}`);
+  if (sum.imports > 0) parts.push(`${sum.imports} import${sum.imports === 1 ? '' : 's'}`);
+  const what = parts.length ? parts.join(' and ') : `${unseen.length} change${unseen.length === 1 ? '' : 's'}`;
+  const who = sum.actors.map(email => actorLabel({ by: null, email }, null));
+  const newest = unseen[0];
+  return (
+    <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-amber-50 border-amber-200 text-amber-900 px-3 py-2 text-xs no-print">
+      <span className="flex-1 min-w-0">
+        <strong>{who.join(' and ')}</strong> made {what} since you last opened this block
+        {' '}(last: {new Date(newest.at).toLocaleString(undefined, ACTIVITY_FMT)}).
+      </span>
+      <Button variant="secondary" size="sm" onClick={onDismiss}>Mark as seen</Button>
+    </div>
+  );
+}
+
+function BlockActivityList({ log, viewer }) {
+  const entries = normalizeActivityLog(log).slice().reverse();
+  return (
+    <details className="px-5 py-3 border-t border-border text-xs no-print">
+      <summary className="cursor-pointer font-medium text-foreground select-none">
+        Recent activity <span className="text-muted-foreground font-normal">({entries.length})</span>
+      </summary>
+      {entries.length === 0
+        ? <p className="mt-2 text-muted-foreground">No tracked changes yet on this block.</p>
+        : <ul className="mt-2 space-y-1">
+            {entries.map((e, i) => (
+              <li key={e.at + i} className="flex items-baseline gap-2">
+                <span className="font-medium text-foreground">{actorLabel(e, viewer)}</span>
+                <span className="text-muted-foreground">
+                  {activityVerb(e)}{e.count > 1 ? ` (×${e.count})` : ''}{e.kind === 'generate' && e.note ? ` · ${e.note}` : ''}
+                </span>
+                <span className="ml-auto text-muted-foreground whitespace-nowrap" title={new Date(e.at).toLocaleString()}>{relativeTime(e.at)}</span>
+              </li>
+            ))}
+          </ul>}
+      <p className="mt-2 text-muted-foreground">Full document history: Settings → Version History</p>
+    </details>
+  );
+}
+
 // Extended (P1 of the chief-review-loop plan) with a compact step rail: Set up -> Generated ->
 // Errors -> Publish -> Export. Pure derivation lives in lib/blockStatus.js (deriveBlockSteps) —
 // this component only supplies the inputs it already has as props and renders the result. The
 // error count comes from the ROOT `issues`/`issueCounts` memo the caller already computed once for
 // the whole app (see ResidentScheduler()'s `issueCounts`) — never a second validateAll pass here.
-function BlockContextBar({ block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
   const steps = useMemo(() => deriveBlockSteps({
     hasDates: !!(block.startDate && block.endDate),
     hasReport,
@@ -22592,6 +22677,7 @@ function BlockContextBar({ block, blockSaveState, hasReport, errorCount, publish
           {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
         </span>
         <SaveStatePill state={blockSaveState}/>
+        <LastEditedLine log={block.activityLog} viewer={viewer}/>
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Block status">
@@ -22611,7 +22697,7 @@ function BlockContextBar({ block, blockSaveState, hasReport, errorCount, publish
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[],
+           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
 }
@@ -22659,6 +22745,29 @@ export function withOverrideEvents(prev, next) {
   const stamped = events.map(e => ({ ...e, at, generatedAt: prev.generationReport.generatedAt || null }));
   const merged = [...(prev.overrideLog || []), ...stamped];
   return { ...next, overrideLog: merged.slice(-OVERRIDE_LOG_CAP) };
+}
+
+// ─── BLOCK ACTIVITY (who edited this block) ─────────────────────────────────
+// Two admins share one synced document, so every tracked schedule change is stamped with who + when
+// into block.activityLog (pure helpers: lib/blockActivity.js). Rides inside the block object like
+// overrideLog — no new res_* key. `activityMeta` = { kind, note } from a call site that knows what
+// it is (generate/clear/undo); otherwise the kind is inferred from what changed. Returns `next`
+// untouched when nothing worth logging changed (e.g. a pure no-op updater).
+export function withActivity(prev, next, activityMeta, viewer) {
+  const schedCells = diffScheduleCells(prev?.schedule, next?.schedule).length;
+  const pl = prev?.lockedCells || {}, nl = next?.lockedCells || {};
+  let lockCells = 0;
+  for (const rid of new Set([...Object.keys(pl), ...Object.keys(nl)])) {
+    const a = pl[rid] || {}, b = nl[rid] || {};
+    for (const ds of new Set([...Object.keys(a), ...Object.keys(b)])) if (!!a[ds] !== !!b[ds]) lockCells++;
+  }
+  const kind = activityMeta?.kind ?? (schedCells > 0 ? 'edit' : lockCells > 0 ? 'lock' : null);
+  const cells = schedCells + lockCells;
+  if (!kind && cells === 0) return next;
+  return { ...next, activityLog: appendActivity(prev?.activityLog, {
+    at: new Date().toISOString(), by: viewer?.userId ?? null, email: viewer?.email ?? null,
+    kind, cells, note: activityMeta?.note ?? null,
+  }) };
 }
 
 // Groups an override log into "the generator keeps making this choice and you keep undoing it".
@@ -23984,7 +24093,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // block.overrideLog UNCONDITIONALLY (unlike withOverrideEvents' generic capture below, which only
   // fires against a schedule that came from a generation) — a confirmed rule override is worth
   // recording regardless of whether the schedule under it was generated or hand-built.
-  function updateBlockTracked(fn, overrideMeta) {
+  function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
       const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
@@ -24002,10 +24111,10 @@ export default function ResidentScheduler({ viewer } = {}) {
           const at = new Date().toISOString();
           const stamped = events.map(e => ({ ...e, at, ruleIds: overrideMeta.ruleIds || [], note: overrideMeta.note || null, generatedAt: prev.generationReport?.generatedAt || null }));
           const merged = [...(prev.overrideLog || []), ...stamped].slice(-OVERRIDE_LOG_CAP);
-          return { ...next, overrideLog: merged };
+          return withActivity(prev, { ...next, overrideLog: merged }, activityMeta, viewer);
         }
       }
-      return withOverrideEvents(prev, next);
+      return withActivity(prev, withOverrideEvents(prev, next), activityMeta, viewer);
     });
   }
 
@@ -24014,7 +24123,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     const prev = undoStack[undoStack.length - 1];
     setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => ({ ...b, schedule: prev.schedule, lockedCells: prev.lockedCells }));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
@@ -24025,7 +24134,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => ({ ...b, schedule: next.schedule, lockedCells: next.lockedCells }));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
@@ -24093,6 +24202,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       // Untrusted shape (old snapshot, hand-edited storage, foreign backup) — guard with
       // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
       overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],
+      activityLog: normalizeActivityLog(d.activityLog),
       // Same untrusted-shape guard for the three jeopardy tracks (each must be a plain object,
       // not an array/string/etc — a pre-feature snapshot simply has none of these keys) and the
       // Metro admin-month ranges list.
@@ -24649,7 +24759,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       )}
 
       {BLOCK_SCOPED_TABS.has(tab) && (
-        <BlockContextBar block={block} blockSaveState={blockSaveState}
+        <BlockContextBar viewer={viewer} block={block} blockSaveState={blockSaveState}
           hasReport={!!block.generationReport} errorCount={issueCounts.errors}
           published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
           onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
@@ -24684,13 +24794,19 @@ export default function ResidentScheduler({ viewer } = {}) {
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
-              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover}/>
+              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
+          {tab==='schedule' && (
+            <div className="mb-3 empty:hidden">
+              <UnseenEditsBanner log={block.activityLog} viewer={viewer} seenAt={uiPrefsApi.prefs.blockSeen?.[block.id || '_current']}
+                onDismiss={() => uiPrefsApi.markBlockSeen(block.id || '_current')}/>
+            </div>
+          )}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
-            onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget}/>}
+            onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} viewer={viewer}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
