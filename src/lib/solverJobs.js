@@ -1,7 +1,7 @@
 // src/lib/solverJobs.js
 // Pure fetch client for the solver's background-job endpoints (POST /jobs, GET /jobs/{id},
 // DELETE /jobs/{id} — solver-service/api/jobs.py), backing the "Long solve…" feature: a bigger
-// time budget (5/15/30 min) than the synchronous /solve path's own ~60s/120s, submitted once and
+// time budget (5/15/30 min) than the synchronous /solve path's own ~2/5 min, submitted once and
 // polled for instead of blocking a request for that long. No React, no import from
 // ResidentScheduler.jsx — same src/lib/ rule as solverClient.js (see CLAUDE.md "Layout & stack").
 // Builds on solverClient's own base-URL resolution (getSolverUrl/isUnresolvedToken) rather than
