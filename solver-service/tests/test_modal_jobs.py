@@ -172,14 +172,14 @@ def test_cancel_finished_job_is_noop():
     assert calls.get(jid) is None or calls[jid].cancelled_with is None
 
 
-def test_modal_routes_no_one_job_limit_and_ownership(monkeypatch):
+def test_modal_routes_per_owner_cap_and_ownership(monkeypatch):
     monkeypatch.setenv("SOLVER_JOBS_BACKEND", "modal")
     backend, store, _fn, _ = _modal_backend()
     jobs_module.set_backend(backend, "modal")
     client = TestClient(app)
     a = client.post("/jobs", json=make_payload())
     b = client.post("/jobs", json=make_payload())
-    assert a.status_code == 200 and b.status_code == 200  # no 409 on a durable backend
+    assert a.status_code == 200 and b.status_code == 409  # per-owner active-job cap
     jid = a.json()["jobId"]
     assert client.get(f"/jobs/{jid}").json()["status"] == "running"
     store[jid] = {"state": "done", "result": {"status": "OPTIMAL"}}
@@ -333,3 +333,32 @@ def test_job_polling_is_not_limited_by_preauth_bucket(monkeypatch):
     # ...while POST routes still hit the strict preauth bucket.
     codes = [client.post("/jobs", json={}).status_code for _ in range(15)]
     assert 429 in codes
+
+
+# ---- per-owner active-job cap ------------------------------------------------------------------
+def test_second_submit_while_running_is_rejected_per_owner():
+    from api.jobs import JobConflict
+    backend, store, _fn, _ = _modal_backend()
+    raw = make_payload()
+    backend.submit(parse_payload(raw), "sub:a", raw=raw)
+    with pytest.raises(JobConflict):
+        backend.submit(parse_payload(raw), "sub:a", raw=raw)
+    # a different owner is unaffected
+    assert backend.submit(parse_payload(raw), "sub:b", raw=raw) == "fc-2"
+
+
+def test_submit_allowed_again_once_previous_job_finished():
+    backend, store, _fn, _ = _modal_backend()
+    raw = make_payload()
+    jid = backend.submit(parse_payload(raw), "sub:a", raw=raw)
+    store[jid] = {"state": "done", "result": {"status": "OPTIMAL"}}
+    assert backend.submit(parse_payload(raw), "sub:a", raw=raw) == "fc-2"
+    assert backend._meta[jid]["done"] is True
+
+
+def test_submit_allowed_after_cancel():
+    backend, _store, _fn, _ = _modal_backend()
+    raw = make_payload()
+    jid = backend.submit(parse_payload(raw), "sub:a", raw=raw)
+    backend.cancel(jid, "sub:a")
+    assert backend.submit(parse_payload(raw), "sub:a", raw=raw) == "fc-2"

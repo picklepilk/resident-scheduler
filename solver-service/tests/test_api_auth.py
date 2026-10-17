@@ -349,3 +349,40 @@ def test_supabase_mode_ignores_issuer_when_supabase_url_unset(monkeypatch):
     token = _hs256_token("s3cret", iss="https://anything-at-all.example.com/auth/v1")
     resp = _post(headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
+
+
+def _allowlist_env(monkeypatch, allowed=None):
+    monkeypatch.setenv("SOLVER_AUTH_MODE", "supabase")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "s3cret")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    if allowed is None:
+        monkeypatch.delenv("SOLVER_ALLOWED_EMAILS", raising=False)
+    else:
+        monkeypatch.setenv("SOLVER_ALLOWED_EMAILS", allowed)
+
+
+def test_allowlist_unset_allows_any_authenticated_user(monkeypatch):
+    _allowlist_env(monkeypatch)
+    token = _hs256_token("s3cret", email="anyone@example.org")
+    assert _post(headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_allowlist_permits_listed_email_case_insensitively(monkeypatch):
+    _allowlist_env(monkeypatch, " Admin1@Example.org , admin2@example.org ")
+    token = _hs256_token("s3cret", email="ADMIN1@example.org")
+    assert _post(headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_allowlist_rejects_unlisted_or_missing_email_with_403(monkeypatch):
+    _allowlist_env(monkeypatch, "admin1@example.org")
+    other = _hs256_token("s3cret", email="pending@example.org")
+    assert _post(headers={"Authorization": f"Bearer {other}"}).status_code == 403
+    no_email = _hs256_token("s3cret")
+    assert _post(headers={"Authorization": f"Bearer {no_email}"}).status_code == 403
+
+
+def test_allowlist_also_gates_post_jobs(monkeypatch):
+    _allowlist_env(monkeypatch, "admin1@example.org")
+    token = _hs256_token("s3cret", email="pending@example.org")
+    resp = TestClient(app).post("/jobs", json=make_payload(), headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403

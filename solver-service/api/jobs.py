@@ -41,7 +41,7 @@ backend chosen by env `SOLVER_JOBS_BACKEND` (`memory` default, `modal`):
 - `ModalJobs` -- durable: `submit` spawns a Modal Function call (independent of
   this web container and of the client), ownership/budget metadata lives in a
   `modal.Dict`, progress is written by the solve function into another
-  `modal.Dict`. No one-job-at-a-time rule (each call gets its own container).
+  `modal.Dict`. One running job per owner (409 on a second); each call gets its own container.
   `status` can report `lost` (result expired after Modal's retention).
 
 Backend interface (both): `submit(payload, owner, raw=None) -> job_id`,
@@ -365,6 +365,7 @@ class ModalJobs:
     def submit(self, payload, owner: str, raw: Optional[dict] = None) -> str:
         if raw is None:
             raise ValueError("ModalJobs.submit needs the raw request dict")
+        self._enforce_owner_cap(owner)
         call = self._fn().spawn(raw)
         job_id = call.object_id
         self._meta_dict().put(job_id, {
@@ -373,6 +374,17 @@ class ModalJobs:
             "budget": payload.config.max_time_seconds,
         })
         return job_id
+
+    def _enforce_owner_cap(self, owner: str) -> None:
+        """One running job per owner (any signed-up account could otherwise fan out 8-vCPU solves).
+        Entries observed terminal are marked `done` so later scans skip them."""
+        meta = self._meta_dict()
+        for key, m in list(meta.items()):
+            if not isinstance(m, dict) or m.get("owner") != owner or m.get("cancelled") or m.get("done"):
+                continue
+            if self._view(key, m)["status"] in ("queued", "running"):
+                raise JobConflict("you already have a solve job running; wait for it or cancel it")
+            meta.put(key, {**m, "done": True})
 
     def _get_meta(self, job_id: str, owner: Optional[str]) -> dict:
         meta = self._meta_dict().get(job_id)

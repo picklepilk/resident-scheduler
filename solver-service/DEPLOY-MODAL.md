@@ -23,8 +23,12 @@ decides which path to use.
    modal secret create resident-scheduler-solver \
      SOLVER_AUTH_MODE=supabase \
      SUPABASE_URL=<Supabase dashboard -> Project Settings -> API -> Project URL> \
-     SOLVER_CORS_ORIGINS=https://residentscheduling.netlify.app,http://localhost:5173
+     SOLVER_CORS_ORIGINS=https://residentscheduling.netlify.app,http://localhost:5173      SOLVER_ALLOWED_EMAILS=admin1@example.org,admin2@example.org
    ```
+   Replace the placeholder emails with the two admins' real addresses at the terminal only (never commit them).
+   **Recommended:** without `SOLVER_ALLOWED_EMAILS`, any signed-up Supabase account (including app role `pending`) can
+   submit solves; with it set, other emails get 403 on `/solve` and `POST /jobs`. Emails are read from the verified JWT.
+   Independently, each owner may have only one running job (409 on a second).
    Optional keys: `SUPABASE_JWT_SECRET` (only if the project still signs with legacy HS256: Project Settings -> API
    -> JWT Secret), `SOLVER_RATE_PER_MIN` / `SOLVER_RATE_BURST` (default 6 / 3, per-user bucket on `POST /jobs`),
    `SOLVER_MAX_BODY_BYTES` (default 5 MiB), `SOLVER_PREAUTH_RATE_PER_MIN` / `SOLVER_PREAUTH_RATE_BURST` (default 30 / 10, POST routes only), `SOLVER_POLL_RATE_PER_MIN` / `SOLVER_POLL_RATE_BURST` (default 300 / 60, per-IP bucket for job polling/cancel).

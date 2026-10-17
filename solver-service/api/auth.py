@@ -80,6 +80,14 @@ def _jwt_secret() -> str:
     return os.environ.get("SUPABASE_JWT_SECRET", "")
 
 
+def _allowed_emails() -> Optional[set]:
+    """Lower-cased allowlist from env SOLVER_ALLOWED_EMAILS (comma-separated), or None when
+    unset/blank (= no restriction)."""
+    raw = os.environ.get("SOLVER_ALLOWED_EMAILS", "")
+    items = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    return items or None
+
+
 @dataclass
 class AuthResult:
     """What a dependency chained after `require_auth` gets to key on.
@@ -91,6 +99,7 @@ class AuthResult:
 
     enabled: bool
     subject: Optional[str] = None
+    email: Optional[str] = None  # from the VERIFIED JWT claims only
 
 
 class _JwksCache:
@@ -235,4 +244,12 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> AuthRes
         # wrong aud/role, and an unreachable JWKS alike.
         raise HTTPException(status_code=401, detail="invalid token") from None
 
-    return AuthResult(enabled=True, subject=claims.get("sub"))
+    email = claims.get("email")
+    email = email.strip().lower() if isinstance(email, str) else None
+    allowed = _allowed_emails()
+    if allowed is not None and email not in allowed:
+        # Optional allowlist (SOLVER_ALLOWED_EMAILS): any signed-up Supabase account
+        # (including app role 'pending') otherwise passes the 'authenticated' role check.
+        raise HTTPException(status_code=403, detail="not permitted")
+
+    return AuthResult(enabled=True, subject=claims.get("sub"), email=email)
