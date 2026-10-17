@@ -39,7 +39,9 @@ export function appendActivity(log, entry, { mergeWindowMs = DEFAULT_MERGE_WINDO
   const next = normalizeEntry(entry);
   if (!next) return base;
   const last = base[base.length - 1];
-  if (last && last.by === next.by && last.email === next.email && last.kind === next.kind && next.kind !== 'generate') {
+  if (last && last.by === next.by && last.email === next.email && last.kind === next.kind && next.kind !== 'generate'
+      // undo and redo share kind 'undo' (redo carries note 'redo'); never fold one into the other.
+      && (next.kind !== 'undo' || next.note === last.note)) {
     const dt = Date.parse(next.at) - Date.parse(last.at);
     if (dt >= 0 && dt <= mergeWindowMs) {
       const merged = { ...last, at: next.at, cells: last.cells + next.cells, count: last.count + 1, note: next.note ?? last.note };

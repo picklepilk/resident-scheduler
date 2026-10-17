@@ -51,6 +51,11 @@ describe('appendActivity', () => {
     expect(appendActivity(log, E({ at: '2026-10-16T20:01:00.000Z', email: 'b@x.org' }))).toHaveLength(2);
     expect(appendActivity(log, E({ at: '2026-10-16T20:16:00.000Z' }))).toHaveLength(2);
   });
+  it('does not merge redo into undo (differing notes)', () => {
+    const log = [E({ kind: 'undo' })];
+    expect(appendActivity(log, E({ kind: 'undo', note: 'redo', at: '2026-10-16T20:01:00.000Z' }))).toHaveLength(2);
+    expect(appendActivity(log, E({ kind: 'undo', at: '2026-10-16T20:01:00.000Z' }))).toHaveLength(1);
+  });
   it('never merges generate', () => {
     const log = [E({ kind: 'generate' })];
     expect(appendActivity(log, E({ kind: 'generate', at: '2026-10-16T20:01:00.000Z' }))).toHaveLength(2);

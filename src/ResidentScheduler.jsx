@@ -22588,7 +22588,7 @@ function LastEditedLine({ log, viewer }) {
   const last = lastActivity(log);
   if (!last) return null;
   const who = actorLabel(last, viewer);
-  const verb = last.kind === 'generate' ? 'Generated' : 'Edited';
+  const verb = { generate: 'Generated', lock: 'Locked', undo: last.note === 'redo' ? 'Redid' : 'Undid', clear: 'Cleared', import: 'Imported' }[last.kind] || 'Edited';
   return (
     <span className="text-muted-foreground whitespace-nowrap" title={new Date(last.at).toLocaleString()}>
       {verb} by {who} · {relativeTime(last.at)}
