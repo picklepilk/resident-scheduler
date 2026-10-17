@@ -15371,7 +15371,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         const accessToken = (!longSolveJob.usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
         const view = await pollSolveJob(longSolveJob.jobId, { accessToken, url: longSolveJob.solverTargetUrl });
         if (stopped) return;
-        setLongSolveStatus(view.lost ? 'lost' : view);
+        setLongSolveStatus(view.lost || view.status === 'lost' ? 'lost' : view);
       } catch (e) {
         if (!stopped) console.warn('Long solve poll failed:', e);
       } finally {
@@ -24685,6 +24685,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     }
     setBlocksHistory(p=>p.filter(b=>b.id!==block.id));
     setBlock(makeDefaultBlock());
+    setUndoStack([]); setRedoStack([]); // undo history belongs to the block it was made in
     showToast('Block deleted','amber');
   }
 
@@ -24718,6 +24719,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       },
       metroJeopardyRanges: Array.isArray(d.metroJeopardyRanges) ? d.metroJeopardyRanges : [] });
     setSwitchPending(null);
+    setUndoStack([]); setRedoStack([]); // undo history belongs to the block it was made in
     if (!(opts && opts.stayOnTab === true)) setTab('schedule');
     showToast(`Loaded "${snap.name}"`,'green');
   }
@@ -24729,7 +24731,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function doNewBlock() {
-    setBlock(makeDefaultBlock()); setSwitchPending(null); setTab('dashboard');
+    setBlock(makeDefaultBlock()); setSwitchPending(null); setUndoStack([]); setRedoStack([]); setTab('dashboard');
     showToast('New block ready — enter dates below','amber');
   }
 

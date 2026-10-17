@@ -27,9 +27,10 @@ export function buildRailBlocks({ blocksHistory, liveBlock, ay }) {
     const isLive = liveMatchesAy && snap.id === liveBlock.id;
     return {
       key: snap.id, id: snap.id,
-      name: snap.name || '',
-      startDate: snap.startDate || snap.data?.startDate,
-      endDate: snap.endDate || snap.data?.endDate,
+      // The live row shows the live block's own name/dates (unsaved edits included).
+      name: isLive ? (liveBlock.name || snap.name || '') : (snap.name || ''),
+      startDate: isLive ? liveBlock.startDate : (snap.startDate || snap.data?.startDate),
+      endDate: isLive ? (liveBlock.endDate || snap.endDate || snap.data?.endDate) : (snap.endDate || snap.data?.endDate),
       isLive, unsaved: false,
       published: !!snap.published,
       imported: typeof snap.id === 'string' && snap.id.startsWith('blk_import_'),

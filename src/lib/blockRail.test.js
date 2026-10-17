@@ -35,6 +35,12 @@ describe('buildRailBlocks', () => {
     expect(rows.find(x => x.id === 'b2').schedule).toEqual(h[0].data.schedule);
     expect(rows.find(x => x.id === 'b2').activityLog).toEqual(h[0].data.activityLog);
   });
+  it('live row uses the live block name and dates, not the stale snapshot', () => {
+    const live = { id: 'b1', name: 'Renamed', academicYear: '2026-27', startDate: '2026-07-02', endDate: '2026-07-29', schedule: {} };
+    const r = buildRailBlocks({ blocksHistory: h, liveBlock: live, ay: '2026-27' }).find(x => x.id === 'b1');
+    expect(r).toMatchObject({ name: 'Renamed', startDate: '2026-07-02', endDate: '2026-07-29' });
+    expect(r.snap.name).toBe('Block b1');
+  });
   it('appends an unsaved live block with dates and keeps order', () => {
     const live = { id: 'new', name: 'Fresh', academicYear: '2026-27', startDate: '2026-06-01', endDate: '2026-06-28', schedule: {} };
     const rows = buildRailBlocks({ blocksHistory: h, liveBlock: live, ay: '2026-27' });
