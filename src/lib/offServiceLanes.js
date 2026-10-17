@@ -9,6 +9,8 @@
 // startMid/endMid mark an edge that lands inside a block rather than on its first/last day - the
 // "not synced with our blocks" signal.
 
+import { CAT_MAP } from './parse.js';
+
 const DAY_MS = 86_400_000;
 const dayNum = iso => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
@@ -80,7 +82,6 @@ export function laneBar(blocks, window, cellWidth) {
 // category palette), so there is no second palette. Class strings are spelled out in full (Tailwind
 // can't see interpolated names) and use only -100/-700 shades, which already have .dark overrides in
 // index.css. Bar border + hatch caps draw in currentColor, so they show on every tint.
-import { CAT_MAP } from './parse.js';
 
 const FAMILY_TONE = {
   blue:   { bar: 'bg-blue-100 text-blue-700',     chip: 'bg-blue-100 text-blue-700' },

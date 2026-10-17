@@ -27,6 +27,25 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 const STATUS_ORDER = { legacyClamped: 0, outside: 1, split: 2, straddles: 3, aligned: 4, noWindow: 5 };
 
+/**
+ * Collapse overlapping or day-adjacent windows (next.start <= day after prev.end) into one stint.
+ * Input need not be sorted. Invalid entries are dropped. Returns new sorted [{start,end}].
+ */
+export function mergeWindows(windows) {
+  const list = (Array.isArray(windows) ? windows : [])
+    .filter(w => w && isIso(w.start) && isIso(w.end) && w.start <= w.end)
+    .map(w => ({ start: w.start, end: w.end }))
+    .sort((a, b) => cmp(a.start, b.start) || cmp(a.end, b.end));
+  const out = [];
+  for (const w of list) {
+    const last = out[out.length - 1];
+    if (last && w.start <= nextDay(last.end)) {
+      if (w.end > last.end) last.end = w.end;
+    } else out.push(w);
+  }
+  return out;
+}
+
 function collectBlocks(snapshots, liveBlock, ay) {
   const win = ayWindowFor(ay);
   const byId = new Map();
@@ -78,7 +97,8 @@ export function buildOffServiceAlignment({ snapshots = [], liveBlock = null, ay 
     const blockIds = [...new Set(p.recs.map(r => r.block.id))];
     const winMap = new Map();
     for (const r of p.recs) for (const rg of r.ranges) winMap.set(`${rg.start}|${rg.end}`, { start: rg.start, end: rg.end });
-    const windows = [...winMap.values()].sort((a, b) => cmp(a.start, b.start) || cmp(a.end, b.end));
+    // legacyClamped below inspects the RAW per-record ranges (adjacent bound-exact); merge only here.
+    const windows = mergeWindows([...winMap.values()]);
 
     const segments = [];
     const notes = [];

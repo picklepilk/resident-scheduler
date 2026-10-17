@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildOffServiceAlignment } from './offServiceAlignment.js';
+import { buildOffServiceAlignment, mergeWindows } from './offServiceAlignment.js';
 
 const AY = 'AY26/27';
 const B = {
@@ -148,5 +148,43 @@ describe('buildOffServiceAlignment', () => {
     expect(out.residents.map(r => r.name)).toEqual(['D Wolf', 'C Xray', 'B Yank', 'A Zulu']);
     expect(out.residents.map(r => r.status)).toEqual(['straddles', 'straddles', 'aligned', 'noWindow']);
     expect(out.counts).toMatchObject({ aligned: 1, straddles: 2, noWindow: 1, misaligned: 2 });
+  });
+});
+
+describe('stint merging', () => {
+  it('mergeWindows: adjacent, overlapping, gap, unsorted, invalid', () => {
+    expect(mergeWindows([{ start: '2026-07-29', end: '2026-08-10' }, { start: '2026-07-10', end: '2026-07-28' }]))
+      .toEqual([{ start: '2026-07-10', end: '2026-08-10' }]);
+    expect(mergeWindows([{ start: '2026-07-01', end: '2026-07-20' }, { start: '2026-07-10', end: '2026-07-15' }]))
+      .toEqual([{ start: '2026-07-01', end: '2026-07-20' }]);
+    expect(mergeWindows([{ start: '2026-07-01', end: '2026-07-10' }, { start: '2026-07-12', end: '2026-07-20' }])).toHaveLength(2);
+    expect(mergeWindows([{ start: 'x', end: '2026-07-10' }, null])).toEqual([]);
+    expect(mergeWindows(null)).toEqual([]);
+  });
+  it('adjacent windows across a block edge are one stint, not split', () => {
+    const out = run([
+      snap(B.b1, [rec('Ann', [{ start: '2026-07-10', end: '2026-07-28' }])]),
+      snap(B.b2, [rec('Ann', [{ start: '2026-07-29', end: '2026-08-12' }])]),
+    ]);
+    expect(one(out).windows).toEqual([{ start: '2026-07-10', end: '2026-08-12' }]);
+    expect(one(out).status).toBe('straddles');
+  });
+  it('overlapping windows merge', () => {
+    const out = run([snap(B.b1, [rec('Ann', [{ start: '2026-07-01', end: '2026-07-20' }, { start: '2026-07-15', end: '2026-07-28' }])])]);
+    expect(one(out).windows).toHaveLength(1);
+    expect(one(out).status).toBe('aligned');
+  });
+  it('a real gap stays two stints and split', () => {
+    const out = run([snap(B.b1, [rec('Ann', [{ start: '2026-07-01', end: '2026-07-10' }, { start: '2026-07-12', end: '2026-07-28' }])])]);
+    expect(one(out).windows).toHaveLength(2);
+    expect(one(out).status).toBe('split');
+  });
+  it('legacy adjacent bound-exact records still legacyClamped (raw ranges inspected)', () => {
+    const out = run([
+      snap(B.b1, [rec('Ann', [{ start: B.b1.start, end: B.b1.end }])]),
+      snap(B.b2, [rec('Ann', [{ start: B.b2.start, end: B.b2.end }])]),
+    ]);
+    expect(one(out).status).toBe('legacyClamped');
+    expect(one(out).windows).toHaveLength(1);
   });
 });

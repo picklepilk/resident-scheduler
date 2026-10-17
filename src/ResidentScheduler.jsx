@@ -10235,7 +10235,7 @@ function OffServiceLaneToggle({ counts, stints = 0, open, onToggle, onlyMisalign
   return (
     <span className="flex items-center gap-2 font-sans">
       <button type="button" onClick={onToggle} aria-pressed={open}
-        title={`${n} off-service rotation${n === 1 ? '' : 's'} ${n === 1 ? "doesn't" : "don't"} line up with our block edges${stints > 0 ? ` · ${stints} resident${stints === 1 ? ' has' : 's have'} 2+ ER stints` : ''}`}
+        title={`${n} off-service rotation${n === 1 ? '' : 's'} ${n === 1 ? "doesn't" : "don't"} line up with our block edges${stints > 0 ? ` · ${stints} resident${stints === 1 ? ' has' : 's have'} multiple ER stints` : ''}`}
         className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${open ? 'border-primary text-primary bg-accent' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
         Off-service windows
         <span className={`rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${n > 0 ? 'bg-sky-100 text-sky-700' : 'bg-muted text-muted-foreground'}`}>{n}</span>
