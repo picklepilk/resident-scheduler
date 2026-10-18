@@ -53,7 +53,9 @@ import {
   findMatchingRealBlock, summarizePromoteDiff, promoteBlockSchedule,
 } from './lib/playgrounds.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
-import { appendImportLog, normalizeImportLog } from './lib/importLog.js';
+import { appendImportLog, normalizeImportLog, stampNewEntries, sourcesFor } from './lib/importLog.js';
+import { parseAcademicDocx, summarizeParsed, fileHash } from './lib/academicSchedule.js';
+import { buildAcademicPlan, applyAcademicPlan, defaultJcMode, provenanceFor, personKey } from './lib/academicImportPlan.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
@@ -10858,7 +10860,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover, viewer, stepHandlers }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -10904,6 +10906,8 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   // ── Block editor state ──
   const [showImportMatrix, setShowImportMatrix] = useState(false);
   const [showImportQGenda, setShowImportQGenda] = useState(false);
+  const [showImportAcademic, setShowImportAcademic] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const [confirmClearSchedule, setConfirmClearSchedule] = useState(false);
   const { prefs: dashPrefsData, markBlockSeen: dashMarkBlockSeen } = useUiPrefsContext();
   const dashPrefs = { blockSeen: dashPrefsData.blockSeen, markBlockSeen: dashMarkBlockSeen };
@@ -11002,6 +11006,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
     { key: 'new', label: 'New Block', icon: Plus, onClick: onNewBlock },
     { key: 'matrix', label: 'Import Master Matrix', icon: Upload, onClick: () => setShowImportMatrix(true) },
     { key: 'qgenda', label: 'Import QGenda Schedule', icon: Upload, onClick: () => setShowImportQGenda(true) },
+    { key: 'academic', label: 'Import Academic Schedule (.docx)', icon: Upload, onClick: () => setShowImportAcademic(true) },
     { separator: true },
     { key: 'clear', label: 'Clear Schedule', icon: Trash2, danger: true, disabled: curShiftCount === 0, onClick: () => setConfirmClearSchedule(true) },
     { key: 'reset', label: 'Reset Block', icon: RefreshCw, danger: true, onClick: () => setConfirmResetBlock(true) },
@@ -11012,6 +11017,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   const primaryActions = (
     <>
       <Button variant="primary" size="sm" icon={Save} onClick={onSaveBlock} disabled={blockSaveState === 'saved'}>Save Block</Button>
+      <Button variant="secondary" size="sm" icon={Info} onClick={() => setShowSources(true)} title="Which imported files populated this block / academic year">Sources</Button>
       <Button variant="secondary" size="sm" onClick={() => setTab('schedule')} disabled={!block.startDate}>
         Open schedule <ChevronRight size={13}/>
       </Button>
@@ -11301,6 +11307,17 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         />
       )}
 
+      {showImportAcademic && (
+        <ImportAcademicModal
+          emRoster={emRoster} setEmRoster={setEmRoster} ayData={ayData} updateAyData={updateAyData}
+          showToast={showToast} onClose={() => setShowImportAcademic(false)} setImportLog={setImportLog}
+        />
+      )}
+
+      {showSources && (
+        <SourcesPanel importLog={importLog} block={block} ay={selectedAy} onClose={() => setShowSources(false)}/>
+      )}
+
       {confirmClearSchedule && (
         <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
           onConfirm={() => {
@@ -11393,6 +11410,7 @@ function detectHomeAndOffSheetsByContent(wb, XLSX) {
 function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast, setImportLog }) {
   const [fileName, setFileName] = useState('');
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
+  const [fileHashStr, setFileHashStr] = useState('');
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState('');
   const fileRef = useRef(null);
@@ -11406,11 +11424,13 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     if (!file) return;
     setFileName(file.name);
     setFileSizeBytes(file.size || 0);
+    setFileHashStr('');
     setError('');
     setPreview(null);
     const reader = new FileReader();
     reader.onload = async () => {
       try {
+        setFileHashStr(fileHash(new Uint8Array(reader.result)));
         const XLSX = await import('xlsx');
         const wb = XLSX.read(reader.result, { type: 'array' });
         const detected = detectHomeAndOffSheetsByContent(wb, XLSX);
@@ -11513,7 +11533,9 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     if (setImportLog) {
       const ranges = newSnaps.map(s => `${prettyDate(s.startDate)}–${prettyDate(s.endDate)}`).join(', ');
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('matrix', {
-        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
+        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined, hash: fileHashStr || undefined,
+        blockStarts: newSnaps.map(s => s.startDate), ays: [...new Set(newSnaps.map(s => s.academicYear).filter(Boolean))],
+        populated: [`Roster/rotations for ${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''}`, `${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''} added to roster`],
         summary: `${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} imported (${ranges}) · ${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''}, ${preview.existingCount} matched existing`,
       })));
     }
@@ -12421,6 +12443,7 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave, 
 function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast, setImportLog }) {
   const [fileName, setFileName] = useState('');
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
+  const [fileHashStr, setFileHashStr] = useState('');
   const [preview, setPreview] = useState(null);   // { built, baseSnap }
   const [assign, setAssign] = useState({});       // unmatched rowIndex -> { categoryId, pgy }
   const [error, setError] = useState('');
@@ -12431,10 +12454,12 @@ function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     if (!file) return;
     setFileName(file.name);
     setFileSizeBytes(file.size || 0);
+    setFileHashStr('');
     setError(''); setPreview(null); setAssign({});
     const reader = new FileReader();
     reader.onload = async () => {
       try {
+        setFileHashStr(fileHash(new Uint8Array(reader.result)));
         const XLSX = await import('xlsx');
         const wb = XLSX.read(reader.result, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
@@ -12549,7 +12574,9 @@ function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     // src/lib/importLog.js header comment).
     if (setImportLog) {
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('qgenda', {
-        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
+        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined, hash: fileHashStr || undefined,
+        blockStarts: [start], ays: [snap.academicYear],
+        populated: [`${snap.shiftCount} shifts as saved block`, `${jeopardyCells} jeopardy dates`],
         summary: `${prettyDate(start)}–${prettyDate(end)} · ${allMatched.length} residents, ${snap.shiftCount} shifts, ${jeopardyCells} jeopardy dates · ${creations.length} new resident${creations.length !== 1 ? 's' : ''} created, ${built.unmatched.length - creations.length} skipped`,
       })));
     }
@@ -12700,6 +12727,7 @@ function ImportRosterModal({ title, allowedCategoryIds, existingNames, onImport,
       const dupeCount = preview.rows.length - newRows.length;
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('roster', {
         rawText: text,
+        populated: [`Roster: ${newRows.length} new resident${newRows.length !== 1 ? 's' : ''}`],
         summary: `${newRows.length} of ${preview.rows.length} row${preview.rows.length !== 1 ? 's' : ''} imported${dupeCount ? ` (${dupeCount} duplicate/skipped)` : ''}`,
       })));
     }
@@ -12886,6 +12914,7 @@ function parseVacationWorkbook(sheetRows, ayStartYear, emRoster) {
 function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast, setImportLog }) {
   const [fileName, setFileName] = useState('');
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
+  const [fileHashStr, setFileHashStr] = useState('');
   const [ayStartYear, setAyStartYear] = useState(() => Number(getAcademicYear().slice(2, 4)) + 2000);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState('');
@@ -12896,11 +12925,13 @@ function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast, setImp
     if (!file) return;
     setFileName(file.name);
     setFileSizeBytes(file.size || 0);
+    setFileHashStr('');
     setError('');
     setPreview(null);
     const reader = new FileReader();
     reader.onload = async () => {
       try {
+        setFileHashStr(fileHash(new Uint8Array(reader.result)));
         const XLSX = await import('xlsx');
         const wb = XLSX.read(reader.result, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
@@ -12930,7 +12961,8 @@ function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast, setImp
     // Import History entry — xlsx importer, counts only (no resident name list beyond counts).
     if (setImportLog) {
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('vacation', {
-        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined,
+        filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined, hash: fileHashStr || undefined,
+        populated: [`Vacation dates: ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`],
         summary: `${preview.matched.length} matched, ${preview.unmatched.length} unmatched, ${preview.skipped.length} skipped`,
       })));
     }
@@ -13176,6 +13208,8 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData
     if (setImportLog) {
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('lectures', {
         rawText: text,
+        ays: [`AY${String(ayStartYear).slice(2)}/${String(ayStartYear + 1).slice(2)}`],
+        populated: [`Lecture/M&M/JC presenter dates: ${preview.matched.length} resident${preview.matched.length !== 1 ? 's' : ''}`],
         summary: `${preview.matched.length} matched, ${preview.unmatched.length} unmatched, ${totalWarnings} warning${totalWarnings !== 1 ? 's' : ''}`,
       })));
     }
@@ -13295,6 +13329,236 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData
             Import {preview ? preview.matched.length : ''} resident{preview?.matched.length !== 1 ? 's' : ''}
           </button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── ACADEMIC SCHEDULE IMPORT (.docx) ─────────────────────────────────────────
+// Parses the chief's "PGY Academic Schedule" Word file (src/lib/academicSchedule.js), previews a
+// per-AY diff (src/lib/academicImportPlan.js), then applies: JC dates -> ayData[AY].jcDates (via
+// writeJcDatesToAy, one seam), presenters -> resident.jcPresentDates, lecture + M&M ->
+// resident.grLectureDates (merge only). Names go through matchLectureRosterName (the shared
+// matcher); unmatched/ambiguous rows get a roster picker or Skip.
+function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onClose, showToast, setImportLog }) {
+  const [file, setFile] = useState(null); // { name, size, hash }
+  const [parsed, setParsed] = useState(null);
+  const [error, setError] = useState('');
+  const [mapping, setMapping] = useState({});
+  const [jcMode, setJcMode] = useState({});
+  const fileRef = useRef(null);
+
+  function pickFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setError(''); setParsed(null); setMapping({}); setJcMode({});
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const bytes = new Uint8Array(reader.result);
+        const res = parseAcademicDocx(bytes);
+        setFile({ name: f.name, size: f.size || 0, hash: fileHash(bytes) });
+        setParsed(res);
+      } catch (err) {
+        setFile(null);
+        setError(`Couldn't read this file — ${err?.message || 'is it a valid .docx?'}`);
+      }
+    };
+    reader.readAsArrayBuffer(f);
+    e.target.value = '';
+  }
+
+  const plan = useMemo(() => parsed
+    ? buildAcademicPlan({ parsed, emRoster, ayData, match: matchLectureRosterName, mapping })
+    : null, [parsed, emRoster, ayData, mapping]);
+  const summary = parsed ? summarizeParsed(parsed) : null;
+  const rosterOpts = useMemo(() => [...emRoster].sort((a, b) =>
+    `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`)), [emRoster]);
+  const modeOf = ay => jcMode[ay.ay] ?? defaultJcMode(ay);
+  const canApply = !!plan && (plan.counts.matched > 0 || plan.ays.some(a => modeOf(a) !== 'off'));
+
+  function commit() {
+    if (!plan) return;
+    const out = applyAcademicPlan(plan, { emRoster, ayData, jcMode });
+    // Updater stays pure on prev; out above supplies the ayData writes, counts and log scope.
+    setEmRoster(prev => applyAcademicPlan(plan, { emRoster: prev, ayData, jcMode }).emRoster);
+    for (const ay of out.jcAys) updateAyData(ay, out.ayData[ay]);
+    const s = summary;
+    if (setImportLog) {
+      setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('academic', {
+        filename: file?.name, sizeBytes: file?.size || undefined, hash: file?.hash,
+        ...provenanceFor(plan, out),
+        summary: `${s.tablesMatched} table${s.tablesMatched !== 1 ? 's' : ''}, ${plan.counts.matched} matched, ${plan.counts.skipped} skipped, ${plan.counts.unresolved} unresolved, ${s.dates} dates${s.failures ? `, ${s.failures} unparsed` : ''}`,
+      })));
+    }
+    showToast(`Imported academic schedule for ${out.residentsTouched} resident${out.residentsTouched !== 1 ? 's' : ''}${out.jcAys.length ? ` · JC dates set for ${out.jcAys.join(', ')}` : ''}`, 'green');
+    onClose();
+  }
+
+  const fmt = ds => formatDisplayDate(ds);
+  return (
+    <Modal title="Import Academic Schedule (.docx)" onClose={onClose} wide>
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          Upload the PGY Academic Schedule Word file (one table per PGY with Resident, Lecture, M&amp;M, Journal Club columns —
+          tables are found by their Journal Club header). Journal Club dates set each academic year's JC date list; presenters
+          go to each resident's Journal Club Presenting Dates; Lecture and M&amp;M dates merge into Grand Rounds Lecture Dates.
+          Existing resident dates are only ever added to, never removed. The file itself is never stored.
+        </p>
+        <div className="flex items-center gap-3">
+          <input ref={fileRef} type="file" accept=".docx" onChange={pickFile} className="hidden"/>
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-primary hover:bg-primary/90 text-white rounded-lg">
+            <Upload size={13}/> {file ? 'Choose another file' : 'Choose .docx file'}
+          </button>
+          {file && <span className="text-xs text-gray-500 truncate">{file.name}</span>}
+        </div>
+        {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg p-2">{error}</p>}
+
+        {plan && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">Tables</p>
+                <p className="text-gray-500 mt-1">{summary.tablesMatched} found · {Object.entries(summary.residentsPerPgy).map(([k, n]) => `PGY${k}: ${n}`).join(' · ')}</p>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <p className="font-semibold text-gray-700">Matched</p>
+                <p className="text-gray-500 mt-1">{plan.counts.matched} resident{plan.counts.matched !== 1 ? 's' : ''}{plan.counts.skipped ? ` · ${plan.counts.skipped} skipped` : ''}</p>
+              </div>
+              <div className={`${plan.counts.unresolved || summary.failures ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200'} border rounded-lg p-3`}>
+                <p className="font-semibold text-gray-700">Needs attention</p>
+                <p className="text-gray-500 mt-1">{plan.counts.unresolved} unresolved name{plan.counts.unresolved !== 1 ? 's' : ''} · {summary.failures} unparsed cell{summary.failures !== 1 ? 's' : ''}</p>
+              </div>
+            </div>
+
+            {plan.people.some(p => !p.residentId) && (
+              <div className="border border-amber-200 rounded-lg divide-y divide-amber-100 max-h-48 overflow-y-auto">
+                {plan.people.filter(p => !p.residentId).map(p => (
+                  <div key={p.key} className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-50/50">
+                    <AlertTriangle size={12} className="text-amber-500 shrink-0"/>
+                    <span className="text-amber-800 font-medium">PGY{p.pgy ?? '?'} {p.name}</span>
+                    <span className="text-amber-700">{p.status === 'ambiguous' ? '— ambiguous' : '— no roster match'}</span>
+                    <select value={mapping[p.key] || ''} onChange={e => setMapping(m => ({ ...m, [p.key]: e.target.value || undefined }))}
+                      className="ml-auto text-xs border border-gray-300 rounded px-1.5 py-0.5 max-w-[14rem]">
+                      <option value="">Choose resident…</option>
+                      <option value="skip">Skip this row</option>
+                      {(p.candidates.length ? p.candidates.map(c => ({ id: c.id, label: c.label })) : rosterOpts.map(r => ({ id: r.id, label: `${r.lastName}, ${r.firstName} (PGY-${r.pgy})` })))
+                        .map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {plan.ays.map(ay => {
+              const byDate = {};
+              for (const r of ay.presenters.rows) (byDate[r.date] ||= []).push(r);
+              return (
+                <div key={ay.ay} className="border border-gray-200 rounded-lg p-3 space-y-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-gray-800">{ay.ay}</span>
+                    <label className="ml-auto flex items-center gap-1.5 text-gray-600">
+                      JC dates
+                      <select value={modeOf(ay)} disabled={!ay.jc.file.length}
+                        onChange={e => setJcMode(m => ({ ...m, [ay.ay]: e.target.value }))}
+                        className="text-xs border border-gray-300 rounded px-1.5 py-0.5">
+                        <option value="off">Leave list unchanged</option>
+                        <option value="union">Add file dates (keep existing)</option>
+                        <option value="replace">{`Replace with file list${ay.jc.removed.length ? ` (removes ${ay.jc.removed.length})` : ''}`}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p className="text-gray-500">
+                    JC dates: <span className="text-green-700">+{ay.jc.added.length} added</span> ·{' '}
+                    <span className={ay.jc.removed.length ? 'text-red-600' : ''}>−{ay.jc.removed.length} removed</span> · {ay.jc.same.length} unchanged
+                    {!ay.jc.custom && ' (current list is the default first Tuesdays)'}
+                  </p>
+                  {(ay.jc.added.length > 0 || ay.jc.removed.length > 0) && (
+                    <p className="text-gray-500">
+                      {ay.jc.added.map(d => <span key={d} className="inline-block mr-1.5 text-green-700">+{fmt(d)}</span>)}
+                      {ay.jc.removed.map(d => <span key={d} className="inline-block mr-1.5 text-red-600">−{fmt(d)}</span>)}
+                    </p>
+                  )}
+                  <p className="text-gray-500">
+                    JC presenters: {ay.presenters.new} new, {ay.presenters.have} already stored · Lecture: {ay.lecture.dates.length} date{ay.lecture.dates.length !== 1 ? 's' : ''} ({ay.lecture.new} new)
+                    · M&amp;M: {ay.mm.dates.length} date{ay.mm.dates.length !== 1 ? 's' : ''} ({ay.mm.new} new)
+                  </p>
+                  {Object.keys(byDate).length > 0 && (
+                    <div className="max-h-40 overflow-y-auto border border-gray-100 rounded divide-y divide-gray-100">
+                      {Object.keys(byDate).sort().map(d => (
+                        <div key={d} className="px-2 py-1 flex gap-2">
+                          <span className="font-medium text-gray-700 w-20 shrink-0">{fmt(d)}</span>
+                          <span className="text-gray-500">{byDate[d].map(r => `PGY${r.pgy ?? '?'} ${r.name}`).join(' · ')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">Cancel</button>
+          <button type="button" onClick={commit} disabled={!canApply}
+            className="px-4 py-2 text-sm bg-primary hover:bg-primary/90 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">
+            Apply import
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── SOURCES (import provenance) ──────────────────────────────────────────────
+// Which imported files populated this block / academic year. Reads the Import History log
+// (metadata only: file name, size, hash, time, who, what it populated) — never file contents.
+function SourcesPanel({ importLog, block, ay, onClose }) {
+  const [scope, setScope] = useState('block');
+  const { scoped, global } = useMemo(() => sourcesFor(importLog, {
+    blockStart: scope === 'block' ? block.startDate : null, ay: scope === 'ay' ? ay : (block.academicYear || null),
+  }), [importLog, scope, block.startDate, block.academicYear, ay]);
+  const Row = ({ e }) => {
+    const meta = IMPORT_KIND_META[e.kind] || { label: e.kind || 'Import', badge: 'bg-gray-100 text-gray-600 border border-gray-200' };
+    return (
+      <div className="px-3 py-2 text-xs">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`px-1.5 py-0.5 rounded-full font-semibold shrink-0 ${meta.badge}`}>{meta.label}</span>
+          <span className="text-gray-700 truncate">{e.filename || 'pasted text'}{e.sizeBytes ? ` (${Math.max(1, Math.round(e.sizeBytes / 1024))}KB)` : ''}</span>
+          {e.hash && <span className="text-gray-400 font-mono" title="Content hash of the uploaded file">#{e.hash}</span>}
+        </div>
+        <p className="text-gray-400 mt-0.5">{e.at ? new Date(e.at).toLocaleString() : ''}{e.by ? ` · ${e.by}` : ''}</p>
+        {Array.isArray(e.populated) && e.populated.length > 0 && (
+          <ul className="text-gray-600 mt-0.5 list-disc ml-4">{e.populated.map((t, i) => <li key={i}>{t}</li>)}</ul>
+        )}
+        {!e.populated && e.summary && <p className="text-gray-600 mt-0.5">{e.summary}</p>}
+      </div>
+    );
+  };
+  return (
+    <Modal title="Sources — imported files" onClose={onClose} wide>
+      <div className="space-y-3">
+        <div className="flex gap-2 text-xs">
+          {[['block', `This block (${block.name || 'current'})`], ['ay', `Academic year ${ay || block.academicYear || ''}`]].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setScope(k)} aria-pressed={scope === k}
+              className={`px-3 py-1 rounded-lg border font-medium ${scope === k ? 'bg-primary text-white border-primary' : 'bg-card border-border text-muted-foreground'}`}>{label}</button>
+          ))}
+        </div>
+        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto">
+          {scoped.map(e => <Row key={e.id} e={e}/>)}
+          {scoped.length === 0 && <p className="px-3 py-3 text-xs text-gray-400 text-center">No imported file is recorded for this {scope === 'block' ? 'block' : 'academic year'}.</p>}
+        </div>
+        {global.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-gray-600 mb-1">Roster-wide imports (apply to every block)</p>
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-56 overflow-y-auto">
+              {global.map(e => <Row key={e.id} e={e}/>)}
+            </div>
+          </div>
+        )}
+        <p className="text-xs text-gray-400">Only file names, sizes, hashes, times and counts are recorded. File contents are never stored. Manage entries in Settings → Import History.</p>
       </div>
     </Modal>
   );
@@ -20933,6 +21197,7 @@ const IMPORT_KIND_META = {
   vacation: { label: 'Vacation',      badge: 'bg-teal-100 text-teal-700 border border-teal-200' },
   lectures: { label: 'Lecture / JC',  badge: 'bg-purple-100 text-purple-700 border border-purple-200' },
   qgenda:   { label: 'QGenda',        badge: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
+  academic: { label: 'Academic Schedule', badge: 'bg-amber-100 text-amber-700 border border-amber-200' },
 };
 
 // One entry per roster/matrix/vacation/lecture import (see src/lib/importLog.js and the four
@@ -23972,7 +24237,13 @@ export default function ResidentScheduler({ viewer } = {}) {
   // per roster/matrix/vacation/lecture import the chief has run, capped at ~500KB serialized.
   // Rides the same physKey/LS_BACKUP_KEYS/syncBindings machinery as the other nine slots so it's
   // demo-sandbox-isolated and round-trips through backup/restore + cloud sync automatically.
-  const [importLog, setImportLog]         = useLocalStorage(physKey('res_import_log'), []);
+  const [importLog, setImportLogRaw]      = useLocalStorage(physKey('res_import_log'), []);
+  // Every importer calls setImportLog; this wrapper stamps who ran it (provenance, "Sources" panel).
+  const importActor = viewer?.email || null;
+  const setImportLog = useCallback(upd => setImportLogRaw(prev => {
+    const next = typeof upd === 'function' ? upd(prev) : upd;
+    return stampNewEntries(next, prev, importActor);
+  }), [setImportLogRaw, importActor]);
   // Device/viewer display preference — see the LS_BACKUP_KEYS comment for why this is excluded.
   const [darkMode, setDarkMode]           = useLocalStorage('res_dark_mode', false);
   // "Run the optimizer on this computer" (2026-10-16): which solver target Generate/Deep Solve
@@ -25824,7 +26095,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
-              setImportLog={setImportLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
+              setImportLog={setImportLog} importLog={importLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
               stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
