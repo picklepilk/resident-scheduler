@@ -68,6 +68,7 @@ import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange
 import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
 import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
 import { netNewIssues, capRows } from './lib/moveImpact.js';
+import { clearScheduleFields } from './lib/clearSchedule.js';
 import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
@@ -9274,19 +9275,56 @@ function ConfirmDialog({ icon: Icon, tone = 'warn', title, children, actions }) 
 
 // Shared confirm dialog for wiping a block's shift assignments — used by both the Dashboard's
 // Current Block card and ScheduleGrid's toolbar so the two surfaces can't drift on copy/behavior.
-function ClearScheduleConfirm({ blockName, hasSnapshot, onConfirm, onClose }) {
+function ClearScheduleConfirm({ block, hasSnapshot, onConfirm, onClose }) {
+  const [mode, setMode] = useState('all');
+  const [start, setStart] = useState(block?.startDate || '');
+  const [end, setEnd] = useState(block?.endDate || '');
+  const inBlock = d => !!d && (!block?.startDate || d >= block.startDate) && (!block?.endDate || d <= block.endDate);
+  const rangeOk = mode !== 'range' || (inBlock(start) && inBlock(end) && start <= end);
+  const preview = useMemo(() => clearScheduleFields(block, { mode, start, end }), [block, mode, start, end]);
+  const count = rangeOk ? preview.cleared : 0;
+  const MODES = [
+    ['all', 'Everything', 'Every assignment, lock, and hand override; resets generation info.'],
+    ['unlocked', 'Unlocked cells only', 'Keeps locked cells (and their locks).'],
+    ['range', 'Date range', 'Unlocked cells between the two dates, inclusive.'],
+  ];
   return (
-    <ConfirmDialog icon={Trash2} tone="danger" title="Clear all shift assignments?"
+    <ConfirmDialog icon={Trash2} tone="danger" title="Clear shift assignments?"
       actions={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button variant="danger" size="sm" icon={Trash2} onClick={onConfirm}>Clear Schedule</Button>
+          <Button variant="danger" size="sm" icon={Trash2} disabled={!rangeOk} onClick={() => onConfirm({ mode, start, end })}>
+            Clear {count} assignment{count === 1 ? '' : 's'}
+          </Button>
         </>
       }>
-      <p>This clears all shift assignments on <strong className="text-foreground">{blockName || 'the current block'}</strong> — including ones you entered manually. Residents, rotations, dates, and days off are kept. This cannot be undone.</p>
+      <p>Clears shift assignments on <strong className="text-foreground">{block?.name || 'the current block'}</strong> without regenerating — including ones you entered manually. Residents, rotations, dates, and days off are kept. Undo restores the cells, locks, and hand overrides.</p>
+      <div className="mt-3 space-y-1.5">
+        {MODES.map(([id, label, hint]) => (
+          <label key={id} className="flex items-start gap-2 cursor-pointer">
+            <input type="radio" name="clear-mode" className="mt-1" checked={mode === id} onChange={() => setMode(id)}/>
+            <span><span className="text-foreground font-medium">{label}</span> <span className="text-xs">{hint}</span></span>
+          </label>
+        ))}
+      </div>
+      {mode === 'range' && (
+        <div className="mt-2 flex items-center gap-2">
+          <input type="date" value={start} min={block?.startDate} max={block?.endDate} onChange={e => setStart(e.target.value)}
+            className="text-xs border border-border rounded-lg px-1.5 py-1 bg-background text-foreground"/>
+          <span className="text-xs">–</span>
+          <input type="date" value={end} min={block?.startDate} max={block?.endDate} onChange={e => setEnd(e.target.value)}
+            className="text-xs border border-border rounded-lg px-1.5 py-1 bg-background text-foreground"/>
+          {!rangeOk && <span className="text-xs text-destructive">Pick dates inside the block, start before end.</span>}
+        </div>
+      )}
       {hasSnapshot && <p className="mt-2">The saved copy is not changed until you save again.</p>}
     </ConfirmDialog>
   );
+}
+
+// Single apply path for both surfaces: ONE functional tracked update (one undo step).
+function applyClearSchedule(updateBlockTracked, opts) {
+  updateBlockTracked(b => clearScheduleFields(b, opts).block, null, { kind: 'clear', note: opts.mode, skipOverrideCapture: true });
 }
 
 function ResetBlockConfirm({ onConfirm, onClose }) {
@@ -11129,7 +11167,7 @@ function AyFairnessLedgerCard({ ledger }) {
   );
 }
 
-function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
+function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
   emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, moveGuard, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers, liveSetup, onNavigateFix }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
@@ -11606,9 +11644,9 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
       )}
 
       {confirmClearSchedule && (
-        <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
-          onConfirm={() => {
-            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lastGenerated: null, generatedWithGaps: null, issueAcks: {} }, { kind: 'clear' }, viewer));
+        <ClearScheduleConfirm block={block} hasSnapshot={blockSaveState !== 'never'}
+          onConfirm={opts => {
+            applyClearSchedule(updateBlockTracked, opts);
             setConfirmClearSchedule(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -17907,6 +17945,12 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               )}
             </span>
           )}
+          <span className="self-stretch w-px bg-border mx-1" aria-hidden="true"/>
+          <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
+            title="Empties assignments without regenerating — choose everything, unlocked cells only, or a date range.">
+            Clear Schedule
+          </Button>
+          <span className="self-stretch w-px bg-border mx-1" aria-hidden="true"/>
           <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
             title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
             What-If Sweep
@@ -17942,10 +17986,6 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               Regenerate Range
             </Button>
           </span>
-          <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
-            title="Empties every assignment without regenerating.">
-            Clear Schedule
-          </Button>
           <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full Screen'}
@@ -18146,11 +18186,9 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       )}
 
       {confirmClear && (
-        <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
-          onConfirm={() => {
-            // lockedCells must clear alongside schedule — otherwise a lock entry points at a cell
-            // that no longer exists, invisible with no UI to find or remove it (see CLAUDE.md).
-            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {}, handOverrides: {}, lastGenerated: null, generatedWithGaps: null, issueAcks: {} }, { kind: 'clear' }, viewer));
+        <ClearScheduleConfirm block={block} hasSnapshot={blockSaveState !== 'never'}
+          onConfirm={opts => {
+            applyClearSchedule(updateBlockTracked, opts);
             setConfirmClear(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -24272,7 +24310,7 @@ function activityVerb(e) {
     case 'generate': return 'generated';
     case 'lock': return `locked ${n} cell${n === 1 ? '' : 's'}`;
     case 'undo': return e.note === 'redo' ? 'redid' : 'undid';
-    case 'clear': return 'cleared the schedule';
+    case 'clear': return e.note === 'unlocked' ? 'cleared unlocked cells' : e.note === 'range' ? 'cleared a date range' : 'cleared the schedule';
     case 'import': return 'imported';
     default: return `edited ${n} cell${n === 1 ? '' : 's'}`;
   }
@@ -24282,7 +24320,8 @@ function LastEditedLine({ log, viewer }) {
   const last = lastActivity(log);
   if (!last) return null;
   const who = actorLabel(last, viewer);
-  const verb = { generate: 'Generated', lock: 'Locked', undo: last.note === 'redo' ? 'Redid' : 'Undid', clear: 'Cleared', import: 'Imported' }[last.kind] || 'Edited';
+  const clearVerb = last.note === 'unlocked' ? 'Cleared unlocked cells' : last.note === 'range' ? 'Cleared a date range' : 'Cleared';
+  const verb = { generate: 'Generated', lock: 'Locked', undo: last.note === 'redo' ? 'Redid' : 'Undid', clear: clearVerb, import: 'Imported' }[last.kind] || 'Edited';
   return (
     <span className="text-muted-foreground whitespace-nowrap" title={new Date(last.at).toLocaleString()}>
       {verb} by {who} · {relativeTime(last.at)}
@@ -26614,7 +26653,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         {moveImpact.modal}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
           {tab==='dashboard' && (
-            <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents} schedulableCount={schedulableCount}
+            <DashboardTab block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} allResidents={allResidents} schedulableCount={schedulableCount}
               ayConf={currentAyConf} dayRules={dayRules} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
               loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} deleteBlockSnapshot={deleteBlockSnapshot} setTab={setTab}
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
