@@ -46,4 +46,11 @@ describe('clearScheduleFields', () => {
     expect(r.cleared).toBe(1);
     expect(r.block.schedule).toEqual({});
   });
+  it('prunes override whose shiftId no longer matches the cell; unlocked drops aggregate acks', () => {
+    const b = mk();
+    b.handOverrides.r1['2026-07-02'].shiftId = 'POD-N';
+    const r = clearScheduleFields(b, { mode: 'unlocked' });
+    expect(r.block.handOverrides).toEqual({});
+    expect(r.block.issueAcks).toEqual({});
+  });
 });

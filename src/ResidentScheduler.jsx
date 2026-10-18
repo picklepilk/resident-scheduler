@@ -9281,7 +9281,7 @@ function ClearScheduleConfirm({ block, hasSnapshot, onConfirm, onClose }) {
   const [end, setEnd] = useState(block?.endDate || '');
   const inBlock = d => !!d && (!block?.startDate || d >= block.startDate) && (!block?.endDate || d <= block.endDate);
   const rangeOk = mode !== 'range' || (inBlock(start) && inBlock(end) && start <= end);
-  const preview = clearScheduleFields(block, { mode, start, end });
+  const preview = useMemo(() => clearScheduleFields(block, { mode, start, end }), [block, mode, start, end]);
   const count = rangeOk ? preview.cleared : 0;
   const MODES = [
     ['all', 'Everything', 'Every assignment, lock, and hand override; resets generation info.'],
@@ -24310,7 +24310,7 @@ function activityVerb(e) {
     case 'generate': return 'generated';
     case 'lock': return `locked ${n} cell${n === 1 ? '' : 's'}`;
     case 'undo': return e.note === 'redo' ? 'redid' : 'undid';
-    case 'clear': return 'cleared the schedule';
+    case 'clear': return e.note === 'unlocked' ? 'cleared unlocked cells' : e.note === 'range' ? 'cleared a date range' : 'cleared the schedule';
     case 'import': return 'imported';
     default: return `edited ${n} cell${n === 1 ? '' : 's'}`;
   }
@@ -24320,7 +24320,8 @@ function LastEditedLine({ log, viewer }) {
   const last = lastActivity(log);
   if (!last) return null;
   const who = actorLabel(last, viewer);
-  const verb = { generate: 'Generated', lock: 'Locked', undo: last.note === 'redo' ? 'Redid' : 'Undid', clear: 'Cleared', import: 'Imported' }[last.kind] || 'Edited';
+  const clearVerb = last.note === 'unlocked' ? 'Cleared unlocked cells' : last.note === 'range' ? 'Cleared a date range' : 'Cleared';
+  const verb = { generate: 'Generated', lock: 'Locked', undo: last.note === 'redo' ? 'Redid' : 'Undid', clear: clearVerb, import: 'Imported' }[last.kind] || 'Edited';
   return (
     <span className="text-muted-foreground whitespace-nowrap" title={new Date(last.at).toLocaleString()}>
       {verb} by {who} · {relativeTime(last.at)}
