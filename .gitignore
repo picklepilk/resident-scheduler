@@ -28,3 +28,8 @@ supabase/.temp/
 
 # Playwright MCP screenshots/snapshots from local browser checks
 .playwright-mcp/
+
+# Local session logs (may contain real names/emails)
+CC-Session-Logs/
+solver-service/CC-Session-Logs/
+.claude/.session-end-stamp.json
