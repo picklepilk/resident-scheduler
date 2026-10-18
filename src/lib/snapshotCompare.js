@@ -1,6 +1,6 @@
 // Compare a freshly built block snapshot against a stored one. Optional fields added in later
 // releases are absent on old snapshots; treat "absent" and "empty" as equal for those only.
-export const OPTIONAL_SNAPSHOT_FIELDS = ['handOverrides', 'issueAcks', 'lastGenerated'];
+export const OPTIONAL_SNAPSHOT_FIELDS = ['handOverrides', 'issueAcks', 'lastGenerated', 'generatedWithGaps'];
 
 function normalizeForCompare(val) {
   if (Array.isArray(val)) {

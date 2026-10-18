@@ -18,3 +18,13 @@ describe('snapshotsEqual', () => {
     expect(snapshotsEqual({ ...base, notes: 'y' }, base)).toBe(false);
   });
 });
+
+import { snapshotsEqual as _eq } from './snapshotCompare.js';
+describe('generatedWithGaps optional field', () => {
+  it('absent equals null/empty on an old snapshot', () => {
+    expect(_eq({ a: 1 }, { a: 1, generatedWithGaps: null })).toBe(true);
+  });
+  it('a present stamp makes the snapshot dirty', () => {
+    expect(_eq({ a: 1 }, { a: 1, generatedWithGaps: { at: 'T', gaps: [{ id: 'x', label: 'X' }] } })).toBe(false);
+  });
+});

@@ -28,6 +28,7 @@ import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnD
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
+import { computeSetupGaps, buildGapStamp, openStampedGaps } from './lib/setupReadiness.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
@@ -2875,20 +2876,49 @@ function getJCPresenterGaps(allResidents, block, ayConf = {}) {
 // working unchanged — every real call site (below) supplies them. Return shape changed from a
 // flat string[] to { messages, keptViolations } — see the three ReadinessWarningPanel/
 // KeptCellViolationsPanel call sites in ScheduleGrid.
-export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd }) {
-  const messages = [];
-  for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
-    messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
+export function buildSetupReadiness({ allResidents, block, dayRules, ayConf = {}, appSettings, coverage, pendingByResident }) {
+  const jcGaps = getJCPresenterGaps(allResidents, block, ayConf).map(g => ({ ...g, display: formatDisplayDate(g.dateStr) }));
+  const residentIssues = [];
+  for (const r of allResidents) {
+    const missing = [];
+    if (!r.category || !CAT_MAP[r.category]) missing.push('category');
+    if (isEmResident(r)) {
+      if (![1, 2, 3].includes(r.pgy)) missing.push('PGY');
+      if (r.blockType && !BLOCK_TYPE_MAP[r.blockType]) missing.push('rotation');
+    }
+    if (missing.length) residentIssues.push({ id: r.id, name: `${r.lastName || ''}${r.firstName ? ', ' + r.firstName : ''}`.trim() || String(r.id), missing, tab: isEmResident(r) ? 'em' : 'offservice' });
   }
-  if (appSettings && appSettings.ruleDatesMigrated !== true) {
-    messages.push('Rule dates not yet migrated (cloud not loaded) -- First Friday / Wellness Wednesday / Journal Club dates may be missing');
+  const offServiceNoRanges = (block.offServiceResidents || [])
+    .filter(r => (r.availabilityMode || 'full') === 'ranges' && !(r.availableRanges || []).some(rg => rg.start && rg.end && rg.start <= rg.end))
+    .map(r => ({ id: r.id, name: `${r.lastName || ''}${r.firstName ? ', ' + r.firstName : ''}`.trim() || String(r.id) }));
+  let pendingResidentCount = 0;
+  if (pendingByResident && typeof pendingByResident.forEach === 'function') {
+    const ids = new Set(allResidents.map(r => r.id));
+    pendingByResident.forEach((set, rid) => { if (ids.has(rid) && set && set.size > 0) pendingResidentCount++; });
   }
-  for (const m of missingRuleDates({ block, ayConf, rules: ruleDateChecksForBlock(block, dayRules, appSettings, allResidents) })) {
-    messages.push(m.message);
+  let supplyDemand = null;
+  if (block.startDate && block.endDate && block.endDate >= block.startDate && coverage) {
+    supplyDemand = {
+      demand: computeTotalTargetDemand(allResidents, appSettings || {}),
+      supply: computeTotalCoverageSupply(getBlockDates(block.startDate, block.endDate), coverage, ayConf),
+    };
   }
-  for (const g of getJCPresenterGaps(allResidents, block, ayConf)) {
-    messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
-  }
+  return computeSetupGaps({
+    block,
+    missingSpecialDayLists: getMissingSpecialDayLists(allResidents, block, dayRules),
+    unmigrated: !!appSettings && appSettings.ruleDatesMigrated !== true,
+    missingRuleDates: missingRuleDates({ block, ayConf, rules: ruleDateChecksForBlock(block, dayRules, appSettings, allResidents) }),
+    jcGaps,
+    holidaysConfigured: resolveHolidays(ayConf).length > 0,
+    ayLabel: block.academicYear ? `AY ${block.academicYear}` : '',
+    conferenceDatesAbsent: !AY_CONF_DATE_FIELDS.some(f => ayConf?.[f]) && resolveTwelveHourWindows(ayConf || {}).length === 0,
+    residentIssues, pendingResidentCount, offServiceNoRanges, supplyDemand,
+  });
+}
+
+export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd, pendingByResident }) {
+  const { gaps } = buildSetupReadiness({ allResidents, block, dayRules, ayConf, appSettings, coverage, pendingByResident });
+  const messages = gaps.map(g => g.detail);
   // Kept-cell hard-error warning (CLAUDE.md "chief sees red validateAll errors after hand-editing/
   // locking cells or partial regenerate"): the generator/repair pass never overwrites a
   // pre-existing non-empty cell, so a cell that already violates a hard rule survives every
@@ -2900,7 +2930,7 @@ export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf =
     const split = violatingCells(issues, block.schedule || {}, block.lockedCells || {});
     keptViolations = keptCellsForMode(split, mode, rangeStart, rangeEnd);
   }
-  return { messages, keptViolations };
+  return { messages, gaps, keptViolations };
 }
 
 // Shared list-builder for AY conference date ranges — both getConferencesInBlock (block-range
@@ -9274,14 +9304,14 @@ function CollapsibleHeader({ title, subtitle, action, open, onToggle }) {
 // `prefId` is optional — when given, initial open state and every toggle go through the shared
 // UiPrefsProvider (see src/uiPrefs.js) so it's remembered per-viewer across visits/reloads;
 // omitted, this behaves exactly as before (local-only state, resets to `defaultOpen` on remount).
-function CollapsibleCard({ title, subtitle, children, action, defaultOpen = true, prefId }) {
+function CollapsibleCard({ title, subtitle, children, action, defaultOpen = true, prefId, anchorId }) {
   const { prefs, setCardOpen } = useUiPrefsContext();
   const [localOpen, setLocalOpen] = useState(defaultOpen);
   const persisted = prefId ? prefs.cardOpen[prefId] : undefined;
   const open = persisted !== undefined ? persisted : localOpen;
   const toggle = () => prefId ? setCardOpen(prefId, !open) : setLocalOpen(p => !p);
   return (
-    <div className="bg-card text-card-foreground rounded-xl border border-border shadow-sm overflow-hidden">
+    <div id={anchorId} className="bg-card text-card-foreground rounded-xl border border-border shadow-sm overflow-hidden">
       <CollapsibleHeader title={title} subtitle={subtitle} action={action} open={open} onToggle={toggle}/>
       {open && <div className="px-5 py-4">{children}</div>}
     </div>
@@ -10861,7 +10891,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers, liveSetup, onNavigateFix }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -11091,6 +11121,13 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           }
           footer={<BlockActivityList log={block.activityLog} viewer={viewer}/>}>
 
+          {liveSetup && (
+            <>
+              <IncompleteSetupBanner block={block} liveGaps={liveSetup.gaps} onFix={onNavigateFix}
+                onRegenerate={stepHandlers?.onGoToGenerate}/>
+              <SetupNeedsAttentionStrip gaps={liveSetup.gaps} pressure={liveSetup.pressure} onFix={onNavigateFix}/>
+            </>
+          )}
           {stepHandlers && (
             <BlockStepsRow block={block} hasReport={!!block.generationReport} errorCount={issueCounts.errors}
               published={!!currentSnapPublished} hasSnapshot={hasSnapshot} handlers={{ ...stepHandlers, onSave: onSaveBlock }}/>
@@ -11212,7 +11249,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
             )}
 
             {/* Special days for this block — editable */}
-            <CollapsibleCard title="Special Days" prefId="dash-special-days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
+            <CollapsibleCard title="Special Days" prefId="dash-special-days" anchorId="setup-special-days" subtitle="Days with schedule restrictions. Changes take effect immediately in the schedule grid.">
               <div className="space-y-5">
                 <SpecialDaysList
                   label="IM Code Blue Days"
@@ -11266,7 +11303,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
           Academic year {selectedAy ? selectedAy.replace('-', '–') : ''}
         </div>
         {selectedAy && (
-          <CollapsibleCard title="AY settings" subtitle={aySummary} prefId="dash.aySettings" defaultOpen={false}>
+          <CollapsibleCard title="AY settings" subtitle={aySummary} prefId="dash.aySettings" anchorId="setup-ay-card" defaultOpen={false}>
             <div className="rounded-lg overflow-hidden border border-primary/20">
               <AYConferenceEditor ay={selectedAy} conf={selectedAyConf}
                 onUpdate={conf => updateAyData(selectedAy, conf)}/>
@@ -15794,7 +15831,7 @@ function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpe
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer }) {
+function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -15891,14 +15928,14 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // partial-regenerate confirm modal — same inputs, same warnings either way, so one memo gated on
   // "either confirm modal is open" replaces what used to be two identical memos.
   const generateReadiness = useMemo(() => {
-    if (confirmRegen) return checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'clear' });
+    if (confirmRegen) return checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'clear', pendingByResident });
     if (confirmPartialRegen) return checkGenerateReadiness({
-      allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory,
+      allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, pendingByResident,
       mode: confirmPartialRegen.kind === 'range' ? 'range' : 'unlocked',
       rangeStart: confirmPartialRegen.start, rangeEnd: confirmPartialRegen.end,
     });
-    return { messages: [], keptViolations: { fixable: [], locked: [] } };
-  }, [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory]);
+    return { messages: [], gaps: [], keptViolations: { fixable: [], locked: [] } };
+  }, [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, pendingByResident]);
   // What-If Optimization Sweep — see runOptimizationSweep. sweepResult/sweepRunning/sweepOpen are
   // ephemeral (not persisted, not part of the block) — a fresh Generate/Regenerate invalidates any
   // prior sweep result since it no longer describes "vs the current schedule".
@@ -16821,8 +16858,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // presenters) haven't been entered — chief can override and generate anyway.
   // `deepSolve`: carried through to the confirm dialog (if one is needed) and from there to
   // runGenerate — see genConfirmSpec below, which reads it back off `confirmGenerate.deepSolve`.
+  // Stamp for block.generatedWithGaps -- computed at commit time (inside the same updateBlockTracked
+  // as the generated schedule) from the gaps open right now; null clears any prior stamp.
+  function gapStampNow() {
+    return buildGapStamp(buildSetupReadiness({ allResidents, block, dayRules, ayConf, appSettings, coverage, pendingByResident }).gaps);
+  }
   function requestGenerate(deepSolve = false) {
-    const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill' });
+    const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill', pendingByResident });
     if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate({ ...readiness, deepSolve });
     else runGenerate(false, undefined, deepSolve);
   }
@@ -17018,7 +17060,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, clearFirst, deepSolve);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       const rc = res.report.restCompromises.length;
@@ -17079,7 +17121,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, false);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
@@ -17429,6 +17471,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           ? "Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but rules that depend on these dates may not apply correctly."
           : null,
         messages: confirmGenerate.messages,
+        gaps: confirmGenerate.gaps,
         keptViolations: confirmGenerate.keptViolations,
         onFixAndGenerate: () => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
           cleared => runGenerate(false, cleared, confirmGenerate.deepSolve)),
@@ -17442,6 +17485,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         title: 'Clear & Regenerate?',
         note: 'This clears all current assignments — including ones you entered manually — and regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.',
         messages: generateReadiness.messages,
+        gaps: generateReadiness.gaps,
         keptViolations: generateReadiness.keptViolations,
         onFixAndGenerate: null, // always empty under a full clear — see KeptCellViolationsPanel's comment
         onCancel: () => setConfirmRegen(false),
@@ -17456,6 +17500,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           ? <>This clears every <strong>unlocked</strong> assignment between {formatDisplayDate(confirmPartialRegen.start)} and {formatDisplayDate(confirmPartialRegen.end)} and refills them. Locked cells and cells outside this range are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>
           : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>,
         messages: generateReadiness.messages,
+        gaps: generateReadiness.gaps,
         keptViolations: generateReadiness.keptViolations,
         onFixAndGenerate: () => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
           cleared => runPartialRegenerate(confirmPartialRegen, cleared)),
@@ -17525,6 +17570,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           )}
         </div>
       )}
+      <IncompleteSetupBanner block={block} liveGaps={liveSetup ? liveSetup.gaps : []} onFix={onNavigateFix}
+        onRegenerate={() => setConfirmRegen(true)}/>
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
@@ -17870,7 +17917,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             {genConfirmSpec.note && (
               <p className="text-sm text-gray-600">{genConfirmSpec.note}</p>
             )}
-            <ReadinessWarningPanel messages={genConfirmSpec.messages}/>
+            <ReadinessWarningPanel messages={genConfirmSpec.messages} gaps={genConfirmSpec.gaps} onFix={t => { genConfirmSpec.onCancel(); onNavigateFix && onNavigateFix(t); }}/>
             <KeptCellViolationsPanel violations={genConfirmSpec.keptViolations} onFixAndGenerate={genConfirmSpec.onFixAndGenerate}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={genConfirmSpec.onCancel}>Cancel</Button>
@@ -18148,12 +18195,88 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
 // Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
 // red warning-panel style as DragConfirmModal's violation list below.
-function ReadinessWarningPanel({ messages }) {
+function ReadinessWarningPanel({ messages, gaps, onFix }) {
+  if (gaps && gaps.length) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3" data-testid="readiness-gaps">
+      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Setup needs attention ({gaps.length})</div>
+      <SetupGapRows gaps={gaps} onFix={onFix}/>
+    </div>
+  );
   if (!messages.length) return null;
   return (
     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
       <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Missing manual dates</div>
       {messages.map((w,i)=><p key={i} className="text-xs text-red-600 ml-4">{w}</p>)}
+    </div>
+  );
+}
+
+const SETUP_TAB_LABELS = { dashboard: 'Dashboard', em: 'EM Residents', offservice: 'Off-Service', requests: 'Requests', rules: 'Scheduling Rules', schedule: 'Schedule' };
+
+// Gap rows shared by the pre-Generate modal, the incomplete-setup banner, and the Dashboard strip.
+function SetupGapRows({ gaps, onFix }) {
+  return (
+    <ul className="space-y-1.5">
+      {gaps.map(g => (
+        <li key={g.id} className="text-xs ml-1">
+          <div className="flex items-start gap-1.5">
+            {g.severity === 'blocking'
+              ? <AlertCircle size={12} className="text-red-600 mt-0.5 shrink-0" aria-label="Blocking"/>
+              : <AlertTriangle size={12} className="text-amber-600 mt-0.5 shrink-0" aria-label="Advisory"/>}
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-gray-800">{g.label}</div>
+              <div className="text-gray-600">{g.detail}</div>
+              {g.suppresses && g.suppresses.length > 0 && (
+                <div className="text-gray-500 italic">Not checked while missing: {g.suppresses.join(', ')}</div>
+              )}
+            </div>
+            {onFix && g.fixTarget && (
+              <button type="button" onClick={() => onFix(g.fixTarget)}
+                className="shrink-0 text-xs px-2 py-0.5 rounded border border-blue-300 text-blue-700 bg-white hover:bg-blue-50">
+                Fix in {SETUP_TAB_LABELS[g.fixTarget.tab] || g.fixTarget.tab}
+              </button>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Standing banner: this block's schedule was generated while setup gaps were open and at least one is
+// still open (recomputed live from liveGaps) -- vanishes once every stamped gap is resolved.
+function IncompleteSetupBanner({ block, liveGaps, onFix, onRegenerate }) {
+  const [open, setOpen] = useState(false);
+  const stillOpen = openStampedGaps(block.generatedWithGaps, liveGaps);
+  if (!stillOpen.length) return null;
+  return (
+    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3" data-testid="incomplete-setup-banner">
+      <div className="flex items-center gap-2 flex-wrap">
+        <AlertTriangle size={14} className="text-amber-700"/>
+        <span className="text-sm font-medium text-amber-800">Generated with incomplete setup ({stillOpen.length})</span>
+        <span className="flex-1"/>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Review'}</Button>
+        {onRegenerate && <Button size="sm" variant="ghost" onClick={onRegenerate}>Regenerate</Button>}
+      </div>
+      {open && <div className="mt-2"><SetupGapRows gaps={stillOpen} onFix={onFix}/></div>}
+    </div>
+  );
+}
+
+// Live Dashboard strip: gaps computed from current data, before any Generate.
+function SetupNeedsAttentionStrip({ gaps, pressure, onFix }) {
+  const [open, setOpen] = useState(false);
+  if (!gaps.length) return null;
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4" data-testid="setup-strip">
+      <button type="button" className="w-full flex items-center gap-2 text-left" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+        <AlertTriangle size={14} className="text-amber-700"/>
+        <span className="text-sm font-medium text-amber-800">Setup needs attention ({gaps.length})</span>
+        {pressure && <span className="text-xs text-amber-700">Demand vs supply: {pressure.level} ({Math.round(pressure.ratio * 100)}%)</span>}
+        <span className="flex-1"/>
+        <ChevronDown size={14} className={`text-amber-700 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+      {open && <div className="mt-2"><SetupGapRows gaps={gaps} onFix={onFix}/></div>}
     </div>
   );
 }
@@ -24009,7 +24132,8 @@ function buildSnapData(block) {
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear,
            // Key only when present: a null/absent mismatch would make every pre-existing snapshot compare dirty.
-           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated } : {}),
+           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps } : {}),
+           ...(block.generatedWithGaps ? { generatedWithGaps: block.generatedWithGaps } : {}),
            // Omitted when empty so snapshots saved before E2 (no key) still compare clean in blockSaveState.
            ...(Object.keys(normalizeAcks(block.issueAcks)).length ? { issueAcks: normalizeAcks(block.issueAcks) } : {}) };
 }
@@ -25401,6 +25525,22 @@ export default function ResidentScheduler({ viewer } = {}) {
   // stat tiles — running it once per relevant state change instead of once per consumer.
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf]);
   const ackPart = useMemo(()=>partitionAcked(issues, block.issueAcks),[issues, block.issueAcks]);
+  // Live setup readiness (same lib the pre-Generate modal uses) for the Dashboard strip + banners.
+  const liveSetup = useMemo(
+    () => buildSetupReadiness({ allResidents, block, dayRules, ayConf: currentAyConf, appSettings, coverage, pendingByResident }),
+    [allResidents, block, dayRules, currentAyConf, appSettings, coverage, pendingByResident]);
+  // "Fix in <Tab>": switch tab, open the target card if it is collapsed, then scroll to it.
+  function navigateToFix(target) {
+    if (!target || !target.tab) return;
+    setTab(target.tab);
+    const SECTION_PREF = { 'special-days': 'dash-special-days', 'ay-card': 'dash.aySettings' };
+    if (target.section && SECTION_PREF[target.section]) uiPrefsApi.setCardOpen(SECTION_PREF[target.section], true);
+    if (target.section) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.getElementById('setup-' + target.section)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+    }
+  }
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
     // Acknowledged warnings (block.issueAcks, Wave E2) drop out of the headline warning count only;
@@ -25452,7 +25592,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // recording regardless of whether the schedule under it was generated or hand-built.
   function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
-      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }];
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
@@ -25481,20 +25621,20 @@ export default function ResidentScheduler({ viewer } = {}) {
   function undoSchedule() {
     if (!undoStack.length) return;
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }]);
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides, lastGenerated: prev.lastGenerated }, { kind: 'undo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides, lastGenerated: prev.lastGenerated, generatedWithGaps: prev.generatedWithGaps }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
     if (!redoStack.length) return;
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
-      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }];
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }];
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides, lastGenerated: next.lastGenerated }, { kind: 'undo', note: 'redo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides, lastGenerated: next.lastGenerated, generatedWithGaps: next.generatedWithGaps }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
@@ -26169,6 +26309,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
               setImportLog={setImportLog} importLog={importLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
+              liveSetup={liveSetup} onNavigateFix={navigateToFix}
               stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
           {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
@@ -26180,7 +26321,7 @@ export default function ResidentScheduler({ viewer } = {}) {
                 onDismiss={() => uiPrefsApi.markBlockSeen(block.id || '_current')}/>
             </div>
           )}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
+          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} liveSetup={liveSetup} onNavigateFix={navigateToFix} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
             onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} viewer={viewer}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
