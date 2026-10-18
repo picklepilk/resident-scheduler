@@ -2692,7 +2692,7 @@ function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, a
 // generateSchedule call on every single generation. Cheap: short-circuits on the first hit, and
 // fallbackCompositionAt's own `.find()` is a fast empty miss on every date the block's own 1-2
 // substitute-eligible dates aren't (same reasoning as preferTruePrimaryPass's header comment).
-function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
+export function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
   for (const area of Object.keys(SENIOR_COMPOSITION)) {
     for (const shift of SHIFTS.filter(s => s.area === area)) {
       for (const ds of getBlockDates(block.startDate, block.endDate)) {
@@ -7749,11 +7749,16 @@ function scoreGenerationResult(res, args, rulePriority) {
 // all per-resident state rebuilt from the surviving schedule (no incremental un-assign bookkeeping
 // to drift). The candidate is adopted only on STRICT betterQuality; otherwise nothing changes.
 // Deterministic from `seed`: the replay recipe is in generateScheduleBest's header.
+// Under-target preference (req 3) was measured and consciously DROPPED as a score bonus: a +40 refill
+// bonus for under-target residents left underTargetErrors flat (vacationHeavy 35 -> 35) and worsened
+// fairness (standard deficit/fairness slot 343.3 -> 347.4, vacationHeavy night/work-shape axes), failing
+// the baseline gate. The deficit term (SCORE_WEIGHTS.deficit) already ranks them first; what remains is
+// hard-blocked (rest/seniority/caps), so only the LNS window focus on under-target residents stays.
 // UI engine options (B1). Built-in mode IS the whole answer, so it gets a 20 s budget (extra seeds,
 // then LNS for the remainder); with a solver behind it local is only the warm start, so it gets a
 // short fixed LNS pass (~40 iterations, a few seconds at real scale) and no extra seeds.
 const BUILTIN_ENGINE_OPTS = { timeBudgetMs: 20000, lnsIters: 5000 };
-const POLISHED_ENGINE_OPTS = { lnsIters: 40 };
+const POLISHED_ENGINE_OPTS = { lnsIters: 40, lnsTimeMs: 6000 };
 const ATTEMPT_BUDGET_SHARE = 1;
 const ATTEMPT_BUDGET_SHARE_WITH_LNS = 0.55;
 const LNS_MIN_WINDOW = 3;
@@ -7792,6 +7797,11 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
   const deadline = timeMs > 0 ? Date.now() + timeMs : 0;
   const locked = args.block.lockedCells || {};
   let cur = current, ran = 0, accepted = 0;
+  // Phase 3b (true-primary preference) already ran on `current`; the repair:false refill must not
+  // reintroduce a fallback-PGY composition it removed, so a candidate that NEWLY has one is rejected.
+  const hasFallback = res => hasFallbackComposition(res.schedule, args.allResidents, args.block, args.appSettings || {}, args.ayConf || {});
+  let curFallback = hasFallback(cur.result);
+  const startedMs = Date.now();
   while (ran < iters && n > 0) {
     if (deadline && Date.now() >= deadline) break;
     ran++;
@@ -7832,10 +7842,16 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
       if (res) {
         const merged = { schedule: res.schedule, report: mergeLnsReport(rep, res.report, new Set(windowDates)) };
         const score = scoreGenerationResult(merged, args, rulePriority);
-        if (betterQuality(score, cur.score)) { cur = { ...cur, result: merged, score }; accepted++; }
+        if (betterQuality(score, cur.score)) {
+          const candFallback = curFallback ? true : hasFallback(merged);
+          if (!candFallback || curFallback) { cur = { ...cur, result: merged, score }; curFallback = candFallback; accepted++; }
+        }
       }
     }
-    yield { phase: 'lns', done: ran, total: iters };
+    // Under a time cap the iteration count is not the real horizon: report elapsed/cap instead.
+    yield deadline
+      ? { phase: 'lns', done: Math.min(Date.now() - startedMs, timeMs), total: timeMs }
+      : { phase: 'lns', done: ran, total: iters };
   }
   return { current: cur, ran, accepted };
 }
@@ -7910,6 +7926,8 @@ export function replayLns(args, preLns, lns) {
 
 function originalKeptCells(args) {
   const kept = new Set();
+  // clearFirst discards the incoming schedule, so nothing in it is a kept cell.
+  if (args.clearFirst) return kept;
   for (const r of args.allResidents) {
     for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
       if (sid) kept.add(`${r.id}|${ds}`);
@@ -8072,6 +8090,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // `best` is replaced only on strict betterQuality inside lnsPassSteps. Runs BEFORE the one-shot
   // diagnostics below so they describe the final schedule.
   let lnsInfo = null;
+  // `repair` gate: repair:false callers want the raw unrepaired attempt (and its replay with
+  // repair:false), which an LNS pass would silently mutate.
   if (repair && lnsIters > 0) {
     const lnsSeed = (resolvedBaseSeed ^ 0xA5A5A5A5) >>> 0;
     const lnsCapMs = timeBudgetMs > 0 ? Math.max(0, startedAt + timeBudgetMs - Date.now()) : lnsTimeMs;
@@ -17111,6 +17131,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, solverRunTarget === 'builtin' ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
+        : p.phase === 'lns' ? { phase: 'local', polishing: true, done: 0, total: 0 } // 'Polishing best attempt…'
         : { phase: 'local', polishing: true, done: p.done, total: p.total }));
     if (!localRes) return null;
 
