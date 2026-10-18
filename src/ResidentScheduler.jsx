@@ -91,6 +91,7 @@ import { createIdleTimer, DEFAULT_IDLE_TIMEOUT_MINUTES } from './lib/idleTimer.j
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
 import { snapshotsEqual } from './lib/snapshotCompare.js';
+import { restRankedBelowCoverage } from './lib/rulePriorityRanking.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -7723,6 +7724,21 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
   };
 }
 
+// Ranking-side blocking-warning count (slot 1 of betterQuality). Export gate is separate and
+// unchanged (issueCounts.restWarns). When Soft Rule Priority ranks coverageMin above postNightRest,
+// postNightRest warnings are NOT counted here — they only count in the postNightRest slot of the
+// quality vector — so a schedule with 1 hole + 8 short-rest warnings beats one with 23 holes.
+export function countBlockingWarns(issues, rulePriority) {
+  const dropRest = restRankedBelowCoverage(rulePriority);
+  let n = 0;
+  for (const i of issues) {
+    if (!(EXPORT_BLOCKING_RULE_IDS.has(i.rule) || i.conferenceTolerated)) continue;
+    if (dropRest && i.rule === 'postNightRest') continue;
+    n++;
+  }
+  return n;
+}
+
 // Scores one generateSchedule() result the same way for every attempt in generateScheduleBest —
 // (validateAll error count, export-blocking warning count, quality vector), the exact tuple
 // betterQuality compares lexicographically. Quality is computed from the WHOLE final schedule
@@ -7748,9 +7764,10 @@ function scoreGenerationResult(res, args, rulePriority) {
   // (issueCounts.restWarns) still sees only the genuinely export-blocking rules. Two callers ask
   // two different questions of the same issue list and each owns its own answer — the same idiom
   // twelveHourAllows uses for its `undefined` state.
-  const blockingWarnCount = issues.filter(i =>
-    EXPORT_BLOCKING_RULE_IDS.has(i.rule) || i.conferenceTolerated
-  ).length;
+  const blockingWarnCount = countBlockingWarns(issues, rulePriority);
+  // Rest metric from the same validateAll pass (correct for solver results and hand edits, which
+  // carry no generator restCompromises bookkeeping).
+  const restCompromiseCount = issues.filter(i => i.rule === 'postNightRest').length;
   const qInput = buildQualityInput({
     schedule: res.schedule, report: res.report, allResidents: args.allResidents,
     block: args.block, appSettings: args.appSettings, eligOverrides: args.eligOverrides,
@@ -7764,7 +7781,7 @@ function scoreGenerationResult(res, args, rulePriority) {
     dates,
     coverage: args.coverage,
     seniorGapCount: res.report.seniorGaps.length,
-    restCompromiseCount: res.report.restCompromises.length,
+    restCompromiseCount,
   });
   return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
 }
@@ -8422,7 +8439,7 @@ export async function runOptimizationSweep(args, {
   const baselineReport = block.generationReport || { unfilled: [], filled: 0, optionalFilled: 0, seniorGaps: [], restCompromises: [] };
   const baselineIssues = validateAll(allResidents, currentSchedule, block, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf);
   const baselineErrorCount = baselineIssues.filter(i => i.level === 'error').length;
-  const baselineBlockingWarnCount = baselineIssues.filter(i => EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length;
+  const baselineBlockingWarnCount = countBlockingWarns(baselineIssues, referenceRulePriority);
   const baselineQInput = buildQualityInput({
     schedule: currentSchedule, report: baselineReport, allResidents, block, appSettings, eligOverrides, blocksHistory, ayConf,
   });
@@ -8431,7 +8448,7 @@ export async function runOptimizationSweep(args, {
     dates: getBlockDates(block.startDate, block.endDate),
     coverage,
     seniorGapCount: baselineReport.seniorGaps.length,
-    restCompromiseCount: baselineReport.restCompromises.length,
+    restCompromiseCount: baselineIssues.filter(i => i.rule === 'postNightRest').length,
   });
   const baseline = {
     errorCount: baselineErrorCount,
@@ -15346,7 +15363,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </div>
       </SectionCard>
 
-      <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way.">
+      <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way. The order also decides which generated schedule wins: with coverage above rest, the winner has fewer open slots and may carry some short-rest warnings to review.">
         {(() => {
           const priority = normalizeRulePriority(appSettings?.rulePriority);
           const isDefault = priority.every((id, i) => id === DEFAULT_RULE_PRIORITY[i]);
