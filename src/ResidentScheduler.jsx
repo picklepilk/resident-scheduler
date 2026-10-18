@@ -24923,7 +24923,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     const snap={ id:block.id, name:block.name||'Unnamed Block', academicYear:block.academicYear||getAcademicYear(),
       startDate:block.startDate, endDate:block.endDate, savedAt:new Date().toISOString(), published,
       residentCount:emRoster.length+(block.offServiceResidents||[]).length, shiftCount,
-      data: buildSnapData(block) };
+      data: buildSnapData({ ...block, issueAcks: prunedAcks }) };
     setBlocksHistory(p=>[snap,...p.filter(b=>b.id!==snap.id)].slice(0, appSettings.maxSavedBlocks ?? 24));
     showToast(`"${snap.name}" saved`,'green');
   }
