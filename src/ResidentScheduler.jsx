@@ -32,7 +32,8 @@ import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } fro
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
+import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
@@ -4794,7 +4795,7 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // precomputed buildStaticGenContext(...) result — see that function's own header — that
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
-export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null }) {
+export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null, diagnosticsOnly = false, seedUnfilled = null }) {
   // repair: 'truePrimaryOnly' (R5, 2026-09-27 chief decision) is a fourth mode besides
   // true/false/undefined — see the fill-pass call site and the `preferTruePrimaryPass` definition
   // below for what it actually does and why it exists (generateScheduleBest's own post-selection
@@ -6776,12 +6777,16 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // fillDayPass's OPTIONAL phase over it would try to top up any shift not already at its own
   // coverage MAX using a freshly-restarted rng stream, silently adding placements this replay has no
   // business making. This mode exists to run Phase 3b and nothing else.
-  if (!truePrimaryOnlyMode) {
+  // diagnosticsOnly (attachSolverDiagnostics): the schedule is another engine's finished result -
+  // run NO fill pass and no repair, so the diagnostics below describe exactly that schedule.
+  // `seedUnfilled` supplies that engine's own unfilled slots (no fill pass ran to produce any).
+  if (!truePrimaryOnlyMode && !diagnosticsOnly) {
     for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
     for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
     for (const ds of dates) fillDayPass(ds, () => true, 'optional');
   }
-  if (repair === true) repairPass();
+  if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
+  if (repair === true && !diagnosticsOnly) repairPass();
   else if (truePrimaryOnlyMode) preferTruePrimaryPass();
 
   // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
@@ -6984,7 +6989,9 @@ const FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE = 30;
 // and shipped in every run at 2/4/8 workers. Shipped together with fly.toml's move to 4 dedicated
 // CPUs (`cpu_kind = "performance"`). Exported so generateViaSolverOrLocal/solverPayload.test.js
 // share one number.
-export const DEFAULT_SOLVE_MAX_TIME_SECONDS = 120;
+// Values live in lib/solverBudget.js (pure, shared with solverBudgetSeconds); re-exported here for
+// the existing importers.
+export { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS };
 // "Deep solve" (admin-facing, 2026-10-15): same solver/polisher pipeline as the default Generate
 // path, just a larger CP-SAT time budget — cloud and "This computer" targets alike. 300s since
 // 2026-10-16 (raised with the 120s default so Deep Solve stays a real step up; the same
@@ -6992,12 +6999,9 @@ export const DEFAULT_SOLVE_MAX_TIME_SECONDS = 120;
 // cap on `config.maxTimeSeconds` (schemas.py/payload.py accept any float; hint_pin.py's 30s
 // pre-check and report/builder.py's 10s verify step don't touch the main staged solve). Exported
 // so generateViaSolverOrLocal and the tests share one number instead of literals drifting apart.
-export const DEEP_SOLVE_MAX_TIME_SECONDS = 300;
 // solveRemote's client-side abort timeout — must clear the solver's own budget plus network/
 // cold-start slack (Fly scale-to-zero can add several seconds). Both paths pass it explicitly;
 // never rely on solveRemote's own fallback default.
-const DEEP_SOLVE_TIMEOUT_MS = DEEP_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
-const DEFAULT_SOLVE_TIMEOUT_MS = DEFAULT_SOLVE_MAX_TIME_SECONDS * 1000 + 60000;
 // "~2 minutes" style copy for a solver budget, so UI text derives from the constants above
 // instead of hand-copied literals that go stale every time a budget changes.
 const approxMinutes = (seconds) => {
@@ -7932,6 +7936,51 @@ export function pickEngineResult(solverRes, localRes, args) {
     winner,
     engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore) },
   };
+}
+
+// Under-target / unfilled-slot diagnostics (`openSlots`/`blockedBy`, per-slot `blockers`/`nearMiss`)
+// are computed by closures living inside generateSchedule's scope, so a solver schedule has none.
+// This re-enters generateSchedule once with the solver's schedule as the kept (pre-filled) cells and
+// the diagnostics deferred, runs both closures, and copies ONLY the plain-data fields onto the
+// solver report's matching entries (by residentId / dateStr+shiftId+slotIndex). The scratch result
+// is discarded, so the solver schedule itself is never changed; if the scratch pass could still
+// fill a slot the solver left open, that slot simply gets no diagnostics (the card tolerates
+// absent fields). Closures are deleted after running (the persisted report can't hold functions).
+// Never throws: diagnostics are advisory, a failure must not break Generate.
+export function attachSolverDiagnostics(solverRes, args) {
+  try {
+    const rep = solverRes?.report;
+    if (!rep || ((rep.underTarget || []).length === 0 && (rep.unfilled || []).length === 0)) return solverRes;
+    const scratch = generateSchedule({
+      ...args,
+      block: { ...args.block, schedule: solverRes.schedule },
+      clearFirst: false, repair: false, rng: mulberry32(1), deferUnderTargetDiagnostics: true,
+      diagnosticsOnly: true, seedUnfilled: rep.unfilled || [],
+    });
+    if (!scratch) return solverRes;
+    const sr = scratch.report;
+    if (sr.computeUnderTargetDiagnostics) { sr.computeUnderTargetDiagnostics(); delete sr.computeUnderTargetDiagnostics; }
+    if (sr.computeUnfilledDiagnostics) { sr.computeUnfilledDiagnostics(); delete sr.computeUnfilledDiagnostics; }
+    const utById = new Map((sr.underTarget || []).map(u => [u.residentId, u]));
+    for (const u of rep.underTarget || []) {
+      const d = utById.get(u.residentId);
+      if (d && d.blockedBy) { u.openSlots = d.openSlots; u.blockedBy = { ...d.blockedBy }; }
+    }
+    const slotKey = (u, withIdx) => `${u.dateStr}|${u.shiftId}${withIdx ? `|${u.slotIndex ?? 0}` : ''}`;
+    const exact = new Map(); const loose = new Map();
+    for (const u of sr.unfilled || []) {
+      if (!u.blockers) continue;
+      exact.set(slotKey(u, true), u);
+      if (!loose.has(slotKey(u, false))) loose.set(slotKey(u, false), u);
+    }
+    for (const u of rep.unfilled || []) {
+      const d = exact.get(slotKey(u, true)) || loose.get(slotKey(u, false));
+      if (d) { u.blockers = { ...d.blockers }; u.nearMiss = (d.nearMiss || []).map(n => ({ ...n })); }
+    }
+  } catch (e) {
+    console.warn('Solver-result diagnostics unavailable:', e);
+  }
+  return solverRes;
 }
 
 // ─── WHAT-IF STAFFING SIMULATOR (chief decision support, Violations tab) ──────────────────────
@@ -15175,9 +15224,106 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   );
 }
 
+// ─── ENGINE PICKER ──────────────────────────────────────────────────────────────────────────────
+// One segmented control, rendered in TWO places (the Schedule tab's Generate toolbar and Settings →
+// Optimizer): 'builtin' (local JS generator only) | 'cloud' (Fly or Modal, labelled from the
+// backend's /health jobs mode) | 'local' (solver on THIS computer, with a live status dot). The
+// value is the device-local res_solver_target (never synced); `solverAllowed` is the synced
+// "Use optimizer service" kill switch, which disables the two solver choices.
+function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
+  const [localStatus, setLocalStatus] = useState(undefined); // undefined checking | null down | {ortools,cpus}
+  const [jobsMode, setJobsMode] = useState(null);            // null unknown/loading | 'durable' | 'memory'
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => { if (typeof document !== 'undefined' && document.hidden) return; checkLocalSolverHealth().then(r => { if (!cancelled) setLocalStatus(r); }); };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  useEffect(() => {
+    if (!SOLVER_ENABLED) return undefined;
+    let cancelled = false;
+    probeSolverJobsMode(getSolverUrl()).then(m => { if (!cancelled) setJobsMode(m); });
+    return () => { cancelled = true; };
+  }, []);
+  const cloudLabel = jobsMode === 'durable' ? 'Cloud (Modal)' : jobsMode === 'memory' ? 'Cloud (Fly)' : 'Cloud';
+  const localDot = localStatus === undefined ? 'bg-gray-300' : localStatus ? 'bg-green-500' : 'bg-red-400';
+  const localTip = localStatus === undefined ? 'checking…' : localStatus ? `running · OR-Tools ${localStatus.ortools} · ${localStatus.cpus} core${localStatus.cpus === 1 ? '' : 's'}` : `not running at ${LOCAL_SOLVER_URL}`;
+  const options = [
+    { v: 'builtin', l: 'Built-in', d: 'Local JS generator, no optimizer', disabled: false },
+    { v: 'cloud', l: cloudLabel, d: SOLVER_ENABLED ? 'Shared server (always on)' : 'Not configured in this build', disabled: !SOLVER_ENABLED || !solverAllowed },
+    { v: 'local', l: 'This computer', d: `Faster, must be running (${localTip})`, disabled: !solverAllowed, dot: localDot },
+  ];
+  return (
+    <div className="inline-flex flex-col gap-1">
+      <div role="radiogroup" aria-label="Schedule engine" className="inline-flex gap-1.5 flex-wrap">
+        {options.map(({ v, l, d, disabled, dot }) => {
+          const on = value === v;
+          return (
+            <button key={v} type="button" role="radio" aria-checked={on} disabled={disabled}
+              onClick={() => onChange(v)} title={d}
+              className={`flex flex-col items-start rounded-lg border-2 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${compact ? 'px-2 py-1' : 'px-3 py-2'} ${on ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-purple-300 bg-white'}`}>
+              <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-bold flex items-center gap-1.5 ${on ? 'text-purple-700' : 'text-gray-700'}`}>
+                {dot && <span className={`inline-block w-2 h-2 rounded-full ${dot}`} aria-hidden="true"/>}
+                {l}
+              </span>
+              {!compact && <span className="text-xs text-gray-400 mt-0.5">{d}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {!solverAllowed && (
+        <span className="text-[11px] text-amber-600">Optimizer service is turned off in Settings, so only Built-in runs.</span>
+      )}
+    </div>
+  );
+}
+
+// Compact local-vs-optimizer card for GenerationReportCard (report.engineComparison, plain data).
+// Slot labels come from the CURRENT rule priority, which is what pickEngineResult used unless the
+// chief reordered it after generating.
+function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpenSolver }) {
+  const labels = qualityVectorLabels(normalizeRulePriority(appSettings?.rulePriority));
+  const winnerKey = c.winner === 'cpsat' ? 'solver' : c.winner;
+  const requested = c.target === 'local' ? 'This computer' : c.target === 'cloud' ? 'Cloud' : null;
+  const ranOn = c.backend ? backendLabel(c.backend) : null;
+  const num = x => (typeof x === 'number' ? (Number.isInteger(x) ? String(x) : x.toFixed(1)) : '-');
+  const row = (name, sc, win) => (
+    <div className={win ? 'font-semibold' : ''}>
+      <div>{name}{win ? ' (used)' : ''}: {sc ? `${sc.errorCount} error${sc.errorCount !== 1 ? 's' : ''}, ${sc.blockingWarnCount} blocking warning${sc.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}</div>
+      {sc && Array.isArray(sc.qualityVector) && (
+        <div className="font-normal opacity-80">
+          {sc.qualityVector.map((x, i) => `${labels[i] || `Slot ${i + 1}`} ${num(x)}`).join(' · ')}
+        </div>
+      )}
+    </div>
+  );
+  return (
+    <div className="text-xs text-blue-700 mt-1 space-y-1" data-testid="engine-comparison">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="px-1.5 py-0.5 rounded-full font-bold bg-blue-100">
+          {winnerKey === 'solver' ? `${ranOn || 'Optimizer'} used` : winnerKey === 'tie' ? 'Tie - kept Built-in' : 'Built-in used'}
+        </span>
+        {(requested || ranOn) && <span>Requested {requested || 'optimizer'}{ranOn ? `, ran on ${ranOn}` : ''}</span>}
+        {typeof c.budgetSeconds === 'number' && <span>· budget {c.budgetSeconds}s</span>}
+        {typeof c.wallSeconds === 'number' && <span>· took {c.wallSeconds}s</span>}
+        {c.solverStatus && <span>· status {c.solverStatus}</span>}
+      </div>
+      {row('Built-in', c.local, winnerKey !== 'solver')}
+      {row('Optimizer', c.solver, winnerKey === 'solver')}
+      {canOpenSolver && (
+        <button type="button" onClick={onOpenSolver}
+          className="mt-1 px-2 py-1 rounded-md border border-blue-300 bg-white text-blue-700 font-semibold hover:bg-blue-100">
+          Open solver result in a playground
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, viewer }) {
+function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer }) {
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -15348,6 +15494,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   const [longSolveSubmitting, setLongSolveSubmitting] = useState(false);
   const [longSolveReview, setLongSolveReview] = useState(null); // {schedule, lockedCells} once "Review" is confirmed-pending
   const [longSolveReviewName, setLongSolveReviewName] = useState('');
+  // The solver schedule that LOST the last Generate's pickEngineResult comparison ({generatedAt,
+  // genBlock, schedule, lockedCells}). Component state only - never persisted in the report.
+  const [solverAlt, setSolverAlt] = useState(null);
   const longSolvePollingRef = useRef(false); // guards against overlapping fetches if one is slow
   const longSolveNotifiedRef = useRef(null); // last {jobId,status} this tab already toasted about
 
@@ -15417,6 +15566,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   async function requestLongSolve(minutes) {
     setLongSolveMenuOpen(false);
     if (longSolveJob?.jobId) { showToast('A long solve is already running.', 'amber'); return; }
+    if (solverRunTarget === 'builtin') { showToast('Pick Cloud or This computer to run a long solve.', 'amber'); return; }
     if (!getBlockDates(block.startDate, block.endDate).length) { showToast('Set block dates first', 'red'); return; }
     setLongSolveSubmitting(true);
     try {
@@ -15497,14 +15647,27 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   }
 
   function confirmLongSolveReview() {
-    if (!longSolveReview || !longSolveJob) return;
-    onCreatePlaygroundFromSolve?.(longSolveReviewName, longSolveJob.genBlock, longSolveReview.schedule, longSolveReview.lockedCells);
+    if (!longSolveReview) return;
+    // A review opened from the report card's "Open solver result" carries its own genBlock and must
+    // not touch any pending long-solve job; a long-solve review falls back to the job's genBlock.
+    const reviewBlock = longSolveReview.genBlock || longSolveJob?.genBlock;
+    if (!reviewBlock) return;
+    onCreatePlaygroundFromSolve?.(longSolveReviewName, reviewBlock, longSolveReview.schedule, longSolveReview.lockedCells);
+    if (longSolveReview.genBlock) { setLongSolveReview(null); return; }
     // onCreatePlaygroundFromSolve reloads the page on success (same as createPlayground) — clear the
     // job bookkeeping now so a reload that lands back here (e.g. a save failure) doesn't re-offer a
     // stale review.
     setLongSolveJob(null);
     setLongSolveStatus(null);
     setLongSolveReview(null);
+  }
+  // Report card -> "Open solver result in a playground": reuses the long-solve review dialog and its
+  // onCreatePlaygroundFromSolve data path with the losing solver schedule held in component state.
+  function openSolverAlt() {
+    if (!solverAlt) return;
+    const now = new Date();
+    setLongSolveReviewName(`Solver result ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+    setLongSolveReview({ schedule: solverAlt.schedule, lockedCells: solverAlt.lockedCells, genBlock: solverAlt.genBlock });
   }
   // Yields one animation frame so React can paint the overlay/stage-text update BEFORE a
   // synchronous, CPU-bound call (generateScheduleBest) blocks the main thread — without this the
@@ -16213,13 +16376,20 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     // Local FIRST, always — see this function's own header for why (both the warm-start source
     // AND, on any solver failure, the final answer itself; generateScheduleBest's own null return
     // for an invalid date range is already handled by the hasValidDates guard just above).
-    setGenStageLabel((SOLVER_ENABLED || solverRunTarget === 'local') ? 'Generating (built-in engine)…' : 'Preparing…');
+    setGenStageLabel((solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local')) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
     const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, undefined,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
         : { phase: 'local', polishing: true, done: p.done, total: p.total }));
     if (!localRes) return null;
+
+    // Engine picker 'builtin': skip the solver entirely - no payload build, no health probe, no
+    // jobs-mode probe. Everything below is the solver path.
+    const withEngineLabel = (res, engineLabel) => ({ ...res, engineLabel, report: { ...res.report, engineLabel } });
+    if (solverRunTarget === 'builtin') {
+      return { ...withEngineLabel(localRes, 'Built-in'), engineUsed: 'local', relaxed: false };
+    }
 
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
     // `!== false` so an old backup/cloud row with no such key keeps the solver ON — the env-var
@@ -16243,28 +16413,39 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         'amber');
     }
     if (solverAllowed && solverTargetUrl) {
+      // Declared outside the try so the catch can still describe what was attempted.
+      let jobsMode = 'memory';
+      let backend = usingLocal ? 'local' : 'cloud';
+      let solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve });
+      const scoreArgs = { ...baseArgs, block: genBlock };
+      let solveStartedAt = Date.now();
       try {
-        // Deep solve (admin opt-in): same pipeline, just a bigger explicit
-        // `config.maxTimeSeconds` override — never the default (buildSolverPayload's own
-        // `maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS` stays the baseline for every other
-        // caller) — and a client-side solveRemote timeout wide enough to cover it.
+        // Jobs mode (Modal durable vs Fly memory) decides the budget, so probe it BEFORE building
+        // the payload. Cached per URL; the local target never needs it.
+        // null = probe failed: behave as Fly (legacy sync path) but label the backend just "Cloud".
+        jobsMode = usingLocal ? 'memory' : await probeSolverJobsMode(solverTargetUrl);
+        backend = backendFor({ usingLocal, jobsMode });
+        solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve });
+        const solverLabel = backendLabel(backend);
+        // Deep solve (admin opt-in) only raises the budget further on Fly; Modal and this computer
+        // already run the long budget by default (see solverBudgetSeconds).
         setGenStageLabel(deepSolve
-          ? `Deep solve — optimizing, this can take up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)}…`
-          : `Optimizing schedule — up to ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)}…`);
-        genSolverStartRef.current = Date.now();
-        setGenProgress({ phase: 'solver', budgetSec: deepSolve ? DEEP_SOLVE_MAX_TIME_SECONDS : DEFAULT_SOLVE_MAX_TIME_SECONDS });
+          ? `Deep solve on ${solverLabel} — optimizing, this can take up to ${approxMinutes(solveBudgetSec)}…`
+          : `Optimizing on ${solverLabel} — up to ${approxMinutes(solveBudgetSec)}…`);
+        solveStartedAt = Date.now();
+        genSolverStartRef.current = solveStartedAt;
+        setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec });
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
-          config: deepSolve ? { maxTimeSeconds: DEEP_SOLVE_MAX_TIME_SECONDS } : {} });
+          config: { maxTimeSeconds: solveBudgetSec } });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
         // service 401s and the catch below keeps the already-computed local result. Never sent to
         // the local target: it runs with SOLVER_AUTH_MODE=off (loopback-only, see run-local.ps1/.sh)
         // and there's no reason to hand a real session token to a process on the same machine.
         const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
-        const solveTimeoutMs = deepSolve ? DEEP_SOLVE_TIMEOUT_MS : DEFAULT_SOLVE_TIMEOUT_MS;
-        const solveBudgetSec = deepSolve ? DEEP_SOLVE_MAX_TIME_SECONDS : DEFAULT_SOLVE_MAX_TIME_SECONDS;
+        const solveTimeoutMs = solverTimeoutMs(solveBudgetSec);
         // Durable backend (Modal: POST /solve disabled) => submit-then-poll; legacy Fly and the
         // local run-local target keep the synchronous solveRemote path exactly as before.
-        const durable = !usingLocal && (await getSolverJobsMode(solverTargetUrl)) === 'durable';
+        const durable = jobsMode === 'durable';
         const runJob = async () => {
           const ac = new AbortController();
           genSolveAbortRef.current = ac;
@@ -16286,6 +16467,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             // Health probe missed a durable backend (cold start): /solve says use_jobs — retry once as a job.
             if (usingLocal || !/use_jobs/.test(String(e?.message))) throw e;
             markSolverJobsDurable(solverTargetUrl);
+            jobsMode = 'durable';
+            backend = backendFor({ usingLocal, jobsMode });
             json = await runJob();
           }
         }
@@ -16298,20 +16481,41 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
         // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
         // polisher, not a blind trust.
-        const scoreArgs = { ...baseArgs, block: genBlock };
-        const { result, winner, engineComparison } = pickEngineResult(solverRes, localRes, scoreArgs);
+        const { result, winner, engineComparison: pick } = pickEngineResult(solverRes, localRes, scoreArgs);
+        const finalLabel = backendLabel(backend);
+        const engineComparison = buildEngineComparison({
+          pick, target: solverRunTarget, backend, budgetSeconds: solveBudgetSec,
+          wallSeconds: (Date.now() - solveStartedAt) / 1000, solverStatus: json.status,
+        });
+        if (winner === 'cpsat') attachSolverDiagnostics(result, scoreArgs);
+        const engineLabel = winner === 'cpsat' ? finalLabel : 'Built-in (optimizer result did not beat it)';
         return {
           ...result,
-          report: { ...result.report, engineComparison },
+          report: { ...result.report, engineComparison, engineLabel },
           engineUsed: winner === 'cpsat' ? 'cpsat' : 'local-better',
+          engineLabel,
           relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
+          // Component-state only (never persisted): the solver schedule that lost, so the report
+          // card can offer "Open solver result in a playground".
+          unshippedSolver: winner === 'cpsat' ? null : { genBlock, schedule: solverRes.schedule, lockedCells: genBlock.lockedCells },
         };
       } catch (e) {
         console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
-        return { ...localRes, engineUsed: 'fallback', relaxed: false };
+        let engineComparison = null;
+        try {
+          engineComparison = buildEngineComparison({
+            pick: pickEngineResult(null, localRes, scoreArgs).engineComparison, target: solverRunTarget, backend,
+            budgetSeconds: solveBudgetSec, wallSeconds: (Date.now() - solveStartedAt) / 1000, solverStatus: 'unavailable',
+          });
+        } catch { /* comparison is advisory */ }
+        const engineLabel = `Built-in (${usingLocal ? 'this computer' : 'cloud'} unavailable)`;
+        return { ...localRes, report: { ...localRes.report, engineComparison, engineLabel }, engineUsed: 'fallback', engineLabel, relaxed: false };
       }
     }
-    return { ...localRes, engineUsed: 'local', relaxed: false };
+    const noSolverReason = !solverAllowed ? 'optimizer service off'
+      : wantsLocalSolver ? 'this computer not running'
+      : 'no optimizer configured';
+    return { ...withEngineLabel(localRes, `Built-in (${noSolverReason})`), engineUsed: 'local', relaxed: false };
   }
 
   // `overrideSchedule` (fill mode only): lets "Fix Violations"/the readiness modal's "Clear
@@ -16334,6 +16538,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
       updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       const rc = res.report.restCompromises.length;
       // Filling with a <24h-rest candidate is a real safety-relevant tradeoff (default Soft Rule
@@ -16350,6 +16555,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
+      if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
@@ -16392,6 +16598,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
       updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
         ? (u === 0
@@ -16403,6 +16610,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
+      if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
@@ -16841,6 +17049,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className="flex items-center gap-2 flex-wrap">
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
+          <EnginePicker compact value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false}/>
           <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
@@ -16850,7 +17059,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               as an explicit buildSolverPayload config override — the default Generate button above is untouched. Gated the same as
               the Settings → "Use optimizer service" toggle, OR'd with solverRunTarget === 'local'
               since the local target never depends on VITE_SOLVER_URL/SOLVER_ENABLED. */}
-          {(SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
+          {solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
               title={`Same as Generate Schedule, but lets the optimizer${solverRunTarget === 'local' ? ' on this computer' : ''} search for up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)} instead of ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)} — can fill more slots on a tight block. Only ships if it beats the regular result.`}>
               Deep Solve (~{Math.round(DEEP_SOLVE_MAX_TIME_SECONDS / 60)} min)
@@ -16861,7 +17070,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               and reviews the result in a playground when it's done (never straight into the real
               schedule). Same gate as Deep Solve: no solver, no job to submit. Disabled while one is
               already pending — see requestLongSolve's own guard. */}
-          {(SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
+          {solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
             <span className="relative">
               <Button variant="secondary" size="sm" icon={Clock} disabled={!!longSolveJob?.jobId || longSolveSubmitting}
                 onClick={() => setLongSolveMenuOpen(o => !o)}
@@ -17147,7 +17356,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           playground. Creating it (onCreatePlaygroundFromSolve) never touches the real schedule —
           same posture as every other playground-creation path in this app. */}
       {longSolveReview && (
-        <ConfirmDialog icon={FlaskConical} tone="info" title="Review the long solve in a playground"
+        <ConfirmDialog icon={FlaskConical} tone="info" title="Review the optimizer result in a playground"
           actions={
             <>
               <Button variant="ghost" size="sm" onClick={() => setLongSolveReview(null)}>Cancel</Button>
@@ -17156,7 +17365,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               </Button>
             </>
           }>
-          <p>Creates a new playground — a copy of the current real workspace — with this block's schedule replaced by the long solve's result. Locked cells are kept. The real schedule is never changed; use "Use this schedule for real…" from inside the playground afterward if you want to keep it.</p>
+          <p>Creates a new playground — a copy of the current real workspace — with this block's schedule replaced by the optimizer's result. Locked cells are kept. The real schedule is never changed; use "Use this schedule for real…" from inside the playground afterward if you want to keep it.</p>
           <label className="block text-xs font-medium text-gray-700 mt-2">Playground name</label>
           <input type="text" value={longSolveReviewName} onChange={e=>setLongSolveReviewName(e.target.value)} autoFocus
             className="w-full mt-1 text-sm border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary bg-white"/>
@@ -17370,7 +17579,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
+            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
         </div>
       )}
       </div>
@@ -17393,7 +17603,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
+            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
         </div>
       )}
       </div>
@@ -18485,7 +18696,7 @@ function ReportSubsection({ compact, title, count, children }) {
   );
 }
 
-function GenerationReportCard({ report, appSettings, blockStart, allResidents, compact = false }) {
+function GenerationReportCard({ report, appSettings, blockStart, allResidents, compact = false, solverAlt = null, onOpenSolverAlt = null }) {
   const summary = useMemo(()=>summarizeGenerationReport(report, appSettings, blockStart),[report,appSettings,blockStart]);
   const realGapGroups = summary.filter(s=>!s.structural);
   const structuralGroups = summary.filter(s=>s.structural);
@@ -18529,16 +18740,8 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
         {report.engineComparison && (
-          <p className="text-xs text-blue-700 mt-1 flex items-center gap-1.5 flex-wrap">
-            <span className="px-1.5 py-0.5 rounded-full font-bold bg-blue-100">
-              {report.engineComparison.winner === 'cpsat' ? 'Optimizer' : 'Built-in engine'} used
-            </span>
-            <span>
-              optimizer: {report.engineComparison.solver ? `${report.engineComparison.solver.errorCount} error${report.engineComparison.solver.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.solver.blockingWarnCount} blocking warning${report.engineComparison.solver.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
-              {' · '}
-              built-in: {report.engineComparison.local ? `${report.engineComparison.local.errorCount} error${report.engineComparison.local.errorCount !== 1 ? 's' : ''}, ${report.engineComparison.local.blockingWarnCount} blocking warning${report.engineComparison.local.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}
-            </span>
-          </p>
+          <EngineComparisonCard comparison={report.engineComparison} appSettings={appSettings}
+            canOpenSolver={!!(onOpenSolverAlt && solverAlt && solverAlt.generatedAt === report.generatedAt)} onOpenSolver={onOpenSolverAlt}/>
         )}
       </div>
       <div className="p-4 space-y-3">
@@ -18740,7 +18943,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
 function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
-  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover }) {
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt }) {
   const { mustFix, orderedWarns } = panelIssues;
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
   // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
@@ -18841,7 +19044,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
         {report && (
           <section>
             <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">Generation notes</h3>
-            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} allResidents={allResidents} compact/>
+            <GenerationReportCard report={report} appSettings={appSettings} blockStart={blockStart} allResidents={allResidents} compact solverAlt={solverAlt} onOpenSolverAlt={onOpenSolverAlt}/>
           </section>
         )}
       </div>
@@ -20860,12 +21063,9 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             </div>
           </div>
 
-          {/* Optimizer engine toggle — meaningful whenever EITHER a cloud solver is configured for
-              this build (VITE_SOLVER_URL) OR "This computer" is selected below (which never needs
-              VITE_SOLVER_URL — see solverClient.js's LOCAL_SOLVER_URL); hidden only when neither
-              target could ever be reached, same posture as the feedback widget. */}
-          {(SOLVER_ENABLED || solverRunTarget === 'local') && (
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+          {/* Optimizer kill switch (synced): when off, the engine picker below disables Cloud and
+              This computer. Always shown so the picker's hint has something to point at. */}
+          <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input type="checkbox" checked={appSettings.useSolverService !== false}
                 onChange={e=>updS('useSolverService', e.target.checked)} className="rounded mt-0.5"/>
               <span>
@@ -20873,7 +21073,6 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                 <span className="block text-xs text-gray-400">Generate Schedule uses the external CP-SAT optimizer when reachable, falling back to the built-in generator on any failure. Uncheck to always use the built-in generator.</span>
               </span>
             </label>
-          )}
 
           {/* "Run the optimizer on this computer" (2026-10-16): device-local choice of solver
               target, never synced (see res_solver_target's own comment at its useLocalStorage call).
@@ -20882,19 +21081,8 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               or run-local.sh on this machine. */}
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Optimizer — where to run</label>
-            <p className="text-xs text-gray-400 mb-2">Cloud runs on the shared, low-power server (always on, no setup). This computer uses a copy of the optimizer running locally on this machine — much faster on a multi-core laptop, but only while you've started it here and only for this device (this choice is not synced to other admins).</p>
-            <div className="flex gap-2 flex-wrap">
-              {[
-                { v: 'cloud', l: 'Cloud', d: 'Shared server (default)' },
-                { v: 'local', l: 'This computer', d: 'Faster, must be running' },
-              ].map(({ v, l, d }) => (
-                <button key={v} onClick={()=>setSolverRunTarget(v)}
-                  className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 text-left transition-all ${solverRunTarget===v?'border-purple-500 bg-purple-50':'border-gray-200 hover:border-purple-300 bg-white'}`}>
-                  <span className={`text-xs font-bold ${solverRunTarget===v?'text-purple-700':'text-gray-700'}`}>{l}</span>
-                  <span className="text-xs text-gray-400 mt-0.5">{d}</span>
-                </button>
-              ))}
-            </div>
+            <p className="text-xs text-gray-400 mb-2">Built-in uses only the local JS generator (no optimizer). Cloud runs on the shared server (always on, no setup). This computer uses a copy of the optimizer running locally on this machine — much faster on a multi-core laptop, but only while you've started it here and only for this device (this choice is not synced to other admins).</p>
+            <EnginePicker value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false}/>
             {solverRunTarget === 'local' && (
               <p className="text-xs mt-2">
                 {localSolverStatus === undefined && <span className="text-gray-400">Checking…</span>}
@@ -23499,7 +23687,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   // solverClient.js's LOCAL_SOLVER_URL). Device-local by necessity, same posture as res_dark_mode/
   // res_demo_mode: another admin's machine doesn't have this device's local solver running, so this
   // preference must never sync — NOT in LS_BACKUP_KEYS/syncBindings.
-  const [solverRunTarget, setSolverRunTarget] = useLocalStorage('res_solver_target', 'cloud');
+  const [solverRunTargetRaw, setSolverRunTarget] = useLocalStorage('res_solver_target', 'cloud');
+  // Untrusted shape (device storage): 'builtin' | 'cloud' | 'local', anything else reads as 'cloud'.
+  const solverRunTarget = normalizeSolverTarget(solverRunTargetRaw);
 
   // Cross-device cloud sync (see the SUPABASE SYNC section). dbStatus/dbError feed
   // AutosaveIndicator's cloud states. dbReady gates the debounced cloud-save effect so it never
@@ -25316,7 +25506,7 @@ export default function ResidentScheduler({ viewer } = {}) {
             </div>
           )}
           {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
-            onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} viewer={viewer}/>}
+            onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} viewer={viewer}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
