@@ -98,6 +98,47 @@ def test_stopper_stop_search_reaches_every_run():
     assert s1.stopped == 1 and s2.stopped == 1
 
 
+def test_failed_run_records_error_and_winner_still_chosen(monkeypatch):
+    real = solve_module._solve_single
+
+    def flaky(payload, cancel_event=None, on_progress=None):
+        if payload.config.random_seed == 43:
+            raise RuntimeError("boom build bug")
+        return real(payload, cancel_event, on_progress)
+
+    monkeypatch.setattr(solve_module, "_solve_single", flaky)
+    result = solve(parse_payload(_raw(3)))
+    per_run = result.report["portfolio"]["perRun"]
+    assert per_run[1]["status"] == "ERROR"
+    assert per_run[1]["tiers"] is None
+    assert "boom build bug" in per_run[1]["error"]
+    assert "error" not in per_run[0] and "error" not in per_run[2]
+    assert result.report["portfolio"]["winnerIndex"] in (0, 2)
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+
+
+def test_batching_splits_time_and_workers(monkeypatch):
+    seen = []
+    real = solve_module._solve_single
+
+    def recorder(payload, cancel_event=None, on_progress=None):
+        seen.append((payload.config.random_seed, payload.config.num_workers, payload.config.max_time_seconds))
+        return real(payload, cancel_event, on_progress)
+
+    monkeypatch.setattr(solve_module, "_solve_single", recorder)
+    # 2 workers, K=5 -> concurrent 2, 3 batches, 1 worker each, budget 6s / 3 = 2s per run.
+    monkeypatch.setattr(solve_module, "_num_workers", lambda payload: 2)
+    solve(parse_payload(_raw(5, workers=2, seconds=6)))
+    assert sorted(s[0] for s in seen) == [42, 43, 44, 45, 46]
+    assert all(w == 1 for _s, w, _t in seen)
+    assert all(t == pytest.approx(2.0) for _s, _w, t in seen)
+
+    seen.clear()  # K <= workers: one batch, full budget
+    monkeypatch.setattr(solve_module, "_num_workers", lambda payload: 4)
+    solve(parse_payload(_raw(2, workers=4, seconds=6)))
+    assert all(w == 2 and t == pytest.approx(6.0) for _s, w, t in seen)
+
+
 def test_cancel_registry_receives_stopper_and_stop_is_honoured():
     """A stoppable caller's list gets the portfolio stopper; stopping before runs start
     makes the whole portfolio bail instead of solving."""

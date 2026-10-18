@@ -8,6 +8,7 @@ as-is, never "upgraded" by relaxing anything.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import threading
 import time
@@ -673,12 +674,16 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult
     """K independent full solves (seed = base + i), run concurrently in threads (OR-Tools releases
     the GIL), best by `_result_rank_key` wins, ties go to the lowest i. Workers are split
     `max(1, total // concurrent)` per run and each run gets the full `maxTimeSeconds`; if K exceeds
-    the worker count, runs go in batches of `total` concurrent runs (wall time = batches x budget)."""
+    the worker count, runs go in batches of `concurrent` runs and each run gets `maxTimeSeconds / batches`
+    (wall time stays ~ maxTimeSeconds)."""
     cfg = payload.config
     k = cfg.portfolio
     total_workers = _num_workers(payload)
     concurrent = max(1, min(k, total_workers))
     per_run_workers = max(1, total_workers // concurrent)
+    batch_count = -(-k // concurrent)
+    # Wall time stays ~ maxTimeSeconds: when runs need several batches each gets an equal share.
+    per_run_seconds = cfg.max_time_seconds / batch_count
 
     if on_progress is None:
         on_progress = getattr(_tls, "on_progress", None)
@@ -693,7 +698,8 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult
     def run(i: int) -> None:
         sub = dataclasses.replace(
             payload,
-            config=dataclasses.replace(cfg, portfolio=1, random_seed=cfg.random_seed + i, num_workers=per_run_workers),
+            config=dataclasses.replace(cfg, portfolio=1, random_seed=cfg.random_seed + i, num_workers=per_run_workers,
+                                       max_time_seconds=per_run_seconds),
         )
         my_list = begin_stoppable_run(on_progress if i == 0 else None)
         stopper.add_list(my_list)
@@ -703,6 +709,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult
                 raise RuntimeError("cancelled")
             outcomes[i] = (_solve_single(sub, cancel_event, None), None, time.time() - t0)
         except BaseException as exc:  # one failed run must not lose the others
+            logging.getLogger(__name__).warning("portfolio run %d (seed %d) failed: %r", i, cfg.random_seed + i, exc)
             outcomes[i] = (None, exc, time.time() - t0)
         finally:
             end_stoppable_run()
@@ -736,6 +743,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult
             "status": res.status if res is not None else "ERROR",
             "tiers": res.tiers if res is not None else None,
             "wallSeconds": round(wall, 1),
+            **({"error": str(_err)} if _err is not None else {}),
         })
     winner.report = dict(winner.report)
     winner.report["portfolio"] = {"k": k, "winnerIndex": winner_index, "perRun": per_run}

@@ -1331,7 +1331,8 @@ Independent restarts with different seeds, keeping the best, are a cheap hedge.
   fallback, with `randomSeed + i` for run `i`. Runs are threads in the calling process (OR-Tools
   releases the GIL). Total workers `W = _num_workers(payload)`; `concurrent = min(K, W)`; each run
   gets `max(1, W // concurrent)` workers and the FULL `maxTimeSeconds`. If `K > W`, runs go in
-  batches of `concurrent` (wall time = batches x budget).
+  batches of `concurrent` and each run gets `maxTimeSeconds / batches`, so total wall time stays
+  ~ `maxTimeSeconds` (never beyond Modal's timeout or the client's progress budget).
 - **The trade**: each run searches with fewer workers (e.g. 8 workers, K=4 -> 2 workers each), so a
   single run is weaker than the one K=1 run that owns every core. The portfolio wins only when
   seed luck dominates worker count; on instances where raw parallelism matters it can LOSE (see
@@ -1344,7 +1345,7 @@ Independent restarts with different seeds, keeping the best, are a cheap hedge.
   `INFEASIBLE`. Ties go to the lowest run index. `SolveResult.seed` is the winner's seed.
 - Report (additive; `mapSolverResult` copies only named report keys, like `hintPinning`):
   `report.portfolio = {k, winnerIndex, perRun: [{seed, status, tiers, wallSeconds}]}`. A run that
-  raised is listed with `status: "ERROR"`, `tiers: null`; if all runs raise, the first error
+  raised is listed with `status: "ERROR"`, `tiers: null`, `error: <message>` (also logged); if all runs raise, the first error
   propagates.
 - **Cancel**: a `_PortfolioStopper` is appended to the calling thread's stoppable-run list, so the
   existing job cancel (`stop_search()` on the list's last entry) stops the most recent solver of
