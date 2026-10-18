@@ -260,6 +260,17 @@ def _is_empty_stage(expr) -> bool:
     return isinstance(expr, int) and expr == 0
 
 
+def _expand_split(payload: Payload, a, b, c, d) -> list:
+    """4-entry (errors, blocking, rank, quality) -> 5-entry split. Rest first: rest lives in
+    TIER_BLOCKING. Coverage first: blocking keeps half only if conferenceTolerated can populate it
+    (block touches a conference), else rest gets the whole blocking share."""
+    if rest_outranks_coverage(payload.rule_priority):
+        return [a, b, c, 0.0, d]
+    if payload.block_touches_conference:
+        return [a, b / 2, c, b / 2, d]
+    return [a, 0.0, c, b, d]
+
+
 def _stage_time_budgets(payload: Payload) -> list:
     """Splits `config.max_time_seconds` across the staged-solve stages
     (`_STAGE_NAMES`) per `config.stage_split` (default 15/15/50/20, see
@@ -281,11 +292,11 @@ def _stage_time_budgets(payload: Payload) -> list:
         # Coverage first -> blocking's share is split with TIER_REST (blocking then holds only
         # conferenceTolerated). Empty stages roll their share forward anyway.
         a, b, c, d = splits
-        splits = [a, b, c, 0.0, d] if rest_outranks_coverage(payload.rule_priority) else [a, b / 2, c, b / 2, d]
+        splits = _expand_split(payload, a, b, c, d)
     if len(splits) != len(_STAGE_NAMES) or sum(splits) <= 0:
         splits = list(Config.stage_split)
         a, b, c, d = splits
-        splits = [a, b, c, 0.0, d] if rest_outranks_coverage(payload.rule_priority) else [a, b / 2, c, b / 2, d]
+        splits = _expand_split(payload, a, b, c, d)
     s = sum(splits)
     normalized = [x / s for x in splits]
     budgets = [max(0.1, total * f) for f in normalized]
@@ -323,7 +334,7 @@ _TIEBREAK_MULTIPLIER = 1_000_000
 
 
 def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None):
-    """Runs the 4-stage lexicographic ladder described at `_STAGE_NAMES`'s
+    """Runs the (up to 5-stage) lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
     ever-growing set of "stage N was already this good" bound constraints

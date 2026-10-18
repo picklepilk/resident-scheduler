@@ -183,8 +183,24 @@ def test_stage_time_budgets_sum_within_total_and_respect_split():
     assert sum(budgets) <= payload.config.max_time_seconds + 1e-6
     # Default priority (coverage first): blocking's 10% is shared with the rest stage. Roughly
     # proportional (30/5/40/5/20): rank largest, blocking/rest smallest.
-    assert budgets[2] > budgets[0] > budgets[4] > budgets[1]
-    assert budgets[1] == pytest.approx(budgets[3])
+    assert budgets[2] > budgets[0] > budgets[1]
+    assert budgets[1] < 0.2 and budgets[3] > budgets[1]  # no conference: rest gets blocking's share
+
+
+def test_stage_time_budgets_conference_block_splits_blocking_share():
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 30.0)
+    object.__setattr__(payload, "block_touches_conference", True)
+    budgets = _stage_time_budgets(payload)
+    assert budgets[1] == pytest.approx(budgets[3]) and budgets[1] > 0.2
+
+
+def test_stage_time_budgets_accepts_five_entry_split():
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 10.0)
+    object.__setattr__(payload.config, "stage_split", (0.1, 0.1, 0.4, 0.3, 0.1))
+    budgets = _stage_time_budgets(payload)
+    assert budgets == pytest.approx([1.0, 1.0, 4.0, 3.0, 1.0])
 
 
 def test_stage_time_budgets_rest_first_gives_rest_stage_nothing():
@@ -254,7 +270,7 @@ def test_stage_time_budgets_falls_back_to_default_split_when_misconfigured():
     # Default split is 15/15/50/20 (see payload.py's Config.stage_split) --
     # stages 1-2 tied, stage 3 (coverage) by far the largest, stage 4
     # (quality) the second-largest.
-    assert budgets[2] > budgets[4] > budgets[0] > budgets[1]
+    assert budgets[2] > budgets[4] > budgets[0] and budgets[3] > budgets[1]
 
 
 def test_stage_time_budgets_wrong_length_falls_back_to_default_split():
@@ -265,7 +281,7 @@ def test_stage_time_budgets_wrong_length_falls_back_to_default_split():
     object.__setattr__(payload.config, "stage_split", (0.3, 0.2, 0.5))  # stale 3-tuple
     budgets = _stage_time_budgets(payload)
     assert len(budgets) == 5
-    assert budgets[2] > budgets[4] > budgets[0] > budgets[1]
+    assert budgets[2] > budgets[4] > budgets[0] and budgets[3] > budgets[1]
 
 
 def test_parse_payload_without_stage_split_uses_configs_own_default():
@@ -301,7 +317,7 @@ def test_rank_and_quality_run_as_two_separate_stage_solves_not_one(monkeypatch):
     EM-core), postNightRest (a night shift exists, so penalty vars exist; under
     the default coverage-first priority they form TIER_REST, after TIER_RANK;
     TIER_BLOCKING is then empty and skipped), TIER_RANK (D's coverage min is 1/day), and TIER_QUALITY (r1
-    has a dowPreference bonus) -- every one of the 4 stages actually solves.
+    has a dowPreference bonus) -- every non-empty stage actually solves.
     `_carry_hint` runs once per non-final stage transition: ERRORS->RANK,
     RANK->REST, and -- the thing this test actually proves, now that
     RANK and QUALITY are no longer combined into one solve -- REST->QUALITY

@@ -1398,3 +1398,11 @@ of `rulePriority`" statements in the R9 tier-mapping table above (rows `blocking
   only when rest outranks coverage; otherwise only `targetDeficitCore` and `coverageMin` are pinned
   (a pin on rest would block the rest-for-coverage trade). `report.hintPinning.pinned` lists only
   the components actually pinned. Weighted mode and `apply_rule_priority` are unchanged.
+
+Review follow-up (2026-10-18): in coverage-first order `overstaffCoverage` moves from `TIER_RANK` to
+`TIER_REST` (JS never ranks overstaff above rest; it stays above `TIER_QUALITY`). Inside that stage
+rest's coefficient is scaled to `floor(total overstaff weight / rest weight) + 1` times the base, so
+one rest violation outweighs the entire overstaff sum (provable dominance; reported `tiers` value for
+`TIER_REST` is in these scaled units). Rest-first order is unchanged (overstaff in `TIER_RANK`).
+When the block touches no conference (`TIER_BLOCKING` empty) the 4-entry `stageSplit` gives rest the
+whole blocking share.

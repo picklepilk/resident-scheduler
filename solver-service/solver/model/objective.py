@@ -203,7 +203,8 @@ class PostNightRestPenalty:
 #                                      already a solver HARD constraint:
 #                                      targetDeficitCore (EM-core resident
 #                                      under shift-count target).
-#   TIER_BLOCKING ~ blockingWarnCount -- postNightRest (blocksExport:true).
+#   TIER_BLOCKING ~ blockingWarnCount -- postNightRest when rulePriority ranks it
+#                                      FIRST (otherwise it lives in TIER_REST), plus conferenceTolerated.
 #                                      Override-tier rule violations are the
 #                                      OTHER blockingWarnCount contributor in
 #                                      JS, but those are hard-never-broken in
@@ -211,9 +212,10 @@ class PostNightRestPenalty:
 #                                      solver/model/count_caps.py et al.), so
 #                                      they contribute nothing here to stage.
 #   TIER_RANK     ~ qualityVector[n0,n1,n2] -- coverageMin slack +
-#                                      overstaffCoverage. seniorComposition
-#                                      is hard (always 0); postNightRest is
-#                                      already pinned by TIER_BLOCKING above.
+#                                      overstaffCoverage (rest-first order)
+#                                      or coverageMin alone (coverage-first;
+#                                      overstaff moves to TIER_REST).
+#                                      seniorComposition is hard (always 0).
 #   TIER_QUALITY  ~ qualityVector[fairnessPlusShape] -- everything else:
 #                                      non-core targetDeficit, fairness,
 #                                      isolatedNight, nightFragment,
@@ -231,7 +233,9 @@ TIER_QUALITY = "tier4_quality"
 # AFTER TIER_RANK, so a coverage slot can never be traded for fewer rest
 # violations (JS: postNightRest sits in the quality-vector slot after
 # coverage). Exactly one of TIER_BLOCKING's rest term / TIER_REST is ever
-# populated; the per-payload 4-stage ladder is `staged_ladder()` in solve.py.
+# populated; the ladder actually solved is `_STAGE_NAMES` in solve.py (`_solve_staged`), empty stages skipped.
+# Coverage-first, TIER_REST also holds overstaffCoverage, strictly dominated by rest (rest weight
+# scaled above the total possible overstaff sum); overstaff stays above TIER_QUALITY.
 # (TIER_BLOCKING still also holds conferenceTolerated in either order.)
 TIER_REST = "tier3b_restAfterCoverage"
 STAGE_ORDER = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_REST, TIER_QUALITY)
@@ -795,12 +799,25 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     tier_rest = TermGroup(TIER_REST)
 
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
-    _add_overstaff_term(tier_rank, coverage_result, weights)
+    rest_first = rest_outranks_coverage(payload.rule_priority)
+    rest_weights = weights
+    if rest_first:
+        _add_overstaff_term(tier_rank, coverage_result, weights)
+    else:
+        # Coverage-first: JS never ranks overstaff above rest, but it must stay above TIER_QUALITY.
+        # It shares TIER_REST with the rest term, and rest's coefficient is scaled so that ONE rest
+        # violation outweighs the WHOLE possible overstaff sum (provable lexicographic dominance:
+        # scale = floor(total overstaff weight / rest weight) + 1).
+        _add_overstaff_term(tier_rest, coverage_result, weights)
+        overstaff_total = int(weights["overstaffCoverage"]["perUnit"]) * len(coverage_result.overstaff)
+        rest_unit = max(1, int(weights["postNightRest"]["perViolation"]))
+        scale = overstaff_total // rest_unit + 1
+        rest_weights = {**weights, "postNightRest": {**weights["postNightRest"], "perViolation": rest_unit * scale}}
     target_deficit_vars = _add_target_deficit_terms(
         model, payload, store, tier_errors, tier_quality, tier_blocking, weights
     )
     post_night_rest_penalties = _add_post_night_rest_term(
-        model, payload, store, tier_blocking if rest_outranks_coverage(payload.rule_priority) else tier_rest, weights
+        model, payload, store, tier_blocking if rest_first else tier_rest, rest_weights
     )
     _add_fairness_terms(model, payload, store, tier_quality, weights)
     _add_isolated_night_term(model, payload, store, tier_quality, weights)

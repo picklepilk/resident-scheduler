@@ -157,3 +157,14 @@ def test_cancel_registry_receives_stopper_and_stop_is_honoured():
         assert not stopper.stopped.is_set()
     finally:
         solve_module.end_stoppable_run()
+
+
+def test_rank_key_includes_rest_tier_between_rank_and_quality():
+    def res(tiers):
+        return SolveResult("FEASIBLE", "strict", {}, 0, 0, 0, {}, {}, None, tiers)
+
+    base = {"tier1_errors": 0, "tier2_blockingWarns": 0, "tier3_qualityRank": 0}
+    fewer_rest = res({**base, "tier3b_restAfterCoverage": 1, "tier4_quality": 999})
+    more_rest = res({**base, "tier3b_restAfterCoverage": 2, "tier4_quality": 0})
+    worse_cov = res({**base, "tier3_qualityRank": 1, "tier3b_restAfterCoverage": 0, "tier4_quality": 0})
+    assert sorted([worse_cov, more_rest, fewer_rest], key=_result_rank_key) == [fewer_rest, more_rest, worse_cov]

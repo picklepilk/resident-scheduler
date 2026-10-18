@@ -71,3 +71,27 @@ def test_rest_first_priority_leaves_the_slot_open():
     assert len(result.schedule["r1"]) == 1
     assert result.tiers[TIER_BLOCKING] == 0
     assert result.tiers["tier3_qualityRank"] > 0         # the open slot
+
+
+def test_default_order_one_rest_violation_outweighs_all_overstaff():
+    """Overstaff shares TIER_REST with the rest term but must never beat it: rest's coefficient is
+    scaled above the total possible overstaff weight, so a rest violation is never accepted to
+    avoid an overstaff slot. Rest-first keeps overstaff in TIER_RANK."""
+    from solver.model.objective import TIER_RANK
+
+    def coefs(build, tier):
+        build.model.minimize(build.objective.stage_exprs[tier])
+        proto = build.model.proto
+        return {
+            proto.variables[v].name: abs(c) for v, c in zip(proto.objective.vars, proto.objective.coeffs)
+        }
+
+    default = build_model(_payload(DEFAULT_PRIORITY))
+    names = coefs(default, TIER_REST)
+    rest_coefs = [c for n, c in names.items() if n.startswith("postNightRest")]
+    over_coefs = [c for n, c in names.items() if not n.startswith("postNightRest")]
+    assert rest_coefs
+    assert min(rest_coefs) >= sum(over_coefs)
+
+    rest_first = build_model(_payload(REST_FIRST))
+    assert not any(n.startswith("postNightRest") for n in coefs(rest_first, TIER_RANK))
