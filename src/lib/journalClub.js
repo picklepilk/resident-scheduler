@@ -1,12 +1,11 @@
 // src/lib/journalClub.js
-// Journal Club date helpers. JC dates were formerly derived-only (the first Tuesday of every
-// month), fixed by the calendar with no chief input. They're now chief-overridable per academic
-// year via ayData[AY].jcDates — a stored list wins over derivation, but an AY with no stored list
-// (absent key, or a value that isn't a valid array) still derives the plain first-Tuesday
-// schedule exactly as before, so every AY that predates this feature (and any new AY the chief
-// hasn't touched yet) keeps working with zero migration.
+// Journal Club date helpers. JC dates are CHIEF-LOGGED per academic year in ayData[AY].jcDates
+// (see lib/ruleDates.js). They used to be derived (first Tuesday of every month) when no list was
+// stored; as of 2026-10-18 an absent list means NO dates. The first-Tuesday math survives only as a
+// suggester (getFirstTuesdaysInRange) and in the one-time migration that materialized the old
+// derived dates into stored lists.
 
-import { parseDate, toDateStr, addDays, ayWindowFor, getAcademicYearFor } from './dates.js';
+import { parseDate, toDateStr, getAcademicYearFor } from './dates.js';
 
 // Preserved verbatim from ResidentScheduler.jsx's CIRCADIAN/JOURNAL CLUB section.
 export function isFirstTuesday(dateStr) {
@@ -46,23 +45,11 @@ function validStoredList(v) {
   return v.filter(x => typeof x === 'string' && DATE_RE.test(x));
 }
 
-// Resolves the full list of Journal Club dates for one academic year: the chief's stored
-// override if present (even if explicitly empty), otherwise every first Tuesday in the AY's
-// July-to-July window. opts.fallbackDateStr lets a caller holding only a raw date (not an AY
-// string) still resolve — used by isJcDate-style call sites that only know "this date," via
-// getAcademicYearFor.
-export function resolveJcDates(ayString, ayConf, opts = {}) {
-  let win = ayWindowFor(ayString);
-  if (!win && opts.fallbackDateStr) win = ayWindowFor(getAcademicYearFor(opts.fallbackDateStr));
-  if (!win) return [];
-
-  const stored = validStoredList(ayConf?.jcDates);
-  if (stored) return sortedDedupedDates(stored);
-
-  // ayWindowFor's end is exclusive (next AY's July 1) — getFirstTuesdaysInRange is inclusive,
-  // so back the range up one day or a first-Tuesday July 1 of the NEXT AY would leak in.
-  const lastDay = toDateStr(addDays(parseDate(win.end), -1));
-  return sortedDedupedDates(getFirstTuesdaysInRange(win.start, lastDay));
+// Resolves the chief-logged Journal Club dates for one academic year (absent/invalid = []).
+// opts.fallbackDateStr is kept for call-site compatibility; the AY is no longer needed to derive,
+// so it is unused.
+export function resolveJcDates(ayString, ayConf, opts = {}) { // eslint-disable-line no-unused-vars
+  return sortedDedupedDates(validStoredList(ayConf?.jcDates) || []);
 }
 
 // resolveJcDates(...) clipped to [startStr, endStr] inclusive. Plain string compare is safe here
@@ -80,12 +67,8 @@ export function isJcDate(dateStr, ayString, ayConf, opts = {}) {
   return resolveJcDates(ayString, ayConf, opts).includes(dateStr);
 }
 
-// For validators that legitimately see dates spanning MULTIPLE academic years (a resident's
-// jcPresentDates accumulates across years, unlike a single generated block). Derives the date's
-// own AY, then resolves against that AY's entry in ayData — falling through to DERIVED first
-// Tuesdays (never []) when ayData has no entry for that AY, so a historical presenting date from
-// before this feature existed (or from an AY the chief never customized) still validates
-// correctly instead of reading as invalid.
+// For validators that see dates spanning MULTIPLE academic years (a resident's jcPresentDates
+// accumulates across years): resolves against the date's own AY entry in ayData.
 export function isJcDateAnyAy(dateStr, ayData) {
   const ay = getAcademicYearFor(dateStr);
   return resolveJcDates(ay, ayData?.[ay]).includes(dateStr);

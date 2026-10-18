@@ -31,7 +31,7 @@ const FLEX_WW = '2026-07-15';      // FLEX's (PGY-2's) own Wellness Wednesday (2
 const POD_WW = '2026-07-22';       // POD's (PGY-3's) own Wellness Wednesday (3rd)
 
 function compositionIssues(allResidents, schedule, appSettings, ayConf) {
-  return validateAll(allResidents, schedule, block, {}, appSettings, {}, {}, [], ayConf).filter(i => i.message.includes('requires an EM PGY-'));
+  return validateAll(allResidents, schedule, block, {}, appSettings, {}, {}, [], { ...makeFixture('standard').ayConf, ...(ayConf || {}) }).filter(i => i.message.includes('requires an EM PGY-'));
 }
 
 describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {

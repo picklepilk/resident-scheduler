@@ -8,6 +8,7 @@
 // mirroring grRestRules.test.js/traumaRunCap.test.js's own "hand-built schedule" pattern.
 import { describe, it, expect } from 'vitest';
 import { cellViolations, eligibilityBlockReasons } from '../ResidentScheduler.jsx';
+import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 function res(overrides) {
   return {
@@ -266,7 +267,7 @@ describe('eligibility message/severity consistency (2026-09-27 fix)', () => {
 
   it('WW alone (no restriction) stays override-tier: warn with the WW message', () => {
     const b = { ...block, schedule: { p3: {} } };
-    const vs = cellViolations(pgy3, POD_WW, 'POD-D', b, {}, {}, {}, {});
+    const vs = cellViolations(pgy3, POD_WW, 'POD-D', b, {}, {}, {}, makeFixture('standard').ayConf);
     const v = vs.find(x => x.rule === 'wellnessWednesday');
     expect(v).toBeTruthy();
     expect(v.level).toBe('warn');
