@@ -14,7 +14,12 @@ export function pressureLevel(ratio) {
   return 'tight';
 }
 
-function validDate(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
+function validDate(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 
 export function computeSetupGaps(input = {}) {
   const {
@@ -23,7 +28,9 @@ export function computeSetupGaps(input = {}) {
     residentIssues = [], pendingResidentCount = 0, offServiceNoRanges = [], supplyDemand = null,
   } = input;
   const gaps = [];
-  const add = g => gaps.push({ severity: 'advisory', suppresses: [], ...g });
+  // Default BLOCKING (the rule/resident silently does not work); holidays, conferences, pending requests
+  // and pressure pass severity: 'advisory' explicitly.
+  const add = g => gaps.push({ severity: 'blocking', suppresses: [], ...g });
 
   if (!validDate(block.startDate) || !validDate(block.endDate) || block.endDate < block.startDate) {
     add({
@@ -62,14 +69,14 @@ export function computeSetupGaps(input = {}) {
   }
   if (!holidaysConfigured) {
     add({
-      id: 'holidaysMissing', label: 'No holidays configured',
+      id: 'holidaysMissing', severity: 'advisory', label: 'No holidays configured',
       detail: `No holidays configured for ${ayLabel || 'this academic year'} -- holiday fairness and holiday coverage checks will not run (Dashboard tab, academic year card)`,
       fixTarget: { tab: 'dashboard', section: 'ay-card' }, suppresses: ['Holiday fairness', 'Holiday coverage'],
     });
   }
   if (conferenceDatesAbsent) {
     add({
-      id: 'conferencesMissing', label: 'No conference dates',
+      id: 'conferencesMissing', severity: 'advisory', label: 'No conference dates',
       detail: `No conference dates for ${ayLabel || 'this academic year'} -- 12h conference windows and conference seniority fallback will not apply (Dashboard tab, academic year card)`,
       fixTarget: { tab: 'dashboard', section: 'ay-card' }, suppresses: ['12h conference windows', 'Conference seniority fallback'],
     });
@@ -84,7 +91,7 @@ export function computeSetupGaps(input = {}) {
   if (pendingResidentCount > 0) {
     const n = pendingResidentCount;
     add({
-      id: 'pendingRequests', label: `${n} resident${n !== 1 ? 's' : ''} with unreviewed requests`,
+      id: 'pendingRequests', severity: 'advisory', label: `${n} resident${n !== 1 ? 's' : ''} with unreviewed requests`,
       detail: `${n} resident${n !== 1 ? 's have' : ' has'} pending day-off requests not yet reviewed -- they are not honored by Generate (Requests tab)`,
       fixTarget: { tab: 'requests' }, suppresses: ['Pending day-off requests'],
     });
@@ -100,10 +107,10 @@ export function computeSetupGaps(input = {}) {
   if (supplyDemand && supplyDemand.supply > 0) {
     const ratio = supplyDemand.demand / supplyDemand.supply;
     pressure = { ratio, level: pressureLevel(ratio), demand: supplyDemand.demand, supply: supplyDemand.supply };
-    if (pressure.level === 'tight') {
+    if (pressure.level) {
       add({
-        id: 'pressureTight', label: `Demand vs supply is tight (${Math.round(ratio * 100)}%)`,
-        detail: `Targets total ${pressure.demand} vs ${pressure.supply} slots of coverage capacity (${Math.round(ratio * 100)}%) -- expect under-target residents; raise coverage maxes or lower targets (Scheduling Rules tab)`,
+        id: 'pressure', severity: 'advisory', label: `Demand vs supply: ${pressure.level} (${Math.round(ratio * 100)}%)`,
+        detail: `Targets total ${pressure.demand} vs ${pressure.supply} slots of coverage capacity (${Math.round(ratio * 100)}%) -- level: ${pressure.level}; if tight, expect under-target residents (raise coverage maxes or lower targets) (Scheduling Rules tab)`,
         fixTarget: { tab: 'rules' }, suppresses: [],
       });
     }
@@ -123,3 +130,5 @@ export function openStampedGaps(stamp, liveGaps) {
   const live = new Map((liveGaps || []).map(g => [g.id, g]));
   return stamp.gaps.filter(s => s && live.has(s.id)).map(s => live.get(s.id));
 }
+
+export function blockingGapCount(gaps) { return (gaps || []).filter(g => g.severity === 'blocking').length; }

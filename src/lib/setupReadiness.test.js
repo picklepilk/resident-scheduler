@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeSetupGaps, pressureLevel, buildGapStamp, openStampedGaps } from './setupReadiness.js';
+import { blockingGapCount, computeSetupGaps, pressureLevel, buildGapStamp, openStampedGaps } from './setupReadiness.js';
 
 const okBlock = { startDate: '2026-07-01', endDate: '2026-07-28' };
 
@@ -20,7 +20,13 @@ describe('computeSetupGaps', () => {
     const ids = gaps.map(g => g.id);
     expect(ids).toEqual(expect.arrayContaining(['specialDays:procDays', 'holidaysMissing', 'conferencesMissing', 'pendingRequests', 'offServiceRanges:o1', 'resident:r1']));
     for (const g of gaps) { expect(g.fixTarget.tab).toBeTruthy(); expect(Array.isArray(g.suppresses)).toBe(true); }
-    expect(gaps.every(g => g.severity === 'advisory')).toBe(true);
+    const sev = Object.fromEntries(gaps.map(g => [g.id, g.severity]));
+    expect(sev['specialDays:procDays']).toBe('blocking');
+    expect(sev['resident:r1']).toBe('blocking');
+    expect(sev['offServiceRanges:o1']).toBe('blocking');
+    expect(sev.holidaysMissing).toBe('advisory');
+    expect(sev.conferencesMissing).toBe('advisory');
+    expect(sev.pendingRequests).toBe('advisory');
   });
   it('pressure thresholds', () => {
     expect(pressureLevel(0.59)).toBe('light');
@@ -28,11 +34,24 @@ describe('computeSetupGaps', () => {
     expect(pressureLevel(0.84)).toBe('moderate');
     expect(pressureLevel(0.85)).toBe('tight');
   });
-  it('only a tight pressure becomes a gap', () => {
-    expect(computeSetupGaps({ block: okBlock, supplyDemand: { demand: 50, supply: 100 } }).gaps).toEqual([]);
-    const r = computeSetupGaps({ block: okBlock, supplyDemand: { demand: 90, supply: 100 } });
-    expect(r.gaps.map(g => g.id)).toEqual(['pressureTight']);
-    expect(r.pressure.level).toBe('tight');
+  it('pressure is advisory at every level', () => {
+    for (const [d, lvl] of [[50, 'light'], [70, 'moderate'], [90, 'tight']]) {
+      const r = computeSetupGaps({ block: okBlock, supplyDemand: { demand: d, supply: 100 } });
+      expect(r.gaps.map(g => g.id)).toEqual(['pressure']);
+      expect(r.gaps[0].severity).toBe('advisory');
+      expect(r.pressure.level).toBe(lvl);
+    }
+  });
+  it('advisory-only gaps do not count as blocking; one blocking does', () => {
+    const adv = computeSetupGaps({ block: okBlock, holidaysConfigured: false, pendingResidentCount: 1 }).gaps;
+    expect(adv.length).toBe(2);
+    expect(blockingGapCount(adv)).toBe(0);
+    const mixed = computeSetupGaps({ block: okBlock, holidaysConfigured: false, jcGaps: [{ dateStr: '2026-07-07', pgy: 1 }] }).gaps;
+    expect(blockingGapCount(mixed)).toBe(1);
+  });
+  it('rejects impossible calendar dates', () => {
+    expect(computeSetupGaps({ block: { startDate: '2026-02-30', endDate: '2026-03-10' } }).gaps[0].id).toBe('blockDates');
+    expect(computeSetupGaps({ block: { startDate: '2026-02-28', endDate: '2026-03-10' } }).gaps).toEqual([]);
   });
 });
 

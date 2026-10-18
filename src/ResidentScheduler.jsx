@@ -28,7 +28,7 @@ import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnD
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
-import { computeSetupGaps, buildGapStamp, openStampedGaps } from './lib/setupReadiness.js';
+import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
@@ -2930,7 +2930,7 @@ export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf =
     const split = violatingCells(issues, block.schedule || {}, block.lockedCells || {});
     keptViolations = keptCellsForMode(split, mode, rangeStart, rangeEnd);
   }
-  return { messages, gaps, keptViolations };
+  return { messages, gaps, blockingGapCount: blockingGapCount(gaps), keptViolations };
 }
 
 // Shared list-builder for AY conference date ranges — both getConferencesInBlock (block-range
@@ -15934,7 +15934,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       mode: confirmPartialRegen.kind === 'range' ? 'range' : 'unlocked',
       rangeStart: confirmPartialRegen.start, rangeEnd: confirmPartialRegen.end,
     });
-    return { messages: [], gaps: [], keptViolations: { fixable: [], locked: [] } };
+    return { messages: [], gaps: [], blockingGapCount: 0, keptViolations: { fixable: [], locked: [] } };
   }, [confirmRegen, confirmPartialRegen, allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, pendingByResident]);
   // What-If Optimization Sweep — see runOptimizationSweep. sweepResult/sweepRunning/sweepOpen are
   // ephemeral (not persisted, not part of the block) — a fresh Generate/Regenerate invalidates any
@@ -16865,7 +16865,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   }
   function requestGenerate(deepSolve = false) {
     const readiness = checkGenerateReadiness({ allResidents, block, dayRules, ayConf, eligOverrides, appSettings, coverage, blocksHistory, mode: 'fill', pendingByResident });
-    if (readiness.messages.length || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate({ ...readiness, deepSolve });
+    if (readiness.blockingGapCount > 0 || readiness.keptViolations.fixable.length || readiness.keptViolations.locked.length) setConfirmGenerate({ ...readiness, deepSolve });
     else runGenerate(false, undefined, deepSolve);
   }
 
@@ -17467,7 +17467,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const genConfirmSpec = confirmGenerate
     ? {
         title: 'Before You Generate',
-        note: confirmGenerate.messages.length > 0
+        note: confirmGenerate.blockingGapCount > 0
           ? "Some manual per-block dates haven't been entered yet — Generate will still fill every slot it can, but rules that depend on these dates may not apply correctly."
           : null,
         messages: confirmGenerate.messages,
@@ -18197,8 +18197,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 // red warning-panel style as DragConfirmModal's violation list below.
 function ReadinessWarningPanel({ messages, gaps, onFix }) {
   if (gaps && gaps.length) return (
-    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3" data-testid="readiness-gaps">
-      <div className="flex items-center gap-1.5 text-red-700 font-medium text-sm mb-1"><AlertCircle size={13}/> Setup needs attention ({gaps.length})</div>
+    <div className={`${gaps.some(g => g.severity === 'blocking') ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'} border rounded-lg p-3 mb-3`} data-testid="readiness-gaps">
+      <div className={`flex items-center gap-1.5 ${gaps.some(g => g.severity === 'blocking') ? 'text-red-700' : 'text-amber-700'} font-medium text-sm mb-1`}><AlertCircle size={13}/> {gaps.some(g => g.severity === 'blocking') ? 'Setup needs attention' : 'Setup notes'} ({gaps.length})</div>
       <SetupGapRows gaps={gaps} onFix={onFix}/>
     </div>
   );
@@ -24132,7 +24132,7 @@ function buildSnapData(block) {
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear,
            // Key only when present: a null/absent mismatch would make every pre-existing snapshot compare dirty.
-           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps } : {}),
+           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated } : {}),
            ...(block.generatedWithGaps ? { generatedWithGaps: block.generatedWithGaps } : {}),
            // Omitted when empty so snapshots saved before E2 (no key) still compare clean in blockSaveState.
            ...(Object.keys(normalizeAcks(block.issueAcks)).length ? { issueAcks: normalizeAcks(block.issueAcks) } : {}) };
@@ -25528,7 +25528,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Live setup readiness (same lib the pre-Generate modal uses) for the Dashboard strip + banners.
   const liveSetup = useMemo(
     () => buildSetupReadiness({ allResidents, block, dayRules, ayConf: currentAyConf, appSettings, coverage, pendingByResident }),
-    [allResidents, block, dayRules, currentAyConf, appSettings, coverage, pendingByResident]);
+    // Narrowed to the block fields the readiness checks read -- cell edits (block.schedule) must not recompute it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allResidents, block.startDate, block.endDate, block.academicYear, block.specialDays, block.offServiceResidents, block.emBlockAssignments, dayRules, currentAyConf, appSettings, coverage, pendingByResident]);
   // "Fix in <Tab>": switch tab, open the target card if it is collapsed, then scroll to it.
   function navigateToFix(target) {
     if (!target || !target.tab) return;
