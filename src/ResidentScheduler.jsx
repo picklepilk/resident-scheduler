@@ -91,7 +91,7 @@ import { createIdleTimer, DEFAULT_IDLE_TIMEOUT_MINUTES } from './lib/idleTimer.j
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
 import { snapshotsEqual } from './lib/snapshotCompare.js';
-import { restRankedBelowCoverage } from './lib/rulePriorityRanking.js';
+import { rankedBelowCoverage, RANKED_SOFT_RULE_ISSUES } from './lib/rulePriorityRanking.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -7725,18 +7725,32 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
 }
 
 // Ranking-side blocking-warning count (slot 1 of betterQuality). Export gate is separate and
-// unchanged (issueCounts.restWarns). When Soft Rule Priority ranks coverageMin above postNightRest,
-// postNightRest warnings are NOT counted here — they only count in the postNightRest slot of the
-// quality vector — so a schedule with 1 hole + 8 short-rest warnings beats one with 23 holes.
+// unchanged (issueCounts.restWarns). When Soft Rule Priority ranks coverageMin above a soft rule
+// (postNightRest, seniorComposition), that rule's warnings are NOT counted here — they only count
+// in its own slot of the quality vector — so a schedule with 1 hole + 8 short-rest warnings beats
+// one with 23 holes. Other override-tier warnings have no Rules-tab entry and always count here.
 export function countBlockingWarns(issues, rulePriority) {
-  const dropRest = restRankedBelowCoverage(rulePriority);
+  const dropped = new Set();
+  for (const [softId, ruleIds] of Object.entries(RANKED_SOFT_RULE_ISSUES)) {
+    if (rankedBelowCoverage(rulePriority, softId)) ruleIds.forEach(id => dropped.add(id));
+  }
   let n = 0;
   for (const i of issues) {
     if (!(EXPORT_BLOCKING_RULE_IDS.has(i.rule) || i.conferenceTolerated)) continue;
-    if (dropRest && i.rule === 'postNightRest') continue;
+    if (dropped.has(i.rule)) continue;
     n++;
   }
   return n;
+}
+
+// Count of validateAll issues governed by one soft rule (feeds that rule's quality-vector slot).
+// seniorComposition uses this rather than report.seniorGaps: that generator bookkeeping array is
+// dormant (always [] -- composition is hard in generateSchedule and the solver, so an unmet slot is
+// left unfilled, or flagged by validateAll for hand edits/kept cells), so the two can never
+// coincide; validateAll is the only live source and also covers solver results and hand edits.
+function countSoftRuleIssues(issues, softId) {
+  const ids = RANKED_SOFT_RULE_ISSUES[softId];
+  return issues.filter(i => ids.includes(i.rule)).length;
 }
 
 // Scores one generateSchedule() result the same way for every attempt in generateScheduleBest —
@@ -7767,7 +7781,7 @@ function scoreGenerationResult(res, args, rulePriority) {
   const blockingWarnCount = countBlockingWarns(issues, rulePriority);
   // Rest metric from the same validateAll pass (correct for solver results and hand edits, which
   // carry no generator restCompromises bookkeeping).
-  const restCompromiseCount = issues.filter(i => i.rule === 'postNightRest').length;
+  const restCompromiseCount = countSoftRuleIssues(issues, 'postNightRest');
   const qInput = buildQualityInput({
     schedule: res.schedule, report: res.report, allResidents: args.allResidents,
     block: args.block, appSettings: args.appSettings, eligOverrides: args.eligOverrides,
@@ -7780,7 +7794,7 @@ function scoreGenerationResult(res, args, rulePriority) {
     ...qInput,
     dates,
     coverage: args.coverage,
-    seniorGapCount: res.report.seniorGaps.length,
+    seniorGapCount: countSoftRuleIssues(issues, 'seniorComposition'),
     restCompromiseCount,
   });
   return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
@@ -8447,8 +8461,8 @@ export async function runOptimizationSweep(args, {
     ...baselineQInput,
     dates: getBlockDates(block.startDate, block.endDate),
     coverage,
-    seniorGapCount: baselineReport.seniorGaps.length,
-    restCompromiseCount: baselineIssues.filter(i => i.rule === 'postNightRest').length,
+    seniorGapCount: countSoftRuleIssues(baselineIssues, 'seniorComposition'),
+    restCompromiseCount: countSoftRuleIssues(baselineIssues, 'postNightRest'),
   });
   const baseline = {
     errorCount: baselineErrorCount,
@@ -15363,7 +15377,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </div>
       </SectionCard>
 
-      <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way. The order also decides which generated schedule wins: with coverage above rest, the winner has fewer open slots and may carry some short-rest warnings to review.">
+      <SectionCard title="Soft Rule Priority" subtitle="When the generator can't satisfy every rule for a slot, it breaks the lowest-ranked one first — reorder to change which rule gives way. The order also decides which generated schedule wins: with coverage above rest or senior composition, the winner has fewer open slots and may carry some short-rest or missing-senior warnings to review.">
         {(() => {
           const priority = normalizeRulePriority(appSettings?.rulePriority);
           const isDefault = priority.every((id, i) => id === DEFAULT_RULE_PRIORITY[i]);

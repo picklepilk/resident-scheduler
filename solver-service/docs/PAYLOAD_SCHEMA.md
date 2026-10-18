@@ -1374,6 +1374,8 @@ a verdict on the 58-resident case. Measure on the real block before changing any
 
 ## postNightRest follows Soft Rule Priority (2026-10-18)
 
+JS ranking now also lets `seniorComposition` (`podPgy3Composition`/`flexSeniorComposition` warnings) follow Soft Rule Priority; composition is hard in the solver (`senior_composition.py`, rule 16, no slack), so there is nothing to mirror here.
+
 Chief decision: ranking follows `payload.rulePriority`. This SUPERSEDES the "TIER_BLOCKING regardless
 of `rulePriority`" statements in the R9 tier-mapping table above (rows `blockingWarnCount` and
 `qualityVector[n0,n1,n2]`) and the "pins `postNightRest`" statements in the hint-pinning section.
