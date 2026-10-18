@@ -116,8 +116,16 @@ export async function checkLocalSolverHealth({ timeoutMs = 1500 } = {}) {
 // target is available; callers already treat that the same as the pre-existing
 // !SOLVER_ENABLED case (skip the solver, keep the already-computed local JS result).
 export function resolveSolverTarget({ preference, localHealthy }) {
+  // 'builtin' = never touch a solver: no URL, no probe. Callers skip the whole solver path.
+  if (preference === 'builtin') return { url: null, usingLocal: false };
   if (preference === 'local' && localHealthy) return { url: LOCAL_SOLVER_URL, usingLocal: true };
   return { url: getSolverUrl(), usingLocal: false };
+}
+
+// Untrusted-shape guard for the device-local res_solver_target value: 'builtin' | 'cloud' | 'local';
+// anything else (missing, legacy, hand-edited) reads as 'cloud', the long-standing default.
+export function normalizeSolverTarget(v) {
+  return v === 'builtin' || v === 'local' ? v : 'cloud';
 }
 
 // Which job backend the cloud solver runs: 'durable' (Modal — POST /solve disabled, every solve is a

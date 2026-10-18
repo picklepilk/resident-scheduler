@@ -197,6 +197,21 @@ describe('solverClient — resolveSolverTarget (pure fallback decision)', () => 
     globalThis.__SOLVER_URL__ = ORIGINAL_URL;
   });
 
+  it('preference "builtin": targets nothing, even with a cloud URL configured and local healthy', async () => {
+    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
+    const { resolveSolverTarget } = await freshModule();
+    expect(resolveSolverTarget({ preference: 'builtin', localHealthy: true })).toEqual({ url: null, usingLocal: false });
+    expect(resolveSolverTarget({ preference: 'builtin', localHealthy: false })).toEqual({ url: null, usingLocal: false });
+  });
+
+  it('normalizeSolverTarget: keeps the three valid values, anything else reads as cloud', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('builtin')).toBe('builtin');
+    expect(normalizeSolverTarget('cloud')).toBe('cloud');
+    expect(normalizeSolverTarget('local')).toBe('local');
+    for (const bad of [undefined, null, '', 'LOCAL', 'true', 7, {}, []]) expect(normalizeSolverTarget(bad)).toBe('cloud');
+  });
+
   it('preference "local" + healthy local solver: targets the local URL', async () => {
     globalThis.__SOLVER_URL__ = 'https://solver.example.com';
     const { resolveSolverTarget, LOCAL_SOLVER_URL } = await freshModule();
