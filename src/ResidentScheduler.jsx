@@ -17571,7 +17571,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
-      <SinceGeneratePanel block={block} allResidents={allResidents} updateBlockTracked={updateBlockTracked} showToast={showToast}/>
+      <SinceGeneratePanel block={block} allResidents={allResidents} updateBlockTracked={updateBlockTracked} showToast={showToast}
+        errorCountFor={(blk)=>validateAll(allResidents, blk.schedule||{}, blk, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf).filter(i=>i.level==='error').length}/>
 
       {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. Ref'd
           by selectCell so a phone/tablet tap scrolls the panel (and its inspector) into view. */}
@@ -18938,17 +18939,10 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
   );
 }
 
-// Schedule tab's review panel (P2 of the chief-review-loop plan) — lives beside (desktop) or below
-// (mobile) the grid, both wired up in ScheduleGrid's own return. `panelIssues` is
-// groupPanelIssues(issues, EXPORT_BLOCKING_RULE_IDS) computed once in ScheduleGrid from the ROOT
-// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` and
-// `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
-// supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
-// closing it there).
 // ─── SINCE-GENERATE PANEL ───────────────────────────────────────────────────
 // Collapsible list of cells that differ from block.lastGenerated (baseline stored at generate
 // commit). Per-row Revert / Revert all = one updateBlockTracked each; locked cells need confirm.
-function SinceGeneratePanel({ block, allResidents, updateBlockTracked, showToast }) {
+function SinceGeneratePanel({ block, allResidents, updateBlockTracked, showToast, errorCountFor }) {
   const [open, setOpen] = useState(false);
   const lg = block.lastGenerated;
   const rows = useMemo(() => sinceGenerateRows(lg, block.schedule), [lg, block.schedule]);
@@ -18963,8 +18957,10 @@ function SinceGeneratePanel({ block, allResidents, updateBlockTracked, showToast
     }
     const preview = revertRows(block, list, { allowLocked });
     if (!preview.reverted) { showToast('Nothing reverted (locked cells skipped)', 'amber'); return; }
-    updateBlockTracked(b => revertRows(b, list, { allowLocked }).block);
-    showToast(`Reverted ${preview.reverted} cell${preview.reverted !== 1 ? 's' : ''}${preview.skippedLocked ? `, skipped ${preview.skippedLocked} locked` : ''}`, 'green');
+    let rose = 0;
+    try { rose = errorCountFor ? errorCountFor(preview.block) - errorCountFor(block) : 0; } catch { rose = 0; }
+    updateBlockTracked(b => revertRows(b, list, { allowLocked }).block, null, { kind: 'edit', note: 'since-generate revert', skipOverrideCapture: true });
+    showToast(`Reverted ${preview.reverted} cell${preview.reverted !== 1 ? 's' : ''}${preview.skippedLocked ? `, skipped ${preview.skippedLocked} locked` : ''}${rose > 0 ? `. Revert reintroduced ${rose} rule violation${rose !== 1 ? 's' : ''}` : ''}`, rose > 0 ? 'amber' : 'green');
   }
   const shown = rows.slice(0, 200);
   return (
@@ -18993,6 +18989,13 @@ function SinceGeneratePanel({ block, allResidents, updateBlockTracked, showToast
   );
 }
 
+// Schedule tab's review panel (P2 of the chief-review-loop plan) — lives beside (desktop) or below
+// (mobile) the grid, both wired up in ScheduleGrid's own return. `panelIssues` is
+// groupPanelIssues(issues, EXPORT_BLOCKING_RULE_IDS) computed once in ScheduleGrid from the ROOT
+// `issues` prop — this component never calls validateAll. `onJumpToCell(residentId, dateStr)` and
+// `onJumpToRow(residentId)` are ScheduleGrid's own jumpToCell/jumpToResidentRow; `onClose` is only
+// supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
+// closing it there).
 function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
   selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt }) {
   const { mustFix, orderedWarns } = panelIssues;
@@ -23437,7 +23440,7 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
+           generationReport:block.generationReport||null, lastGenerated:block.lastGenerated||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
 }
@@ -24838,7 +24841,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // recording regardless of whether the schedule under it was generated or hand-built.
   function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
-      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, lastGenerated: block.lastGenerated }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
@@ -24857,27 +24860,27 @@ export default function ResidentScheduler({ viewer } = {}) {
           return withActivity(prev, { ...next, overrideLog: merged }, activityMeta, viewer);
         }
       }
-      return withActivity(prev, withOverrideEvents(prev, next), activityMeta, viewer);
+      return withActivity(prev, activityMeta?.skipOverrideCapture ? next : withOverrideEvents(prev, next), activityMeta, viewer);
     });
   }
 
   function undoSchedule() {
     if (!undoStack.length) return;
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells }]);
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, lastGenerated: block.lastGenerated }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells }, { kind: 'undo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, lastGenerated: prev.lastGenerated }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
     if (!redoStack.length) return;
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
-      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, lastGenerated: block.lastGenerated }];
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells }, { kind: 'undo', note: 'redo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, lastGenerated: next.lastGenerated }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
