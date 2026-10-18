@@ -145,6 +145,9 @@ function runEngines(variant) {
   // production pipeline (local first, solver polishes) rather than a cold from-scratch solve.
   const solverFixture = makeFixture(variant);
   const payload = buildSolverPayload({ ...solverFixture, hint: jsResult.schedule });
+  // Explicit budget: the app default (DEFAULT_SOLVE_MAX_TIME_SECONDS, 120 s since 2026-10-16)
+  // equals the spawnSync timeout below, so a default-budget solve always timed out here.
+  payload.config = { ...payload.config, maxTimeSeconds: 45 };
   const dir = mkdtempSync(path.join(tmpdir(), 'engine-h2h-'));
   const inputPath = path.join(dir, 'payload.json');
   const outputPath = path.join(dir, 'result.json');
@@ -310,10 +313,13 @@ function renderVariantMarkdown(res) {
 // notice AFTER this test has already reported passed is an infra artifact of that same class, not
 // a real failure — the run still completes and every result below is correct; don't chase it.
 (RUN_PARITY ? describe : describe.skip)('engine head-to-head — same JS judge, both engines', () => {
-  it('runs both engines on all four baselineSuite variants and writes a comparison table', () => {
+  it('runs both engines on all four baselineSuite variants and writes a comparison table', async () => {
     mkdirSync(OUT_DIR, { recursive: true });
     const results = [];
     for (const variant of VARIANTS) {
+      // Macrotask yield per variant so the worker's RPC timer never sees >60 s of uninterrupted
+      // sync work (see CLAUDE.md Commands: `Timeout calling "onTaskUpdate"`).
+      await new Promise(resolve => setImmediate(resolve));
       const res = runEngines(variant);
       results.push(res);
 

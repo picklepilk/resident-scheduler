@@ -47,6 +47,9 @@ const PYTHON = path.join(SOLVER_DIR, '.venv', 'Scripts', 'python.exe');
   it('a real solve on a real payload produces a schedule with zero structural validateAll errors', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
+    // Structural-parity check, not a quality race: a short explicit budget keeps the subprocess
+    // well inside the spawnSync timeout (the app default is 120 s, equal to that timeout).
+    payload.config = { ...payload.config, maxTimeSeconds: 30 };
 
     const dir = mkdtempSync(path.join(tmpdir(), 'solver-parity-'));
     const inputPath = path.join(dir, 'payload.json');
