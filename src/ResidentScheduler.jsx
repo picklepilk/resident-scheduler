@@ -8910,13 +8910,17 @@ function Modal({ title, onClose, children, wide = false }) {
 // evaluate() re-runs validateAll on the CURRENT block with it. Zero net-new errors/blocking
 // warnings -> apply() silently; otherwise the MoveImpactModal asks first. An evaluation failure
 // never blocks an edit.
+// Resident fields whose edits go through the move-impact guard.
+const MOVE_IMPACT_FIELDS = ['vacationDates', 'approvedDatesOff', 'jeopardyDates', 'jcPresentDates', 'availableRanges', 'canWorkDates', 'availabilityMode'];
+
 function useMoveImpact({ baseline, evaluate, isBlocking, residentName, onOpenReview }) {
   const [pending, setPending] = useState(null);
   function guard(candidate, apply, label) {
     let net = [];
     try { net = netNewIssues(baseline, evaluate(candidate), isBlocking); } catch { net = []; }
-    if (!net.length) { apply(); return; }
+    if (!net.length) { apply(); return true; }
     setPending({ net, apply, label: label || 'this change' });
+    return false; // false = waiting on the confirm modal
   }
   const close = () => setPending(null);
   const modal = pending ? (
@@ -8931,7 +8935,7 @@ function useMoveImpact({ baseline, evaluate, isBlocking, residentName, onOpenRev
 function MoveImpactModal({ net, label, residentName, onCancel, onApply, onApplyReview }) {
   const { rows, more, total } = capRows(net, 20);
   return (
-    <Modal title={`This change breaks ${total} scheduled shift${total === 1 ? '' : 's'}`} onClose={onCancel} wide>
+    <div className="relative z-[60]"><Modal title={`This change breaks ${total} scheduled shift${total === 1 ? '' : 's'}`} onClose={onCancel} wide>
       <p className="text-sm text-gray-700 mb-1">Applying {label} would add {total} new error{total === 1 ? '' : 's'} or export-blocking warning{total === 1 ? '' : 's'} in the current block.</p>
       <p className="text-xs text-gray-500 mb-3">Only the block loaded now was checked; the edit itself may apply to the whole academic year.</p>
       <ul className="space-y-1 max-h-72 overflow-y-auto text-xs border border-gray-200 rounded-lg p-2 bg-gray-50">
@@ -8950,7 +8954,7 @@ function MoveImpactModal({ net, label, residentName, onCancel, onApply, onApplyR
         {onApplyReview && <button type="button" onClick={onApplyReview} className="px-3 py-1.5 text-sm rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-50">Apply &amp; open Review</button>}
         <button type="button" onClick={onApply} className="px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700">Apply anyway</button>
       </div>
-    </Modal>
+    </Modal></div>
   );
 }
 
@@ -11325,6 +11329,9 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         </div>
         {selectedAy && (
           <CollapsibleCard title="AY settings" subtitle={aySummary} prefId="dash.aySettings" defaultOpen={false}>
+            {selectedAy !== block.academicYear && (
+              <p className="text-xs text-amber-700 mb-2">Impact check covers the loaded block only ({block.academicYear}); edits to {selectedAy} are not checked against it.</p>
+            )}
             <div className="rounded-lg overflow-hidden border border-primary/20">
               <AYConferenceEditor ay={selectedAy} conf={selectedAyConf}
                 onUpdate={guardAy}/>
@@ -12471,7 +12478,7 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave, 
       lockPgy={false}
       initial={resident}
       onClose={onClose}
-      onSubmit={data => { onSave({ ...resident, ...data }); onClose(); }}
+      onSubmit={data => { const applied = onSave({ ...resident, ...data }, onClose); if (applied !== false) onClose(); }}
     />
   );
 }
@@ -13655,8 +13662,15 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
 
   function addRes(r)  { setEmRoster(p => [...p, r]); }
 
-  function saveEdit(updated) {
-    setEmRoster(p => p.map(r => r.id === updated.id ? updated : r));
+  // Returns false when the move-impact confirm is open (the edit modal then stays open, form intact;
+  // `done` closes it once the chief applies).
+  function saveEdit(updated, done) {
+    const fn = p => p.map(r => r.id === updated.id ? updated : r);
+    const cur = emRoster.find(r => r.id === updated.id);
+    if (moveGuard && cur && MOVE_IMPACT_FIELDS.some(f => JSON.stringify(cur[f] ?? null) !== JSON.stringify(updated[f] ?? null))) {
+      return moveGuard({ emRoster: fn }, () => { setEmRoster(fn); done && done(); }, 'these date changes');
+    }
+    setEmRoster(fn);
   }
 
   // Inline date-list edits go through the move-impact guard (Wave E3).
@@ -14082,11 +14096,16 @@ function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResident
 
   function addRes(r) { updateBlock(b => ({ ...b, offServiceResidents: [...(b.offServiceResidents || []), r] })); }
 
-  function saveEdit(updated) {
-    updateBlock(b => ({
+  function saveEdit(updated, done) {
+    const fn = b => ({
       ...b,
       offServiceResidents: b.offServiceResidents.map(r => r.id === updated.id ? updated : r),
-    }));
+    });
+    const cur = (block.offServiceResidents || []).find(r => r.id === updated.id);
+    if (moveGuard && cur && MOVE_IMPACT_FIELDS.some(f => JSON.stringify(cur[f] ?? null) !== JSON.stringify(updated[f] ?? null))) {
+      return moveGuard({ block: fn }, () => { updateBlock(fn); done && done(); }, 'these date changes');
+    }
+    updateBlock(fn);
   }
 
   function removeRes(id) {
