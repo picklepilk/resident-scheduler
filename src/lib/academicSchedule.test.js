@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
 import { parseAcademicDocx, parseLooseDate, bucketByAy, summarizeParsed, fileHash } from './academicSchedule.js';
-import { buildAcademicPlan, applyAcademicPlan, resolvePeople, personKey } from './academicImportPlan.js';
+import { buildAcademicPlan, applyAcademicPlan, defaultJcMode, provenanceFor, resolvePeople, personKey } from './academicImportPlan.js';
 import { matchRosterByName } from './nameMatch.js';
 
 // Synthetic .docx: fake names, runs split mid-token like Word does.
@@ -97,6 +97,7 @@ describe('plan + apply', () => {
     expect(ay.jc.same).toEqual(['2026-12-01']);
     expect(ay.presenters).toMatchObject({ new: 1, have: 1 }); // r1 already stored; healed r4 is new
     expect(ay.writeJcDefault).toBe(true);
+    expect(defaultJcMode(ay)).toBe('union'); // customized list with a chief-added date: never silently dropped
   });
   it('apply merges roster dates, writes JC list for chosen AYs only, is idempotent', () => {
     const mapping = { [personKey(3, 'Resident Two')]: 'r2' };
@@ -108,13 +109,34 @@ describe('plan + apply', () => {
     expect(out.emRoster[2]).toBe(roster[2]);
     expect(out.emRoster[3].jcPresentDates).toEqual(['2027-03-02']); // healed 'Lamber t' resident
     expect(out.ayData['AY26/27'].jcDates).toEqual(['2026-12-01', '2027-01-05', '2027-02-02', '2027-03-02']);
-    const off = applyAcademicPlan(plan, { emRoster: roster, ayData: {}, writeJc: { 'AY26/27': false } });
+    const off = applyAcademicPlan(plan, { emRoster: roster, ayData: {}, jcMode: { 'AY26/27': 'off' } });
     expect(off.ayData).toEqual({});
     const again = applyAcademicPlan(
       buildAcademicPlan({ parsed, emRoster: out.emRoster, ayData: out.ayData, match, mapping }),
       { emRoster: out.emRoster, ayData: out.ayData });
     expect(again.emRoster).toEqual(out.emRoster);
     expect(again.ayData).toEqual(out.ayData);
+  });
+  it('JC mode: union keeps chief-added dates, replace drops them, derived default replaces', () => {
+    const cur = { 'AY26/27': { jcDates: ['2026-11-03', '2026-12-01'] } };
+    const plan = buildAcademicPlan({ parsed, emRoster: roster, ayData: cur, match });
+    const u = applyAcademicPlan(plan, { emRoster: roster, ayData: cur });
+    expect(u.ayData['AY26/27'].jcDates).toEqual(['2026-11-03', '2026-12-01', '2027-01-05', '2027-02-02', '2027-03-02']);
+    const r = applyAcademicPlan(plan, { emRoster: roster, ayData: cur, jcMode: { 'AY26/27': 'replace' } });
+    expect(r.ayData['AY26/27'].jcDates).toEqual(['2026-12-01', '2027-01-05', '2027-02-02', '2027-03-02']);
+    const derived = buildAcademicPlan({ parsed, emRoster: roster, ayData: {}, match });
+    expect(derived.ays[0].jc.custom).toBe(false);
+    expect(defaultJcMode(derived.ays[0])).toBe('replace');
+  });
+  it('provenance reflects what was written: no JC line when JC off', () => {
+    const plan = buildAcademicPlan({ parsed, emRoster: roster, ayData: {}, match });
+    const off = applyAcademicPlan(plan, { emRoster: roster, ayData: {}, jcMode: { 'AY26/27': 'off' } });
+    const pOff = provenanceFor(plan, off);
+    expect(pOff.populated.some(t => t.startsWith('JC dates'))).toBe(false);
+    expect(pOff.populated.some(t => t.startsWith('Lecture/M&M'))).toBe(true);
+    const on = provenanceFor(plan, applyAcademicPlan(plan, { emRoster: roster, ayData: {} }));
+    expect(on.populated[0]).toBe('JC dates: 4 across 1 AY');
+    expect(on.ays).toEqual(['AY26/27']);
   });
   it('resolvePeople exported shape', () => {
     expect(resolvePeople(parsed, roster, match)[0].key).toBe(personKey(3, 'Resident One'));

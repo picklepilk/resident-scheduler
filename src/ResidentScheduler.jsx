@@ -51,7 +51,7 @@ import {
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog, stampNewEntries, sourcesFor } from './lib/importLog.js';
 import { parseAcademicDocx, summarizeParsed, fileHash } from './lib/academicSchedule.js';
-import { buildAcademicPlan, applyAcademicPlan, personKey } from './lib/academicImportPlan.js';
+import { buildAcademicPlan, applyAcademicPlan, defaultJcMode, provenanceFor, personKey } from './lib/academicImportPlan.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
@@ -13202,13 +13202,13 @@ function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onCl
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState('');
   const [mapping, setMapping] = useState({});
-  const [writeJc, setWriteJc] = useState({});
+  const [jcMode, setJcMode] = useState({});
   const fileRef = useRef(null);
 
   function pickFile(e) {
     const f = e.target.files?.[0];
     if (!f) return;
-    setError(''); setParsed(null); setMapping({}); setWriteJc({});
+    setError(''); setParsed(null); setMapping({}); setJcMode({});
     const reader = new FileReader();
     reader.onload = () => {
       try {
@@ -13231,24 +13231,20 @@ function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onCl
   const summary = parsed ? summarizeParsed(parsed) : null;
   const rosterOpts = useMemo(() => [...emRoster].sort((a, b) =>
     `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`)), [emRoster]);
-  const jcOn = ay => writeJc[ay.ay] ?? ay.writeJcDefault;
-  const canApply = !!plan && (plan.counts.matched > 0 || plan.ays.some(jcOn));
+  const modeOf = ay => jcMode[ay.ay] ?? defaultJcMode(ay);
+  const canApply = !!plan && (plan.counts.matched > 0 || plan.ays.some(a => modeOf(a) !== 'off'));
 
   function commit() {
     if (!plan) return;
-    const out = applyAcademicPlan(plan, { emRoster, ayData, writeJc });
-    setEmRoster(prev => applyAcademicPlan(plan, { emRoster: prev, ayData, writeJc }).emRoster);
+    const out = applyAcademicPlan(plan, { emRoster, ayData, jcMode });
+    // Updater stays pure on prev; out above supplies the ayData writes, counts and log scope.
+    setEmRoster(prev => applyAcademicPlan(plan, { emRoster: prev, ayData, jcMode }).emRoster);
     for (const ay of out.jcAys) updateAyData(ay, out.ayData[ay]);
     const s = summary;
     if (setImportLog) {
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('academic', {
         filename: file?.name, sizeBytes: file?.size || undefined, hash: file?.hash,
-        ays: plan.ays.map(a => a.ay),
-        populated: [
-          `JC dates: ${out.jcAys.map(ay => plan.ays.find(a => a.ay === ay).jc.file.length).reduce((x, y) => x + y, 0)} across ${out.jcAys.length} AY`,
-          `JC presenters: ${plan.counts.matched} resident${plan.counts.matched !== 1 ? 's' : ''}`,
-          `Lecture/M&M dates: ${plan.ays.reduce((n, a) => n + a.lecture.dates.length + a.mm.dates.length, 0)}`,
-        ],
+        ...provenanceFor(plan, out),
         summary: `${s.tablesMatched} table${s.tablesMatched !== 1 ? 's' : ''}, ${plan.counts.matched} matched, ${plan.counts.skipped} skipped, ${plan.counts.unresolved} unresolved, ${s.dates} dates${s.failures ? `, ${s.failures} unparsed` : ''}`,
       })));
     }
@@ -13320,9 +13316,14 @@ function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onCl
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-gray-800">{ay.ay}</span>
                     <label className="ml-auto flex items-center gap-1.5 text-gray-600">
-                      <input type="checkbox" checked={jcOn(ay)} disabled={!ay.jc.file.length}
-                        onChange={e => setWriteJc(w => ({ ...w, [ay.ay]: e.target.checked }))}/>
-                      Set this AY's JC date list to the file's {ay.jc.file.length} date{ay.jc.file.length !== 1 ? 's' : ''}
+                      JC dates
+                      <select value={modeOf(ay)} disabled={!ay.jc.file.length}
+                        onChange={e => setJcMode(m => ({ ...m, [ay.ay]: e.target.value }))}
+                        className="text-xs border border-gray-300 rounded px-1.5 py-0.5">
+                        <option value="off">Leave list unchanged</option>
+                        <option value="union">Add file dates (keep existing)</option>
+                        <option value="replace">{`Replace with file list${ay.jc.removed.length ? ` (removes ${ay.jc.removed.length})` : ''}`}</option>
+                      </select>
                     </label>
                   </div>
                   <p className="text-gray-500">

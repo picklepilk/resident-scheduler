@@ -98,10 +98,18 @@ export function writeJcDatesToAy(ayData, ay, dates) {
   return { ...(ayData || {}), [ay]: { ...conf, jcDates: [...new Set(dates)].sort() } };
 }
 
-// Applies the plan. opts.writeJc = { [ay]: bool } (defaults to each AY's writeJcDefault).
+// Default JC write mode per AY: 'off' for AYs with <3 file dates (stray typo guard); 'replace' when
+// nothing would be removed or the current list is just the derived default; else 'union' so
+// chief-added dates (and their presenters) are never silently dropped. 'replace' is explicit opt-in.
+export function defaultJcMode(ay) {
+  if (!ay.writeJcDefault || !ay.jc.file.length) return 'off';
+  return ay.jc.removed.length > 0 && ay.jc.custom ? 'union' : 'replace';
+}
+
+// Applies the plan. opts.jcMode = { [ay]: 'off'|'union'|'replace' } (defaults via defaultJcMode).
 // Roster: jcPresentDates + grLectureDates (lecture AND M&M, as ImportLecturesModal does) MERGE
-// (dedupe + sort), never remove. ayData: JC date list REPLACED by the file's list for chosen AYs.
-export function applyAcademicPlan(plan, { emRoster, ayData, writeJc = {} }) {
+// (dedupe + sort), never remove. ayData: JC list = union with, or replaced by, the file's list.
+export function applyAcademicPlan(plan, { emRoster, ayData, jcMode = {} }) {
   const adds = new Map(); // residentId -> { jc:Set, lec:Set }
   for (const p of plan.people) {
     if (!p.residentId) continue;
@@ -121,10 +129,26 @@ export function applyAcademicPlan(plan, { emRoster, ayData, writeJc = {} }) {
     };
   });
   let nextAy = ayData || {};
-  const jcAys = [];
+  const jcAys = []; // AYs whose JC list was actually written
+  let jcDateCount = 0;
   for (const ay of plan.ays) {
-    const want = writeJc[ay.ay] ?? ay.writeJcDefault;
-    if (want && ay.jc.file.length) { nextAy = writeJcDatesToAy(nextAy, ay.ay, ay.jc.file); jcAys.push(ay.ay); }
+    const mode = jcMode[ay.ay] ?? defaultJcMode(ay);
+    if (mode === 'off' || !ay.jc.file.length) continue;
+    const dates = mode === 'union' ? [...new Set([...ay.jc.current, ...ay.jc.file])] : ay.jc.file;
+    nextAy = writeJcDatesToAy(nextAy, ay.ay, dates);
+    jcAys.push(ay.ay);
+    jcDateCount += new Set(dates).size;
   }
-  return { emRoster: nextRoster, ayData: nextAy, residentsTouched: adds.size, jcAys };
+  return { emRoster: nextRoster, ayData: nextAy, residentsTouched: adds.size, jcAys, jcDateCount };
+}
+
+// Import-log scope + populated lines derived from what was ACTUALLY applied (JC line only for
+// AYs in out.jcAys; presenter/lecture lines for all AYs in the file). Counts only.
+export function provenanceFor(plan, out) {
+  const ays = plan.ays.filter(a => out.jcAys.includes(a.ay) || a.presenters.rows.length || a.lecture.dates.length || a.mm.dates.length).map(a => a.ay);
+  const populated = [];
+  if (out.jcAys.length) populated.push(`JC dates: ${out.jcDateCount} across ${out.jcAys.length} AY`);
+  populated.push(`JC presenters: ${plan.counts.matched} resident${plan.counts.matched !== 1 ? 's' : ''}`);
+  populated.push(`Lecture/M&M dates: ${plan.ays.reduce((n, a) => n + a.lecture.dates.length + a.mm.dates.length, 0)}`);
+  return { ays, populated };
 }
