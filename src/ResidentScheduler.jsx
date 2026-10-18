@@ -32,6 +32,7 @@ import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normaliz
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
+import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
@@ -16648,7 +16649,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, clearFirst, deepSolve);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       const rc = res.report.restCompromises.length;
@@ -17687,6 +17688,9 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           dayRules={dayRules} appSettings={appSettings} violMap={violMap} jeopardySchedule={block.jeopardySchedule}
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
+
+      <SinceGeneratePanel block={block} allResidents={allResidents} updateBlockTracked={updateBlockTracked} showToast={showToast}
+        errorCountFor={(blk)=>validateAll(allResidents, blk.schedule||{}, blk, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf).filter(i=>i.level==='error').length}/>
 
       {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. Ref'd
           by selectCell so a phone/tablet tap scrolls the panel (and its inspector) into view. */}
@@ -19049,6 +19053,56 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
         )}
 
       </div>
+    </div>
+  );
+}
+
+// ─── SINCE-GENERATE PANEL ───────────────────────────────────────────────────
+// Collapsible list of cells that differ from block.lastGenerated (baseline stored at generate
+// commit). Per-row Revert / Revert all = one updateBlockTracked each; locked cells need confirm.
+function SinceGeneratePanel({ block, allResidents, updateBlockTracked, showToast, errorCountFor }) {
+  const [open, setOpen] = useState(false);
+  const lg = block.lastGenerated;
+  const rows = useMemo(() => sinceGenerateRows(lg, block.schedule), [lg, block.schedule]);
+  if (!lg || !rows.length) return null;
+  const nameOf = (rid) => { const r = allResidents.find(x => x.id === rid); return r ? `${r.lastName}, ${r.firstName}` : rid; };
+  const isLocked = (r) => !!block.lockedCells?.[r.residentId]?.[r.date];
+  function doRevert(list) {
+    const lockedN = list.filter(isLocked).length;
+    let allowLocked = false;
+    if (lockedN > 0) {
+      allowLocked = window.confirm(`${lockedN} of these cell${lockedN !== 1 ? 's are' : ' is'} locked. Revert ${lockedN !== 1 ? 'them' : 'it'} anyway? (Cancel skips locked cells.)`);
+    }
+    const preview = revertRows(block, list, { allowLocked });
+    if (!preview.reverted) { showToast('Nothing reverted (locked cells skipped)', 'amber'); return; }
+    let rose = 0;
+    try { rose = errorCountFor ? errorCountFor(preview.block) - errorCountFor(block) : 0; } catch { rose = 0; }
+    updateBlockTracked(b => revertRows(b, list, { allowLocked }).block, null, { kind: 'edit', note: 'since-generate revert', skipOverrideCapture: true });
+    showToast(`Reverted ${preview.reverted} cell${preview.reverted !== 1 ? 's' : ''}${preview.skippedLocked ? `, skipped ${preview.skippedLocked} locked` : ''}${rose > 0 ? `. Revert reintroduced ${rose} rule violation${rose !== 1 ? 's' : ''}` : ''}`, rose > 0 ? 'amber' : 'green');
+  }
+  const shown = rows.slice(0, 200);
+  return (
+    <div className="no-print mt-3 border border-gray-200 rounded-lg bg-white">
+      <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-3 py-2 text-sm font-semibold text-gray-700">
+        <span>Changes since last Generate ({rows.length}){lg.engine ? <span className="ml-2 text-xs font-normal text-gray-400">engine: {lg.engine}</span> : null}</span>
+        <span className="text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3">
+          <div className="flex justify-end mb-1">
+            <button type="button" onClick={() => doRevert(rows)} className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50">Revert all</button>
+          </div>
+          <ul className="divide-y divide-gray-100 max-h-72 overflow-y-auto text-xs">
+            {shown.map(r => (
+              <li key={r.residentId + r.date} className="flex items-center justify-between gap-2 py-1">
+                <span className="truncate"><span className="font-medium">{nameOf(r.residentId)}</span> {r.date}: <span className="text-gray-500">{r.from || '(empty)'}</span> to <span>{r.to || '(empty)'}</span>{isLocked(r) ? ' (locked)' : ''}</span>
+                <button type="button" onClick={() => doRevert([r])} className="shrink-0 px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-50">Revert</button>
+              </li>
+            ))}
+          </ul>
+          {rows.length > shown.length && <p className="text-xs text-gray-400 mt-1">Showing first {shown.length} of {rows.length}.</p>}
+        </div>
+      )}
     </div>
   );
 }
@@ -23528,7 +23582,9 @@ function buildSnapData(block) {
            generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
            handOverrides:normalizeHandOverrides(block.handOverrides),
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
-           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
+           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear,
+           // Key only when present: a null/absent mismatch would make every pre-existing snapshot compare dirty.
+           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated } : {}) };
 }
 
 // ─── OVERRIDE CAPTURE (Phase 3) ─────────────────────────────────────────────
@@ -24933,7 +24989,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // recording regardless of whether the schedule under it was generated or hand-built.
   function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
-      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }];
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
@@ -24955,27 +25011,27 @@ export default function ResidentScheduler({ viewer } = {}) {
           return withActivity(prev, { ...next, overrideLog: merged }, activityMeta, viewer);
         }
       }
-      return withActivity(prev, withOverrideEvents(prev, next), activityMeta, viewer);
+      return withActivity(prev, activityMeta?.skipOverrideCapture ? next : withOverrideEvents(prev, next), activityMeta, viewer);
     });
   }
 
   function undoSchedule() {
     if (!undoStack.length) return;
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }]);
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides }, { kind: 'undo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides, lastGenerated: prev.lastGenerated }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
     if (!redoStack.length) return;
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
-      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }];
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated }];
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides }, { kind: 'undo', note: 'redo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides, lastGenerated: next.lastGenerated }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
