@@ -1371,3 +1371,38 @@ a verdict on the 58-resident case. Measure on the real block before changing any
   fields are NOT dropped any more; the "`SolveRequest` ... `extra="ignore"` ... silently dropped"
   passage in "Two engine gaps closed" describes the old behavior. `payload.py` remains the real
   typed parse.
+
+## postNightRest follows Soft Rule Priority (2026-10-18)
+
+Chief decision: ranking follows `payload.rulePriority`. This SUPERSEDES the "TIER_BLOCKING regardless
+of `rulePriority`" statements in the R9 tier-mapping table above (rows `blockingWarnCount` and
+`qualityVector[n0,n1,n2]`) and the "pins `postNightRest`" statements in the hint-pinning section.
+
+- `objective.rest_outranks_coverage(rulePriority)` is True only when BOTH `coverageMin` and
+  `postNightRest` are listed and `postNightRest` comes first. Missing/invalid/partial -> False
+  (default order, coverage first) - same fallback as the JS `blockingWarnCount` rule.
+- Rest ranked first: unchanged. Rest penalties sit in `TIER_BLOCKING` (before coverage).
+- Coverage first (default): rest penalties sit in the NEW `TIER_REST` (`tier3b_restAfterCoverage`),
+  a dedicated lexicographic stage right after `TIER_RANK` and before `TIER_QUALITY`, so coverage
+  strictly dominates rest (a coverage slot is never traded for fewer rest violations) and rest
+  strictly dominates fairness - mirroring the JS vector order (coverage, seniorComposition n/a,
+  postNightRest, fairness). `TIER_BLOCKING` then holds only `conferenceTolerated`.
+- Staged ladder is now 5 stages (`tier1_errors`, `tier2_blockingWarns`, `tier3_qualityRank`,
+  `tier3b_restAfterCoverage`, `tier4_quality`); exactly one of blocking-rest / `TIER_REST` is
+  populated, empty stages are skipped and roll their time forward. `result.tiers` and
+  `_result_rank_key` (portfolio winner) use all 5 in that order. Progress reports `stages: 5`.
+- `stageSplit` keeps its 4 entries (errors, blocking, rank, quality). A 5-entry split is also
+  accepted. A 4-entry split expands to 5: rest first -> `[a, b, c, 0, d]`; coverage first ->
+  `[a, b/2, c, b/2, d]`.
+- Hint pinning (`hint_pin.pinned_components_for`): `postNightRest` is pinned at the hint's value
+  only when rest outranks coverage; otherwise only `targetDeficitCore` and `coverageMin` are pinned
+  (a pin on rest would block the rest-for-coverage trade). `report.hintPinning.pinned` lists only
+  the components actually pinned. Weighted mode and `apply_rule_priority` are unchanged.
+
+Review follow-up (2026-10-18): in coverage-first order `overstaffCoverage` moves from `TIER_RANK` to
+`TIER_REST` (JS never ranks overstaff above rest; it stays above `TIER_QUALITY`). Inside that stage
+rest's coefficient is scaled to `floor(total overstaff weight / rest weight) + 1` times the base, so
+one rest violation outweighs the entire overstaff sum (provable dominance; reported `tiers` value for
+`TIER_REST` is in these scaled units). Rest-first order is unchanged (overstaff in `TIER_RANK`).
+When the block touches no conference (`TIER_BLOCKING` empty) the 4-entry `stageSplit` gives rest the
+whole blocking share.

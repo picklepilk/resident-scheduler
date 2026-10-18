@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from ortools.sat.python import cp_model
 
 import solver.solve as solve_module
 from solver.build import build_model
 from solver.io.payload import parse_payload
 from solver.model.hint import apply_hint
-from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK
+from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK, TIER_REST
 from solver.solve import _extract_schedule, _num_workers, _stage_time_budgets, solve
 from tests.helpers import load_fixture, make_payload
 
@@ -125,7 +127,7 @@ def test_stage_exprs_partition_sums_to_total_expr():
     payload = parse_payload(load_fixture("small_feasible.json"))
     build_result = build_model(payload)
     objective = build_result.objective
-    assert set(objective.stage_exprs) == {TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_QUALITY}
+    assert set(objective.stage_exprs) == {TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_REST, TIER_QUALITY}
 
     resummed = sum(objective.stage_exprs.values(), start=0)
     solver = cp_model.CpSolver()
@@ -177,12 +179,38 @@ def test_stage_time_budgets_sum_within_total_and_respect_split():
     object.__setattr__(payload.config, "max_time_seconds", 30.0)
     object.__setattr__(payload.config, "stage_split", (0.3, 0.1, 0.4, 0.2))
     budgets = _stage_time_budgets(payload)
-    assert len(budgets) == 4
+    assert len(budgets) == 5  # errors, blocking, rank, rest-after-coverage, quality
     assert sum(budgets) <= payload.config.max_time_seconds + 1e-6
-    # Roughly proportional (30/10/40/20) -- exact equality isn't required, but
-    # stage 3 (coverage/rank) must be the largest and stage 2 (blocking) the
-    # smallest.
-    assert budgets[2] > budgets[0] > budgets[3] > budgets[1]
+    # Default priority (coverage first): blocking's 10% is shared with the rest stage. Roughly
+    # proportional (30/5/40/5/20): rank largest, blocking/rest smallest.
+    assert budgets[2] > budgets[0] > budgets[1]
+    assert budgets[1] < 0.2 and budgets[3] > budgets[1]  # no conference: rest gets blocking's share
+
+
+def test_stage_time_budgets_conference_block_splits_blocking_share():
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 30.0)
+    object.__setattr__(payload, "block_touches_conference", True)
+    budgets = _stage_time_budgets(payload)
+    assert budgets[1] == pytest.approx(budgets[3]) and budgets[1] > 0.2
+
+
+def test_stage_time_budgets_accepts_five_entry_split():
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 10.0)
+    object.__setattr__(payload.config, "stage_split", (0.1, 0.1, 0.4, 0.3, 0.1))
+    budgets = _stage_time_budgets(payload)
+    assert budgets == pytest.approx([1.0, 1.0, 4.0, 3.0, 1.0])
+
+
+def test_stage_time_budgets_rest_first_gives_rest_stage_nothing():
+    payload = parse_payload(load_fixture("small_feasible.json"))
+    object.__setattr__(payload.config, "max_time_seconds", 30.0)
+    object.__setattr__(payload, "rule_priority", ["postNightRest", "coverageMin", "seniorComposition"])
+    budgets = _stage_time_budgets(payload)
+    assert len(budgets) == 5
+    # TIER_REST is empty in this order (its term lives in TIER_BLOCKING); only the 0.1s floor.
+    assert budgets[3] < 0.2 and budgets[1] > budgets[3]
 
 
 def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch):
@@ -242,7 +270,7 @@ def test_stage_time_budgets_falls_back_to_default_split_when_misconfigured():
     # Default split is 15/15/50/20 (see payload.py's Config.stage_split) --
     # stages 1-2 tied, stage 3 (coverage) by far the largest, stage 4
     # (quality) the second-largest.
-    assert budgets[2] > budgets[3] > budgets[0] == budgets[1]
+    assert budgets[2] > budgets[4] > budgets[0] and budgets[3] > budgets[1]
 
 
 def test_stage_time_budgets_wrong_length_falls_back_to_default_split():
@@ -252,8 +280,8 @@ def test_stage_time_budgets_wrong_length_falls_back_to_default_split():
     payload = parse_payload(load_fixture("small_feasible.json"))
     object.__setattr__(payload.config, "stage_split", (0.3, 0.2, 0.5))  # stale 3-tuple
     budgets = _stage_time_budgets(payload)
-    assert len(budgets) == 4
-    assert budgets[2] > budgets[3] > budgets[0] == budgets[1]
+    assert len(budgets) == 5
+    assert budgets[2] > budgets[4] > budgets[0] and budgets[3] > budgets[1]
 
 
 def test_parse_payload_without_stage_split_uses_configs_own_default():
@@ -286,12 +314,13 @@ def test_parse_payload_without_stage_split_uses_configs_own_default():
 
 def test_rank_and_quality_run_as_two_separate_stage_solves_not_one(monkeypatch):
     """small_feasible.json (no hint) has non-empty TIER_ERRORS (r1 is
-    EM-core), TIER_BLOCKING (a night shift exists, so postNightRest penalty
-    vars exist), TIER_RANK (D's coverage min is 1/day), and TIER_QUALITY (r1
-    has a dowPreference bonus) -- every one of the 4 stages actually solves.
-    `_carry_hint` runs once per non-final stage transition: ERRORS->BLOCKING,
-    BLOCKING->RANK, and -- the thing this test actually proves, now that
-    RANK and QUALITY are no longer combined into one solve -- RANK->QUALITY
+    EM-core), postNightRest (a night shift exists, so penalty vars exist; under
+    the default coverage-first priority they form TIER_REST, after TIER_RANK;
+    TIER_BLOCKING is then empty and skipped), TIER_RANK (D's coverage min is 1/day), and TIER_QUALITY (r1
+    has a dowPreference bonus) -- every non-empty stage actually solves.
+    `_carry_hint` runs once per non-final stage transition: ERRORS->RANK,
+    RANK->REST, and -- the thing this test actually proves, now that
+    RANK and QUALITY are no longer combined into one solve -- REST->QUALITY
     too. Before the 2026-10-15 split this would have been only 2 calls."""
     payload = parse_payload(load_fixture("small_feasible.json"))
 
@@ -308,8 +337,8 @@ def test_rank_and_quality_run_as_two_separate_stage_solves_not_one(monkeypatch):
 
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert len(carry_hint_calls) == 3, (
-        "expected 3 stage-to-stage hint carries (errors->blocking, "
-        "blocking->rank, rank->quality) -- got "
+        "expected 3 stage-to-stage hint carries (errors->rank, "
+        "rank->rest, rest->quality) -- got "
         f"{len(carry_hint_calls)}; TIER_RANK and TIER_QUALITY may have been "
         "recombined into one solve"
     )
