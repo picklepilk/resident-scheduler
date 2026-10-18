@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeHandOverrides, getHandOverride, pruneHandOverrides, syncHandOverrides,
-  applyHandOverrideToViolations, applyHandOverridesToIssues, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides,
+  applyHandOverrideToViolations, applyHandOverridesToIssues, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides, handOverrideCells,
 } from './handOverrides.js';
 
 const entry = (over = {}) => ({ shiftId: 'TRAUMA-D', ruleIds: ['traumaDayRotationGuard'], note: 'chief call', at: '2026-10-18T00:00:00.000Z', by: 'a@b.c', ...over });
@@ -16,7 +16,7 @@ describe('normalizeHandOverrides', () => {
   });
   it('keeps a valid entry and cleans fields', () => {
     const n = normalizeHandOverrides({ r1: { d: { shiftId: 'A', ruleIds: ['x', 'x', 3], note: '  ', at: 5 } } });
-    expect(n).toEqual({ r1: { d: { shiftId: 'A', ruleIds: ['x'], note: null, at: null, by: null } } });
+    expect(n).toEqual({ r1: { d: { shiftId: 'A', ruleIds: ['x'], note: null, at: null, by: null, measured: {} } } });
   });
 });
 
@@ -39,7 +39,7 @@ describe('syncHandOverrides', () => {
   it('records an entry for the newly placed cell, with rules, note, who, when', () => {
     const next = { ...prev, schedule: { r1: { '2026-07-07': 'TRAUMA-D' } } };
     const out = syncHandOverrides(prev, next, { ruleIds: ['traumaDayRotationGuard', 'vacation', 'overrideTierThing'], note: ' why ' }, 'me@x.y', 'NOW');
-    expect(out.handOverrides.r1['2026-07-07']).toEqual({ shiftId: 'TRAUMA-D', ruleIds: ['traumaDayRotationGuard'], note: 'why', at: 'NOW', by: 'me@x.y' });
+    expect(out.handOverrides.r1['2026-07-07']).toEqual({ shiftId: 'TRAUMA-D', ruleIds: ['traumaDayRotationGuard'], note: 'why', at: 'NOW', by: 'me@x.y', measured: {} });
     // the cell change and the record are in the SAME returned block (one undo step)
     expect(out.schedule).toBe(next.schedule);
   });
@@ -57,7 +57,7 @@ describe('syncHandOverrides', () => {
   it('keeps an untouched entry while another cell changes', () => {
     const p = { schedule: sched, handOverrides: ho };
     const next = { ...p, schedule: { r1: { '2026-07-07': 'TRAUMA-D', '2026-07-08': 'POD-D' } } };
-    expect(syncHandOverrides(p, next, null).handOverrides).toEqual(ho);
+    expect(syncHandOverrides(p, next, null).handOverrides).toEqual(normalizeHandOverrides(ho));
   });
   it('a swap records both placed cells, a move records only the destination', () => {
     const p = { schedule: { r1: { a: 'X' }, r2: { a: 'Y' } }, handOverrides: {} };
@@ -107,10 +107,52 @@ describe('listing, tooltip, solver safety', () => {
     const t = overrideTooltip(entry());
     expect(t).toMatch(/Trauma Day/); expect(t).toMatch(/chief call/); expect(t).toMatch(/a@b\.c/);
   });
-  it('only pure eligibility-guard overrides are solver-safe', () => {
-    expect(solverUnsafeHandOverrides(ho, sched)).toEqual([]);
+  it('only pure eligibility-guard overrides on non-trauma-cap residents are solver-safe', () => {
+    const pgy1 = { r1: { pgy: 1, category: 'EM_HOME' } }, pgy2 = { r1: { pgy: 2, category: 'EM_HOME' } };
+    const cap = r => r.category === 'EM_HOME' && (r.pgy === 2 || r.pgy === 3);
+    expect(solverUnsafeHandOverrides(ho, sched, pgy1, cap)).toEqual([]);
+    expect(solverUnsafeHandOverrides(ho, sched, pgy2, cap)).toHaveLength(1); // could bind caps.trauma
+    expect(solverUnsafeHandOverrides(ho, sched, {}, cap)).toHaveLength(1); // unknown resident = unsafe
     const h = { r1: { d: entry({ shiftId: 'PED-N', ruleIds: ['nightRunMax'] }) } };
-    expect(solverUnsafeHandOverrides(h, { r1: { d: 'PED-N' } })).toHaveLength(1);
-    expect(solverUnsafeHandOverrides(h, { r1: { d: null } })).toEqual([]); // stale = inert
+    expect(solverUnsafeHandOverrides(h, { r1: { d: 'PED-N' } }, { r1: { pgy: 1 } }, () => false)).toHaveLength(1);
+    expect(solverUnsafeHandOverrides(h, { r1: { d: null } }, {}, () => true)).toEqual([]); // stale = inert
+  });
+});
+
+describe('per-cell records and measured aggregates', () => {
+  it('meta.cells records only the confirmed cell, not the other side of a swap', () => {
+    const p = { schedule: { r1: { a: 'X' }, r2: { a: 'Y' } }, handOverrides: {} };
+    const next = { ...p, schedule: { r1: { a: 'Y' }, r2: { a: 'X' } } };
+    const meta = { ruleIds: ['nightRunMax'], note: null, cells: [{ residentId: 'r2', dateStr: 'a', ruleIds: ['nightRunMax'], measured: { nightRunMax: 7 } }] };
+    const out = syncHandOverrides(p, next, meta, null, 'T');
+    expect(Object.keys(out.handOverrides)).toEqual(['r2']);
+    expect(out.handOverrides.r2.a.measured).toEqual({ nightRunMax: 7 });
+  });
+  it('a cell listed in meta.cells that did not actually change is ignored', () => {
+    const p = { schedule: { r1: { a: 'X' } }, handOverrides: {} };
+    const out = syncHandOverrides(p, { ...p }, { ruleIds: ['nightRunMax'], cells: [{ residentId: 'r1', dateStr: 'a', ruleIds: ['nightRunMax'] }] });
+    expect(out.handOverrides).toEqual({});
+  });
+  it('handOverrideCells groups by violation cell, falls back to default, keeps max measured', () => {
+    const cells = handOverrideCells([
+      { rule: 'nightRunMax', measured: 7, cell: { residentId: 'r1', dateStr: 'a' } },
+      { rule: 'nightRunMax', measured: 8, cell: { residentId: 'r1', dateStr: 'a' } },
+      { rule: 'jcMaxPerAy', measured: 4 },
+      { rule: 'vacation' },
+    ], { residentId: 'r9', dateStr: 'z' });
+    expect(cells).toEqual([
+      { residentId: 'r1', dateStr: 'a', ruleIds: ['nightRunMax'], measured: { nightRunMax: 8 } },
+      { residentId: 'r9', dateStr: 'z', ruleIds: ['jcMaxPerAy'], measured: { jcMaxPerAy: 4 } },
+    ]);
+  });
+  it('aggregate issue downgrades only while the measured value is <= the confirmed one', () => {
+    const h = { r1: { d1: entry({ shiftId: 'PED-N', ruleIds: ['nightRunMax'], measured: { nightRunMax: 7 } }) } };
+    const s = { r1: { d1: 'PED-N' } };
+    const mk = measured => [{ residentId: 'r1', dateStr: null, rule: 'nightRunMax', level: 'error', message: 'm', measured }];
+    expect(applyHandOverridesToIssues(mk(7), h, s)[0].overridden).toBe(true);
+    expect(applyHandOverridesToIssues(mk(6), h, s)[0].overridden).toBe(true);
+    expect(applyHandOverridesToIssues(mk(8), h, s)[0].level).toBe('error');
+    // cellViolations path too
+    expect(applyHandOverrideToViolations(mk(8), h.r1.d1)[0].level).toBe('error');
   });
 });

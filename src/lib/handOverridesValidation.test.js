@@ -62,6 +62,10 @@ describe('hand overrides in validateAll / cellViolations', () => {
     expect(() => buildSolverPayload({ ...base, block: safe })).not.toThrow();
     const unsafe = { ...f.block, schedule, handOverrides: { [res.id]: { [TUE]: { ...entry, ruleIds: ['nightRunMax'] } } } };
     expect(() => buildSolverPayload({ ...base, block: unsafe })).toThrow(/hand override/);
+    // trauma-cap subject (EM Home PGY-2/3): a locked TRAUMA-D could bind caps.trauma -> skip too
+    const capRes = { ...res, pgy: 2 };
+    const capAll = [capRes, ...all.filter(r => r.id !== res.id)];
+    expect(() => buildSolverPayload({ ...base, allResidents: capAll, block: safe })).toThrow(/hand override/);
     const stale = { ...f.block, schedule, handOverrides: { [res.id]: { [TUE]: { ...entry, shiftId: 'POD-D', ruleIds: ['nightRunMax'] } } } };
     expect(() => buildSolverPayload({ ...base, block: stale })).not.toThrow();
   });

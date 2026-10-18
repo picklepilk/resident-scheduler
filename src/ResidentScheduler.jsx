@@ -69,7 +69,7 @@ import { scanUnderTargetSlots, topBlockerReasons } from './lib/underTargetExplai
 import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor, isHandOverridable } from './lib/rulePolicy.js';
-import { getHandOverride, applyHandOverrideToViolations, applyHandOverridesToIssues, syncHandOverrides, normalizeHandOverrides, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides } from './lib/handOverrides.js';
+import { getHandOverride, applyHandOverrideToViolations, applyHandOverridesToIssues, syncHandOverrides, normalizeHandOverrides, handOverrideCells, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides } from './lib/handOverrides.js';
 import { worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
@@ -2007,7 +2007,7 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     const runAfter = nightRunAfter(rs, dateStr);
     const totalRun = runBefore + 1 + runAfter;
     if (totalRun > NIGHT_RULES.maxRun)
-      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax' });
+      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax', measured: totalRun });
     if (!nightOnly) {
       const totalNights = countNightsInSchedule(rs) + 1;
       if (totalNights > NIGHT_RULES.maxPerBlock)
@@ -4135,7 +4135,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         .filter(([ds, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(ds).getDay() === 3).length;
       if (wedNightCount > 1)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
-          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator') });
+          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), measured: wedNightCount });
     }
 
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
@@ -4175,10 +4175,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const pedsHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
-          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator') });
+          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), measured: traumaHalfCount });
       if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
-          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator') });
+          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), measured: pedsHalfCount });
     }
 
     // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
@@ -4187,7 +4187,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator') });
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -4358,7 +4358,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const touchesEdge = runStart === blockDates[0] || blockDates[runEndIdx] === blockDates[blockDates.length - 1];
         if (runLen > NIGHT_RULES.maxRun)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightRunMax',
-            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator') });
+            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), measured: runLen });
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
           // anchorDate (not dateStr): the run's first date, so a review-panel row can jump straight
           // to it — see reviewPanel.js's issueJumpTarget. Deliberately a SEPARATE field from dateStr:
@@ -7075,9 +7075,11 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // sends the generate path to its existing "optimizer unavailable -> keep the built-in result"
   // fallback (the built-in engine keeps the cell via keptCells); the long-solve path surfaces the
   // message as its "Could not start" toast.
-  const unsafeOverrides = solverUnsafeHandOverrides(block.handOverrides, block.schedule);
+  const unsafeOverrides = solverUnsafeHandOverrides(block.handOverrides, block.schedule, Object.fromEntries(allResidents.map(r => [r.id, r])), isTraumaCapSubject);
   if (unsafeOverrides.length) {
-    throw new Error(`Optimizer skipped: ${unsafeOverrides.length} hand override${unsafeOverrides.length !== 1 ? 's' : ''} of program rules cannot be honoured by the optimizer (undo or clear them to use it) - used the built-in engine`);
+    const err = new Error(`Optimizer skipped: ${unsafeOverrides.length} hand override${unsafeOverrides.length !== 1 ? 's' : ''} of program rules cannot be honoured by the optimizer (undo or clear them to use it) - used the built-in engine`);
+    err.code = 'HAND_OVERRIDES'; err.count = unsafeOverrides.length;
+    throw err;
   }
   const dates = getBlockDates(block.startDate, block.endDate);
   const sd = block.specialDays || {};
@@ -14935,7 +14937,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   if (resident.category === 'EM_BAMC' && shift?.type === 'night' && dow === 3) {
     const wedNightCount = Object.entries(hypRow).filter(([d, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(d).getDay() === 3).length;
     if (wedNightCount > 1)
-      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight' });
+      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: wedNightCount });
   }
 
   // 13. Trauma/Peds split sub-caps (program tier — always hard).
@@ -14945,11 +14947,11 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
       if (shift.area === 'TRAUMA') {
         const traumaHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
         if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
-          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit', measured: traumaHalfCount });
       } else if (shift.area === 'PED') {
         const pedsHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
         if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
-          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit', measured: pedsHalfCount });
       }
     }
   }
@@ -14961,7 +14963,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
     const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
     if (jcTotal > JC_MAX_PER_AY)
-      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy' });
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
   }
 
   // Hand overrides: if this exact cell already holds a confirmed override for `sid`, its covered
@@ -15135,7 +15137,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   }, [showNeedsOverride, resident, dateStr, block]);
 
   function confirm() {
-    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null;
+    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null, cells: handOverrideCells(overridable, { residentId: resident.id, dateStr }) } : null;
     onSelect(pending, overrideMeta);
     showToast(`Assigned ${pending} to ${name} on ${display}`, v.length>0?'amber':'green');
     onClose();
@@ -16225,13 +16227,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
       eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
-    ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
+    ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: tgtRes.id, dateStr: tgtDs } }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
           eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
-        ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
+        ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: srcRes.id, dateStr: src.ds } }))
       : [];
 
     const violations = [...violTgt, ...violSrc];
@@ -16391,6 +16393,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
         };
       } catch (e) {
+        if (e?.code === 'HAND_OVERRIDES') return { ...localRes, engineUsed: 'skipped-overrides', skippedOverrideCount: e.count, relaxed: false };
         console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
         return { ...localRes, engineUsed: 'fallback', relaxed: false };
       }
@@ -16430,11 +16433,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         : (u === 0
             ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+      if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -16484,10 +16488,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         : (u === 0
             ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+      if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -17620,7 +17625,7 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const verb = kind === 'swap' ? 'Swap' : 'Move';
 
   function confirm() {
-    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null);
+    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null, cells: handOverrideCells(overridable) } : null);
   }
 
   return (
@@ -25068,19 +25073,20 @@ export default function ResidentScheduler({ viewer } = {}) {
       // "nothing imports" if QGenda rejects an unrecognized task string, so the chief needs the
       // chance to bail out and fix it in Settings before the file leaves the browser.
       const { unmapped } = buildQGendaCSVRows(variant || 'minimal');
-      if (unmapped.length > 0 || pendingErrorCount() > 0 || pendingRestWarnCount() > 0) {
+      if (unmapped.length > 0 || pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || handOverrideList.length > 0) {
         setExportConfirm(kind); setExportVariant(variant); setExportUnmapped(unmapped); return;
       }
       runExport(kind, variant);
       return;
     }
-    if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0) { setExportConfirm(kind); return; }
+    if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || handOverrideList.length > 0) { setExportConfirm(kind); return; }
     runExport(kind);
   }
 
   const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
   // QGENDA_NAME_FORMAT_LABEL is module-level now — shared with SettingsTab's "QGenda Task Names" card.
 
+  const exportHasProblems = pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || (exportConfirm==='qgenda' && exportUnmapped.length > 0);
   const isSwitchNew = switchPending==='__new__';
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
@@ -25499,11 +25505,11 @@ export default function ResidentScheduler({ viewer } = {}) {
           ids whose QGenda task fell back to an on-screen label — see requestExport) alongside the
           usual validateAll issues, but reuses this same dialog rather than a second mechanism. */}
       {exportConfirm && (
-        <ConfirmDialog icon={AlertTriangle} tone="danger" title="Unresolved issues in this schedule"
+        <ConfirmDialog icon={AlertTriangle} tone={exportHasProblems ? 'danger' : 'warn'} title={exportHasProblems ? 'Unresolved issues in this schedule' : 'Hand overrides in this schedule'}
           actions={
             <>
               <Button variant="ghost" size="sm" onClick={()=>{setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);}}>Cancel</Button>
-              <Button variant="danger" size="sm" onClick={()=>runExport(exportConfirm, exportVariant)}>Export Anyway</Button>
+              <Button variant={exportHasProblems ? 'danger' : 'primary'} size="sm" onClick={()=>runExport(exportConfirm, exportVariant)}>{exportHasProblems ? 'Export Anyway' : 'Export'}</Button>
             </>
           }>
           {(pendingErrorCount() > 0 || pendingRestWarnCount() > 0) && (
@@ -25532,9 +25538,9 @@ export default function ResidentScheduler({ viewer } = {}) {
               </ul>
             </div>
           )}
-          <p className="mt-2">
+          {exportHasProblems && <p className="mt-2">
             Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount()+(exportConfirm==='qgenda'?exportUnmapped.length:0))===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
-          </p>
+          </p>}
         </ConfirmDialog>
       )}
 
