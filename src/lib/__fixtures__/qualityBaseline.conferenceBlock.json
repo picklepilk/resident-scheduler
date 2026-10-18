@@ -6,26 +6,26 @@
     99,
     555
   ],
-  "errors": 10,
+  "errors": 9,
   "structuralErrors": 0,
-  "underTargetErrors": 10,
+  "underTargetErrors": 9,
   "quality": [
-    110.4,
+    110.6,
     0,
     0,
-    370.8526144848477
+    354.79410739909537
   ],
   "axes": {
-    "underTargetTotal": 28,
-    "deficitSpread": 0.018929421062830215,
+    "underTargetTotal": 26.8,
+    "deficitSpread": 0.01747689691690686,
     "holidaySpread": 0,
-    "nightSpread": 1.1939309050964644,
-    "weekendSpread": 0.8599337109101439,
-    "nightShapePenalty": 48.959999999999994,
-    "workShapePenalty": 270.6,
-    "areaSpread": 55,
-    "traumaRunPenalty": 0.8,
-    "secondRestDayPenalty": 8.2
+    "nightSpread": 1.119856291375957,
+    "weekendSpread": 0.9800501704176346,
+    "nightShapePenalty": 45.17999999999999,
+    "workShapePenalty": 266,
+    "areaSpread": 52,
+    "traumaRunPenalty": 0.6,
+    "secondRestDayPenalty": 7
   },
-  "unfilled": 110.4
+  "unfilled": 110.6
 }

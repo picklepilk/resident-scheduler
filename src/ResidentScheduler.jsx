@@ -2693,7 +2693,7 @@ function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, a
 // generateSchedule call on every single generation. Cheap: short-circuits on the first hit, and
 // fallbackCompositionAt's own `.find()` is a fast empty miss on every date the block's own 1-2
 // substitute-eligible dates aren't (same reasoning as preferTruePrimaryPass's header comment).
-function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
+export function hasFallbackComposition(schedule, allResidents, block, appSettings, ayConf) {
   for (const area of Object.keys(SENIOR_COMPOSITION)) {
     for (const shift of SHIFTS.filter(s => s.area === area)) {
       for (const ds of getBlockDates(block.startDate, block.endDate)) {
@@ -7768,6 +7768,124 @@ function scoreGenerationResult(res, args, rulePriority) {
   return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
 }
 
+// ─── LNS RUIN-AND-RECREATE (B1) ───
+// Post-pass on generateScheduleBest's winner. Each iteration picks a neighbourhood (a window of
+// 3-5 consecutive days centred on an unfilled slot / an under-target resident's free day), clears
+// ONLY cells the generator itself placed (never `trueKeptCells` = the caller's original non-empty
+// cells, which also covers every locked cell with a shift), then lets generateSchedule refill them
+// with a fresh seeded rng. generateSchedule treats every non-empty incoming cell as kept, so the
+// refill is exactly the normal fillDayPass sequence ('min' except TRAUMA-D, TRAUMA-D alone,
+// 'optional') over the holes, through the same uncached candidatePool + seniority narrowing, with
+// all per-resident state rebuilt from the surviving schedule (no incremental un-assign bookkeeping
+// to drift). The candidate is adopted only on STRICT betterQuality; otherwise nothing changes.
+// Deterministic from `seed`: the replay recipe is in generateScheduleBest's header.
+// Under-target preference (req 3) was measured and consciously DROPPED as a score bonus: a +40 refill
+// bonus for under-target residents left underTargetErrors flat (vacationHeavy 35 -> 35) and worsened
+// fairness (standard deficit/fairness slot 343.3 -> 347.4, vacationHeavy night/work-shape axes), failing
+// the baseline gate. The deficit term (SCORE_WEIGHTS.deficit) already ranks them first; what remains is
+// hard-blocked (rest/seniority/caps), so only the LNS window focus on under-target residents stays.
+// UI engine options (B1). Built-in mode IS the whole answer, so it gets a 20 s budget (extra seeds,
+// then LNS for the remainder); with a solver behind it local is only the warm start, so it gets a
+// short fixed LNS pass (~40 iterations, a few seconds at real scale) and no extra seeds.
+const BUILTIN_ENGINE_OPTS = { timeBudgetMs: 20000, lnsIters: 5000 };
+const POLISHED_ENGINE_OPTS = { lnsIters: 40, lnsTimeMs: 6000 };
+const ATTEMPT_BUDGET_SHARE = 1;
+const ATTEMPT_BUDGET_SHARE_WITH_LNS = 0.55;
+const LNS_MIN_WINDOW = 3;
+const LNS_WINDOW_SPREAD = 3; // window = 3..5 days
+const LNS_UNFILLED_FOCUS = 0.2;
+const LNS_UNDERTARGET_FOCUS = 0.65;
+
+function mergeLnsReport(prevRep, newRep, clearedDates) {
+  const keepOutside = (list, key) => (Array.isArray(list) ? list : []).filter(e => !clearedDates.has(e?.[key]));
+  const unfilledCount = (newRep.unfilled || []).length;
+  return {
+    ...newRep,
+    // The refill pass saw every incoming cell as a manual keep and only logged what IT placed, so
+    // carry the original header numbers and keep earlier per-placement logs from outside the
+    // window; log entries for cleared dates are superseded by the refill's own.
+    mode: prevRep.mode,
+    keptManual: prevRep.keptManual,
+    filled: Math.max(0, (newRep.totalSlots || 0) - unfilledCount - (prevRep.keptManual || 0)),
+    optionalFilled: prevRep.optionalFilled,
+    repairs: prevRep.repairs || [],
+    truePrimaryFixApplied: prevRep.truePrimaryFixApplied,
+    restCompromises: [...keepOutside(prevRep.restCompromises, 'dateStr'), ...(newRep.restCompromises || [])],
+    pgyFallbacks: [...keepOutside(prevRep.pgyFallbacks, 'dateStr'), ...(newRep.pgyFallbacks || [])],
+    overstaffed: [...keepOutside(prevRep.overstaffed, 'date'), ...(newRep.overstaffed || [])],
+    seniorGaps: [...keepOutside(prevRep.seniorGaps, 'dateStr'), ...(newRep.seniorGaps || [])],
+  };
+}
+
+// Generator of progress objects; returns { current, ran, accepted }. `current` = { result, score }.
+// ran counts executed iterations (the replay count); a time cap only ever shortens it.
+function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, seed, iters, timeMs = 0 }) {
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  const n = dates.length;
+  const idxOf = new Map(dates.map((ds, i) => [ds, i]));
+  const rng = mulberry32(seed);
+  const deadline = timeMs > 0 ? Date.now() + timeMs : 0;
+  const locked = args.block.lockedCells || {};
+  let cur = current, ran = 0, accepted = 0;
+  // Phase 3b (true-primary preference) already ran on `current`; the repair:false refill must not
+  // reintroduce a fallback-PGY composition it removed, so a candidate that NEWLY has one is rejected.
+  const hasFallback = res => hasFallbackComposition(res.schedule, args.allResidents, args.block, args.appSettings || {}, args.ayConf || {});
+  let curFallback = hasFallback(cur.result);
+  const startedMs = Date.now();
+  while (ran < iters && n > 0) {
+    if (deadline && Date.now() >= deadline) break;
+    ran++;
+    // Fixed number of draws per iteration, independent of time and of acceptance history.
+    const d1 = rng(), d2 = rng(), d3 = rng(), d4 = rng(), d5 = rng();
+    const rep = cur.result.report;
+    const unf = rep.unfilled || [], ut = rep.underTarget || [];
+    let center;
+    if (unf.length && d1 < LNS_UNFILLED_FOCUS) {
+      center = idxOf.get(unf[Math.floor(d2 * unf.length)].dateStr);
+    } else if (ut.length && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS) {
+      const rid = ut[Math.floor(d2 * ut.length)].residentId;
+      const free = dates.map((ds, i) => (cur.result.schedule[rid]?.[ds] ? -1 : i)).filter(i => i >= 0);
+      center = free.length ? free[Math.floor(d3 * free.length)] : Math.floor(d3 * n);
+    } else {
+      center = Math.floor(d2 * n);
+    }
+    if (center == null) center = Math.floor(d2 * n);
+    const k = Math.min(n, LNS_MIN_WINDOW + Math.floor(d4 * LNS_WINDOW_SPREAD));
+    const start = Math.max(0, Math.min(n - k, center - Math.floor(k / 2)));
+    const windowDates = dates.slice(start, start + k);
+    const subSeed = Math.floor(d5 * 4294967296) >>> 0;
+
+    const schedule = {};
+    let cleared = 0;
+    for (const r of args.allResidents) {
+      const row = { ...(cur.result.schedule[r.id] || {}) };
+      for (const ds of windowDates) {
+        if (row[ds] && !trueKeptCells.has(`${r.id}|${ds}`) && !locked[r.id]?.[ds]) { delete row[ds]; cleared++; }
+      }
+      schedule[r.id] = row;
+    }
+    if (cleared) {
+      const res = generateSchedule({
+        ...args, ctx: genCtx, deferUnderTargetDiagnostics: true, clearFirst: false,
+        block: { ...args.block, schedule }, rng: mulberry32(subSeed), repair: false,
+      });
+      if (res) {
+        const merged = { schedule: res.schedule, report: mergeLnsReport(rep, res.report, new Set(windowDates)) };
+        const score = scoreGenerationResult(merged, args, rulePriority);
+        if (betterQuality(score, cur.score)) {
+          const candFallback = curFallback ? true : hasFallback(merged);
+          if (!candFallback || curFallback) { cur = { ...cur, result: merged, score }; curFallback = candFallback; accepted++; }
+        }
+      }
+    }
+    // Under a time cap the iteration count is not the real horizon: report elapsed/cap instead.
+    yield deadline
+      ? { phase: 'lns', done: Math.min(Date.now() - startedMs, timeMs), total: timeMs }
+      : { phase: 'lns', done: ran, total: iters };
+  }
+  return { current: cur, ran, accepted };
+}
+
 // Best-of-N restart: runs generateSchedule `attempts` times with distinct seeds (generation is
 // nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
 // different schedules), scores each with scoreGenerationResult, and keeps the strictly best
@@ -7788,9 +7906,13 @@ function scoreGenerationResult(res, args, rulePriority) {
 // PRE-fix schedule — the actual winner needs the same second step this function itself ran:
 //   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: report.replay.repair });
 //   const winner = generateSchedule({ ...args, rng: mulberry32(report.replay.seed),
-//     repair: 'truePrimaryOnly', block: { ...args.block, schedule: base.schedule },
+//     repair: 'truePrimaryOnly', clearFirst: false, block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
+// LNS (B1): when `report.replay.lns` is non-null ({seed, iters}), the winner above is only the
+// PRE-LNS schedule; reproduce the final one with `replayLns(args, preLnsResult, report.replay.lns)`
+// (exported below; it drives the same lnsPassSteps from the same start score). `iters` is the count
+// of iterations that actually ran (a time cap only shortens it), so replay needs no time cap.
 // See CLAUDE.md's Generator section for the one-line version of this contract.
 export function generateScheduleBest(args, opts) {
   const it = generateScheduleBestSteps(args, opts);
@@ -7813,9 +7935,41 @@ export async function generateScheduleBestAsync(args, opts, onProgress) {
   return r.value;
 }
 
+// Reproduces the LNS post-pass of a generateScheduleBest result from its pre-LNS schedule (see the
+// replay recipe in generateScheduleBest's header). `args` = the original generate args.
+export function replayLns(args, preLns, lns) {
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  const genCtx = buildStaticGenContext({
+    allResidents: args.allResidents, block: args.block, coverage: args.coverage || {},
+    eligOverrides: args.eligOverrides || {}, appSettings: args.appSettings || {},
+    dayRules: args.dayRules || {}, blocksHistory: args.blocksHistory || [], ayConf: args.ayConf || {}, dates,
+  });
+  const it = lnsPassSteps({
+    args, genCtx, current: { result: preLns, score: scoreGenerationResult(preLns, args, rulePriority) },
+    rulePriority, trueKeptCells: originalKeptCells(args), seed: lns.seed, iters: lns.iters,
+  });
+  let r;
+  do { r = it.next(); } while (!r.done);
+  return r.value.current.result;
+}
+
+function originalKeptCells(args) {
+  const kept = new Set();
+  // clearFirst discards the incoming schedule, so nothing in it is a kept cell.
+  if (args.clearFirst) return kept;
+  for (const r of args.allResidents) {
+    for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
+      if (sid) kept.add(`${r.id}|${ds}`);
+    }
+  }
+  return kept;
+}
+
 // Step generator behind generateScheduleBest/Async. Yields progress objects
 // ({phase:'attempt',done,total} | {phase:'repair',done,total} | {phase:'finalize'}) and returns the result.
-function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3 } = {}) {
+function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3, timeBudgetMs = 0, lnsIters = 0, lnsTimeMs = 0 } = {}) {
+  const startedAt = Date.now();
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   let best = null;
@@ -7847,16 +8001,27 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // literal could.
   const deferredArgs = { ...args, ctx: genCtx, deferUnderTargetDiagnostics: true };
 
-  for (let i = 0; i < attempts; i++) {
+  // timeBudgetMs (B1): keep drawing seeds past `attempts` (same derivation, so the winner's seed
+  // still replays) until this share of the budget is spent; the rest is left for repair + LNS.
+  // Absent/0 = exactly `attempts` runs (all tests/baselines).
+  const attemptDeadline = timeBudgetMs > 0 ? startedAt + timeBudgetMs * (lnsIters > 0 ? ATTEMPT_BUDGET_SHARE_WITH_LNS : ATTEMPT_BUDGET_SHARE) : 0;
+  let attemptsRun = 0;
+  for (let i = 0; i < attempts || (attemptDeadline && Date.now() < attemptDeadline); i++) {
     const seed = (resolvedBaseSeed + i * 0x9E3779B9) >>> 0;
     const res = generateSchedule({ ...deferredArgs, rng: mulberry32(seed), repair: false });
     if (!res) return null;
+    attemptsRun = i + 1;
     const score = scoreGenerationResult(res, args, rulePriority);
     top.push({ seed, result: res, score, repaired: false });
     // Array.sort is stable, so equal-quality entries keep attempt order.
     top.sort((a, b) => (betterQuality(a.score, b.score) ? -1 : betterQuality(b.score, a.score) ? 1 : 0));
     if (top.length > Math.max(1, repairCandidates)) top.length = Math.max(1, repairCandidates);
-    yield { phase: 'attempt', done: i + 1, total: attempts };
+    let total = attempts;
+    if (attemptDeadline) {
+      const per = (Date.now() - startedAt) / (i + 1);
+      total = Math.max(attempts, i + 1 + Math.floor(Math.max(0, attemptDeadline - Date.now()) / Math.max(1, per)));
+    }
+    yield { phase: 'attempt', done: i + 1, total };
   }
   best = top[0];
 
@@ -7907,17 +8072,14 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // skip a case the pass below would actually have fixed.
   if (repair && hasFallbackComposition(best.result.schedule, args.allResidents, args.block, args.appSettings, args.ayConf)) {
     yield { phase: 'finalize' };
-    const trueKeptCells = new Set();
-    for (const r of args.allResidents) {
-      for (const [ds, sid] of Object.entries(args.block.schedule?.[r.id] || {})) {
-        if (sid) trueKeptCells.add(`${r.id}|${ds}`);
-      }
-    }
+    const trueKeptCells = originalKeptCells(args);
     const fixAttempt = generateSchedule({
       ...deferredArgs,
       block: { ...args.block, schedule: best.result.schedule },
       rng: mulberry32(best.seed),
       repair: 'truePrimaryOnly',
+      // Operates on the already-generated schedule: clearFirst (Clear & Regenerate) must not wipe it.
+      clearFirst: false,
       keptCellsOverride: trueKeptCells,
     });
     if (fixAttempt.report.repairs.length) { // Phase 3b actually found and fixed something
@@ -7954,6 +8116,27 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     }
   }
 
+  // B1: LNS ruin-and-recreate on the settled winner (opt-in via lnsIters; the UI path passes it).
+  // `best` is replaced only on strict betterQuality inside lnsPassSteps. Runs BEFORE the one-shot
+  // diagnostics below so they describe the final schedule.
+  let lnsInfo = null;
+  // `repair` gate: repair:false callers want the raw unrepaired attempt (and its replay with
+  // repair:false), which an LNS pass would silently mutate.
+  if (repair && lnsIters > 0) {
+    const lnsSeed = (resolvedBaseSeed ^ 0xA5A5A5A5) >>> 0;
+    const lnsCapMs = timeBudgetMs > 0 ? Math.max(0, startedAt + timeBudgetMs - Date.now()) : lnsTimeMs;
+    if (timeBudgetMs <= 0 || lnsCapMs > 0) {
+      const lnsIt = lnsPassSteps({
+        args, genCtx, current: best, rulePriority, trueKeptCells: originalKeptCells(args),
+        seed: lnsSeed, iters: lnsIters, timeMs: lnsCapMs,
+      });
+      let st = lnsIt.next();
+      while (!st.done) { yield st.value; st = lnsIt.next(); }
+      best = st.value.current;
+      lnsInfo = { seed: lnsSeed, iters: st.value.ran, accepted: st.value.accepted };
+    }
+  }
+
   // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
   // definition in generateSchedule). Deleted afterwards because the report is persisted onto the
   // block: a function property would be silently dropped by the JSON round-trip, and a report that
@@ -7969,7 +8152,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     delete best.result.report.computeUnfilledDiagnostics;
   }
 
-  best.result.report.attempts = attempts;
+  best.result.report.attempts = attemptsRun || attempts;
   best.result.report.baseSeed = resolvedBaseSeed;
   best.result.report.seed = best.seed;
   best.result.report.qualityVector = best.score.qualityVector;
@@ -7979,7 +8162,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // required to reproduce this exact schedule.
   // `repair` is true only when the repaired run was adopted: an unrepaired winner replays with
   // repair:false (a repair:true replay would mutate it into a different schedule).
-  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired };
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null };
+  if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
   return best.result;
 }
 
@@ -16986,9 +17170,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // for an invalid date range is already handled by the hasValidDates guard just above).
     setGenStageLabel((solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local')) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
-    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, undefined,
+    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, solverRunTarget === 'builtin' ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
+        : p.phase === 'lns' ? { phase: 'local', polishing: true, done: 0, total: 0 } // 'Polishing best attempt…'
         : { phase: 'local', polishing: true, done: p.done, total: p.total }));
     if (!localRes) return null;
 
