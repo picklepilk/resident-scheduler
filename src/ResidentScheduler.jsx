@@ -2,6 +2,7 @@
 // EM Residency Scheduler · UH Emergency Medicine
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import UpdateBanner from './UpdateBanner.jsx';
 import {
   Plus, Minus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
@@ -25281,6 +25282,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           </div>
         </div>
       </header>
+      <UpdateBanner flush={flushPendingCloudSave}/>
 
       {demoMode && (
         <div className="no-print shrink-0 flex items-center justify-between gap-3 px-5 py-2 text-white"
