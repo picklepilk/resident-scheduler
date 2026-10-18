@@ -21,8 +21,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates } from './dates.js';
-import { computeQualityMetrics, computeQualityVector } from './scheduleQuality.js';
+import { computeQualityMetrics, computeQualityVector, fairnessAxes, FAIRNESS_AXIS_WEIGHTS } from './scheduleQuality.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
+import { makeRealScaleFixture } from './__fixtures__/realScale.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,8 +62,24 @@ function underTargetErrorCount(issues) {
   return issues.filter(i => i.level === 'error' && i.rule === 'underTarget').length;
 }
 
+// Per-axis tolerance for the fairnessPlusShape components: max(2% relative, 0.5 absolute).
+export function axisTolerance(before) {
+  return Math.max(Math.abs(before) * 0.02, 0.5);
+}
+
+// Axes that moved beyond tolerance in the WORSE (higher) direction. [] when `before` has no axes.
+export function worsenedAxes(afterAxes, beforeAxes) {
+  if (!beforeAxes) return [];
+  return Object.keys(FAIRNESS_AXIS_WEIGHTS).filter(k =>
+    beforeAxes[k] !== undefined && afterAxes[k] - beforeAxes[k] > axisTolerance(beforeAxes[k]));
+}
+
+function fixtureFor(variant) {
+  return variant === 'realScale' ? makeRealScaleFixture() : makeFixture(variant);
+}
+
 function captureOnce(variant, baseSeed) {
-  const fixture = makeFixture(variant);
+  const fixture = fixtureFor(variant);
   // `attempts` pinned ON PURPOSE here, unlike the perf smoke test in generator.harness.test.js,
   // which deliberately tracks whatever default production uses. The committed baselines are a
   // frozen measurement config: if generateScheduleBest's default ever moves, the recorded numbers
@@ -91,6 +108,7 @@ function captureOnce(variant, baseSeed) {
     structuralErrors: structuralErrorCount(issues),
     underTargetErrors: underTargetErrorCount(issues),
     quality: computeQualityVector(metrics, rulePriority),
+    axes: fairnessAxes(metrics),
     unfilled: report.unfilled.length,
   };
 }
@@ -104,12 +122,15 @@ export function captureFor(variant) {
   const quality = Array.from({ length: runs[0].quality.length }, (_, i) =>
     runs.reduce((sum, r) => sum + r.quality[i], 0) / n
   );
+  const axes = {};
+  for (const k of Object.keys(FAIRNESS_AXIS_WEIGHTS)) axes[k] = runs.reduce((sum, r) => sum + r.axes[k], 0) / n;
   return {
     seeds: SEEDS,
     errors: runs.reduce((sum, r) => sum + r.errors, 0),
     structuralErrors: runs.reduce((sum, r) => sum + r.structuralErrors, 0),
     underTargetErrors: runs.reduce((sum, r) => sum + r.underTargetErrors, 0),
     quality,
+    axes,
     unfilled: runs.reduce((sum, r) => sum + r.unfilled, 0) / n,
   };
 }
@@ -155,13 +176,14 @@ export function makeBaselineSuite(variant) {
           const underTargetWorse = captured.underTargetErrors > (before.underTargetErrors ?? Infinity);
           const errorsWorse = captured.errors > before.errors || structuralWorse || underTargetWorse;
           const qualityWorse = compareWithTolerance(captured.quality, before.quality) > 0;
-          if (errorsWorse || qualityWorse) {
+          const axesWorse = worsenedAxes(captured.axes, before.axes);
+          if (errorsWorse || qualityWorse || axesWorse.length) {
             throw new Error(
               `Refusing to write worse baseline for "${variant}" (errors ${before.errors}->${captured.errors}, ` +
               `structural ${before.structuralErrors ?? '?'}->${captured.structuralErrors}, ` +
               `under-target ${before.underTargetErrors ?? '?'}->${captured.underTargetErrors}, ` +
               `quality ${JSON.stringify(before.quality)}->${JSON.stringify(captured.quality)}). ` +
-              `Set FORCE_QUALITY_BASELINE=1 to override.`
+              `${axesWorse.length ? `worse axes: ${axesWorse.join(', ')}. ` : ''}Set FORCE_QUALITY_BASELINE=1 to override.`
             );
           }
           // eslint-disable-next-line no-console
@@ -203,6 +225,15 @@ export function makeBaselineSuite(variant) {
           compareWithTolerance(captured.quality, before.quality),
           `${variant}: quality vector (avg over ${SEEDS.length} seeds) ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`
         ).toBeLessThanOrEqual(0);
+        // Per-axis fairness: the scalar slot 3 can hide one axis worsening while another improves.
+        expect(
+          before.axes,
+          `${variant}: committed baseline missing axes — regenerate with UPDATE_QUALITY_BASELINE=1`
+        ).not.toBeUndefined();
+        expect(
+          worsenedAxes(captured.axes, before.axes),
+          `${variant}: fairness axes worse than baseline (tolerance max(2%, 0.5)); before ${JSON.stringify(before.axes)} after ${JSON.stringify(captured.axes)}`
+        ).toEqual([]);
       });
     }
   });

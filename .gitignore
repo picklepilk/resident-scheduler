@@ -41,3 +41,6 @@ coverage-heatmap.png
 .remember/
 .superpowers/
 .impeccable/
+
+# Local engine-bench inputs (real Settings backups) — never commit
+bench-input/
