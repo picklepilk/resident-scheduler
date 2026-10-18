@@ -533,6 +533,33 @@ const RULE_METRIC_FIELD = {
   postNightRest: 'restCompromises',
 };
 
+// Per-axis components feeding the last quality-vector slot (fairnessPlusShape). Weights are the
+// coefficients argued for in computeQualityVector's comments. `fairnessAxes` returns RAW (unweighted)
+// values with `?? 0` guards for hand-built metrics; fairnessAxesTotal re-applies the weights, so
+// sum(weight * axis) === slot 3 exactly. Used by the baseline gate to localize a regression.
+export const FAIRNESS_AXIS_WEIGHTS = {
+  underTargetTotal: 2,
+  deficitSpread: 10,
+  holidaySpread: 8,
+  nightSpread: 6,
+  weekendSpread: 4,
+  nightShapePenalty: 1,
+  workShapePenalty: 0.5,
+  areaSpread: 2,
+  traumaRunPenalty: 2,
+  secondRestDayPenalty: 1,
+};
+export function fairnessAxes(metrics) {
+  const out = {};
+  for (const k of Object.keys(FAIRNESS_AXIS_WEIGHTS)) out[k] = metrics[k] ?? 0;
+  return out;
+}
+export function fairnessAxesTotal(axes) {
+  let t = 0;
+  for (const k of Object.keys(FAIRNESS_AXIS_WEIGHTS)) t += FAIRNESS_AXIS_WEIGHTS[k] * (axes[k] ?? 0);
+  return t;
+}
+
 // computeQualityVector: [n0, n1, n2, fairnessPlusShape], LOWER IS BETTER. n0/n1/n2 are the three
 // soft-rule counts in `rulePriority` order (index 0 = highest priority = compared first) — a
 // lexicographic tuple, not a scalar weighted sum, so a count in a lower-priority tier can never
@@ -574,22 +601,7 @@ export function computeQualityVector(metrics, rulePriority) {
   // is still meaningfully larger than 1 (second-rest-day), since a mid-run/3rd-trauma placement is
   // a more concrete deviation from the chief's benchmark than a single missed rest day. `?? 0`
   // guards the same hand-built-metrics-object test callers as the other optional fields above.
-  const fairnessPlusShape =
-    2 * metrics.underTargetTotal +
-    10 * metrics.deficitSpread +
-    8 * (metrics.holidaySpread ?? 0) +
-    6 * metrics.nightSpread +
-    4 * metrics.weekendSpread +
-    metrics.nightShapePenalty +
-    0.5 * metrics.workShapePenalty +
-    // areaSpread joins this SAME existing slot at 2 — never a 5th tuple element, same reasoning as
-    // workShapePenalty/holidaySpread above. 2 matches traumaRunPenalty: both are concrete,
-    // countable deviations from the shape the chief asks for, and both must stay far below
-    // deficitSpread (10) so spreading areas can never buy its way past a real target-fairness
-    // regression. The nullish guard covers hand-built metrics objects in tests, as above.
-    2 * (metrics.areaSpread ?? 0) +
-    2 * (metrics.traumaRunPenalty ?? 0) +
-    1 * (metrics.secondRestDayPenalty ?? 0);
+  const fairnessPlusShape = fairnessAxesTotal(fairnessAxes(metrics));
   return [n0, n1, n2, fairnessPlusShape];
 }
 

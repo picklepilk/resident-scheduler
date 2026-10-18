@@ -1,0 +1,29 @@
+{
+  "seeds": [
+    42,
+    7,
+    1234
+  ],
+  "errors": 19,
+  "structuralErrors": 0,
+  "underTargetErrors": 19,
+  "quality": [
+    36.333333333333336,
+    0,
+    0,
+    1274.8864778482885
+  ],
+  "axes": {
+    "underTargetTotal": 219,
+    "deficitSpread": 0.08637216328599669,
+    "holidaySpread": 0,
+    "nightSpread": 0.9924639484245215,
+    "weekendSpread": 0.916993131220302,
+    "nightShapePenalty": 186.5666666666667,
+    "workShapePenalty": 774.3333333333334,
+    "areaSpread": 115,
+    "traumaRunPenalty": 5.333333333333333,
+    "secondRestDayPenalty": 12
+  },
+  "unfilled": 24.333333333333332
+}
