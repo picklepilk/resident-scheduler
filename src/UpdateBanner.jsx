@@ -53,7 +53,7 @@ function useUpdateAvailable() {
 }
 
 // `flush` = root's flushPendingCloudSave (never throws). Reload only after it settles.
-export default function UpdateBanner({ flush }) {
+export default function UpdateBanner({ flush, blocked = false }) {
   const { stale, dismiss } = useUpdateAvailable();
   const [busy, setBusy] = useState(false);
   if (!stale) return null;
@@ -65,9 +65,11 @@ export default function UpdateBanner({ flush }) {
   return (
     <div role="status" aria-live="polite"
       className="no-print shrink-0 flex items-center justify-between gap-3 px-5 py-2 bg-amber-50 border-b border-amber-300 text-amber-900 text-sm">
-      <span>A newer version is available. Your work is saved first.</span>
+      <span>
+        A newer version is available. {blocked ? 'Resolve the sync conflict first.' : 'Pending changes are saved first.'}
+      </span>
       <span className="flex items-center gap-2 flex-none">
-        <button type="button" onClick={reload} disabled={busy}
+        <button type="button" onClick={reload} disabled={busy || blocked}
           className="px-3 py-1 rounded-md text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60">
           {busy ? 'Saving…' : 'Reload'}
         </button>

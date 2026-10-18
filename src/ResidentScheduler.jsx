@@ -25282,7 +25282,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           </div>
         </div>
       </header>
-      <UpdateBanner flush={flushPendingCloudSave}/>
+      <UpdateBanner flush={flushPendingCloudSave} blocked={!!cloudConflict}/>
 
       {demoMode && (
         <div className="no-print shrink-0 flex items-center justify-between gap-3 px-5 py-2 text-white"

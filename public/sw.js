@@ -18,7 +18,7 @@
 //
 // Versioned from one constant — bump CACHE_VERSION on any change to this file's caching
 // behavior so `activate` cleans out the old cache instead of serving mismatched assets forever.
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `em-sched-shell-${CACHE_VERSION}`;
 const APP_SHELL_URL = '/index.html';
 
@@ -51,6 +51,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return; // cross-origin (Supabase etc.) — untouched
   if (isNeverIntercept(url)) return;
+  // The update-available poll (UpdateBanner) fetches '/?v=<ts>' with cache:'no-store'; caching it
+  // would add one HTML entry per poll and defeat the check.
+  if (request.cache === 'no-store') return;
 
   // Navigations: network-first with offline fallback to the cached shell (SPA — every route
   // renders from index.html anyway, per netlify.toml's catch-all redirect).
