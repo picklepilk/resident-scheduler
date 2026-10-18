@@ -1,6 +1,6 @@
 // src/lib/rulePolicy.test.js
 import { describe, it, expect } from 'vitest';
-import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './rulePolicy.js';
+import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, HAND_OVERRIDABLE_RULE_IDS, isHandOverridable, severityFor } from './rulePolicy.js';
 
 const TIERS = ['acgme', 'program', 'override', 'info'];
 
@@ -41,9 +41,10 @@ describe('severityFor', () => {
     expect(severityFor('approvedDayOff', 'validator')).toBe('warn');
   });
 
-  it('handEdit surface: acgme/program -> error (blocking), override -> confirm', () => {
+  it('handEdit surface: acgme -> error (blocking), program/rotationEligibility/override -> confirm', () => {
     expect(severityFor('vacation', 'handEdit')).toBe('error');
-    expect(severityFor('bamcWedNight', 'handEdit')).toBe('error');
+    expect(severityFor('bamcWedNight', 'handEdit')).toBe('confirm');
+    expect(severityFor('rotationEligibility', 'handEdit')).toBe('confirm');
     expect(severityFor('nightsTotalBlock', 'handEdit')).toBe('confirm');
     expect(severityFor('approvedDayOff', 'handEdit')).toBe('confirm');
   });
@@ -69,10 +70,42 @@ describe('severityFor', () => {
       } else if (entry.tier === 'override') {
         expect(validatorLevel, id).toBe('warn');
         expect(handEditLevel, id).toBe('confirm');
+      } else if (isHandOverridable(id)) {
+        expect(validatorLevel, id).toBe('error'); // generator/validator hardness is unchanged
+        expect(handEditLevel, id).toBe('confirm');
       } else {
         expect(validatorLevel, id).toBe('error');
         expect(handEditLevel, id).toBe('error');
       }
     }
+  });
+});
+
+describe('hand-overridable rules (2026-10-18)', () => {
+  it('is every program-tier rule plus rotationEligibility, nothing else', () => {
+    const program = Object.keys(RULE_POLICY).filter(id => RULE_POLICY[id].tier === 'program');
+    expect([...HAND_OVERRIDABLE_RULE_IDS].sort()).toEqual([...program, 'rotationEligibility'].sort());
+    for (const id of ['traumaDayRotationGuard', 'nightRunMax', 'bamcWedNight', 'traumaPedsSplit', 'jcMaxPerAy',
+      'grLectureEveNight', 'jeopardyCollision', 'jeopardyWindow', 'rotationEligibility']) {
+      expect(isHandOverridable(id), id).toBe(true);
+    }
+  });
+
+  it('the unbreakable ACGME/legal rules stay unbreakable by hand', () => {
+    for (const id of ['sixConsecutiveWorkDays', 'sixDayRunRest', 'eveToNextDayDay', 'rolling80h', 'vacation',
+      'restShiftLength', 'edWeekly60', 'totalWeekly72']) {
+      expect(isHandOverridable(id), id).toBe(false);
+      expect(severityFor(id, 'handEdit'), id).toBe('error');
+    }
+  });
+
+  it('override-tier ids are not in the hand-overridable set (they keep their own path)', () => {
+    for (const id of OVERRIDE_TIER_RULE_IDS) expect(isHandOverridable(id), id).toBe(false);
+  });
+
+  it('unknown / non-string ids are never overridable', () => {
+    expect(isHandOverridable('someMadeUpRuleId')).toBe(false);
+    expect(isHandOverridable(undefined)).toBe(false);
+    expect(isHandOverridable(null)).toBe(false);
   });
 });
