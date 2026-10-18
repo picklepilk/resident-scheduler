@@ -11385,7 +11385,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
         <BlockRail ay={selectedAy} ayOptions={ayOptions} onAyChange={setSelectedAy}
           blocks={railBlocks} liveBlockId={liveRailRow ? liveRailRow.id : null}
           blockSaveState={blockSaveState} viewer={viewer} coverage={coverage} ayConf={selectedAyConf}
-          onOpen={row => onPeekBlock(row.snap)} peekId={peekBlock ? peekBlock.id : null}
+          onOpen={row => onPeekBlock(row.snap)} peekId={peek ? peek.block.id : null}
           onTogglePublished={toggleBlockPublished}
           onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}
           headerRight={
