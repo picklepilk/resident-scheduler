@@ -7859,7 +7859,7 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
 // PRE-fix schedule — the actual winner needs the same second step this function itself ran:
 //   const base = generateSchedule({ ...args, rng: mulberry32(report.replay.seed), repair: report.replay.repair });
 //   const winner = generateSchedule({ ...args, rng: mulberry32(report.replay.seed),
-//     repair: 'truePrimaryOnly', block: { ...args.block, schedule: base.schedule },
+//     repair: 'truePrimaryOnly', clearFirst: false, block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
 // LNS (B1): when `report.replay.lns` is non-null ({seed, iters}), the winner above is only the
@@ -8029,6 +8029,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       block: { ...args.block, schedule: best.result.schedule },
       rng: mulberry32(best.seed),
       repair: 'truePrimaryOnly',
+      // Operates on the already-generated schedule: clearFirst (Clear & Regenerate) must not wipe it.
+      clearFirst: false,
       keptCellsOverride: trueKeptCells,
     });
     if (fixAttempt.report.repairs.length) { // Phase 3b actually found and fixed something
