@@ -271,7 +271,7 @@ describe('buildSolverPayload', () => {
     expect(payload.shifts['TRAUMA-N']).toEqual({ startH: 18, durationH: 12, type: 'night', area: 'TRAUMA' });
   });
 
-  it('holidays is {} and jcDates derives first Tuesdays when the AY has no config (no-op guarantee)', () => {
+  it('holidays is {} and jcDates carries the LOGGED Journal Club dates (fixture logs the first Tuesdays)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
     expect(payload.holidays).toEqual({});
@@ -581,7 +581,7 @@ describe('mapSolverResult', () => {
         schedule: { p2: { [POD_WW]: 'POD-N' } },
         report: { unfilled: [], restCompromises: [], underTarget: [], seniorGaps: [] },
       };
-      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy2] });
+      const { report } = mapSolverResult(json, { block: ppBlock, allResidents: [pgy2], ayConf: makeFixture('standard').ayConf });
       expect(report.podSubstitutes).toHaveLength(1);
       expect(report.podSubstitutes[0]).toMatchObject({ residentId: 'p2', dateStr: POD_WW, shiftId: 'POD-N', reason: 'wellness' });
     });

@@ -8,8 +8,10 @@
 //
 // Tiers:
 //   'acgme'    — accreditation-required, never broken, anywhere. No "place anyway" path.
-//   'program'  — chief-decided hard policy, blocks everywhere exactly like 'acgme' (the two tiers
-//                differ in WHY they're hard, not in how hard they are — see severityFor).
+//   'program'  — chief-decided hard policy. The generator, solver and validator treat it exactly
+//                like 'acgme' (hard, 'error'). Since 2026-10-18 a chief may still break one BY HAND,
+//                case by case, behind a confirm — see HAND_OVERRIDABLE_RULE_IDS below. The result is
+//                a flagged, non-export-blocking warning (src/lib/handOverrides.js), never silent.
 //   'override' — the generator never breaks these either, but a chief may break one by hand: the
 //                validator downgrades it to a flagged warning (and it counts toward export-blocking
 //                warnings — see EXPORT_BLOCKING_RULE_IDS in ResidentScheduler.jsx) and a hand-edit
@@ -94,6 +96,22 @@ export const RULE_POLICY = {
   seniorPgyGating: { tier: 'info', label: 'Junior PGY covered a slot a senior PGY already filled (chief-directed gating)' },
 };
 
+// 2026-10-18 chief decision: every 'program' rule plus rotationEligibility (tiered 'acgme' for
+// historical reasons, but it is a rotation/PGY eligibility rule, not an hours rule) may be broken
+// by HAND, per case, behind a confirm. Generator/solver/validator hardness is unchanged: the
+// validator still reports these as 'error' unless a confirmed block.handOverrides entry covers the
+// cell (then it downgrades to a flagged, non-export-blocking warn). The ACGME hours/rest/vacation
+// rules stay unbreakable by hand. Distinct from OVERRIDE_TIER_RULE_IDS (the generator-never-breaks
+// but warn-level 'override' tier, which keeps working exactly as before).
+export const HAND_OVERRIDABLE_RULE_IDS = [
+  ...Object.keys(RULE_POLICY).filter(id => RULE_POLICY[id].tier === 'program'),
+  'rotationEligibility',
+];
+const HAND_OVERRIDABLE_SET = new Set(HAND_OVERRIDABLE_RULE_IDS);
+export function isHandOverridable(ruleId) {
+  return typeof ruleId === 'string' && HAND_OVERRIDABLE_SET.has(ruleId);
+}
+
 // All rule ids whose tier is 'override' — the exact set a hand-edit surface must show a confirm
 // step for (severityFor handles the acgme/program "just block" side on its own). Exported so
 // callers that need the raw id list (e.g. EXPORT_BLOCKING_RULE_IDS in ResidentScheduler.jsx,
@@ -103,8 +121,9 @@ export const OVERRIDE_TIER_RULE_IDS = Object.keys(RULE_POLICY).filter(id => RULE
 // severityFor(ruleId, surface) — the ONE place a rule id becomes a concrete level.
 //   surface 'validator': acgme/program -> 'error' (matches how validateAll has always treated a
 //     hard rule); override -> 'warn' (flagged, but review-panel/export-blocking still show it).
-//   surface 'handEdit': acgme/program -> 'error' (blocking — the picker/drag-drop/inspector must
-//     never offer a "place/move anyway" path for these); override -> 'confirm' (the caller shows
+//   surface 'handEdit': acgme -> 'error' (blocking — the picker/drag-drop/inspector must never
+//     offer a "place/move anyway" path for these); program, rotationEligibility (see
+//     isHandOverridable) and override -> 'confirm' (the caller shows
 //     an explicit "Override program rule" step; NOT a bare warn — a hand edit is an ACTION, not a
 //     retrospective report, so it needs its own affirmative step before it's allowed through).
 // An unrecognized/untiered ruleId (a custom per-resident work restriction has no policy tier of its
@@ -118,7 +137,7 @@ export function severityFor(ruleId, surface) {
     return 'error'; // acgme, program, or unrecognized
   }
   if (surface === 'handEdit') {
-    if (tier === 'override') return 'confirm';
+    if (tier === 'override' || isHandOverridable(ruleId)) return 'confirm';
     return 'error'; // acgme, program, or unrecognized
   }
   return 'warn';

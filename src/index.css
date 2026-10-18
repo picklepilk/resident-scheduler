@@ -378,3 +378,19 @@ body {
     border-color: #475569;
   }
 }
+
+/* Dashboard coverage heatmap chips (BlockMonthGrid). Light defaults here; dark under .dark. */
+.cov-chip { display: inline-flex; gap: 3px; align-items: baseline; padding: 0 4px; border-radius: 4px;
+  font-size: 10px; line-height: 14px; white-space: nowrap; border: 1px solid transparent; }
+.cov-chip-red { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+.cov-chip-amber { background: #fef3c7; color: #b45309; border-color: #fcd34d; }
+.cov-chip-green { background: #dcfce7; color: #15803d; border-color: #86efac; }
+.cov-chip-gray { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+.cov-open-score { color: #b91c1c; font-weight: 700; }
+@media screen {
+  .dark .cov-chip-red { background: rgba(239, 68, 68, 0.22); color: #fca5a5; border-color: rgba(239, 68, 68, 0.5); }
+  .dark .cov-chip-amber { background: rgba(245, 158, 11, 0.2); color: #fcd34d; border-color: rgba(245, 158, 11, 0.5); }
+  .dark .cov-chip-green { background: rgba(34, 197, 94, 0.18); color: #86efac; border-color: rgba(34, 197, 94, 0.45); }
+  .dark .cov-chip-gray { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border-color: rgba(148, 163, 184, 0.3); }
+  .dark .cov-open-score { color: #fca5a5; }
+}

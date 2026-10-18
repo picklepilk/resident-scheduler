@@ -41,3 +41,35 @@ export function appendImportLog(log, entry, cap = IMPORT_LOG_CAP_BYTES) {
 export function normalizeImportLog(value) {
   return Array.isArray(value) ? value : [];
 }
+
+// ── Provenance ("Sources" panel) ───────────────────────────────────────────────────────────────
+// Every importer records, in addition to the fields above (METADATA ONLY — never file contents):
+//   by         who ran it (signed-in email; absent in dev / unauthenticated)
+//   hash       short content hash of the uploaded file (xlsx/docx importers)
+//   populated  string[] — what the import filled in, counts only ("JC presenters: 9 residents")
+//   blockStarts string[] / ays string[] — scope: which saved/live blocks and academic years it
+//              touched. Absent on both = a roster-wide import (applies to every block).
+
+// Stamps `by` on entries that are new in `next` relative to `prev` (matched by id) and lack one.
+// Lets every importer keep calling a plain setImportLog while the root supplies the actor once.
+export function stampNewEntries(next, prev, by) {
+  if (!by || !Array.isArray(next)) return next;
+  const seen = new Set((Array.isArray(prev) ? prev : []).map(e => e && e.id));
+  return next.map(e => (e && !seen.has(e.id) && !e.by ? { ...e, by } : e));
+}
+
+// Splits the log for the Sources panel: entries scoped to this block (or its AY), and roster-wide
+// ones. Scope match: blockStarts includes `blockStart`, else ays includes `ay`. Newest first.
+export function sourcesFor(log, { blockStart, ay }) {
+  const scoped = [], global = [];
+  for (const e of [...normalizeImportLog(log)].reverse()) {
+    const bs = Array.isArray(e.blockStarts) ? e.blockStarts : [];
+    const ays = Array.isArray(e.ays) ? e.ays : [];
+    if (!bs.length && !ays.length) { global.push(e); continue; }
+    const byBlock = blockStart && bs.includes(blockStart);
+    // A block-scoped entry (matrix/qgenda) only counts for the AY view, not for a different block's view.
+    const byAy = ay && ays.includes(ay) && !(bs.length && blockStart);
+    if (byBlock || byAy) scoped.push({ ...e, matchedBy: byBlock ? 'block' : 'ay' });
+  }
+  return { scoped, global };
+}
