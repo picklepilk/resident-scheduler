@@ -167,7 +167,7 @@ export function materializeLegacyRuleDates({ ayData, blocks = [], ordinalsByPgy 
     }
     for (const pgy of [1, 2, 3]) {
       const ord = ordinalsByPgy[pgy];
-      if (!Number.isFinite(ord) || hasStoredList(RULE_KEYS.WELLNESS, conf, pgy)) continue;
+      if (!Number.isFinite(ord) || !starts.length || hasStoredList(RULE_KEYS.WELLNESS, conf, pgy)) continue;
       conf = withLoggedDates(conf, RULE_KEYS.WELLNESS, suggestWellnessWednesdays(starts, ord), pgy);
     }
     if (conf !== orig) { next[ay] = conf; changed = true; }

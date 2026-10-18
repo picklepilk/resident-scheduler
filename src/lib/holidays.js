@@ -13,9 +13,8 @@
 // rather than listing two unlabelled dates.
 //
 // ── ABSENT CONFIG DERIVES NOTHING ───────────────────────────────────────────────────────────────
-// This is the ONE place this module deliberately departs from journalClub.js's convention. There,
-// an absent ayData[AY].jcDates DERIVES first Tuesdays, because Journal Club always existed and
-// deriving reproduced the previous hardcoded behavior exactly. Here, an absent ayData[AY].holidays
+// Same convention as every computed-date rule now (journalClub.js, ruleDates.js: absent = none;
+// Journal Club used to derive first Tuesdays until 2026-10-18). An absent ayData[AY].holidays
 // resolves to [] — NOT to defaultUsHolidays(). Deriving by default would retroactively invent
 // holiday obligations for every academic year already saved, silently move the generator's
 // scoring and every committed quality baseline, and assert a US federal calendar the chief never

@@ -75,7 +75,7 @@ export function buildAcademicPlan({ parsed, emRoster, ayData, match, mapping = {
     }
     return {
       ay: label, ayStart: b.ayStart,
-      jc: { file: fileJc, current, added, removed, same, custom: Array.isArray(((ayData || {})[label] || {}).jcDates) },
+      jc: { file: fileJc, current, added, removed, same },
       lecture: { dates: [...b.lectureDates].sort(), new: lecNew, have: lecHave },
       mm: { dates: [...b.mmDates].sort(), new: mmNew, have: mmHave },
       presenters: { new: jcNew, have: jcHave, rows: b.jc },

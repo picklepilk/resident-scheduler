@@ -20,6 +20,10 @@ describe('issueAcks', () => {
     expect(acked).toHaveLength(0);
     expect(active).toHaveLength(1);
   });
+  it('overridden warnings are not ackable', () => {
+    expect(isAckable(w({ overridden: true }))).toBe(false);
+    expect(isAckable(w())).toBe(true);
+  });
   it('errors are not ackable and never partitioned as acked', () => {
     expect(isAckable(e())).toBe(false);
     const acks = addAcks({}, [e(), w()], { by: 'me' });

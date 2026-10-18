@@ -28,8 +28,8 @@ export function computeSetupGaps(input = {}) {
     residentIssues = [], pendingResidentCount = 0, offServiceNoRanges = [], supplyDemand = null,
   } = input;
   const gaps = [];
-  // Default BLOCKING (the rule/resident silently does not work); holidays, conferences, pending requests
-  // and pending requests pass severity: 'advisory' explicitly.
+  // Default BLOCKING (the rule/resident silently does not work); holidays, conferences and pending requests
+  // pass severity: 'advisory' explicitly.
   const add = g => gaps.push({ severity: 'blocking', suppresses: [], ...g });
 
   if (!validDate(block.startDate) || !validDate(block.endDate) || block.endDate < block.startDate) {

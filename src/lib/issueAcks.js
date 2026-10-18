@@ -16,7 +16,7 @@ export function ackKeyFor(issue) {
 }
 
 export function isAckable(issue) {
-  return !!issue && issue.level !== 'error';
+  return !!issue && issue.level !== 'error' && !issue.overridden;
 }
 
 // Backup/cloud data is untrusted shape.

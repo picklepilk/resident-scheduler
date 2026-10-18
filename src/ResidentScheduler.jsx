@@ -11371,7 +11371,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
             <>
               <IncompleteSetupBanner block={block} liveGaps={liveSetup.gaps} onFix={onNavigateFix}
                 onRegenerate={stepHandlers?.onGoToGenerate}/>
-              <SetupNeedsAttentionStrip gaps={liveSetup.gaps} pressure={liveSetup.pressure} onFix={onNavigateFix}/>
+              <SetupNeedsAttentionStrip gaps={(() => { const shown = new Set(openStampedGaps(block.generatedWithGaps, liveSetup.gaps).map(g => g.id)); return liveSetup.gaps.filter(g => !shown.has(g.id)); })()} pressure={liveSetup.pressure} onFix={onNavigateFix}/>
             </>
           )}
           {stepHandlers && (
@@ -11608,7 +11608,7 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
       {confirmClearSchedule && (
         <ClearScheduleConfirm blockName={block.name} hasSnapshot={blockSaveState !== 'never'}
           onConfirm={() => {
-            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null }, { kind: 'clear' }, viewer));
+            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lastGenerated: null, generatedWithGaps: null, issueAcks: {} }, { kind: 'clear' }, viewer));
             setConfirmClearSchedule(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -17168,9 +17168,16 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // Local FIRST, always — see this function's own header for why (both the warm-start source
     // AND, on any solver failure, the final answer itself; generateScheduleBest's own null return
     // for an invalid date range is already handled by the hasValidDates guard just above).
-    setGenStageLabel((solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local')) ? 'Generating (built-in engine)…' : 'Preparing…');
+    // The polished (longer) local run only makes sense as a warm start for a solver that can
+    // actually run; kill switch off / no cloud URL / hand overrides the optimizer can't honour
+    // all mean the local result IS the answer, so use the built-in budget.
+    const solverPossible = solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false;
+    const overrideSkipCount = solverPossible
+      ? solverUnsafeHandOverrides(genBlock.handOverrides, genBlock.schedule, Object.fromEntries(allResidents.map(r => [r.id, r])), isTraumaCapSubject).length
+      : 0;
+    setGenStageLabel((solverPossible && !overrideSkipCount) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
-    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, solverRunTarget === 'builtin' ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
+    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, (!solverPossible || overrideSkipCount) ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
         : p.phase === 'lns' ? { phase: 'local', polishing: true, done: 0, total: 0 } // 'Polishing best attempt…'
@@ -17182,6 +17189,9 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     const withEngineLabel = (res, engineLabel) => ({ ...res, engineLabel, report: { ...res.report, engineLabel } });
     if (solverRunTarget === 'builtin') {
       return { ...withEngineLabel(localRes, 'Built-in'), engineUsed: 'local', relaxed: false };
+    }
+    if (overrideSkipCount) {
+      return { ...withEngineLabel(localRes, 'Built-in (hand overrides present)'), engineUsed: 'skipped-overrides', skippedOverrideCount: overrideSkipCount, relaxed: false };
     }
 
     // Chief-level kill switch (Settings → Rule Enforcement → "Use optimizer service"): read as
@@ -17293,7 +17303,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           unshippedSolver: winner === 'cpsat' ? null : { genBlock, schedule: solverRes.schedule, lockedCells: genBlock.lockedCells },
         };
       } catch (e) {
-        if (e?.code === 'HAND_OVERRIDES') return { ...localRes, engineUsed: 'skipped-overrides', engineLabel: 'Built-in (hand overrides present)', skippedOverrideCount: e.count, relaxed: false };
+        if (e?.code === 'HAND_OVERRIDES') return { ...withEngineLabel(localRes, 'Built-in (hand overrides present)'), engineUsed: 'skipped-overrides', skippedOverrideCount: e.count, relaxed: false };
         console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
         let engineComparison = null;
         try {
@@ -17392,7 +17402,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       const res = await generateViaSolverOrLocal(genBlock, false);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
@@ -17451,7 +17461,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // no separate confirm/undo mechanism needed.
   function applySweepCandidate(cand) {
     if (!cand) return;
-    updateBlockTracked(b => ({ ...b, schedule: cand.schedule, generationReport: cand.report, issueAcks: {} }));
+    updateBlockTracked(b => ({ ...b, schedule: cand.schedule, lastGenerated: buildLastGenerated({ schedule: cand.schedule, engine: cand.label || 'sweep' }), generatedWithGaps: gapStampNow(), generationReport: cand.report, issueAcks: {} }));
     setSweepOpen(false);
     showToast(`Applied "${cand.label}" — ${cand.diffTotal} shift${cand.diffTotal !== 1 ? 's' : ''} changed across ${Object.keys(cand.diff.byResident).length} resident${Object.keys(cand.diff.byResident).length !== 1 ? 's' : ''}. Undo (Ctrl+Z) restores the previous schedule.`, 'green');
   }
@@ -17865,7 +17875,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               as an explicit buildSolverPayload config override — the default Generate button above is untouched. Gated the same as
               the Settings → "Use optimizer service" toggle, OR'd with solverRunTarget === 'local'
               since the local target never depends on VITE_SOLVER_URL/SOLVER_ENABLED. */}
-          {solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
+          {solverRunTarget === 'cloud' && SOLVER_ENABLED && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
               title={`Same as Generate Schedule, but lets the optimizer${solverRunTarget === 'local' ? ' on this computer' : ''} search for up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)} instead of ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)} — can fill more slots on a tight block. Only ships if it beats the regular result.`}>
               Deep Solve (~{Math.round(DEEP_SOLVE_MAX_TIME_SECONDS / 60)} min)
@@ -18140,7 +18150,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           onConfirm={() => {
             // lockedCells must clear alongside schedule — otherwise a lock entry points at a cell
             // that no longer exists, invisible with no UI to find or remove it (see CLAUDE.md).
-            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {}, handOverrides: {} }, { kind: 'clear' }, viewer));
+            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {}, handOverrides: {}, lastGenerated: null, generatedWithGaps: null, issueAcks: {} }, { kind: 'clear' }, viewer));
             setConfirmClear(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -24061,7 +24071,7 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
     () => reconcileTabOrder(tabOrder, TABS).filter(t => t.id !== 'feedback' || cloudEnabled),
     [tabOrder, cloudEnabled]
   );
-  const clean = hasSchedule && issueCounts.errors === 0 && issueCounts.warns === 0;
+  const clean = hasSchedule && issueCounts.errors === 0 && issueCounts.warns === 0 && !(issueCounts.ackedBlocking > 0);
 
   // "Other" overflow group (see src/uiPrefs.js) — a per-viewer, per-tab membership list, not a
   // reorder: `reconcileTabOrder`'s ordering semantics are untouched, this just splits the already-
@@ -26005,6 +26015,9 @@ export default function ResidentScheduler({ viewer } = {}) {
       emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
       schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
       conferences:d.conferences||{}, generationReport:d.generationReport||null,
+      // Generate-time baselines (omit key when absent, never null; plain-object guard for untrusted shape).
+      ...(d.lastGenerated && typeof d.lastGenerated === 'object' && !Array.isArray(d.lastGenerated) ? { lastGenerated: d.lastGenerated } : {}),
+      ...(d.generatedWithGaps && typeof d.generatedWithGaps === 'object' && !Array.isArray(d.generatedWithGaps) ? { generatedWithGaps: d.generatedWithGaps } : {}),
       // Untrusted shape (old snapshot, hand-edited storage, foreign backup) — guard with
       // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
       overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],

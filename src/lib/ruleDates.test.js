@@ -55,6 +55,10 @@ describe('materializeLegacyRuleDates', () => {
     expect(loggedDates('wellnessWednesday', c, 3)).toEqual(['2026-07-15', '2026-08-12']);
     expect(loggedDates('wellnessWednesday', c, 1)).toEqual(['2026-07-01', '2026-07-29']);
   });
+  it('does not write an empty (opted-out) wellness list for AYs with no block starts', () => {
+    const out = materializeLegacyRuleDates({ ayData: { 'AY25/26': {} }, blocks, ordinalsByPgy: { 1: 1 } });
+    expect(hasStoredList('wellnessWednesday', out['AY25/26'], 1)).toBe(false);
+  });
   it('creates entries for block AYs and extra-date AYs; JC derived once', () => {
     const out = materializeLegacyRuleDates({ ayData: {}, blocks, ordinalsByPgy: { 2: 2 }, extraDates: ['2025-09-02'] });
     expect(loggedDates('journalClub', out['AY26/27'])).toHaveLength(12);

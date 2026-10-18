@@ -2,6 +2,7 @@
 // releases are absent on old snapshots; treat "absent" and "empty" as equal for those only.
 export const OPTIONAL_SNAPSHOT_FIELDS = ['handOverrides', 'issueAcks', 'lastGenerated', 'generatedWithGaps'];
 
+// Keep in sync with normalizeForCompare in ResidentScheduler.jsx.
 function normalizeForCompare(val) {
   if (Array.isArray(val)) {
     const arr = val.map(normalizeForCompare);
