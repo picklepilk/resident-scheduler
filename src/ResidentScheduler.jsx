@@ -16356,7 +16356,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // also what keeps Fly's traffic-based autostart/autostop from idling the machine out from under a
   // genuinely running job (see solver-service/CLAUDE.md's "Background jobs" section).
   useEffect(() => {
-    if (!longSolveJob?.jobId) { setLongSolveStatus(null); return; }
+    if (readOnly || !longSolveJob?.jobId) { setLongSolveStatus(null); return; }
     let stopped = false;
     async function pollOnce() {
       if (longSolvePollingRef.current) return;
@@ -17902,7 +17902,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           component-level comment on longSolveJob for why "only while mounted" is an acceptable
           prototype scope) — z-ladder/overlay machinery is reserved for things that must stay
           visible over the grid itself. */}
-      {longSolveJob?.jobId && (
+      {!readOnly && longSolveJob?.jobId && (
         <div className="no-print mb-3 flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 flex-wrap" role="status" aria-live="polite">
           <RefreshCw size={16} className={`flex-none text-primary ${longSolveSpinning ? 'animate-spin' : ''}`}/>
           <span className="text-xs font-medium text-foreground">
@@ -18024,6 +18024,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             </Button>
           </span>
           </>}
+          {readOnly && <span className="text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-800">Read-only</span>}
           <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full Screen'}
@@ -18446,7 +18447,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       {view==='resident' && (
         <ResidentCardsView grouped={grouped} sched={sched} dates={dates} appSettings={appSettings} ayConf={ayConf} violMap={violMap}
           dayRules={dayRules} blockStart={block.startDate} block={block} blocksHistory={blocksHistory} jeopardySchedule={block.jeopardySchedule}
-          onRowClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+          onRowClick={(res,ds)=>{ if(!readOnly) setPicker({resident:res,dateStr:ds}); }}/>
       )}
 
       {view==='calendar' && calendarMode==='week' && (
@@ -18536,7 +18537,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         </Modal>
       )}
 
-      {picker && (
+      {picker && !readOnly && (
         <ShiftPickerModal resident={picker.resident} dateStr={picker.dateStr}
           currentShift={sched[picker.resident.id]?.[picker.dateStr]||null}
           block={block} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules}
@@ -26005,7 +26006,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     () => (peekSnapId && peekSnapId !== block.id ? blocksHistory.find(b => b.id === peekSnapId) || null : null),
     [peekSnapId, block.id, blocksHistory]);
   const peekBlock = useMemo(() => (peekSnap ? snapToBlock(peekSnap) : null), [peekSnap]);
-  const peekAyConf = peekBlock ? (ayData[peekBlock.academicYear] || { ...DEFAULT_AY_CONF }) : null;
+  const peekAyRaw = peekBlock ? ayData[peekBlock.academicYear] : null;
+  const peekAyConf = useMemo(() => (peekBlock ? (peekAyRaw || { ...DEFAULT_AY_CONF }) : null), [peekBlock, peekAyRaw]);
   const peekResidents = useMemo(
     () => (peekBlock ? composeAllResidents(emRoster, peekBlock, blocksHistory) : []),
     [peekBlock, emRoster, blocksHistory]);
@@ -26015,8 +26017,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     [peekBlock, peekResidents, eligOverrides, appSettings, dayRules, coverage, blocksHistory, peekAyConf]);
   const peekIssueCounts = useMemo(() => ({
     errors: peekIssues.filter(i => i.level === 'error').length,
-    warns: peekIssues.filter(i => i.level !== 'error').length,
-  }), [peekIssues]);
+    warns: partitionAcked(peekIssues, peekBlock?.issueAcks).active.filter(i => i.level !== 'error').length,
+  }), [peekIssues, peekBlock]);
   const peekSchedulableCount = useMemo(() => peekResidents.filter(isSchedulable).length, [peekResidents]);
   // Click on the rail / Switch-block menu: the live block just clears the peek, any other block is
   // opened read-only. No save prompt - nothing about the live block changes.
@@ -26026,11 +26028,11 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
   function makePeekActive() {
     if (!peekSnap) return;
-    const snap = peekSnap;
-    setPeekSnapId(null);
+    const snap = peekSnap; // peek is cleared in doLoadBlock, so cancelling the save-first dialog keeps it
     loadBlock(snap, { stayOnTab: true });
   }
   // Peek only makes sense on the views that render a block read-only (Dashboard block card, Schedule).
+  useEffect(() => { if (peekSnapId && !peekSnap) setPeekSnapId(null); }, [peekSnapId, peekSnap]);
   useEffect(() => {
     if (peekSnapId && tab !== 'dashboard' && tab !== 'schedule') setPeekSnapId(null);
   }, [tab, peekSnapId]);
@@ -26176,6 +26178,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function doLoadBlock(snap, opts) {
+    setPeekSnapId(null);
     setBlock(snapToBlock(snap));
     setSwitchPending(null);
     setUndoStack([]); setRedoStack([]); // undo history belongs to the block it was made in
@@ -26511,8 +26514,8 @@ export default function ResidentScheduler({ viewer } = {}) {
                 the icon (with its title/aria-label) remains, keeping 375px from overflowing. */}
             {block.startDate && (
               <div className="relative">
-                <Button variant="secondary" size="sm" onClick={()=>setExportMenuOpen(o=>!o)}
-                  title="Export the schedule" aria-haspopup="menu" aria-expanded={exportMenuOpen}>
+                <Button variant="secondary" size="sm" onClick={()=>setExportMenuOpen(o=>!o)} disabled={!!peekBlock}
+                  title={peekBlock ? `Exports the active block (${block.name || 'untitled'}) — return to it to export` : 'Export the schedule'} aria-haspopup="menu" aria-expanded={exportMenuOpen}>
                   <Download size={12}/> <span className="hidden sm:inline">Export</span> <ChevronDown size={12}/>
                 </Button>
                 {exportMenuOpen && (
