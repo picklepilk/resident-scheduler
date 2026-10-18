@@ -1406,3 +1406,15 @@ one rest violation outweighs the entire overstaff sum (provable dominance; repor
 `TIER_REST` is in these scaled units). Rest-first order is unchanged (overstaff in `TIER_RANK`).
 When the block touches no conference (`TIER_BLOCKING` empty) the 4-entry `stageSplit` gives rest the
 whole blocking share.
+
+Portfolio bench (2026-10-18, `scripts/bench-engines.mjs --fixture realScale`, local solver on an
+8-CPU laptop, 120 s budget, synthetic 58-resident fixture, ladder change above applied):
+
+| portfolio | wall | status | errors | blockWarn | miss | rest | fair | winner |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 123 s | FEASIBLE | 7 | 3 | 27 | 0 | 1227 | cpsat |
+| 4 | 104 s | FEASIBLE | 11 | 2 | 63 | 0 | 1283 | local |
+
+K=4 (2 workers per run) is far worse than K=1 (8 workers on one run) at equal wall time: CP-SAT's
+own multi-worker portfolio beats K independent thin runs here. Client default stays 1 (off). Re-run
+on a real backup before revisiting.
