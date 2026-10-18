@@ -26,6 +26,7 @@ npx vitest run src/lib/qgenda.test.js        # single file
 - **TDZ hazard**: module-level `const` referencing a later `const` throws at page load; `npm run build` won't catch it. `RULE_NOTES` prose deliberately hardcodes numbers duplicating `NIGHT_RULES`/`JC_MAX_PER_AY`/`TRAUMA_PEDS_SPLIT` for this reason — change one, update matching prose.
 
 ## Persistence, cloud sync, playgrounds
+- New optional per-block snapshot field → add it to `OPTIONAL_SNAPSHOT_FIELDS` in `src/lib/snapshotCompare.js`, else old snapshots read dirty.
 - `useLocalStorage` backs `res_*` keys. Nine ride `LS_BACKUP_KEYS`; Settings backup/restore AND cloud sync derive from it. **A new `res_*` key must be added to `LS_BACKUP_KEYS` + `syncBindings`** or it silently won't round-trip (forgetting `syncBindings` throws; forgetting the list is silent loss).
 - Device-local, deliberately excluded: `res_dark_mode`, `res_demo_mode`, `res_whats_new_seen`, `res_ui_prefs` (fields `gridZoom`/`gridColExtra`/`gridGroupBy` need no own key).
 - Everything read from backup/cloud/localStorage is untrusted shape — guard like `reconcileTabOrder` (`Array.isArray`), `normalizeCoverageEntry` (legacy single-number → `{min,max}`), `offRequestEntryFor`.

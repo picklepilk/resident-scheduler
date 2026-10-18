@@ -82,6 +82,7 @@ import { keysToClearOnSignOut } from './lib/signOutCleanup.js';
 import { createIdleTimer, DEFAULT_IDLE_TIMEOUT_MINUTES } from './lib/idleTimer.js';
 import { offServiceStraddle } from './lib/offServiceWindow.js';
 import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
+import { snapshotsEqual } from './lib/snapshotCompare.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -24906,7 +24907,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // re-import, which bypass updateBlock) recomputes the pill correctly instead of desyncing.
   const blockSaveState = useMemo(() => {
     if (!matchingSnap) return 'never';
-    return deepEqualNormalized(buildSnapData(block), matchingSnap.data) ? 'saved' : 'dirty';
+    return snapshotsEqual(buildSnapData(block), matchingSnap.data) ? 'saved' : 'dirty';
   }, [block, matchingSnap]);
 
   function updateBlock(fn) { setBlock(p=>typeof fn==='function'?fn(p):{...p,...fn}); }
