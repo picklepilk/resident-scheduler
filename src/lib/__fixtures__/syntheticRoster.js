@@ -28,6 +28,7 @@
 // schedule with night shifts landing on the block's first or last date using this same fixture;
 // nothing here needs to change to support that case.
 
+import { materializeLegacyRuleDates } from '../ruleDates.js';
 import { parseDate, addDays, toDateStr } from '../dates.js';
 
 // ─── date helpers (mirrors getBlockDates' own parseDate/addDays/toDateStr walk) ──────────────
@@ -201,6 +202,17 @@ function makeBlock(variant) {
 // behind residents finishing a conference block under target.
 const CONFERENCE_AY_CONF = { acepStart: '2026-07-20', acepEnd: '2026-07-23' };
 
+// First Friday / Wellness Wednesday / Journal Club dates are chief-LOGGED now (lib/ruleDates.js), no
+// longer derived. The fixtures log exactly what used to be derived (via the production migration
+// helper) so every committed quality baseline keeps measuring the same schedule.
+function loggedRuleDatesFor(ayConf) {
+  const out = materializeLegacyRuleDates({
+    ayData: { [ACADEMIC_YEAR]: ayConf }, blocks: [{ startDate: BLOCK_START, academicYear: ACADEMIC_YEAR }],
+    ordinalsByPgy: { 1: 1, 2: 2, 3: 3 },
+  });
+  return out[ACADEMIC_YEAR];
+}
+
 /**
  * @param {'standard'|'understaffed'|'vacationHeavy'|'conferenceBlock'|'feasible'} variant
  * @returns {{allResidents:object[], block:object, coverage:object, eligOverrides:object,
@@ -234,6 +246,6 @@ export function makeFixture(variant = 'standard') {
     appSettings: makeDefaultAppSettings(),
     dayRules: {},
     blocksHistory: [],
-    ayConf: variant === 'conferenceBlock' ? { ...CONFERENCE_AY_CONF } : {},
+    ayConf: loggedRuleDatesFor(variant === 'conferenceBlock' ? { ...CONFERENCE_AY_CONF } : {}),
   };
 }

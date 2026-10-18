@@ -33,7 +33,7 @@ const NON_CONFERENCE_DAY = '2026-07-13'; // Monday — clear of both ACEP_CONF a
 const ACEP_CONF = { acepStart: '2026-07-09', acepEnd: '2026-07-10' };
 
 function issuesFor(allResidents, schedule, ayConf = {}) {
-  return validateAll(allResidents, schedule, block, {}, {}, {}, {}, [], ayConf);
+  return validateAll(allResidents, schedule, block, {}, {}, {}, {}, [], { ...makeFixture('standard').ayConf, ...ayConf });
 }
 
 describe('R5: POD PGY-2 substitute for an unavailable PGY-3 — validateAll', () => {

@@ -45,31 +45,11 @@ describe('getFirstTuesdaysInRange', () => {
   });
 });
 
-describe('resolveJcDates (derivation, no stored list)', () => {
-  it('derives all 12 first-Tuesdays for AY26/27 (July 2026 - June 2027)', () => {
-    const dates = resolveJcDates('AY26/27', undefined);
-    expect(dates).toEqual([
-      '2026-07-07', '2026-08-04', '2026-09-01', '2026-10-06', '2026-11-03', '2026-12-01',
-      '2027-01-05', '2027-02-02', '2027-03-02', '2027-04-06', '2027-05-04', '2027-06-01',
-    ]);
-    expect(dates).toHaveLength(12);
-  });
-
-  it('respects the exclusive-end boundary: the AY start window end (next July 1) never appears', () => {
-    const dates = resolveJcDates('AY26/27', undefined);
-    expect(dates).not.toContain('2027-07-01');
-    expect(dates[dates.length - 1]).toBe('2027-06-01'); // June's first Tuesday, the AY's true last month
-  });
-
-  it('returns [] for a malformed AY string with no fallback', () => {
-    expect(resolveJcDates('not-an-ay', undefined)).toEqual([]);
-    expect(resolveJcDates('', undefined)).toEqual([]);
-    expect(resolveJcDates(undefined, undefined)).toEqual([]);
-  });
-
-  it('resolves via fallbackDateStr when the AY string is malformed/blank', () => {
-    const viaFallback = resolveJcDates('', undefined, { fallbackDateStr: '2026-09-15' });
-    expect(viaFallback).toEqual(resolveJcDates('AY26/27', undefined));
+describe('resolveJcDates (no stored list)', () => {
+  it('absent config yields NO dates (logged-only model, 2026-10-18)', () => {
+    expect(resolveJcDates('AY26/27', undefined)).toEqual([]);
+    expect(resolveJcDates('AY26/27', {})).toEqual([]);
+    expect(resolveJcDates('', undefined, { fallbackDateStr: '2026-09-15' })).toEqual([]);
   });
 });
 
@@ -88,10 +68,9 @@ describe('resolveJcDates (stored override)', () => {
     expect(resolveJcDates('AY26/27', ayConf)).toEqual(['2026-07-07', '2026-08-04', '2026-09-01']);
   });
 
-  it('non-array jcDates (untrusted shape) falls back to derivation', () => {
-    expect(resolveJcDates('AY26/27', { jcDates: 'nope' })).toEqual(resolveJcDates('AY26/27', undefined));
-    expect(resolveJcDates('AY26/27', { jcDates: { a: 1 } })).toEqual(resolveJcDates('AY26/27', undefined));
-    expect(resolveJcDates('AY26/27', undefined)).toEqual(resolveJcDates('AY26/27', {}));
+  it('non-array jcDates (untrusted shape) yields no dates', () => {
+    expect(resolveJcDates('AY26/27', { jcDates: 'nope' })).toEqual([]);
+    expect(resolveJcDates('AY26/27', { jcDates: { a: 1 } })).toEqual([]);
   });
 
   it('an array with garbage entries filters down to only valid date strings', () => {
@@ -107,8 +86,9 @@ describe('resolveJcDates (stored override)', () => {
 });
 
 describe('jcDatesInRange', () => {
-  it('clips derived dates to the given range, inclusive', () => {
-    expect(jcDatesInRange('2026-07-01', '2026-09-30', 'AY26/27', undefined)).toEqual([
+  it('clips logged dates to the given range, inclusive', () => {
+    const logged = { jcDates: ['2026-07-07', '2026-08-04', '2026-09-01', '2026-10-06'] };
+    expect(jcDatesInRange('2026-07-01', '2026-09-30', 'AY26/27', logged)).toEqual([
       '2026-07-07', '2026-08-04', '2026-09-01',
     ]);
   });
@@ -125,12 +105,13 @@ describe('jcDatesInRange', () => {
 });
 
 describe('isJcDate', () => {
-  it('is true for a derived first Tuesday', () => {
-    expect(isJcDate('2026-08-04', 'AY26/27', undefined)).toBe(true);
+  it('is true for a logged date', () => {
+    expect(isJcDate('2026-08-04', 'AY26/27', { jcDates: ['2026-08-04'] })).toBe(true);
   });
 
-  it('is false for a non-JC date', () => {
-    expect(isJcDate('2026-08-05', 'AY26/27', undefined)).toBe(false);
+  it('is false for a non-JC date and when nothing is logged', () => {
+    expect(isJcDate('2026-08-05', 'AY26/27', { jcDates: ['2026-08-04'] })).toBe(false);
+    expect(isJcDate('2026-08-04', 'AY26/27', undefined)).toBe(false);
   });
 
   it('reflects a stored override (a date not a first-Tuesday can be added; one can be removed)', () => {
@@ -147,11 +128,9 @@ describe('isJcDateAnyAy', () => {
     expect(isJcDateAnyAy('2026-08-04', ayData)).toBe(false);
   });
 
-  it('derives for an AY absent from ayData rather than returning false', () => {
-    // 2026-08-04 is a genuine first Tuesday; ayData has no AY26/27 entry at all
-    expect(isJcDateAnyAy('2026-08-04', {})).toBe(true);
-    expect(isJcDateAnyAy('2026-08-04', undefined)).toBe(true);
-    expect(isJcDateAnyAy('2026-08-05', {})).toBe(false);
+  it('an AY absent from ayData has no JC dates', () => {
+    expect(isJcDateAnyAy('2026-08-04', {})).toBe(false);
+    expect(isJcDateAnyAy('2026-08-04', undefined)).toBe(false);
   });
 
   it('resolves the correct AY for a date near the July 1 cutoff', () => {

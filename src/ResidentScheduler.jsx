@@ -27,6 +27,7 @@ import { dayIsUngenerated, dayOpenSlots, summarizeBlockCoverage, shiftChipLabel 
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
+import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
@@ -233,7 +234,7 @@ export const DEFAULT_DAY_RULES = {
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
     // Wellness Wednesday — the 1st Wednesday on/after the block's own start date is a day/eve
     // off for EM Home PGY-1 (night starting that Wednesday still allowed). Block-relative, not
-    // calendar-month-relative — see nthWeekdayOnOrAfter/computedDayRules handling.
+    // calendar-month-relative — the ordinal now only feeds the Suggest buttons (lib/ruleDates.js); dates are chief-logged.
     computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }],
     shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
@@ -797,7 +798,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 — hard, sole exception the resident\'s own 2nd Wellness Wednesday (PGY-3 may substitute that one day). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation.';
-const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the first Tuesday of each month by default — the chief can move any date for an academic year on the Dashboard tab. Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
+const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
 // CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
@@ -900,7 +901,7 @@ const DOW_MODE_LABEL = { onlyDay: 'day shifts only', noNight: 'no night shifts',
 
 // Renders the current dayRules config for a row as the same {label, rule, type} shape the tab
 // used to get from static RULES_DATA.dayRules — generated live, so it can never drift.
-const COMPUTED_RULE_LABEL = { firstFridayOfMonth: '1st Friday of each calendar month' };
+const COMPUTED_RULE_LABEL = { firstFridayOfMonth: 'First Friday (logged dates)' };
 const ORDINAL_WORD = { 1: '1st', 2: '2nd', 3: '3rd' };
 
 // One shared style table for the six on-grid day markers (GR/JC/WW/OFF/VAC/J) plus the
@@ -975,7 +976,7 @@ function describeDayRules(dr) {
   for (const f of dr.residentFlagOverrides || []) out.push({ label: `${f.fullBlockDays.map(d=>DOW[d]).join('/')} (when ${f.flag})`, rule: 'No shifts', type: 'block' });
   for (const c of dr.computedDayRules || []) {
     if (c.type === 'wellnessWednesday') {
-      out.push({ label: `${ORDINAL_WORD[c.ordinal] || `${c.ordinal}th`} Wed of block`, rule: 'No day/eve shifts (night OK) — Wellness Wednesday', type: 'restrict' });
+      out.push({ label: 'Wellness Wednesday (logged dates)', rule: `No day/eve shifts (night OK) on logged dates; Suggest uses the ${ORDINAL_WORD[c.ordinal] || `${c.ordinal}th`} Wed of block`, type: 'restrict' });
     } else {
       out.push({ label: COMPUTED_RULE_LABEL[c.type] || c.type, rule: 'No shifts', type: 'block' });
     }
@@ -2515,39 +2516,18 @@ function getBlockProgress(startStr, endStr) {
   return { total, elapsed, remaining, pct: Math.round(elapsed / total * 100) };
 }
 
-// First Friday of each calendar month that falls within the block
-function getFirstFridaysInBlock(startStr, endStr) {
-  if (!startStr || !endStr) return [];
-  const result = [];
-  const start = parseDate(startStr);
-  const end   = parseDate(endStr);
-  let month = new Date(start.getFullYear(), start.getMonth(), 1);
-  const lastMonth = new Date(end.getFullYear(), end.getMonth(), 1);
-  while (month <= lastMonth) {
-    const d = new Date(month);
-    while (d.getDay() !== 5) d.setDate(d.getDate() + 1); // advance to Friday
-    if (d >= start && d <= end) result.push(toDateStr(d));
-    month.setMonth(month.getMonth() + 1);
-  }
-  return result;
-}
-
 // ─── Wellness Wednesdays ────────────────────────────────────────────────────
 // Block-relative (not calendar-month-relative, unlike firstFridayOfMonth above): the Nth
 // occurrence of a weekday on/after a start date. Used for EM Home's Wellness Wednesdays (1st/
 // 2nd/3rd Wednesday on/after the block's own startDate, per PGY) — see DEFAULT_DAY_RULES'
 // computedDayRules{type:'wellnessWednesday', ordinal} and its handling in getEligibleShifts.
-function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
-  if (!startStr || !Number.isFinite(ordinal)) return null;
-  const start = parseDate(startStr);
-  const delta = (weekday - start.getDay() + 7) % 7;
-  return toDateStr(addDays(start, delta + (ordinal - 1) * 7));
-}
+// (The Nth-weekday math now lives in lib/ruleDates.js as a SUGGESTER only -- Wellness Wednesday
+// dates are chief-logged per PGY in ayData[AY].ruleDates.wellnessWednesday.)
 
 // POD's hard PGY-3 requirement (see SENIOR_COMPOSITION.POD) has THREE independent exceptions. This
 // one is the block's own PGY-3 Wellness Wednesday (3rd Wednesday on/after the block's start date —
 // see DEFAULT_DAY_RULES.EM_HOME_3's computedDayRules), when PGY-3s are off day/eve program-wide and
-// a PGY-2 substituting for the missing PGY-3 is explicitly allowed. Reuses nthWeekdayOnOrAfter
+// a PGY-2 substituting for the missing PGY-3 is explicitly allowed. Uses the logged PGY-3 Wellness Wednesday list (lib/ruleDates.js)
 // (ordinal 3, Wednesday) rather than reimplementing the same block-relative date math. A second,
 // isConferenceAwayFor (declared below getConferencesInBlock, further down this file — a PGY-3-away
 // conference like ACEP is the same kind of "primary PGY substitute allowed" exception, just
@@ -2557,23 +2537,23 @@ function nthWeekdayOnOrAfter(startStr, weekday, ordinal) {
 // only ever waives the requirement outright rather than allowing a PGY-2 substitute; don't conflate
 // the three.
 // `appSettings.wellnessWednesdaysEnabled === false` disables Wellness Wednesdays program-wide (see
-// effectiveWellnessWednesdayDate) — when it's off there IS no Wellness Wednesday for PGY-3s to be
+// wellnessWednesdayDatesFor) — when it's off there IS no Wellness Wednesday for PGY-3s to be
 // off on, so the substitution must be refused too, or a disabled feature would silently keep
 // waiving POD's hard composition rule on an ordinary working day. Deliberately still ignores
 // resident.wellnessOverride/the day-rule ordinal override the same way it always has (see
-// effectiveWellnessWednesdayDate's own comment) — only the program-wide toggle, the one control
+// wellnessWednesdayDatesFor's own comment) — only the program-wide toggle, the one control
 // that means "there is no Wellness Wednesday at all", changes this function's answer.
-function podWellnessSubstituteAllowed(ds, blockStart, appSettings) {
+function podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) {
   if (appSettings?.wellnessWednesdaysEnabled === false) return false;
-  return ds === nthWeekdayOnOrAfter(blockStart, 3, 3);
+  return isLoggedDate('wellnessWednesday', ayConf, ds, 3);
 }
 // FLEX's mirror of the above (SENIOR_COMPOSITION.FLEX is now hard too — see the block header
 // comment): the block's own PGY-2 Wellness Wednesday (2nd Wednesday on/after the block's start
 // date — DEFAULT_DAY_RULES.EM_HOME_2's computedDayRules), when a PGY-3 substituting for the
 // missing PGY-2 is explicitly allowed.
-function flexWellnessSubstituteAllowed(ds, blockStart, appSettings) {
+function flexWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) {
   if (appSettings?.wellnessWednesdaysEnabled === false) return false;
-  return ds === nthWeekdayOnOrAfter(blockStart, 3, 2);
+  return isLoggedDate('wellnessWednesday', ayConf, ds, 2);
 }
 // Single dispatcher so every call site (validateAll, fillDayPass, narrowForSeniority/
 // compositionStillSatisfied) asks one function "may the fallback PGY substitute for the missing
@@ -2586,8 +2566,8 @@ function flexWellnessSubstituteAllowed(ds, blockStart, appSettings) {
 // conferenceDefs defaults it to `{}`) — a caller with no AY conference data configured just never
 // takes the second path.
 function seniorWellnessSubstituteAllowed(area, ds, blockStart, appSettings, ayConf) {
-  if (area === 'POD' && podWellnessSubstituteAllowed(ds, blockStart, appSettings)) return true;
-  if (area === 'FLEX' && flexWellnessSubstituteAllowed(ds, blockStart, appSettings)) return true;
+  if (area === 'POD' && podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf)) return true;
+  if (area === 'FLEX' && flexWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf)) return true;
   if (!SENIOR_COMPOSITION[area]) return false;
   return isConferenceAwayFor(area, ds, ayConf);
 }
@@ -2612,8 +2592,8 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
 // Returns null when neither path matched (caller has no business calling this then).
 function substituteReasonFor(area, ds, blockStart, appSettings, ayConf) {
   const ownWellness = area === 'POD'
-    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings)
-    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings) : false;
+    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf)
+    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) : false;
   if (ownWellness) return 'wellness';
   if (isConferenceAwayFor(area, ds, ayConf)) return 'conference';
   return null;
@@ -2721,9 +2701,10 @@ function hasFallbackComposition(schedule, allResidents, block, appSettings, ayCo
 }
 
 // ─── Journal Club ───────────────────────────────────────────────────────────
-// Journal Club runs 18:00-21:00. Its DATES used to be derived-only (first Tuesday of each calendar
-// month); they are now chief-overridable per academic year via ayData[AY].jcDates, resolved through
-// lib/journalClub.js — an absent list still derives first Tuesdays, so nothing migrates. Every
+// Journal Club runs 18:00-21:00. Its DATES used to be derived (first Tuesday of each calendar
+// month); they are now chief-LOGGED per academic year in ayData[AY].jcDates, resolved through
+// lib/journalClub.js — an absent list means NO dates (the one-time ruleDatesMigrated migration
+// materialized the old derived dates). Every
 // consumer below goes through resolveJcDates/jcDatesInRange/isJcDate rather than re-deriving, so
 // the generator, the validator, the planner and the grid can't drift apart on what a JC date is.
 // A resident "works" Journal Club if assigned any shift whose SHIFT_TIMING interval overlaps that
@@ -2891,10 +2872,16 @@ function getJCPresenterGaps(allResidents, block, ayConf = {}) {
 // working unchanged — every real call site (below) supplies them. Return shape changed from a
 // flat string[] to { messages, keptViolations } — see the three ReadinessWarningPanel/
 // KeptCellViolationsPanel call sites in ScheduleGrid.
-function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd }) {
+export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd }) {
   const messages = [];
   for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
     messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
+  }
+  if (appSettings && appSettings.ruleDatesMigrated !== true) {
+    messages.push('Rule dates not yet migrated (cloud not loaded) -- First Friday / Wellness Wednesday / Journal Club dates may be missing');
+  }
+  for (const m of missingRuleDates({ block, ayConf, rules: ruleDateChecksForBlock(block, dayRules, appSettings, allResidents) })) {
+    messages.push(m.message);
   }
   for (const g of getJCPresenterGaps(allResidents, block, ayConf)) {
     messages.push(`No PGY-${g.pgy} Journal Club presenter set for ${formatDisplayDate(g.dateStr)} (set on the resident's profile)`);
@@ -3003,7 +2990,7 @@ const DEFAULT_APP_SETTINGS = {
   rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
   generalPedsMonthlyTarget: 2, // soft nudge: PGY-2/3 not on a dedicated peds rotation aim for this many peds shifts/block
   enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
-  wellnessWednesdaysEnabled: true, // program-wide toggle for EM Home's Wellness Wednesdays (see effectiveWellnessWednesdayDate) — false disables the feature entirely; normalized as `=== false`, so an old backup with no such key still behaves as enabled
+  wellnessWednesdaysEnabled: true, // program-wide toggle for EM Home's Wellness Wednesdays (see wellnessWednesdayDatesFor) — false disables the feature entirely; normalized as `=== false`, so an old backup with no such key still behaves as enabled
   // Jeopardy/sick-call incident log — one record per real-world sick-call/activation event, see
   // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: every cloud save
   // (saveCloudNow/sbSaveStateExplicit) writes a whole-column replace built fresh from THAT BUILD's own
@@ -3014,6 +3001,7 @@ const DEFAULT_APP_SETTINGS = {
   // has never heard of this field, same as targetOverrides/rulePriority above. Do not "clean this
   // up" into its own key later without re-solving that problem.
   jeopardyLog: [],
+  ruleDatesMigrated: false, // one-time marker: materialized the formerly-derived First Friday / Wellness Wednesday / Journal Club dates into ayData (lib/ruleDates.js); lives here so it round-trips with the data it describes
   allowSplitPedsNights: true, // let a TRAUMA_PEDS/PEDS_TRAUMA EM Home PGY-1 work PED-N (9h only,
                                 // never PED-N12) during their PEDS half — see step 5 of
                                 // getEligibleShifts. Default flipped ON (chief hand-schedules 5-6
@@ -3550,6 +3538,41 @@ function getEffectiveDayRules(key, dayRules = {}) {
   return dayRules[key] ?? DEFAULT_DAY_RULES[key] ?? {};
 }
 
+// Computed-date rules (First Friday / Wellness Wednesday) are ENABLED per category key via
+// computedDayRules, but their DATES are chief-logged lists (lib/ruleDates.js). These helpers
+// answer "is the rule on anywhere" and "which block-relative ordinal does the suggester use".
+function computedRuleEnabledAnywhere(type, dayRules = {}) {
+  const keys = new Set([...Object.keys(DEFAULT_DAY_RULES), ...Object.keys(dayRules || {})]);
+  for (const k of keys) {
+    const dr = getEffectiveDayRules(k, dayRules || {});
+    if (dr && Array.isArray(dr.computedDayRules) && dr.computedDayRules.some(c => c.type === type)) return true;
+  }
+  return false;
+}
+function wellnessOrdinalForPgy(pgy, dayRules = {}) {
+  return (getEffectiveDayRules(`EM_HOME_${pgy}`, dayRules || {}).computedDayRules || [])
+    .find(c => c.type === 'wellnessWednesday')?.ordinal ?? null;
+}
+// Rules handed to lib/ruleDates.js missingRuleDates for the pre-generate readiness gate.
+function ruleDateChecksForBlock(block, dayRules, appSettings, allResidents) {
+  const rules = [{
+    ruleKey: 'firstFriday', enabled: computedRuleEnabledAnywhere('firstFridayOfMonth', dayRules),
+    suggested: suggestFirstFridays(block.startDate, block.endDate),
+  }, {
+    ruleKey: 'journalClub', enabled: true, suggested: suggestFirstTuesdays(block.startDate, block.endDate),
+  }];
+  for (const pgy of [1, 2, 3]) {
+    const ord = wellnessOrdinalForPgy(pgy, dayRules);
+    rules.push({
+      ruleKey: 'wellnessWednesday', sub: pgy, label: `Wellness Wednesday (PGY-${pgy})`,
+      enabled: appSettings?.wellnessWednesdaysEnabled !== false && ord != null
+        && (allResidents || []).some(r => r.category === 'EM_HOME' && r.pgy === pgy && isSchedulable(r)),
+      suggested: ord != null ? suggestWellnessWednesdays([block.startDate], ord) : [],
+    });
+  }
+  return rules;
+}
+
 function matchesMode(shiftType, mode) {
   switch (mode) {
     case 'onlyDay':   return shiftType === 'day';
@@ -3680,14 +3703,18 @@ export function shiftBlockedByRestrictions(resident, dateStr, shiftId) {
 // hard-composition substitution days) — those stay anchored to the COMPUTED 3rd/2nd Wednesday
 // regardless of any individual resident's override; a custom wellness date is a personal
 // eligibility strip, not a change to who may substitute into POD/FLEX's senior slot.
-function effectiveWellnessWednesdayDate(resident, blockStart, dayRules, appSettings = {}) {
-  if (appSettings.wellnessWednesdaysEnabled === false) return null;
-  if (resident.wellnessOverride === 'optOut') return null;
+function wellnessWednesdayDatesFor(resident, dayRules, appSettings = {}, ayConf) {
+  if (appSettings.wellnessWednesdaysEnabled === false) return [];
+  if (resident.wellnessOverride === 'optOut') return [];
   const ordinal = (getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules || {}).computedDayRules || [])
     .find(c => c.type === 'wellnessWednesday')?.ordinal;
-  if (ordinal == null) return null;
-  if (resident.wellnessOverride) return resident.wellnessOverride;
-  return nthWeekdayOnOrAfter(blockStart, 3, ordinal);
+  if (ordinal == null) return [];
+  if (resident.wellnessOverride) return [resident.wellnessOverride];
+  // Chief-LOGGED per-PGY list (lib/ruleDates.js); the ordinal now only drives the suggester.
+  return loggedDates('wellnessWednesday', ayConf, resident.pgy);
+}
+function isWellnessWednesdayFor(resident, dateStr, dayRules, appSettings, ayConf) {
+  return wellnessWednesdayDatesFor(resident, dayRules, appSettings, ayConf).includes(dateStr);
 }
 
 // ctx: { blockStart, forGenerator, ayConf } — blockStart is the block's start date string
@@ -3753,14 +3780,13 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
 
   // 1b. Computed-date rules — dates derived from the calendar itself, no manual list needed
   for (const c of dr.computedDayRules || []) {
-    if (c.type === 'firstFridayOfMonth' && dow === 5 && date.getDate() <= 7) return [];
+    if (c.type === 'firstFridayOfMonth' && isLoggedDate('firstFriday', ctx.ayConf, dateStr)) return [];
     // Wellness Wednesday — block-relative (needs ctx.blockStart), strips day+eve only; a night
-    // shift starting that date is still allowed. See effectiveWellnessWednesdayDate for the
+    // shift starting that date is still allowed. See wellnessWednesdayDatesFor for the
     // program-wide toggle / per-resident optOut / custom-date precedence — no-ops (null) if
     // blockStart wasn't threaded through, the toggle is off, or this resident opted out.
     if (c.type === 'wellnessWednesday') {
-      const wwDate = effectiveWellnessWednesdayDate(resident, ctx.blockStart, dayRules, appSettings);
-      if (wwDate && dateStr === wwDate) eligible = eligible.filter(s => !['day', 'eve'].includes(SHIFT_MAP[s]?.type));
+      if (isWellnessWednesdayFor(resident, dateStr, dayRules, appSettings, ctx.ayConf)) eligible = eligible.filter(s => !['day', 'eve'].includes(SHIFT_MAP[s]?.type));
     }
   }
 
@@ -3868,7 +3894,7 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
 // unconditional hard block (see rulePolicy.js — a hand-edit surface must still BLOCK an acgme/
 // program-tier reason but may offer an override-tier one behind a confirm step). Reuses the same
 // shared predicates getEligibleShifts itself calls (isAvailableOnDate, isSchedulable,
-// shiftBlockedByRestrictions, effectiveWellnessWednesdayDate, stripPedGuardedShifts) — this is a
+// shiftBlockedByRestrictions, wellnessWednesdayDatesFor, stripPedGuardedShifts) — this is a
 // re-sequencing of those checks for diagnosis, not a second implementation of any of them.
 // Returns null when the shift IS eligible; otherwise { rule, tier, label } for the single most
 // specific reason (checked in roughly the same precedence order getEligibleShifts applies its own
@@ -3905,8 +3931,7 @@ export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
   const wwOrdinal = resident.category === 'EM_HOME' && ['day', 'eve'].includes(type)
     ? (getEffectiveDayRules(key, ctx.dayRules || {}).computedDayRules || []).find(c => c.type === 'wellnessWednesday')?.ordinal
     : null;
-  const wwDate = wwOrdinal != null ? effectiveWellnessWednesdayDate(resident, ctx.blockStart, ctx.dayRules, appSettings) : null;
-  if (wwDate && dateStr === wwDate) return { rule: 'wellnessWednesday', tier: 'override', label: RULE_POLICY.wellnessWednesday.label };
+  if (wwOrdinal != null && isWellnessWednesdayFor(resident, dateStr, ctx.dayRules, appSettings, ctx.ayConf)) return { rule: 'wellnessWednesday', tier: 'override', label: RULE_POLICY.wellnessWednesday.label };
   if ((resident.grLectureDates || []).includes(toDateStr(addDays(parseDate(dateStr), 1))) && ['eve', 'night'].includes(type))
     return { rule: 'grLectureEveNight', tier: 'program', label: RULE_POLICY.grLectureEveNight.label };
   if (ctx.finalSunday && dateStr === ctx.finalSunday && isNightShiftId(shiftId) && ctx.nextRotation?.known && !ctx.nextRotation.continuingEM)
@@ -8627,7 +8652,7 @@ async function exportMatrixPDF({ block, allResidents, schedule, demoMode }) {
 // carries the same OFF/jeopardy/JC-presenting/GR weekly attendance/GR-lecture/Wellness Wednesday
 // markers ResidentCardsView shows on screen. Portrait letter — simpler than a week-quadrant
 // calendar layout, and sufficient for a take-home schedule printout.
-async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMode, dayRules, appSettings }) {
+async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMode, dayRules, appSettings, ayConf }) {
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return;
   const sched = schedule || {};
@@ -8646,9 +8671,9 @@ async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMo
     pdfPageHeader(doc, `${r.lastName}, ${r.firstName} — PGY-${r.pgy}`, block.name || '');
     if (demoMode) pdfDemoBanner(doc);
 
-    const wwDate = r.category==='EM_HOME'
-      ? effectiveWellnessWednesdayDate(r, block.startDate, dayRules||{}, appSettings||{})
-      : null;
+    const wwDates = r.category==='EM_HOME'
+      ? wellnessWednesdayDatesFor(r, dayRules||{}, appSettings||{}, ayConf)
+      : [];
 
     const rows = dates.map(ds => {
       const sid = rs[ds] || null;
@@ -8669,7 +8694,7 @@ async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMo
       if ((r.jcPresentDates||[]).includes(ds)) notes.push('JC presenting');
       if ((r.grLectureDates||[]).includes(ds)) notes.push('GR lecture');
       if (grWorkDow(r)===dow && !isOff && !isVac) notes.push('Grand Rounds');
-      if (wwDate && ds===wwDate) notes.push('Wellness Wednesday');
+      if (wwDates.includes(ds)) notes.push('Wellness Wednesday');
       // Hours since/until the nearest shift — current block only, same scope limit as
       // ResidentCard/ScheduleGrid (see their own comments); display only.
       if (sid) {
@@ -8726,11 +8751,11 @@ function icsStamp(dateObj, hourFloat) {
 // exportResidentCalendarPDF's date iteration and Notes-marker logic, and buildQGendaCSVRows'
 // midnight-rollover handling (SHIFT_TIMING-derived start/duration, end date bumped a day when
 // startH+durationH >= 24), but neither of those is modified — this is new, standalone code.
-function buildResidentICS(resident, dates, sched, demoMode, dayRules, blockStart, jeopardySchedule, appSettings) {
+function buildResidentICS(resident, dates, sched, demoMode, dayRules, blockStart, jeopardySchedule, appSettings, ayConf) {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//resident-scheduler//EN', 'CALSCALE:GREGORIAN'];
-  const wwDate = resident.category==='EM_HOME' && blockStart
-    ? effectiveWellnessWednesdayDate(resident, blockStart, dayRules||{}, appSettings||{})
-    : null;
+  const wwDates = resident.category==='EM_HOME' && blockStart
+    ? wellnessWednesdayDatesFor(resident, dayRules||{}, appSettings||{}, ayConf)
+    : [];
 
   for (const ds of dates) {
     const sid = sched[ds];
@@ -8756,7 +8781,7 @@ function buildResidentICS(resident, dates, sched, demoMode, dayRules, blockStart
     if ((resident.jcPresentDates || []).includes(ds)) notes.push('JC presenting');
     if ((resident.grLectureDates || []).includes(ds)) notes.push('GR lecture');
     if (grWorkDow(resident)===dow && !isOff && !isVac) notes.push('Grand Rounds');
-    if (wwDate && ds===wwDate) notes.push('Wellness Wednesday');
+    if (wwDates.includes(ds)) notes.push('Wellness Wednesday');
 
     lines.push('BEGIN:VEVENT');
     lines.push(`UID:${resident.id}-${ds}-${sid}@resident-scheduler${demoFilenameSuffix(demoMode)}`);
@@ -9555,8 +9580,7 @@ function WorkRestrictionsEditor({ restrictions = [], onUpdate }) {
 // each EM Home resident's worked-JC count against the 3/AY cap. Presenters are assignable inline
 // here (the resident-profile chip editor still works too) — both write the same
 // resident.jcPresentDates field, so there is no second source of truth. Dates come from
-// resolveJcDates, so a chief-edited list and the derived first-Tuesday default look identical
-// here. Self-contained so promoting it to its own tab later is just a TABS entry + routing line.
+// resolveJcDates, so the planner always shows exactly the logged list. Self-contained so promoting it to its own tab later is just a TABS entry + routing line.
 function JournalClubPlanner({ allResidents, block, blocksHistory, ayConf = {}, onAssignPresenter }) {
   const win = ayWindowFor(block.academicYear);
   const emHome = allResidents.filter(r => r.category === 'EM_HOME');
@@ -10833,7 +10857,7 @@ function AyFairnessLedgerCard({ ledger }) {
   );
 }
 
-function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
+function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
   emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, onRequestSickCallCover, viewer, stepHandlers }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
@@ -10869,7 +10893,11 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
       ? [...(r.jcPresentDates || []), ds].sort()
       : (r.jcPresentDates || []).filter(d => d !== ds) };
   }));
-  const firstFridays = getFirstFridaysInBlock(block.startDate, block.endDate);
+  // LOGGED First Fridays only (never derived -- see lib/ruleDates.js); the card greys out when the
+  // rule is off in Day Rules, and nudges when it is on but nothing is logged for this block.
+  const firstFridays = loggedDatesInRange('firstFriday', ayConf, block.startDate, block.endDate);
+  const firstFridayRuleOn = computedRuleEnabledAnywhere('firstFridayOfMonth', dayRules);
+  const firstFridaySuggested = suggestFirstFridays(block.startDate, block.endDate);
   const sd           = block.specialDays || {};
   const schedule     = block.schedule || {};
 
@@ -11154,17 +11182,24 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
               )}
             </CollapsibleCard>
 
-            {/* 1st Fridays */}
-            {firstFridays.length > 0 && (
+            {/* 1st Fridays -- chief-LOGGED dates (edit in AY settings below) */}
+            {(firstFridays.length > 0 || (firstFridayRuleOn && firstFridaySuggested.length > 0)) && (
               <CollapsibleCard title="First Fridays This Block" prefId="dash-first-fridays"
-                subtitle="Anesthesia: never schedulable (social hour) — enforced automatically.">
-                <div className="flex flex-wrap gap-2">
+                subtitle={firstFridayRuleOn
+                  ? 'Anesthesia: never schedulable (social hour) on the dates logged for this academic year.'
+                  : 'The First Friday rule is switched off in Day Rules -- logged dates are not enforced.'}>
+                <div className={`flex flex-wrap gap-2 ${firstFridayRuleOn ? '' : 'opacity-50'}`}>
                   {firstFridays.map(d => (
                     <span key={d} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 text-sm font-medium text-purple-700">
                       <CalendarDays size={13}/>
                       {formatDisplayDate(d)}
                     </span>
                   ))}
+                  {firstFridays.length === 0 && (
+                    <span className="text-xs text-amber-700">
+                      None logged for this block (suggested: {firstFridaySuggested.map(formatDisplayDate).join(', ')}). Log them under Academic year, AY settings, First Friday Dates.
+                    </span>
+                  )}
                 </div>
               </CollapsibleCard>
             )}
@@ -11229,7 +11264,10 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
               <AYConferenceEditor ay={selectedAy} conf={selectedAyConf}
                 onUpdate={conf => updateAyData(selectedAy, conf)}/>
               <JournalClubDatesEditor ay={selectedAy} conf={selectedAyConf}
-                onUpdate={conf => updateAyData(selectedAy, conf)} blockStart={block.startDate}/>
+                onUpdate={conf => updateAyData(selectedAy, conf)} block={block}/>
+              <RuleDatesEditor ay={selectedAy} conf={selectedAyConf} onUpdate={conf => updateAyData(selectedAy, conf)}
+                block={block} blockStarts={railBlocks.map(b => b.startDate).filter(Boolean)} dayRules={dayRules}
+                wellnessEnabled={appSettings?.wellnessWednesdaysEnabled !== false}/>
               <HolidayDatesEditor ay={selectedAy} conf={selectedAyConf}
                 onUpdate={conf => updateAyData(selectedAy, conf)}/>
               <TwelveHourWindowsEditor ay={selectedAy} conf={selectedAyConf}
@@ -11633,54 +11671,47 @@ function AYConferenceEditor({ ay, conf, onUpdate }) {
   );
 }
 
-// Inline Journal Club date editor, in the same AY folder as the conference dates. JC used to be
-// hardcoded to "first Tuesday of the month"; the chief needs to move one occasionally. An absent
-// conf.jcDates keeps deriving first Tuesdays (zero migration), and the FIRST edit materializes the
-// whole derived list before applying the change — so removing one date can't silently discard the
-// other eleven. "Reset" deletes the key rather than storing the derived list, so a resident who
-// later corrects a date still inherits the default.
-function JournalClubDatesEditor({ ay, conf, onUpdate, blockStart }) {
+// Chief-LOGGED date list with suggest/clear controls, shared by every computed-date rule (Journal
+// Club, First Friday, Wellness Wednesday). Suggestions only ever MERGE into the list (deduped) for
+// the chief to review -- nothing is applied implicitly. See lib/ruleDates.js.
+function LoggedDatesList({ label, hint, dates, onChange, suggestBlock = [], suggestYear = [], chipClass }) {
+  const merge = sug => onChange([...new Set([...dates, ...sug])].sort());
+  const btn = 'text-xs px-2.5 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors disabled:opacity-40';
+  return (
+    <div className="space-y-1.5">
+      <SpecialDaysList label={label} hint={hint} dates={dates} onUpdate={onChange} chipClass={chipClass}/>
+      <div className="flex flex-wrap gap-2">
+        <button className={btn} disabled={!suggestBlock.length} onClick={() => merge(suggestBlock)}
+          title={suggestBlock.length ? `Adds ${suggestBlock.map(formatDisplayDate).join(', ')}` : 'The rule proposes no dates inside the current block'}>
+          Suggest for this block
+        </button>
+        <button className={btn} disabled={!suggestYear.length} onClick={() => merge(suggestYear)}>
+          Suggest for whole year
+        </button>
+        {dates.length > 0 && <button className={btn} onClick={() => onChange([])}>Clear all</button>}
+      </div>
+    </div>
+  );
+}
+
+// Collapsible shell matching the other AY-folder editors.
+function LoggedDatesFolder({ title, summary, children }) {
   const [open, setOpen] = useState(false);
-  const isCustom = Array.isArray(conf.jcDates);
-  const dates = resolveJcDates(ay, conf, { fallbackDateStr: blockStart });
-
-  const setDates = next => onUpdate({ ...conf, jcDates: [...new Set(next)].sort() });
-  const reset = () => { const c = { ...conf }; delete c.jcDates; onUpdate(c); };
-
   return (
     <div className="bg-primary/10 border-b border-primary/20">
       <button onClick={() => setOpen(p => !p)}
         className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-primary/10 transition-colors">
         <div className="flex items-center gap-2 min-w-0">
           <CalendarDays size={13} className="text-primary shrink-0"/>
-          <span className="text-xs font-semibold text-primary">Journal Club Dates</span>
-          <span className="text-xs text-primary truncate">
-            {dates.length} date{dates.length === 1 ? '' : 's'} · {isCustom ? 'customized' : 'first Tuesday of each month'}
-          </span>
+          <span className="text-xs font-semibold text-primary">{title}</span>
+          <span className="text-xs text-primary truncate">{summary}</span>
         </div>
         <ChevronDown size={13} className={`text-primary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}/>
       </button>
-
       {open && (
-        <div className="px-4 py-3 space-y-2">
-          <SpecialDaysList
-            label={`Journal Club — ${ay}`}
-            hint="Defaults to the first Tuesday of each month. Editing any date pins the whole year's list; 18:00–21:00 either way."
-            dates={dates}
-            onUpdate={setDates}
-            chipClass="bg-violet-50 text-violet-700 border-violet-200"/>
-          <p className="text-xs text-gray-500">
-            Presenters are assigned on the Journal Club card below. Moving a date leaves any presenter
-            still marked for the old date — Validation flags those so nothing goes missing silently.
-            Worked-JC counts for already-published blocks are recomputed against this list.
-          </p>
-          <div className="flex justify-end gap-2 pt-1">
-            {isCustom && (
-              <button onClick={reset}
-                className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 transition-colors">
-                Reset to first Tuesdays
-              </button>
-            )}
+        <div className="px-4 py-3 space-y-3">
+          {children}
+          <div className="flex justify-end pt-1">
             <button onClick={() => setOpen(false)}
               className="text-xs px-3 py-1 bg-primary hover:bg-primary/90 text-white rounded-lg transition-colors font-medium">
               Done
@@ -11689,6 +11720,73 @@ function JournalClubDatesEditor({ ay, conf, onUpdate, blockStart }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Journal Club dates: chief-logged per academic year (ayData[AY].jcDates). Absent = no dates; the
+// "first Tuesday" math is only the Suggest buttons now.
+function JournalClubDatesEditor({ ay, conf, onUpdate, block }) {
+  const dates = loggedDates('journalClub', conf);
+  const range = ayInclusiveRange(ay);
+  return (
+    <LoggedDatesFolder title="Journal Club Dates"
+      summary={`${dates.length} date${dates.length === 1 ? '' : 's'} logged`}>
+      <LoggedDatesList
+        label={`Journal Club -- ${ay}`}
+        hint="Log each Journal Club date (18:00-21:00). Nothing is derived automatically; use Suggest to propose first Tuesdays."
+        dates={dates}
+        onChange={next => onUpdate(withLoggedDates(conf, 'journalClub', next))}
+        suggestBlock={suggestFirstTuesdays(block?.startDate, block?.endDate)}
+        suggestYear={range ? suggestFirstTuesdays(range.start, range.end) : []}
+        chipClass="bg-violet-50 text-violet-700 border-violet-200"/>
+      <p className="text-xs text-gray-500">
+        Presenters are assigned on the Journal Club card below. Moving a date leaves any presenter
+        still marked for the old date; Validation flags those so nothing goes missing silently.
+        Worked-JC counts for already-published blocks are recomputed against this list.
+      </p>
+    </LoggedDatesFolder>
+  );
+}
+
+// First Friday + Wellness Wednesday (per PGY) logged dates for one academic year. The rules stay
+// switched on/off per category in Day Rules; this is where their DATES live.
+function RuleDatesEditor({ ay, conf, onUpdate, block, blockStarts = [], dayRules, wellnessEnabled }) {
+  const range = ayInclusiveRange(ay);
+  const ffDates = loggedDates('firstFriday', conf);
+  const wwCount = [1, 2, 3].reduce((n, p) => n + loggedDates('wellnessWednesday', conf, p).length, 0);
+  return (
+    <>
+      <LoggedDatesFolder title="First Friday Dates"
+        summary={`${ffDates.length} date${ffDates.length === 1 ? '' : 's'} logged${computedRuleEnabledAnywhere('firstFridayOfMonth', dayRules) ? '' : ' (rule off in Day Rules)'}`}>
+        <LoggedDatesList
+          label={`First Fridays -- ${ay}`}
+          hint="Anesthesia is blocked the whole day on each logged date. Nothing is derived automatically; use Suggest to propose the first Friday of each month."
+          dates={ffDates}
+          onChange={next => onUpdate(withLoggedDates(conf, 'firstFriday', next))}
+          suggestBlock={suggestFirstFridays(block?.startDate, block?.endDate)}
+          suggestYear={range ? suggestFirstFridays(range.start, range.end) : []}
+          chipClass="bg-purple-50 text-purple-700 border-purple-200"/>
+      </LoggedDatesFolder>
+      <LoggedDatesFolder title="Wellness Wednesday Dates"
+        summary={`${wwCount} date${wwCount === 1 ? '' : 's'} logged${wellnessEnabled ? '' : ' (feature off in Settings)'}`}>
+        {[1, 2, 3].map(pgy => {
+          const ord = wellnessOrdinalForPgy(pgy, dayRules);
+          const dates = loggedDates('wellnessWednesday', conf, pgy);
+          return (
+            <LoggedDatesList key={pgy}
+              label={`PGY-${pgy} Wellness Wednesdays -- ${ay}`}
+              hint={ord != null
+                ? `PGY-${pgy} EM Home is off day/eve on each logged date. Suggest proposes the ${ORDINAL_WORD[ord] || `${ord}th`} Wednesday on/after each block start.`
+                : `No Wellness Wednesday rule for PGY-${pgy} in Day Rules.`}
+              dates={dates}
+              onChange={next => onUpdate(withLoggedDates(conf, 'wellnessWednesday', next, pgy))}
+              suggestBlock={ord != null ? suggestWellnessWednesdays([block?.startDate], ord) : []}
+              suggestYear={ord != null ? suggestWellnessWednesdays(blockStarts, ord) : []}
+              chipClass="bg-violet-50 text-violet-700 border-violet-200"/>
+          );
+        })}
+      </LoggedDatesFolder>
+    </>
   );
 }
 
@@ -11982,7 +12080,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
   function addJcDate() {
     const d = newJcDate;
     if (!d) return;
-    if (!isJcDateAnyAy(d, ayData)) { setJcError('Not a Journal Club date for that academic year (defaults to the first Tuesday of the month; edit the list on the Dashboard tab)'); return; }
+    if (!isJcDateAnyAy(d, ayData)) { setJcError('Not a Journal Club date for that academic year (log it on the Dashboard tab first)'); return; }
     setJcError('');
     if (!form.jcPresentDates.includes(d)) set('jcPresentDates', [...form.jcPresentDates, d].sort());
     setNewJcDate('');
@@ -12155,7 +12253,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
         {/* Work Restrictions — partial-day/recurring, distinct from the full-day-off lists above */}
         <WorkRestrictionsEditor restrictions={form.workRestrictions} onUpdate={d => set('workRestrictions', d)}/>
 
-        {/* Wellness Wednesday override (EM Home only — see effectiveWellnessWednesdayDate) */}
+        {/* Wellness Wednesday override (EM Home only — see wellnessWednesdayDatesFor) */}
         {form.category === 'EM_HOME' && (
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Wellness Wednesday</label>
@@ -12184,7 +12282,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
         {persistentOnly && (
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Journal Club Presenting Dates</label>
-            <p className="text-xs text-gray-400 mb-2">Journal Club dates this resident presents on — max 3 worked/year still applies even when not presenting. Dates default to the first Tuesday of each month; the year's list is edited on the Dashboard tab.</p>
+            <p className="text-xs text-gray-400 mb-2">Journal Club dates this resident presents on — max 3 worked/year still applies even when not presenting. Dates are the Journal Club dates logged for the year on the Dashboard tab.</p>
             <div className="flex flex-wrap gap-1.5 mb-2 min-h-[22px]">
               {form.jcPresentDates.length === 0
                 ? <span className="text-xs text-gray-300 italic">None set</span>
@@ -13000,7 +13098,7 @@ function validateLectureImportDate(dateStr, kind, resident, ayStartYear, ayData 
     warnings.push(`Falls after the ${ayStartYear}/${String(ayStartYear + 1).slice(2)} academic year ends`);
   }
   if (kind === 'jc') {
-    if (!isJcDateAnyAy(dateStr, ayData)) warnings.push('Not a Journal Club date for that academic year (defaults to the first Tuesday of the month)');
+    if (!isJcDateAnyAy(dateStr, ayData)) warnings.push('Not a Journal Club date for that academic year (log it on the Dashboard tab)');
   } else {
     const expectedDow = grWorkDow(resident);
     if (expectedDow == null || parseDate(dateStr).getDay() !== expectedDow)
@@ -13468,7 +13566,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                         }
                       </select>
                     </div>
-                    {/* Wellness Wednesday override — see effectiveWellnessWednesdayDate. Applies
+                    {/* Wellness Wednesday override — see wellnessWednesdayDatesFor. Applies
                         to all three EM Home PGYs (each has their own 1st/2nd/3rd Wednesday). */}
                     <div className="flex items-center gap-1.5">
                       <label className="text-xs text-gray-500 shrink-0">Wellness:</label>
@@ -14414,13 +14512,13 @@ function DayRulesEditor({ rowKey, dr, update }) {
       {/* Computed-date rules */}
       <div>
         <div className="font-display text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Computed-Date Rules</div>
-        <p className="text-xs text-gray-400 mb-1.5">Dates derived from the calendar itself — no manual list needed.</p>
+        <p className="text-xs text-gray-400 mb-1.5">Switches the rule on or off for this category. The DATES are the ones you log on the Dashboard tab (Academic year, AY settings); the calendar math only powers the Suggest buttons.</p>
         <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
           <input type="checkbox" checked={(dr.computedDayRules||[]).some(c=>c.type==='firstFridayOfMonth')} className="rounded"
             onChange={e=>update(d=>({...d, computedDayRules: e.target.checked
               ? [...(d.computedDayRules||[]), { type: 'firstFridayOfMonth' }]
               : (d.computedDayRules||[]).filter(c=>c.type!=='firstFridayOfMonth') }))}/>
-          1st Friday of each calendar month: block entire day
+          First Friday (logged dates): block entire day
         </label>
       </div>
 
@@ -16925,11 +17023,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           // Wellness Wednesday cue: the resident's own PGY-specific ordinal (1st/2nd/3rd
           // Wed on/after block start) — a subset of GR Wednesdays, so it always
           // coincides with isGR for that one cell (unless the chief set a custom wellness
-          // date, or disabled the feature — see effectiveWellnessWednesdayDate). WW takes
+          // date, or disabled the feature — see wellnessWednesdayDatesFor). WW takes
           // visual priority over the JC/GR cues there (more specific: it additionally strips
           // evenings), rather than stacking multiple badges in one cell.
-          const wwDate = wwOrdinal!=null ? effectiveWellnessWednesdayDate(res, block.startDate, dayRules, appSettings) : null;
-          const isWW = !!wwDate && ds===wwDate;
+          const isWW = wwOrdinal!=null && isWellnessWednesdayFor(res, ds, dayRules, appSettings, ayConf);
           const shift=sid?SHIFT_MAP[sid]:null;
           // Hours since/until the nearest shift, measured against this resident's whole row within
           // the CURRENT BLOCK only (see ResidentCard's identical comment — same scope limit, same
@@ -17668,7 +17765,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       )}
 
       {view==='resident' && (
-        <ResidentCardsView grouped={grouped} sched={sched} dates={dates} appSettings={appSettings} violMap={violMap}
+        <ResidentCardsView grouped={grouped} sched={sched} dates={dates} appSettings={appSettings} ayConf={ayConf} violMap={violMap}
           dayRules={dayRules} blockStart={block.startDate} block={block} blocksHistory={blocksHistory} jeopardySchedule={block.jeopardySchedule}
           onRowClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
@@ -17686,7 +17783,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
 
       {view==='calendar' && calendarMode==='resident' && (
         <PerResidentMonthView dates={dates} allResidents={visibleResidents} sched={sched} block={block}
-          dayRules={dayRules} appSettings={appSettings} violMap={violMap} jeopardySchedule={block.jeopardySchedule}
+          dayRules={dayRules} appSettings={appSettings} ayConf={ayConf} violMap={violMap} jeopardySchedule={block.jeopardySchedule}
           onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
       )}
 
@@ -18045,7 +18142,7 @@ function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onAppl
 // rows, with shifts (and non-shift markers: OFF/jeopardy/JC-presenting/GR weekly attendance/GR
 // lecture/Wellness Wednesday) grouped by calendar week. Reuses ScheduleGrid's own violMap memo —
 // never runs a second validateAll pass.
-function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, dayRules, blockStart, block, blocksHistory, jeopardySchedule, onRowClick }) {
+function ResidentCardsView({ grouped, sched, dates, appSettings, ayConf, violMap, dayRules, blockStart, block, blocksHistory, jeopardySchedule, onRowClick }) {
   return (
     <div className="space-y-5">
       {grouped.map(({cat,members})=>(
@@ -18054,7 +18151,7 @@ function ResidentCardsView({ grouped, sched, dates, appSettings, violMap, dayRul
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3 mt-2">
             {members.map(res=>(
               <ResidentCard key={res.id} res={res} rs={sched[res.id]||{}} dates={dates}
-                appSettings={appSettings} violMap={violMap} dayRules={dayRules} blockStart={blockStart} block={block} blocksHistory={blocksHistory} jeopardySchedule={jeopardySchedule} onRowClick={onRowClick}/>
+                appSettings={appSettings} ayConf={ayConf} violMap={violMap} dayRules={dayRules} blockStart={blockStart} block={block} blocksHistory={blocksHistory} jeopardySchedule={jeopardySchedule} onRowClick={onRowClick}/>
             ))}
           </div>
         </div>
@@ -18280,7 +18377,7 @@ const MonthCalendarView = React.memo(function MonthCalendarView({ dates, residen
 // grid already compute (see CLAUDE.md's ResidentCard bullet), not a re-derivation. `violMap` is the
 // grid's existing per-cell violation lookup (`${residentId}_${dateStr}` -> issue[]) — reused as-is
 // rather than a second validateAll pass, per CLAUDE.md's "don't run a second validateAll" note.
-function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, appSettings, violMap, jeopardySchedule, onCellClick }) {
+function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, appSettings, ayConf, violMap, jeopardySchedule, onCellClick }) {
   const schedulable = useMemo(() => allResidents.filter(isSchedulable), [allResidents]);
   const [residentId, setResidentId] = useState(schedulable[0]?.id || '');
   useEffect(() => {
@@ -18297,7 +18394,7 @@ function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, app
   const wwOrdinal = res.category === 'EM_HOME'
     ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules || []).find(c => c.type === 'wellnessWednesday')?.ordinal
     : null;
-  const wwDate = wwOrdinal != null && block.startDate ? effectiveWellnessWednesdayDate(res, block.startDate, dayRules, appSettings) : null;
+  const wwDates = wwOrdinal != null && block.startDate ? wellnessWednesdayDatesFor(res, dayRules, appSettings, ayConf) : [];
 
   return (
     <div>
@@ -18325,7 +18422,7 @@ function PerResidentMonthView({ dates, allResidents, sched, block, dayRules, app
               const isJeo = isJeopardyDate(res, ds, jeopardySchedule);
               const isJC = (res.jcPresentDates||[]).includes(ds);
               const isGR = grWorkDow(res)===dow && !isOff && !isVac;
-              const isWW = !!wwDate && ds===wwDate;
+              const isWW = wwDates.includes(ds);
               // Shared error/blocking-warn/advisory split (classifyCellIssues, same helper
               // ScheduleGrid's own cells and ResidentCardsView use) — this used to be a bare
               // "any issue at all" hasV that rang the same red alarm for a hard error and a purely
@@ -18538,7 +18635,7 @@ function TimeOffModal({ resident, allResidents, block, pendingByResident, onPatc
 const MIX_TYPE_ORDER = ['day','eve','night','swing'];
 const MIX_TYPE_LABEL = { day:'D', eve:'E', night:'N', swing:'S' };
 
-function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockStart, block, blocksHistory, jeopardySchedule, onRowClick }) {
+function ResidentCard({ res, rs, dates, appSettings, ayConf, violMap, dayRules, blockStart, block, blocksHistory, jeopardySchedule, onRowClick }) {
   const sched_ok = isSchedulable(res);
   const cnt = Object.values(rs).filter(Boolean).length;
   const tgt = getShiftTarget(res, appSettings);
@@ -18574,8 +18671,7 @@ function ResidentCard({ res, rs, dates, appSettings, violMap, dayRules, blockSta
     const wwOrdinal = res.category==='EM_HOME'
       ? (getEffectiveDayRules(`${res.category}_${res.pgy}`, dayRules).computedDayRules||[]).find(c=>c.type==='wellnessWednesday')?.ordinal
       : null;
-    const wwDate = wwOrdinal!=null && blockStart ? effectiveWellnessWednesdayDate(res, blockStart, dayRules, appSettings) : null;
-    const isWW = !!wwDate && ds===wwDate;
+    const isWW = wwOrdinal!=null && !!blockStart && isWellnessWednesdayFor(res, ds, dayRules, appSettings, ayConf);
     if (!sid && !isOff && !isVac && !isJeo && !isJC && !isLecture && !isGR && !isWW) continue;
     const ws = toDateStr(addDays(d, -d.getDay()));
     (weeks[ws] = weeks[ws] || []).push({ ds, sid, isOff, isVac, isJeo, isJC, isLecture, isGR, isWW });
@@ -24894,6 +24990,32 @@ export default function ResidentScheduler({ viewer } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbReady]);
 
+  // One-time migration (2026-10-18): First Friday / Wellness Wednesday / Journal Club dates used to
+  // be DERIVED on every read; they are now chief-logged lists. Materialize what was derived into
+  // stored lists for every AY that has none, so day-one behavior is unchanged and nothing vanishes.
+  // Gated on dbReady (not []) and marked inside appSettings so the marker travels with the data it
+  // describes (a pre-overlay run would migrate the stale local copy, burn the marker, then be
+  // overwritten by the unmigrated cloud row).
+  useEffect(() => {
+    // Local-only installs set dbReady synchronously, so `dbReady || !SUPABASE_ENABLED` is the same gate;
+    // a FAILED cloud load stays unmigrated on purpose (checkGenerateReadiness warns about it).
+    if (!(dbReady || !SUPABASE_ENABLED)) return;
+    if (appSettings?.ruleDatesMigrated === true) return;
+    const snapBlocks = (Array.isArray(blocksHistory) ? blocksHistory : []).map(sn => ({
+      startDate: sn?.startDate ?? sn?.data?.startDate, academicYear: sn?.academicYear,
+    }));
+    const blocks = [{ startDate: block?.startDate, academicYear: block?.academicYear }, ...snapBlocks];
+    const ordinalsByPgy = {};
+    for (const pgy of [1, 2, 3]) {
+      const o = wellnessOrdinalForPgy(pgy, dayRules);
+      if (o != null) ordinalsByPgy[pgy] = o;
+    }
+    const extraDates = (Array.isArray(emRoster) ? emRoster : []).flatMap(r => Array.isArray(r?.jcPresentDates) ? r.jcPresentDates : []);
+    setAyData(prev => materializeLegacyRuleDates({ ayData: prev, blocks, ordinalsByPgy, extraDates }));
+    setAppSettings(p => ({ ...p, ruleDatesMigrated: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dbReady]);
+
   function updateAyData(ay, conf) {
     setAyData(p => ({ ...p, [ay]: conf }));
   }
@@ -25246,7 +25368,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     schedulable.forEach((r, i) => {
       setTimeout(() => {
         const sched = block.schedule?.[r.id] || {};
-        const ics = buildResidentICS(r, dates, sched, demoMode, dayRules, block.startDate, block.jeopardySchedule, appSettings);
+        const ics = buildResidentICS(r, dates, sched, demoMode, dayRules, block.startDate, block.jeopardySchedule, appSettings, currentAyConf);
         const safeName = `${r.lastName}_${r.firstName}`.replace(/[^A-Za-z0-9_-]/g, '_');
         downloadICS(`${safeName}${demoFilenameSuffix(demoMode)}.ics`, ics);
       }, i * 150);
@@ -25319,7 +25441,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
         if (kind==='pdf-matrix') await exportMatrixPDF({ block, allResidents, schedule: block.schedule, demoMode });
-        else await exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, demoMode, dayRules, appSettings });
+        else await exportResidentCalendarPDF({ block, allResidents, schedule: block.schedule, demoMode, dayRules, appSettings, ayConf: currentAyConf });
       } catch {
         // pdfSave() has nothing left to fall back to once it fails, so it propagates here —
         // surface it instead of leaving the chief thinking the export silently succeeded.
@@ -25696,7 +25818,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents} schedulableCount={schedulableCount}
-              ayConf={currentAyConf} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
+              ayConf={currentAyConf} dayRules={dayRules} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
               loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} deleteBlockSnapshot={deleteBlockSnapshot} setTab={setTab}
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
               ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}

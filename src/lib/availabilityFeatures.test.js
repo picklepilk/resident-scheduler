@@ -181,8 +181,8 @@ describe('getEligibleShifts — Wellness Wednesday precedence (4.3)', () => {
   it('default: strips eve (and day) on the computed date, not on an ordinary GR Wednesday', () => {
     const fixture = makeFixture('standard');
     const r = foxtrot(fixture);
-    const onWellness = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate });
-    const onRegular = getEligibleShifts(r, REGULAR_WED, {}, {}, {}, {}, { blockStart: fixture.block.startDate });
+    const onWellness = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
+    const onRegular = getEligibleShifts(r, REGULAR_WED, {}, {}, {}, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
     expect(onWellness).not.toContain('POD-E');
     expect(onRegular).toContain('POD-E');
   });
@@ -190,15 +190,15 @@ describe('getEligibleShifts — Wellness Wednesday precedence (4.3)', () => {
   it("optOut: this resident's Wellness Wednesday strips nothing at all", () => {
     const fixture = makeFixture('standard');
     const r = foxtrot(fixture, { wellnessOverride: 'optOut' });
-    const elig = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate });
+    const elig = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
     expect(elig).toContain('POD-E');
   });
 
   it('custom date: strips on the chief-picked date (even a non-Wednesday) instead of the computed one', () => {
     const fixture = makeFixture('standard');
     const r = foxtrot(fixture, { wellnessOverride: CUSTOM_MONDAY });
-    const onCustom = getEligibleShifts(r, CUSTOM_MONDAY, {}, {}, {}, {}, { blockStart: fixture.block.startDate });
-    const onComputed = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate });
+    const onCustom = getEligibleShifts(r, CUSTOM_MONDAY, {}, {}, {}, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
+    const onComputed = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, {}, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
     expect(onCustom).not.toContain('POD-E');
     expect(onCustom).not.toContain('POD-D'); // Monday isn't otherwise GR-Wednesday-restricted
     expect(onComputed).toContain('POD-E'); // the computed date is no longer special for this resident
@@ -207,7 +207,7 @@ describe('getEligibleShifts — Wellness Wednesday precedence (4.3)', () => {
   it('global toggle off: no strip anywhere, even for a resident with no override', () => {
     const fixture = makeFixture('standard');
     const r = foxtrot(fixture);
-    const elig = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, { wellnessWednesdaysEnabled: false }, {}, { blockStart: fixture.block.startDate });
+    const elig = getEligibleShifts(r, WELLNESS_WED_PGY1, {}, {}, { wellnessWednesdaysEnabled: false }, {}, { blockStart: fixture.block.startDate, ayConf: fixture.ayConf });
     expect(elig).toContain('POD-E');
   });
 });
