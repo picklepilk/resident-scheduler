@@ -41,9 +41,12 @@ def _payload(priority):
 def test_rest_outranks_coverage_semantics():
     assert rest_outranks_coverage(REST_FIRST) is True
     assert rest_outranks_coverage(DEFAULT_PRIORITY) is False
-    # missing / invalid / partial -> default (coverage first)
-    for bad in ([], None, ["postNightRest"], ["coverageMin"], ["x"], ["postNightRest", "x"]):
+    # absent / invalid -> default (coverage first)
+    for bad in ([], None, ["coverageMin"], ["x"], "postNightRest", {"postNightRest": 1}):
         assert rest_outranks_coverage(bad) is False
+    # partial lists follow _priority_order / JS normalizeRulePriority: missing id appended
+    for partial in (["postNightRest"], ["postNightRest", "x"]):
+        assert rest_outranks_coverage(partial) is True
 
 
 def test_rest_term_lives_in_rest_tier_by_default_and_blocking_tier_when_rest_first():

@@ -17,7 +17,8 @@ whatever the staged solve's own search does, not a substitute for it.
 
 Fix: before the staged solve ever runs, measure exactly what the hint itself
 achieves on the 3 components the JS `betterQuality` ladder can actually see
-(targetDeficitCore, postNightRest, coverageMin slack), and add each as a HARD
+(targetDeficitCore, postNightRest -- only when rest outranks coverage -- and
+coverageMin slack), and add each as a HARD
 upper bound (`expr <= hintValue`) on the real model. A hard constraint holds
 for every solution the solver can return, at any time budget -- so the
 polisher can only ever match or beat the hint on each of these, never trade

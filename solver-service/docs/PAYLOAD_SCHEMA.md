@@ -276,7 +276,7 @@ second, wasted local run any more.
 - `config.objectiveMode`: `"staged"` (new default) or `"weighted"` (the pre-R9 single-shot solve on
   the flat weighted sum, kept for comparison/rollback).
 - `config.stageSplit`: `[float, float, float, float]`, default `[0.15, 0.15, 0.5, 0.2]` — fraction of
-  `maxTimeSeconds` given to each of the 4 staged-solve stages (see below; `Config.stage_split`
+  `maxTimeSeconds` given to each staged-solve stage group (errors, blocking, coverage/rank, quality; the rest stage is carved out of blocking/rank at solve time; see below; `Config.stage_split`
   in `solver/io/payload.py`). Renormalized defensively
   if it doesn't sum to 1; stages 1-2 keep 15% each because they are typically ALREADY at
   their optimum straight from the warm-start hint (a good local schedule has 0 target deficit and 0

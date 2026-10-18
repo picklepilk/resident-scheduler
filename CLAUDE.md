@@ -111,6 +111,8 @@ Contracts in `imports-exports` skill (`.claude/skills/imports-exports/SKILL.md`)
 - **Cell locking**: `block.lockedCells`; generator knows nothing about locks; every bulk lock action = ONE functional `updateBlockTracked` (looping floods undo).
 - `computeCoverageByDate` shared by grid footer/Dashboard/Calendar — never fork. `cellViolations` shared by picker + drag-drop. Root `issues` memo = ONE `validateAll` pass.
 - Dashboard is landing tab (Home tab GONE).
+- **Block peek is read-only**: `peekSnapId` state, `snapToBlock` DERIVED from the snapshot, never stored. Dashboard peek renders `BlockPanel` without `menuItems`; peeked schedule is a `readOnly` `ScheduleGrid` with NOOP mutators as backstop. NEW edit controls in block-scoped views MUST be gated on `readOnly` / the live panel only. Export and undo are disabled while peeking.
+- **Clear Schedule**: `lib/clearSchedule.js` `clearScheduleFields` is the single implementation; `ClearScheduleConfirm` + `applyClearSchedule` run it in ONE `updateBlockTracked`. Don't fork per surface.
 - What's New: change `CHANGELOG` `id` only for interruption-worthy releases; `markChangelogSeen()` single writer.
 - Schedule-tab grouping: `lib/scheduleGrouping.js` `groupResidents` takes `CATEGORIES`/`BLOCK_TYPES_EM`/`isEmResident` as PARAMETERS (lib may not import big file); returns `[{cat, members}]`.
 

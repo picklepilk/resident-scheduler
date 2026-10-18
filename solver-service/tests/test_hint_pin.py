@@ -229,8 +229,8 @@ def test_pinned_components_follow_rule_priority():
     rest_first = parse_payload(raw)
     assert pinned_components_for(rest_first) == PINNED_COMPONENTS
 
-    # missing / invalid priority -> default (coverage first), never rest-first
-    for bad in ([], ["postNightRest"], ["bogus"], None):
+    # absent / invalid priority -> default (coverage first), never rest-first
+    for bad in ([], ["bogus"], None):
         raw["rulePriority"] = bad
         assert "postNightRest" not in pinned_components_for(parse_payload(raw))
 

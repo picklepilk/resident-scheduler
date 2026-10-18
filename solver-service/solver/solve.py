@@ -20,7 +20,7 @@ from ortools.sat.python import cp_model
 # `solve()` itself knows nothing about jobs/threads -- this is a thin,
 # additive registry so a job runner thread can ask whatever CpSolver
 # instance(s) `solve()` is CURRENTLY using (there can be several across a
-# staged solve's 4 stages) to stop. Per-thread (not global) so the
+# staged solve's stages) to stop. Per-thread (not global) so the
 # synchronous /solve request path -- which never calls `begin_stoppable_run`
 # -- pays zero cost and sees zero behavior change; only a thread that opted
 # in via `begin_stoppable_run()` ever has entries appended to it.

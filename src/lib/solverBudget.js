@@ -78,3 +78,12 @@ export function qualityVectorLabels(rulePriority) {
   while (labels.length < 3) labels.push('-');
   return [...labels, 'Fairness + shape'];
 }
+
+// Value of the postNightRest slot in a quality vector (slot order = the normalized rulePriority),
+// or null when absent. Shown beside the ranking-warning count because that count excludes rest
+// warnings when rest ranks below coverage, yet every one of them still needs review before export.
+export function restSlotCount(qualityVector, rulePriority) {
+  if (!Array.isArray(qualityVector) || !Array.isArray(rulePriority)) return null;
+  const i = rulePriority.indexOf('postNightRest');
+  return i >= 0 && i < 3 && typeof qualityVector[i] === 'number' ? qualityVector[i] : null;
+}
