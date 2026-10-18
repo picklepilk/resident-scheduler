@@ -32,6 +32,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // single-seed baseline cannot tell a genuine regression from that drift, and in practice fired on
 // noise twice for changes that were measurably neutral-or-better in aggregate.
 export const SEEDS = [42, 7, 1234, 99, 555];
+// B1: LNS post-pass iterations pinned for the frozen measurement config (deterministic, no time cap).
+export const BASELINE_LNS_ITERS = Number(process.env.BASELINE_LNS_ITERS ?? 40);
 // realScale takes ~11s per seed (58 residents); 5 seeds risked the 120s beforeAll timeout under
 // CPU contention, so it uses the first 3 of the standard list.
 export function seedsFor(variant) {
@@ -115,7 +117,7 @@ function captureOnce(variant, baseSeed) {
   // frozen measurement config: if generateScheduleBest's default ever moves, the recorded numbers
   // must not silently shift underneath the non-regression assertion. Re-measure deliberately
   // (UPDATE_QUALITY_BASELINE=1) instead.
-  const { schedule, report } = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed });
+  const { schedule, report } = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed, lnsIters: BASELINE_LNS_ITERS });
   const issues = validateAll(
     fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
     fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
