@@ -39,6 +39,9 @@ class ConfigModel(_RequestModel):
     objectiveMode: str = "staged"
     stageSplit: Optional[list[float]] = None
     symmetryLevel: Optional[int] = None
+    # Seed portfolio: K concurrent solves with distinct seeds, best kept (solver/solve.py).
+    # Clamped to 1..8 by solver/io/payload.py.
+    portfolio: int = 1
 
 
 class BlockModel(_RequestModel):

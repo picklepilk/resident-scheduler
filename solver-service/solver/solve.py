@@ -7,6 +7,7 @@ as-is, never "upgraded" by relaxing anything.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 import time
@@ -489,9 +490,20 @@ class SolveResult:
     report: dict
     validation: dict
     feasibility: dict = None
+    # Strict (pass-1) results only: {tier name: achieved stage-expression value}, the same
+    # lexicographic ladder the staged objective optimizes. None for relaxed/infeasible results.
+    tiers: dict = None
 
 
 def solve(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
+    """Entry point. `config.portfolio` == 1 (default) is exactly `_solve_single`; K > 1 runs
+    `_solve_portfolio`. Everything else about the pipeline lives in `_solve_single`."""
+    if payload.config.portfolio > 1:
+        return _solve_portfolio(payload, cancel_event, on_progress)
+    return _solve_single(payload, cancel_event, on_progress)
+
+
+def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
     """`cancel_event` (optional, used only by api/jobs.py's background runner):
     when a stage-1 solve is stopped early via `begin_stoppable_run()`'s
     registry + `CpSolver.stop_search()`, CP-SAT can come back with status
@@ -586,6 +598,7 @@ def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
 
     schedule = _extract_schedule(solver, store)
     report = _build_report(payload, solver, objective, hint_diag)
+    tiers = {name: round(solver.value(expr)) for name, expr in objective.stage_exprs.items()}
 
     failures = validate_schedule(payload, schedule)
     if failures:
@@ -613,7 +626,121 @@ def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
         report=report,
         validation={"passed": True, "failures": []},
         feasibility=None,
+        tiers=tiers,
     )
+
+
+# --- Seed portfolio ---------------------------------------------------------
+class _PortfolioStopper:
+    """Registered in the CALLING thread's stoppable-run list (when it has one) so a job cancel --
+    which calls `.stop_search()` on that list's last entry -- reaches every portfolio run, and so
+    runs not yet started never start."""
+
+    def __init__(self):
+        self.stopped = threading.Event()
+        self._lists: list = []
+        self._lock = threading.Lock()
+
+    def add_list(self, lst: list) -> None:
+        with self._lock:
+            self._lists.append(lst)
+
+    def stop_search(self) -> None:
+        self.stopped.set()
+        with self._lock:
+            lists = list(self._lists)
+        for lst in lists:
+            # Same rule as api/jobs.py's cancel: only the most recent solver of each run.
+            for s in lst[-1:]:
+                try:
+                    s.stop_search()
+                except Exception:
+                    pass
+
+
+def _result_rank_key(result: SolveResult) -> tuple:
+    """Lower is better. Strict solvable results beat relaxed, relaxed beat infeasible; strict
+    results compare their tier values lexicographically (errors, blocking, coverage, quality) --
+    the same ladder `_solve_staged` optimizes. Relaxed results compare by objective value."""
+    if result.tiers is not None:
+        return (0, tuple(result.tiers.get(n, 0) for n in _STAGE_NAMES))
+    if result.status == "RELAXED":
+        return (1, (result.objective_value,))
+    return (2, ())
+
+
+def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult:
+    """K independent full solves (seed = base + i), run concurrently in threads (OR-Tools releases
+    the GIL), best by `_result_rank_key` wins, ties go to the lowest i. Workers are split
+    `max(1, total // concurrent)` per run and each run gets the full `maxTimeSeconds`; if K exceeds
+    the worker count, runs go in batches of `total` concurrent runs (wall time = batches x budget)."""
+    cfg = payload.config
+    k = cfg.portfolio
+    total_workers = _num_workers(payload)
+    concurrent = max(1, min(k, total_workers))
+    per_run_workers = max(1, total_workers // concurrent)
+
+    if on_progress is None:
+        on_progress = getattr(_tls, "on_progress", None)
+
+    stopper = _PortfolioStopper()
+    parent_list = getattr(_tls, "solvers", None)
+    if parent_list is not None:
+        parent_list.append(stopper)
+
+    outcomes: list = [None] * k  # (result | None, error | None, wall_seconds)
+
+    def run(i: int) -> None:
+        sub = dataclasses.replace(
+            payload,
+            config=dataclasses.replace(cfg, portfolio=1, random_seed=cfg.random_seed + i, num_workers=per_run_workers),
+        )
+        my_list = begin_stoppable_run(on_progress if i == 0 else None)
+        stopper.add_list(my_list)
+        t0 = time.time()
+        try:
+            if stopper.stopped.is_set():
+                raise RuntimeError("cancelled")
+            outcomes[i] = (_solve_single(sub, cancel_event, None), None, time.time() - t0)
+        except BaseException as exc:  # one failed run must not lose the others
+            outcomes[i] = (None, exc, time.time() - t0)
+        finally:
+            end_stoppable_run()
+
+    for start in range(0, k, concurrent):
+        if stopper.stopped.is_set() or (cancel_event is not None and cancel_event.is_set()):
+            break
+        threads = [
+            threading.Thread(target=run, args=(i,), daemon=True) for i in range(start, min(k, start + concurrent))
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    done = [(i, o[0]) for i, o in enumerate(outcomes) if o is not None and o[0] is not None]
+    if not done:
+        errs = [o[1] for o in outcomes if o is not None and o[1] is not None]
+        if errs:
+            raise errs[0]
+        raise RuntimeError("portfolio cancelled before any run finished")
+
+    winner_index, winner = min(done, key=lambda t: (_result_rank_key(t[1]), t[0]))
+    per_run = []
+    for i, o in enumerate(outcomes):
+        if o is None:
+            continue
+        res, _err, wall = o
+        per_run.append({
+            "seed": cfg.random_seed + i,
+            "status": res.status if res is not None else "ERROR",
+            "tiers": res.tiers if res is not None else None,
+            "wallSeconds": round(wall, 1),
+        })
+    winner.report = dict(winner.report)
+    winner.report["portfolio"] = {"k": k, "winnerIndex": winner_index, "perRun": per_run}
+    winner.seed = cfg.random_seed + winner_index
+    return winner
 
 
 def run_pass2(payload: Payload) -> SolveResult:

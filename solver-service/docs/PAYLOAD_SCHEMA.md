@@ -961,8 +961,8 @@ this repo's "every rule here is load-bearing" convention.
 own `conferenceTolerated` branch uses — `getConferencesInBlock(block.startDate, block.endDate,
 ayConf).length > 0` — so the two can never drift on "does this block touch a conference." Parsed in
 `solver/io/payload.py` (`Payload.block_touches_conference`) AND declared on `api/schemas.py`'s
-`SolveRequest` — the schema declaration is NOT optional busywork: `SolveRequest` is a Pydantic
-`BaseModel` with the library default `extra="ignore"`, and `api/main.py`'s `solve_endpoint` calls
+`SolveRequest` — the schema declaration is NOT optional busywork: `SolveRequest` WAS a Pydantic
+`BaseModel` with the library default `extra="ignore"` (SUPERSEDED: now `extra="allow"`, see the 2026-10-18 section at the end), and `api/main.py`'s `solve_endpoint` calls
 `request.model_dump()` before `parse_payload` ever sees the raw dict, so a field `SolveRequest`
 doesn't declare is silently dropped before it reaches `solver/io/payload.py` at all, regardless of
 what `Payload`'s own dataclass declares or defaults. (This same gap already existed for several
@@ -1310,3 +1310,63 @@ progress copy, one test file). `solver-service` pytest: 191 passed, 4 pre-existi
 collection failures (missing `jwt` package in this environment, confirmed pre-existing and unchanged
 by this task). `npm test`: 1442 passed, 4 skipped (SOLVER_PARITY-gated, need Python), same as before
 this task. `npm run build`: clean.
+
+
+## Seed portfolio `config.portfolio` + doc refresh (2026-10-18)
+
+### Why
+On the real 58-resident block the coverage gap is search-budget/luck limited (30s -> 120s took
+coverageMiss 17 -> 9, proven bound 1) and multi-worker CP-SAT is nondeterministic run-to-run.
+Independent restarts with different seeds, keeping the best, are a cheap hedge.
+
+### Field
+- `config.portfolio` (int, default `1`, clamped to `1..8` in `solver/io/payload.py`; declared on
+  `api/schemas.py`'s `ConfigModel`). `1` is exactly the old single-solve path (`_solve_single`; no
+  `report.portfolio` key). `K > 1` runs `_solve_portfolio` in `solver/solve.py`.
+- `solve()` is the only entry (used by `/solve`, `/jobs`, Modal's `solve_raw`), so every route
+  honours it.
+
+### Behavior
+- K full, independent solves of the same payload: same hint, hint pinning, staged ladder and pass-2
+  fallback, with `randomSeed + i` for run `i`. Runs are threads in the calling process (OR-Tools
+  releases the GIL). Total workers `W = _num_workers(payload)`; `concurrent = min(K, W)`; each run
+  gets `max(1, W // concurrent)` workers and the FULL `maxTimeSeconds`. If `K > W`, runs go in
+  batches of `concurrent` (wall time = batches x budget).
+- **The trade**: each run searches with fewer workers (e.g. 8 workers, K=4 -> 2 workers each), so a
+  single run is weaker than the one K=1 run that owns every core. The portfolio wins only when
+  seed luck dominates worker count; on instances where raw parallelism matters it can LOSE (see
+  measurement below). Wall time stays ~ one budget (plus ~1-2 s of model-build overhead), memory is
+  ~K models.
+- Winner = lexicographic min of the per-run tier values `(tier1_errors, tier2_blockingWarns,
+  tier3_qualityRank, tier4_quality)`, the same ladder the staged objective optimizes (values are
+  `solver.value(objective.stage_exprs[tier])` of the final solution, now exposed as
+  `SolveResult.tiers`). Strict results beat `RELAXED` (compared by objective), which beat
+  `INFEASIBLE`. Ties go to the lowest run index. `SolveResult.seed` is the winner's seed.
+- Report (additive; `mapSolverResult` copies only named report keys, like `hintPinning`):
+  `report.portfolio = {k, winnerIndex, perRun: [{seed, status, tiers, wallSeconds}]}`. A run that
+  raised is listed with `status: "ERROR"`, `tiers: null`; if all runs raise, the first error
+  propagates.
+- **Cancel**: a `_PortfolioStopper` is appended to the calling thread's stoppable-run list, so the
+  existing job cancel (`stop_search()` on the list's last entry) stops the most recent solver of
+  every run and prevents further batches/runs from starting. `cancel_event` is also passed to each
+  run. Progress (`on_progress`) reports run 0 only.
+- **Modal**: portfolio threads run inside the existing `solve_fn` container (no extra
+  `Function.spawn`); `SOLVER_NUM_WORKERS` is the `W` that gets split. Memory is K models in one 8 GiB
+  container.
+
+### Measurement (noisy: other JS test suites were running on the machine)
+Synthetic 24-resident, 28-day, 5-shift understaffed fixture, 8 CPUs, `maxTimeSeconds: 20`,
+`numWorkers: 8`: K=1 wall 21.3 s tiers `[30000, 0, 0, 200]`; K=4 (2 workers each) wall 23.1 s,
+winner `[190000, 0, 0, 2845]` (runs ranged 190000-320000 on tier 1). Here the split hurt; this
+fixture is not the real block, so treat it as evidence that the portfolio is not a free win, not as
+a verdict on the 58-resident case. Measure on the real block before changing any client default.
+
+### Stale text corrected (as of 2026-10-18)
+- Client default budget is **120 s**, Deep Solve **300 s** (the 30 s / 60 s / 120 s figures in
+  the dated sections above are historical). A parallel client change makes durable (Modal) and
+  local ("This computer") targets default to **300 s** as well.
+- Fly VM is **4 performance CPUs / 8 GB** (`fly.toml`), not the "2 shared CPUs" quoted above.
+- `api/schemas.py`'s request models use `extra="allow"` (`_RequestModel`), so undeclared payload
+  fields are NOT dropped any more; the "`SolveRequest` ... `extra="ignore"` ... silently dropped"
+  passage in "Two engine gaps closed" describes the old behavior. `payload.py` remains the real
+  typed parse.
