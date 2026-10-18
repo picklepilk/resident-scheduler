@@ -16,7 +16,13 @@ from ortools.sat.python import cp_model
 import solver.solve as solve_module
 from solver.build import build_model
 from solver.io.payload import parse_payload
-from solver.model.hint_pin import PINNED_COMPONENTS, apply_hint_pins, evaluate_hint, pinned_component_exprs
+from solver.model.hint_pin import (
+    PINNED_COMPONENTS,
+    apply_hint_pins,
+    evaluate_hint,
+    pinned_component_exprs,
+    pinned_components_for,
+)
 from solver.solve import solve
 from tests.helpers import load_fixture
 
@@ -76,7 +82,8 @@ def test_legal_hint_is_feasible_and_pinned_at_its_own_achieved_values():
     diag = result.report["hintPinning"]
     assert diag["applied"] is True
     assert diag["hintFeasible"] is True
-    assert diag["pinned"] == hint_eval.components
+    # Default priority (coverage outranks rest): postNightRest is measured but NOT pinned.
+    assert diag["pinned"] == {k: v for k, v in hint_eval.components.items() if k != "postNightRest"}
     # The real solve must never end up WORSE than what got pinned.
     assert result.report["unfilled"] == []  # coverageMin slack stayed at 0
     core_shortfall = sum(
@@ -210,4 +217,27 @@ def test_apply_hint_pins_adds_hard_constraints_to_the_real_model():
     apply_hint_pins(build_hinted.model, payload_hinted, build_hinted.objective, hint_eval)
     pinned_constraints = len(build_hinted.model.proto.constraints)
 
-    assert pinned_constraints == baseline_constraints + len(PINNED_COMPONENTS)
+    assert pinned_constraints == baseline_constraints + len(pinned_components_for(payload_hinted))
+
+
+def test_pinned_components_follow_rule_priority():
+    raw = load_fixture("small_feasible.json")
+    default = parse_payload(raw)
+    assert pinned_components_for(default) == ("targetDeficitCore", "coverageMin")
+
+    raw["rulePriority"] = ["postNightRest", "coverageMin", "seniorComposition"]
+    rest_first = parse_payload(raw)
+    assert pinned_components_for(rest_first) == PINNED_COMPONENTS
+
+    # missing / invalid priority -> default (coverage first), never rest-first
+    for bad in ([], ["postNightRest"], ["bogus"], None):
+        raw["rulePriority"] = bad
+        assert "postNightRest" not in pinned_components_for(parse_payload(raw))
+
+
+def test_rest_first_priority_pins_rest_but_default_does_not():
+    raw = load_fixture("small_feasible.json")
+    raw["hint"] = _full_coverage_hint()
+    raw["rulePriority"] = ["postNightRest", "coverageMin", "seniorComposition"]
+    result = solve(parse_payload(raw))
+    assert set(result.report["hintPinning"]["pinned"]) == set(PINNED_COMPONENTS)

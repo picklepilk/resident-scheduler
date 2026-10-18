@@ -40,7 +40,7 @@ def test_portfolio_1_uses_single_path_and_adds_no_report_key(monkeypatch):
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert "portfolio" not in result.report
     assert result.seed == 42
-    assert set(result.tiers) == {"tier1_errors", "tier2_blockingWarns", "tier3_qualityRank", "tier4_quality"}
+    assert set(result.tiers) == {"tier1_errors", "tier2_blockingWarns", "tier3_qualityRank", "tier3b_restAfterCoverage", "tier4_quality"}
 
 
 def test_portfolio_3_returns_valid_best_with_report():

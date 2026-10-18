@@ -76,6 +76,7 @@ from dataclasses import dataclass, field
 from ortools.sat.python import cp_model
 
 from solver.io.payload import Payload
+from solver.model.objective import rest_outranks_coverage
 
 SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 
@@ -89,6 +90,15 @@ SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 # handcuffs the solver's own +1-over-max relief valve without protecting
 # anything JS can actually see).
 PINNED_COMPONENTS = ("targetDeficitCore", "postNightRest", "coverageMin")
+
+
+def pinned_components_for(payload: Payload) -> tuple:
+    """Which components actually get a hard pin. postNightRest is pinned only when `rulePriority`
+    ranks it ABOVE coverageMin; otherwise (the default) coverage outranks rest, and pinning rest at
+    the hint's value would block the very rest-for-coverage trade the ladder allows."""
+    if rest_outranks_coverage(payload.rule_priority):
+        return PINNED_COMPONENTS
+    return tuple(c for c in PINNED_COMPONENTS if c != "postNightRest")
 
 
 def pinned_component_exprs(payload: Payload, objective) -> dict:
@@ -194,5 +204,6 @@ def apply_hint_pins(model, payload: Payload, objective, hint_eval: HintEvaluatio
     `hint_eval.feasible` -- see module docstring for why this can never make
     an otherwise-feasible payload infeasible."""
     exprs = pinned_component_exprs(payload, objective)
-    for name, expr in exprs.items():
+    for name in pinned_components_for(payload):
+        expr = exprs[name]
         model.add(expr <= hint_eval.components[name])

@@ -212,7 +212,7 @@ def test_in_memory_job_exposes_progress_from_real_solve():
         time.sleep(0.1)
     assert body["status"] == "done", body
     p = body["progress"]
-    assert p is not None and p["stages"] == 4 and p["stage"] == 4
+    assert p is not None and p["stages"] == 5 and p["stage"] == 5
     assert set(p) >= {"stage", "stages", "elapsed", "budget", "best"}
 
 
@@ -224,7 +224,7 @@ def test_progress_hook_stages_are_monotonic():
     assert events, "hook never called"
     stages = [e["stage"] for e in events]
     assert stages == sorted(stages)
-    assert events[-1]["stage"] == events[-1]["stages"] == 4
+    assert events[-1]["stage"] == events[-1]["stages"] == 5
     assert all(e["budget"] == payload.config.max_time_seconds for e in events)
     assert all(e["elapsed"] >= 0 for e in events)
 

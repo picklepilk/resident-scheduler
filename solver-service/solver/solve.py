@@ -66,8 +66,15 @@ def _register_active_solver(solver: cp_model.CpSolver) -> None:
 from solver.build import BuildResult, build_model
 from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
-from solver.model.hint_pin import apply_hint_pins, evaluate_hint
-from solver.model.objective import TIER_BLOCKING, TIER_ERRORS, TIER_QUALITY, TIER_RANK
+from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for
+from solver.model.objective import (
+    TIER_BLOCKING,
+    TIER_ERRORS,
+    TIER_QUALITY,
+    TIER_RANK,
+    TIER_REST,
+    rest_outranks_coverage,
+)
 from solver.report.builder import HARD_RELAXABLE_RULES, build_feasibility_report
 from solver.validate import validate_schedule
 
@@ -105,7 +112,10 @@ PROBE_TIME_SECONDS = 5.0
 # clean, undiluted objective and (with `_stage_time_budgets`' rollover) a much
 # bigger share of the time budget, without changing what either tier actually
 # measures.
-_STAGE_NAMES = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_QUALITY)
+# All tier names in JS-vector order (errors, blocking, coverage/rank, rest-after-coverage,
+# quality). Exactly one of TIER_BLOCKING's rest term / TIER_REST is populated per payload (see
+# objective.py); empty stages are skipped by `_solve_staged`.
+_STAGE_NAMES = (TIER_ERRORS, TIER_BLOCKING, TIER_RANK, TIER_REST, TIER_QUALITY)
 
 
 PROGRESS_MIN_INTERVAL_SECONDS = 2.0
@@ -116,7 +126,7 @@ class ProgressReporter:
     `on_progress({stage, stages, elapsed, budget, best})` at every staged-solve
     stage boundary (always) and from CP-SAT's solution callback (at most once
     per PROGRESS_MIN_INTERVAL_SECONDS). `stage` is 1-based and never decreases;
-    `stages` is 4 for the staged objective, 1 for `objectiveMode: 'weighted'`;
+    `stages` is 5 for the staged objective, 1 for `objectiveMode: 'weighted'`;
     `best` is the CURRENT stage's incumbent objective (stage-local, tiebreak
     weighted -- not comparable across stages), None before the first solution.
     A failing sink never affects the solve.
@@ -251,7 +261,7 @@ def _is_empty_stage(expr) -> bool:
 
 
 def _stage_time_budgets(payload: Payload) -> list:
-    """Splits `config.max_time_seconds` across the 4 staged-solve stages
+    """Splits `config.max_time_seconds` across the staged-solve stages
     (`_STAGE_NAMES`) per `config.stage_split` (default 15/15/50/20, see
     payload.py's Config). Defensively renormalizes so the fractions sum to 1
     (a misconfigured payload degrades to the default split rather than
@@ -265,8 +275,17 @@ def _stage_time_budgets(payload: Payload) -> list:
     """
     total = max(0.1, payload.config.max_time_seconds)
     splits = list(payload.config.stage_split)
+    if len(splits) == len(_STAGE_NAMES) - 1 and sum(splits) > 0:
+        # Legacy/default 4-entry split (errors, blocking, rank, quality): TIER_REST has no entry of
+        # its own. Rest ranked first -> its term lives in TIER_BLOCKING, TIER_REST stays empty.
+        # Coverage first -> blocking's share is split with TIER_REST (blocking then holds only
+        # conferenceTolerated). Empty stages roll their share forward anyway.
+        a, b, c, d = splits
+        splits = [a, b, c, 0.0, d] if rest_outranks_coverage(payload.rule_priority) else [a, b / 2, c, b / 2, d]
     if len(splits) != len(_STAGE_NAMES) or sum(splits) <= 0:
         splits = list(Config.stage_split)
+        a, b, c, d = splits
+        splits = [a, b, c, 0.0, d] if rest_outranks_coverage(payload.rule_priority) else [a, b / 2, c, b / 2, d]
     s = sum(splits)
     normalized = [x / s for x in splits]
     budgets = [max(0.1, total * f) for f in normalized]
@@ -557,7 +576,7 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
         return {"applied": False, "hintFeasible": False, "pinned": {}}, hint_eval
 
     apply_hint_pins(build_result.model, payload, build_result.objective, hint_eval)
-    return {"applied": True, "hintFeasible": True, "pinned": hint_eval.components}, hint_eval
+    return {"applied": True, "hintFeasible": True, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
 
 
 def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
