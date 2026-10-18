@@ -13473,7 +13473,7 @@ function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onCl
                   <p className="text-gray-500">
                     JC dates: <span className="text-green-700">+{ay.jc.added.length} added</span> ·{' '}
                     <span className={ay.jc.removed.length ? 'text-red-600' : ''}>−{ay.jc.removed.length} removed</span> · {ay.jc.same.length} unchanged
-                    {!ay.jc.custom && ' (current list is the default first Tuesdays)'}
+                    {ay.jc.current.length === 0 && ' (no Journal Club dates logged yet)'}
                   </p>
                   {(ay.jc.added.length > 0 || ay.jc.removed.length > 0) && (
                     <p className="text-gray-500">

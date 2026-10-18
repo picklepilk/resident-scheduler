@@ -117,7 +117,7 @@ describe('plan + apply', () => {
     expect(again.emRoster).toEqual(out.emRoster);
     expect(again.ayData).toEqual(out.ayData);
   });
-  it('JC mode: union keeps chief-added dates, replace drops them, derived default replaces', () => {
+  it('JC mode: union keeps chief-added dates, replace drops them, absent list replaces (nothing logged to lose)', () => {
     const cur = { 'AY26/27': { jcDates: ['2026-11-03', '2026-12-01'] } };
     const plan = buildAcademicPlan({ parsed, emRoster: roster, ayData: cur, match });
     const u = applyAcademicPlan(plan, { emRoster: roster, ayData: cur });
@@ -125,8 +125,11 @@ describe('plan + apply', () => {
     const r = applyAcademicPlan(plan, { emRoster: roster, ayData: cur, jcMode: { 'AY26/27': 'replace' } });
     expect(r.ayData['AY26/27'].jcDates).toEqual(['2026-12-01', '2027-01-05', '2027-02-02', '2027-03-02']);
     const derived = buildAcademicPlan({ parsed, emRoster: roster, ayData: {}, match });
-    expect(derived.ays[0].jc.custom).toBe(false);
+    expect(derived.ays[0].jc.current).toEqual([]); // absent = no dates, not derived first Tuesdays
+    expect(derived.ays[0].jc.removed).toEqual([]);
     expect(defaultJcMode(derived.ays[0])).toBe('replace');
+    const empty = buildAcademicPlan({ parsed, emRoster: roster, ayData: { 'AY26/27': { jcDates: [] } }, match });
+    expect(defaultJcMode(empty.ays[0])).toBe('replace');
   });
   it('provenance reflects what was written: no JC line when JC off', () => {
     const plan = buildAcademicPlan({ parsed, emRoster: roster, ayData: {}, match });
