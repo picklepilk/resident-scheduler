@@ -76,6 +76,9 @@ class Config:
     # OR-Tools' own default -- this repo has no hand-written symmetry-
     # breaking constraints to conflict with it (see solve.py's docstring).
     symmetry_level: Optional[int] = None
+    # Seed portfolio (solver/solve.py's `_solve_portfolio`): K independent solves of the same
+    # payload with seeds random_seed+i, best kept. 1 = today's single solve, unchanged.
+    portfolio: int = 1
 
 
 @dataclass(frozen=True)
@@ -402,6 +405,7 @@ def parse_payload(raw: dict) -> Payload:
             objective_mode=config_raw.get("objectiveMode", "staged"),
             stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
+            portfolio=max(1, min(8, int(config_raw.get("portfolio", 1) or 1))),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
