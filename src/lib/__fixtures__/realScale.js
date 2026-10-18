@@ -26,6 +26,7 @@
 // restarts do not help); CP-SAT --bound-probe (30s) found coverageMiss 15, proven bound 0 (not
 // closed in 30s). Local is >= 22 above what the solver demonstrably achieves.
 import { parseDate, addDays, toDateStr } from '../dates.js';
+import { materializeLegacyRuleDates } from '../ruleDates.js';
 
 const BLOCK_START = '2026-07-06';
 const BLOCK_END = '2026-08-02';
@@ -139,6 +140,12 @@ export function makeRealScaleFixture({ seed = 20260706 } = {}) {
     appSettings: {},
     dayRules: {},
     blocksHistory: [],
-    ayConf: { acepStart: '2026-07-20', acepEnd: '2026-07-23' },
+    // First Friday / Wellness / Journal Club are chief-LOGGED (lib/ruleDates.js); log what used to be
+    // derived via the production migration helper, same as syntheticRoster.js.
+    ayConf: materializeLegacyRuleDates({
+      ayData: { 'AY26/27': { acepStart: '2026-07-20', acepEnd: '2026-07-23' } },
+      blocks: [{ startDate: BLOCK_START, academicYear: 'AY26/27' }],
+      ordinalsByPgy: { 1: 1, 2: 2, 3: 3 },
+    })['AY26/27'],
   };
 }
