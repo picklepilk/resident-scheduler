@@ -2,16 +2,16 @@
 // `block.issueAcks = { [ackKey]: { at, by, note } }`. Errors (level 'error') can never be
 // acknowledged. Acknowledging NEVER changes export-blocking semantics: EXPORT_BLOCKING_RULE_IDS,
 // blockingWarnCount and the export-confirm gate keep counting an acknowledged blocking warning.
-import { normalizeIssueMessage } from './reviewPanel.js';
 
-// Stable identity of an issue across re-validation: rule id + resident + date + shift + the message
-// with dates/numbers stripped (so a count that drifts, e.g. "3 separate night stints" text variants
-// of the same warning, still hits the same ack, while a different resident/date never does).
+// Identity of EXACTLY the issue the chief saw: rule + resident + date + anchorDate (run-anchored
+// issues such as isolated night stints carry only anchorDate) + shift + message. Numbers stay in
+// the key on purpose: if a count or wording changes ("2 vs 3 separate night stints", "Under target
+// N/M"), the ack lapses and the issue reappears. Only whitespace/case are normalized.
 export function ackKeyFor(issue) {
   if (!issue) return '';
   return [
-    issue.rule || '', issue.residentId || '', issue.dateStr || '', issue.shiftId || '',
-    normalizeIssueMessage(issue.message),
+    issue.rule || '', issue.residentId || '', issue.dateStr || '', issue.anchorDate || '', issue.shiftId || '',
+    String(issue.message || '').replace(/\s+/g, ' ').trim().toLowerCase(),
   ].join('|');
 }
 

@@ -60,7 +60,7 @@ import { deriveBlockSteps } from './lib/blockStatus.js';
 import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
 import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
 import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
-import { partitionAcked, addAcks, removeAcks, normalizeAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
+import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -16543,7 +16543,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, clearFirst, deepSolve);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       const rc = res.report.restCompromises.length;
@@ -16603,7 +16603,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
       const res = await generateViaSolverOrLocal(genBlock, false);
       if (!res) { showToast('Set block dates first', 'red'); return; }
       if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
-      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } } }), null, { kind: 'generate', note: res.engineUsed || 'local' });
+      updateBlockTracked(b => ({ ...b, schedule: res.schedule, generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
@@ -16661,7 +16661,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
   // no separate confirm/undo mechanism needed.
   function applySweepCandidate(cand) {
     if (!cand) return;
-    updateBlockTracked(b => ({ ...b, schedule: cand.schedule, generationReport: cand.report }));
+    updateBlockTracked(b => ({ ...b, schedule: cand.schedule, generationReport: cand.report, issueAcks: {} }));
     setSweepOpen(false);
     showToast(`Applied "${cand.label}" — ${cand.diffTotal} shift${cand.diffTotal !== 1 ? 's' : ''} changed across ${Object.keys(cand.diff.byResident).length} resident${Object.keys(cand.diff.byResident).length !== 1 ? 's' : ''}. Undo (Ctrl+Z) restores the previous schedule.`, 'green');
   }
@@ -18958,11 +18958,10 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
     () => partitionAcked(panelIssues.orderedWarns, issueAcks), [panelIssues.orderedWarns, issueAcks]);
   const [ackedOpen, setAckedOpen] = useState(false);
   const canAck = !!onAckIssues;
-  const ackWithNote = list => {
-    let n = '';
-    try { n = window.prompt('Optional note for this acknowledgement:', ''); } catch { n = ''; }
-    if (n !== null) onAckIssues(list, n || '');
-  };
+  // Single-row Acknowledge is one click, no note; a bulk "Acknowledge all N" opens a Modal with an
+  // optional note.
+  const [bulkAck, setBulkAck] = useState(null); // { list, label } | null
+  const [bulkNote, setBulkNote] = useState('');
   const ackedGroups = useMemo(() => groupIssuesByKind(ackedWarns, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID), [ackedWarns]);
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
   // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
@@ -19054,11 +19053,23 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
               <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
             ) : (
               <ul className="space-y-1">
-                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, canAck ? { onAck: ackWithNote } : null))}
+                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, canAck ? { onAck: list => onAckIssues(list, ''), onBulkAck: (list, label) => { setBulkNote(''); setBulkAck({ list, label }); } } : null))}
               </ul>
             )
           )}
         </section>
+
+        {bulkAck && (
+          <Modal title={`Acknowledge all ${bulkAck.list.length} ${bulkAck.label}`} onClose={()=>setBulkAck(null)}>
+            <p className="text-sm text-gray-600 mb-2">They collapse into the Acknowledged section. If an issue changes, its acknowledgement lapses. Export-blocking warnings still block export.</p>
+            <input type="text" value={bulkNote} maxLength={200} onChange={e=>setBulkNote(e.target.value)} placeholder="Optional note"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3"/>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={()=>setBulkAck(null)}>Cancel</Button>
+              <Button variant="primary" size="sm" onClick={()=>{ onAckIssues(bulkAck.list, bulkNote); setBulkAck(null); }}>Acknowledge</Button>
+            </div>
+          </Modal>
+        )}
 
         {ackedWarns.length > 0 && (
           <section>
@@ -19391,7 +19402,7 @@ function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow, ack }) {
       </button>
       {ack && group.items.some(isAckable) && (
         <button type="button" className="mt-0.5 ml-2 text-[11px] text-muted-foreground hover:text-primary underline"
-          onClick={() => (ack.onAck ? ack.onAck(group.items) : ack.onUnack(group.items))}>
+          onClick={() => (ack.onAck ? ack.onBulkAck(group.items, group.label) : ack.onUnack(group.items))}>
           {ack.onAck ? `Acknowledge all ${group.count} ${group.label}` : `Un-acknowledge all ${group.count}`}
         </button>
       )}
@@ -20222,6 +20233,7 @@ function UnderTargetExplainPanel({
 
 function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory = [], ayConf = {}, coverage = {}, eligOverrides = {}, dayRules = {}, updateBlockTracked, showToast }) {
   const errors=issues.filter(i=>i.level==='error'), warns=issues.filter(i=>i.level==='warn');
+  const ackedWarnCount = partitionAcked(warns, block.issueAcks).acked.length;
   const byRes = useMemo(()=>{
     const m={};
     for(const i of issues){ if(!m[i.residentId]) m[i.residentId]={name:i.name,issues:[]}; m[i.residentId].issues.push(i); }
@@ -20258,7 +20270,7 @@ function ValidationTab({ issues, block, appSettings, allResidents, blocksHistory
       <OverrideInsightsCard overrideLog={block.overrideLog} allResidents={allResidents}/>
       <div className="flex gap-3 flex-wrap">
         {errors.length>0 && <div className="flex items-center gap-2 bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-2.5 text-sm text-destructive font-medium"><AlertCircle size={15}/>{errors.length} error{errors.length!==1?'s':''}</div>}
-        {warns.length>0 && <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-amber-700 font-medium"><AlertTriangle size={15}/>{warns.length} warning{warns.length!==1?'s':''}</div>}
+        {warns.length>0 && <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-sm text-amber-700 font-medium"><AlertTriangle size={15}/>{warns.length} warning{warns.length!==1?'s':''}{ackedWarnCount>0 && ` (${ackedWarnCount} acknowledged in Review panel)`}</div>}
       </div>
       {Object.entries(byRes).map(([id,{name,issues:ri}])=>{
         const hasErr=ri.some(i=>i.level==='error');
@@ -23437,9 +23449,11 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[], issueAcks:normalizeAcks(block.issueAcks),
+           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
-           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
+           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear,
+           // Omitted when empty so snapshots saved before E2 (no key) still compare clean in blockSaveState.
+           ...(Object.keys(normalizeAcks(block.issueAcks)).length ? { issueAcks: normalizeAcks(block.issueAcks) } : {}) };
 }
 
 // ─── OVERRIDE CAPTURE (Phase 3) ─────────────────────────────────────────────
@@ -24796,17 +24810,18 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Single validateAll pass shared by the sidebar badge, pendingErrorCount, and the Dashboard
   // stat tiles — running it once per relevant state change instead of once per consumer.
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf]);
+  const ackPart = useMemo(()=>partitionAcked(issues, block.issueAcks),[issues, block.issueAcks]);
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
     // Acknowledged warnings (block.issueAcks, Wave E2) drop out of the headline warning count only;
     // restWarns below still counts an acknowledged export-blocking warning (export gate unchanged).
-    warns: partitionAcked(issues, block.issueAcks).active.filter(i=>i.level!=='error').length,
-    ackedBlocking: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule) && isAckable(i) && partitionAcked([i], block.issueAcks).acked.length).length,
+    warns: ackPart.active.filter(i=>i.level!=='error').length,
+    ackedBlocking: ackPart.acked.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
     // Soft-rule warnings flagged blocksExport in SOFT_RULES (currently just postNightRest) are
     // still safety-relevant enough that exporting the schedule (CSV/QGenda/PDF) should gate on
     // them same as a hard error — see requestExport below.
     restWarns: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
-  }),[issues, block.issueAcks]);
+  }),[issues, ackPart]);
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
   const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
   // Derived, not stored — so any code path that changes block/blocksHistory (including raw
@@ -24898,6 +24913,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   }, [undoStack, redoStack, block]);
 
   function saveBlock() {
+    // Drop acks whose issue no longer exists so they don't accumulate (Wave E2).
+    const prunedAcks = pruneAcks(block.issueAcks, issues);
+    if (Object.keys(prunedAcks).length !== Object.keys(normalizeAcks(block.issueAcks)).length) setBlock(b => ({ ...b, issueAcks: prunedAcks }));
     const shiftCount=Object.values(block.schedule||{}).reduce((s,d)=>s+Object.values(d).filter(Boolean).length,0);
     // A saved snapshot replaces its predecessor wholesale — preserve any existing "published"
     // flag from that predecessor here, or re-saving a published block would silently unpublish it.

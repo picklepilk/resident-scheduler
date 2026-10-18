@@ -5,11 +5,20 @@ const w = (o = {}) => ({ level: 'warn', rule: 'x', residentId: 'r1', dateStr: '2
 const e = () => ({ level: 'error', rule: 'y', residentId: 'r1', message: 'bad' });
 
 describe('issueAcks', () => {
-  it('key is stable across numeric/date wording drift but distinguishes resident/date/shift', () => {
-    expect(ackKeyFor(w())).toBe(ackKeyFor(w({ message: 'Isolated night stint of 2 (Thu 2/5-Fri 2/6)' })));
+  it('key distinguishes resident/date/shift/anchorDate and lapses when count or wording changes', () => {
+    expect(ackKeyFor(w())).toBe(ackKeyFor(w({ message: '  Isolated night stint of 3 (Wed 1/5-Fri 1/7) ' })));
+    expect(ackKeyFor(w())).not.toBe(ackKeyFor(w({ message: 'Isolated night stint of 2 (Wed 1/5-Fri 1/6)' })));
     expect(ackKeyFor(w())).not.toBe(ackKeyFor(w({ residentId: 'r2' })));
     expect(ackKeyFor(w())).not.toBe(ackKeyFor(w({ dateStr: '2026-07-02' })));
     expect(ackKeyFor(w())).not.toBe(ackKeyFor(w({ shiftId: 'POD-N' })));
+    const stint = a => w({ dateStr: undefined, shiftId: undefined, anchorDate: a, message: 'Isolated night stint' });
+    expect(ackKeyFor(stint('2026-07-03'))).not.toBe(ackKeyFor(stint('2026-07-20')));
+  });
+  it('worsened count no longer matches an existing ack', () => {
+    const acks = addAcks({}, [w({ message: '2 separate night stints this block' })], { at: 't' });
+    const { active, acked } = partitionAcked([w({ message: '3 separate night stints this block' })], acks);
+    expect(acked).toHaveLength(0);
+    expect(active).toHaveLength(1);
   });
   it('errors are not ackable and never partitioned as acked', () => {
     expect(isAckable(e())).toBe(false);
