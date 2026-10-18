@@ -41,11 +41,12 @@ class Config:
     # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
     # keeps the pre-R9 single-shot solve for comparison/rollback.
     objective_mode: str = "staged"
-    # Fraction of `max_time_seconds` given to each of the 4 staged-solve
-    # stages (errors -> blocking-warns -> coverage/rank -> quality). Must sum
+    # Fraction of `max_time_seconds` given to each staged-solve
+    # stage group (errors -> blocking-warns -> coverage/rank -> quality; the
+    # separate rest stage takes its share from blocking/rank, see solve.py). Must sum
     # to <= 1.0; solve.py renormalizes defensively if a caller sends something
     # that doesn't, or falls back to this default if the length doesn't match
-    # the 4 stages. `solve.py`'s `_solve_staged` rolls any time a stage
+    # the 4 entries. `solve.py`'s `_solve_staged` rolls any time a stage
     # finishes early (proven OPTIMAL) forward into the NEXT stage's budget
     # rather than letting it sit idle, so these fixed fractions are a
     # starting allocation, not a hard ceiling -- but they are NOT just a
@@ -429,7 +430,7 @@ def parse_payload(raw: dict) -> Payload:
             jc_dates=frozenset(raw.get("jcDates", ()) or ()),
             holidays=dict(raw.get("holidays", {}) or {}),
             preferences=_parse_preferences(raw.get("preferences", [])),
-            rule_priority=list(raw.get("rulePriority", []) or []),
+            rule_priority=(raw.get("rulePriority") if isinstance(raw.get("rulePriority"), list) else []),
             settings=settings,
             trauma_night_shift_ids=frozenset(raw.get("traumaNightShiftIds", ()) or ()),
             peds_split_intern_ids=frozenset(raw.get("pedsSplitInternIds", ()) or ()),

@@ -38,7 +38,7 @@ import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGe
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
-import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels } from './lib/solverBudget.js';
+import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
@@ -16145,14 +16145,15 @@ function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
 // Slot labels come from the CURRENT rule priority, which is what pickEngineResult used unless the
 // chief reordered it after generating.
 function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpenSolver }) {
-  const labels = qualityVectorLabels(normalizeRulePriority(appSettings?.rulePriority));
+  const normPriority = normalizeRulePriority(appSettings?.rulePriority);
+  const labels = qualityVectorLabels(normPriority);
   const winnerKey = c.winner === 'cpsat' ? 'solver' : c.winner;
   const requested = c.target === 'local' ? 'This computer' : c.target === 'cloud' ? 'Cloud' : null;
   const ranOn = c.backend ? backendLabel(c.backend) : null;
   const num = x => (typeof x === 'number' ? (Number.isInteger(x) ? String(x) : x.toFixed(1)) : '-');
   const row = (name, sc, win) => (
     <div className={win ? 'font-semibold' : ''}>
-      <div>{name}{win ? ' (used)' : ''}: {sc ? `${sc.errorCount} error${sc.errorCount !== 1 ? 's' : ''}, ${sc.blockingWarnCount} blocking warning${sc.blockingWarnCount !== 1 ? 's' : ''}` : 'n/a'}</div>
+      <div>{name}{win ? ' (used)' : ''}: {sc ? `${sc.errorCount} error${sc.errorCount !== 1 ? 's' : ''}, ${sc.blockingWarnCount} ranking warning${sc.blockingWarnCount !== 1 ? 's' : ''}${restSlotCount(sc.qualityVector, normPriority) != null ? `, ${num(restSlotCount(sc.qualityVector, normPriority))} rest warning${restSlotCount(sc.qualityVector, normPriority) !== 1 ? 's' : ''} (still need review before export)` : ''}` : 'n/a'}</div>
       {sc && Array.isArray(sc.qualityVector) && (
         <div className="font-normal opacity-80">
           {sc.qualityVector.map((x, i) => `${labels[i] || `Slot ${i + 1}`} ${num(x)}`).join(' · ')}
@@ -18234,8 +18235,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       {totalAssigned === 0 && (
         <div className="text-center py-8 mb-3 bg-primary/10 rounded-xl border-2 border-dashed border-primary">
           <Wand2 size={28} className="mx-auto mb-2 text-primary"/>
-          <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
-          <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
+          <p className="text-sm font-medium text-gray-700 mb-1">{readOnly ? 'No shifts in this block' : 'No shifts assigned yet'}</p>
+          {!readOnly && <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>}
           {!readOnly && <Button variant="primary" icon={Wand2} onClick={() => requestGenerate(false)}>
             Generate Schedule
           </Button>}
@@ -18792,18 +18793,23 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
 // schedule is never touched by opening or browsing this panel; only Apply commits anything, and
 // it commits through the same updateBlockTracked path Generate uses, so Ctrl+Z undoes it.
 function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onApply, allResidents }) {
+  const refPriority = result?.referenceRulePriority;
   const [expandedId, setExpandedId] = useState(null);
   const residentName = (rid) => {
     const r = allResidents.find(x => x.id === rid);
     return r ? `${r.lastName}, ${r.firstName}` : rid;
   };
-  const countsBadge = (errorCount, blockingWarnCount) => (
+  const countsBadge = (errorCount, blockingWarnCount, qualityVector) => {
+    const restN = restSlotCount(qualityVector, refPriority);
+    return (
     <span className="whitespace-nowrap">
       <span className={errorCount > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}>{errorCount} err</span>
       <span className="text-gray-300 mx-1">·</span>
-      <span className={blockingWarnCount > 0 ? 'text-amber-600' : 'text-gray-400'}>{blockingWarnCount} export-blocking warn</span>
+      <span className={blockingWarnCount > 0 ? 'text-amber-600' : 'text-gray-400'}>{blockingWarnCount} ranking warn</span>
+      {restN != null && <><span className="text-gray-300 mx-1">·</span><span className={restN > 0 ? 'text-amber-600' : 'text-gray-400'} title="Rest warnings still need review before export">{restN} rest warn</span></>}
     </span>
-  );
+    );
+  };
   const kindChip = (kind) => {
     const map = {
       rules: ['Rule order', 'bg-blue-100 text-blue-800'],
@@ -18846,7 +18852,7 @@ function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onAppl
                   <><span className="font-semibold">Your current schedule already looks best</span> among the {result.candidates.length} variants tested.</>
                 )}
                 <span className="block text-xs opacity-70 mt-1">
-                  {result.candidates.length} variant{result.candidates.length !== 1 ? 's' : ''} tested · baseline {countsBadge(result.baseline.errorCount, result.baseline.blockingWarnCount)}
+                  {result.candidates.length} variant{result.candidates.length !== 1 ? 's' : ''} tested · baseline {countsBadge(result.baseline.errorCount, result.baseline.blockingWarnCount, result.baseline.qualityVector)}
                   {result.truncated ? ' · time budget reached, some variants skipped' : ''}
                 </span>
               </div>
@@ -18880,7 +18886,7 @@ function WhatIfSweepModal({ running, progress, result, onCancel, onClose, onAppl
                             {result.best?.id === c.id && <span className="ml-2 text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">BEST</span>}
                           </td>
                           <td className="py-2 pr-3">{kindChip(c.kind)}</td>
-                          <td className="py-2 pr-3">{countsBadge(c.errorCount, c.blockingWarnCount)}</td>
+                          <td className="py-2 pr-3">{countsBadge(c.errorCount, c.blockingWarnCount, c.qualityVector)}</td>
                           <td className="py-2 pr-3 text-gray-500">
                             <button type="button" className="hover:underline" onClick={() => setExpandedId(isExpanded ? null : c.id)}>
                               {c.diffTotal} cell{c.diffTotal !== 1 ? 's' : ''} · {residentIds.length} resident{residentIds.length !== 1 ? 's' : ''}

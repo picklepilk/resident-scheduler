@@ -138,14 +138,13 @@ def _priority_order(rule_priority: list) -> list:
 
 
 def rest_outranks_coverage(rule_priority: list) -> bool:
-    """True only when `rulePriority` lists BOTH coverageMin and postNightRest
-    and postNightRest comes first (chief decision: ranking follows Soft Rule
-    Priority). Missing/invalid/absent entries mean the default order
-    (coverageMin first), mirroring the JS `blockingWarnCount` rule."""
-    rp = list(rule_priority or [])
-    if "coverageMin" not in rp or "postNightRest" not in rp:
-        return False
-    return rp.index("postNightRest") < rp.index("coverageMin")
+    """True when postNightRest ranks above coverageMin (chief decision: ranking
+    follows Soft Rule Priority). Uses `_priority_order`, i.e. the same
+    drop-unknown / append-missing-in-default-order normalization as JS
+    `normalizeRulePriority`, so partial lists agree with `apply_rule_priority`:
+    ["postNightRest"] -> rest first; ["coverageMin"], [], None -> coverage first."""
+    rp = rule_priority if isinstance(rule_priority, list) else []
+    return _priority_order(rp)[0] == "postNightRest"
 
 
 def apply_rule_priority(weights: dict, rule_priority: list) -> dict:
