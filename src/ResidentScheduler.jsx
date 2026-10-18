@@ -10470,8 +10470,10 @@ function railStatus(row, blockSaveState) {
 }
 
 function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, onOpen,
-  marker, coverage, ayConf, blockSaveState, viewer }) {
-  const active = row.isLive;
+  marker, coverage, ayConf, blockSaveState, viewer, peekId }) {
+  // While peeking another block read-only, the peeked row is the selected tab; the live row keeps
+  // a quiet "Active" tag so it is still clear which block edits go to.
+  const active = peekId ? row.id === peekId : row.isLive;
   const dates = useMemo(() => getBlockDates(row.startDate, row.endDate), [row.startDate, row.endDate]);
   // computeCoverageByDate only reads `r.id` off the resident list - build it from the row's own
   // schedule keys so an old snapshot is never judged against today's roster.
@@ -10485,7 +10487,7 @@ function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, on
   const status = railStatus(row, blockSaveState);
   const chip = railEditorChip(row.activityLog, viewer);
   const label = [`Block ${numeral}`, row.name && !/^\s*block\s*\d+\s*$/i.test(row.name) ? row.name : null, range, status.text,
-    row.imported ? 'imported' : null, active ? 'currently editing' : null].filter(Boolean).join(', ');
+    row.imported ? 'imported' : null, active ? (peekId ? 'viewing read-only' : 'currently editing') : (peekId && row.isLive ? 'active block' : null)].filter(Boolean).join(', ');
 
   return (
     <div role="presentation" style={{ flex: '0 0 auto', width: cellWidth }}
@@ -10511,7 +10513,8 @@ function BlockRailCell({ row, index, cellWidth, tabbable, btnRef, onFocusKey, on
           ))}
         </span>
         <span className="mt-1.5 flex items-center justify-between gap-1 min-h-[16px] text-[11px]">
-          {active ? <span className="font-semibold text-primary">Editing</span> : <span/>}
+          {active ? <span className="font-semibold text-primary">{peekId ? 'Viewing' : 'Editing'}</span>
+            : (peekId && row.isLive ? <span className="font-semibold text-muted-foreground">Active</span> : <span/>)}
           {chip && <span role="img" aria-label={chip.title} title={chip.title}
             className="inline-flex items-center justify-center w-[18px] h-[18px] rounded-full bg-card text-foreground ring-1 ring-border text-[10px] font-semibold leading-none">{chip.text}</span>}
         </span>
@@ -10683,7 +10686,7 @@ function OffServiceLaneToggle({ counts, stints = 0, open, onToggle, onlyMisalign
 }
 
 function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveState, viewer, coverage, ayConf,
-  onOpen, onTogglePublished, onDeleteSnapshot, aboveCells, aboveScroller, headerRight }) {
+  onOpen, onTogglePublished, onDeleteSnapshot, aboveCells, aboveScroller, headerRight, peekId }) {
   const scrollerRef = useRef(null);
   const tabRefs = useRef({});
   const [focusKey, setFocusKey] = useState(null);
@@ -10700,7 +10703,7 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
     return () => ro.disconnect();
   }, []);
 
-  const activeKey = (blocks.find(b => b.isLive) || {}).key ?? null;
+  const activeKey = (blocks.find(b => (peekId ? b.id === peekId : b.isLive)) || {}).key ?? null;
   useEffect(() => {
     setFocusKey(null);
     const el = activeKey ? tabRefs.current[activeKey] : null;
@@ -10714,7 +10717,7 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
       const left = target.offsetLeft - (scroller.clientWidth - target.offsetWidth) / 2;
       scroller.scrollTo({ left: Math.max(0, left), behavior });
     }
-  }, [activeKey, liveBlockId]);
+  }, [activeKey, liveBlockId, peekId]);
 
   const n = Math.max(1, blocks.length);
   const cellWidth = Math.max(RAIL_MIN_CELL_W, width ? Math.floor(width / n) : RAIL_MIN_CELL_W);
@@ -10784,7 +10787,7 @@ function BlockRail({ ay, ayOptions, onAyChange, blocks, liveBlockId, blockSaveSt
                 btnRef={el => { if (el) tabRefs.current[row.key] = el; else delete tabRefs.current[row.key]; }}
                 onFocusKey={setFocusKey} onOpen={onOpen}
                 marker={marker && marker.key === row.key ? marker : null}
-                coverage={coverage} ayConf={ayConf} blockSaveState={blockSaveState} viewer={viewer}/>
+                coverage={coverage} ayConf={ayConf} blockSaveState={blockSaveState} viewer={viewer} peekId={peekId}/>
             ))}
           </div>
           {/* Row actions live OUTSIDE the tablist (it may only contain tabs), overlaid on each cell. */}
@@ -10824,16 +10827,16 @@ function BlockPanel({ labelledBy, eyebrow, name, dateText, blockSaveState, viewe
           <h2 className="text-xl font-semibold text-foreground break-words">{name || 'Unnamed block'}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
             {dateText && <span className="font-mono tabular-nums text-muted-foreground">{dateText}</span>}
-            <SaveStatePill state={blockSaveState}/>
+            {blockSaveState && <SaveStatePill state={blockSaveState}/>}
             <LastEditedLine log={activityLog} viewer={viewer}/>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {primaryActions}
-          <PopMenu items={menuItems} triggerLabel="More block actions" triggerTitle="More block actions"
+          {menuItems && menuItems.length > 0 && <PopMenu items={menuItems} triggerLabel="More block actions" triggerTitle="More block actions"
             triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
             <MoreHorizontal size={13}/> More
-          </PopMenu>
+          </PopMenu>}
         </div>
       </div>
       <div className="px-5 pb-5 space-y-4">
@@ -11168,7 +11171,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, moveGuard, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers, liveSetup, onNavigateFix }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, moveGuard, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers, liveSetup, onNavigateFix, onPeekBlock, peek }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -11365,7 +11368,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
         <BlockRail ay={selectedAy} ayOptions={ayOptions} onAyChange={setSelectedAy}
           blocks={railBlocks} liveBlockId={liveRailRow ? liveRailRow.id : null}
           blockSaveState={blockSaveState} viewer={viewer} coverage={coverage} ayConf={selectedAyConf}
-          onOpen={row => loadBlock(row.snap, { stayOnTab: true })}
+          onOpen={row => onPeekBlock(row.snap)} peekId={peekBlock ? peekBlock.id : null}
           onTogglePublished={toggleBlockPublished}
           onDeleteSnapshot={snap => setDeleteSnapConfirm(snap)}
           headerRight={
@@ -11378,7 +11381,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
               ? <>
                   <OffServiceLaneLegend residents={laneResidents}/>
                   <OffServiceLaneList alignment={offAlign} residents={laneResidents} railBlocks={railBlocks}
-                    onOpen={row => loadBlock(row.snap, { stayOnTab: true })}/>
+                    onOpen={row => onPeekBlock(row.snap)}/>
                 </>
               : <p className="mb-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
                   {offAlign.residents.some(r => r.status !== 'noWindow')
@@ -11390,6 +11393,31 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
             <OffServiceLanes alignment={offAlign} residents={laneResidents} cellWidth={cellWidth}/>
           ) : undefined}/>
 
+        {peek ? (
+          <BlockPanel
+            labelledBy={`rail-tab-${peek.block.id}`}
+            eyebrow="Viewing read-only"
+            name={peek.block.name}
+            dateText={peek.block.startDate && peek.block.endDate ? `${prettyDate(peek.block.startDate)} → ${prettyDate(peek.block.endDate)}` : ''}
+            blockSaveState={null} viewer={viewer} activityLog={peek.block.activityLog}
+            primaryActions={
+              <Button variant="secondary" size="sm" onClick={() => setTab('schedule')} disabled={!peek.block.startDate}>
+                View schedule <ChevronRight size={13}/>
+              </Button>
+            }
+            menuItems={[]}
+            footer={<BlockActivityList log={peek.block.activityLog} viewer={viewer}/>}>
+            <PeekBanner peekBlock={peek.block} liveBlock={block} onMakeActive={peek.onMakeActive} onBack={peek.onBack}/>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Schedulable Residents" value={peek.schedulableCount} sub={`of ${peek.residentCount} on block`} icon={Users} tone="primary"/>
+              <StatCard label="Shifts Assigned" value={peek.shiftCount} sub="saved schedule" icon={CalendarDays} tone="neutral"/>
+              <StatCard label="Violations" value={peek.issueCounts.errors}
+                sub={`${peek.issueCounts.warns} warning${peek.issueCounts.warns !== 1 ? 's' : ''}`}
+                icon={AlertCircle} tone={peek.issueCounts.errors > 0 ? 'danger' : 'success'}/>
+              <StatCard label="Academic Year" value={peek.block.academicYear || '—'} sub="saved block" icon={Activity} tone="neutral"/>
+            </div>
+          </BlockPanel>
+        ) : (
         <BlockPanel
           labelledBy={liveRailRow ? `rail-tab-${liveRailRow.key}` : undefined}
           eyebrow={panelNumeral ? `Block ${panelNumeral}${liveAyMismatch ? ` · AY ${block.academicYear}` : ''}` : (block.startDate ? 'Current block' : 'New block')}
@@ -11579,6 +11607,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
             </div>
           </div>
         </BlockPanel>
+        )}
       </div>
 
       {/* Year - settings + fairness ledger for the rail's selected academic year */}
@@ -16139,7 +16168,11 @@ function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpe
 
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
-function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer }) {
+const NOOP_UPDATE = () => {};
+function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer, readOnly = false }) {
+  // readOnly (peek view of a non-active block): every mutator is a no-op even if some path is missed
+  // below; the visible edit controls are also hidden/disabled at their own sites.
+  if (readOnly) { updateBlock = NOOP_UPDATE; updateBlockTracked = NOOP_UPDATE; setAppSettings = NOOP_UPDATE; }
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -16553,7 +16586,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // their lock state instead of opening the shift picker. paintValueRef holds the target value
   // (true=lock, false=unlock) captured on mousedown so a drag can only ever push cells toward
   // that one value, never flip them back and forth as the pointer re-crosses a cell.
-  const [lockMode, setLockMode] = useState(false);
+  const [lockModeRaw, setLockMode] = useState(false);
+  const lockMode = lockModeRaw && !readOnly;
   const paintValueRef = useRef(null);
   useEffect(() => {
     if (!lockMode) return;
@@ -16998,6 +17032,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // already round-trips through res_current_block/backup/cloud sync with no new persistence key.
   // Tracked (undoable) like every other schedule-adjacent mutation here.
   function toggleLock(resId, ds) {
+    if (readOnly) return;
     updateBlockTracked(b => {
       const wasLocked = !!b.lockedCells?.[resId]?.[ds];
       const residentLocks = { ...(b.lockedCells?.[resId] || {}) };
@@ -17101,6 +17136,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   }
 
   function handleDrop(tgtRes, tgtDs) {
+    if (readOnly) { setDrag(null); setDragOver(null); return; }
     const src = drag;
     setDrag(null); setDragOver(null);
     if (!src) return;
@@ -17611,11 +17647,11 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               </>
             )}
           </div>
-          <button type="button" onClick={()=>rowLocked?unlockRow(res.id):lockRow(res.id)}
+          {!readOnly && <button type="button" onClick={()=>rowLocked?unlockRow(res.id):lockRow(res.id)}
             title={rowLocked?`Unlock all of ${res.lastName}'s locked cells`:`Lock all of ${res.lastName}'s assigned cells`}
             className={`shrink-0 rounded p-1 transition-opacity ${rowLocked?'text-indigo-600 opacity-100':'text-gray-300 opacity-0 group-hover:opacity-100 hover:text-gray-600'}`}>
             {rowLocked?<Lock size={11}/>:<Unlock size={11}/>}
-          </button>
+          </button>}
         </div>
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
@@ -17675,7 +17711,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           // (day-marker tint, weekend band, etc.) and relies on the corner dot below instead, so a
           // soft rest-preference nudge doesn't visually outrank a real day-marker cue.
           if(hasError) bg='bg-red-50';
-          const clickable=(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
+          const clickable=!readOnly&&(elig.length>0||sid)&&!isApprovedOff&&!isVacation&&!isLocked;
           const isDragSource = drag && drag.resId===res.id && drag.ds===ds;
           const isDragOverHere = dragOver && dragOver.resId===res.id && dragOver.ds===ds;
           const wwIsCustom = res.wellnessOverride && res.wellnessOverride !== 'optOut';
@@ -17723,8 +17759,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               {isJC&&!isWW&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.JC.chip}`}>JC</span></div>}
               {isGR&&!isWW&&!isJC&&!sid&&!isApprovedOff&&!isVacation&&!isJeoBlocked && <div className="absolute inset-0 flex items-center justify-center"><span className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${DAY_MARKERS.GR.chip}`}>GR</span></div>}
               {shift && (
-                <div draggable={!isLocked&&!lockMode} tabIndex={0}
-                  onDragStart={e=>{ if(isLocked){e.preventDefault();return;} e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
+                <div draggable={!isLocked&&!lockMode&&!readOnly} tabIndex={0}
+                  onDragStart={e=>{ if(isLocked||readOnly){e.preventDefault();return;} e.stopPropagation(); e.dataTransfer.effectAllowed='move'; setDrag({resId:res.id,ds,sid}); }}
                   onDragEnd={()=>{ setDrag(null); setDragOver(null); }}
                   onMouseEnter={e=>scheduleHover(res.id, ds, sid, e)}
                   onMouseLeave={cancelHover}
@@ -17740,7 +17776,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                   `@media (hover:hover)` so it never engages from a touch tap), and a locked cell (or
                   Lock Mode being on) forces it visible on every pointer type so there's still a way
                   to see/reach it on touch. */}
-              {shift && (
+              {shift && !readOnly && (
                 <button type="button" onClick={e=>{ e.stopPropagation(); toggleLock(res.id, ds); }}
                   title={isLocked?'Unlock cell (allow drag/regenerate/edit)':'Lock cell (protect from drag, regenerate, and manual edit)'}
                   className={`absolute bottom-0 right-0 z-10 leading-none rounded-tl p-1 transition-opacity ${isLocked?'bg-indigo-600 text-white opacity-100':lockMode?'bg-white/70 text-gray-400 opacity-100 hover:text-gray-700':'chip-lock-toggle bg-white/70 text-gray-400 opacity-0 hover:text-gray-700 focus-visible:opacity-100'}`}>
@@ -17893,7 +17929,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         </div>
       )}
       <IncompleteSetupBanner block={block} liveGaps={liveSetup ? liveSetup.gaps : []} onFix={onNavigateFix}
-        onRegenerate={() => setConfirmRegen(true)}/>
+        onRegenerate={readOnly ? undefined : () => setConfirmRegen(true)}/>
       {/* Generate actions */}
       <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
         <span className="font-mono text-[11px] text-muted-foreground">
@@ -17901,6 +17937,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
         </span>
         <span className="flex items-center gap-2 flex-wrap">
+          {!readOnly && <>
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
           <EnginePicker compact value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false}/>
@@ -17974,7 +18011,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           <span className="flex items-center gap-1 text-xs text-muted-foreground font-mono" title="Cells currently locked">
             <Lock size={11}/> {lockedCount} locked
           </span>
-          {lockedCount>0 && <Button variant="ghost" size="sm" onClick={()=>setConfirmUnlockAll(true)} title="Unlock every locked cell in the block">Unlock all</Button>}
+          {lockedCount>0 && !readOnly && <Button variant="ghost" size="sm" onClick={()=>setConfirmUnlockAll(true)} title="Unlock every locked cell in the block">Unlock all</Button>}
           <span className="flex items-center gap-1">
             <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)}
               className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
@@ -17986,6 +18023,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               Regenerate Range
             </Button>
           </span>
+          </>}
           <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full Screen'}
@@ -18084,6 +18122,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           only targets the grid-view scroll container. */}
       {view==='grid' && (
         <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
+          {!readOnly && <>
           <Button variant={lockMode?'primary':'ghost'} size="sm" icon={lockMode?Lock:Unlock} onClick={()=>setLockMode(m=>!m)}
             title={lockMode?'Exit lock-paint mode':'Click, or click-and-drag across assigned cells, to lock/unlock them'}>
             {lockMode?'Exit Lock Mode':'Lock Mode'}
@@ -18091,6 +18130,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           <Button variant="ghost" size="sm" onClick={lockAllAssigned} title="Lock every currently assigned cell in the block">
             Lock all assigned
           </Button>
+          </>}
           <span className="w-px h-5 bg-border mx-0.5"/>
           <Button variant="ghost" size="sm" onClick={()=>scrollRef.current?.scrollBy({left:-CELL_W*7, behavior:'smooth'})} title="Scroll back one week">◀</Button>
           <select onChange={e=>{ const ds=e.target.value; if(!ds||!scrollRef.current) return; const idx=dates.indexOf(ds); if(idx>=0) scrollRef.current.scrollLeft=idx*CELL_W; e.target.value=''; }}
@@ -18178,10 +18218,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           <Wand2 size={28} className="mx-auto mb-2 text-primary"/>
           <p className="text-sm font-medium text-gray-700 mb-1">No shifts assigned yet</p>
           <p className="text-xs text-gray-500 mb-3">Auto-fill the whole block using the scheduling rules, coverage needs, and everyone's days off.</p>
-          <Button variant="primary" icon={Wand2} onClick={() => requestGenerate(false)}>
+          {!readOnly && <Button variant="primary" icon={Wand2} onClick={() => requestGenerate(false)}>
             Generate Schedule
-          </Button>
-          <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>
+          </Button>}
+          {!readOnly && <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>}
         </div>
       )}
 
@@ -18315,11 +18355,11 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                     {twelveHourDaySet.has(ds) && (
                       <span className="text-[8px] font-bold px-1 rounded bg-indigo-100 text-indigo-700 leading-tight" title="12-hour shifts active on this date">12h</span>
                     )}
-                    <button type="button" onClick={()=>dsLocked?unlockColumn(ds):lockColumn(ds)}
+                    {!readOnly && <button type="button" onClick={()=>dsLocked?unlockColumn(ds):lockColumn(ds)}
                       title={dsLocked?`Unlock all locked cells on ${formatDisplayDate(ds)}`:`Lock all assigned cells on ${formatDisplayDate(ds)}`}
                       className={`absolute top-0 right-0 rounded-bl p-0.5 transition-opacity ${dsLocked?'text-indigo-600 opacity-100':'text-gray-400 opacity-0 group-hover:opacity-100 hover:text-gray-600'}`}>
                       {dsLocked?<Lock size={9}/>:<Unlock size={9}/>}
-                    </button>
+                    </button>}
                   </div>
                 );
               })}
@@ -18411,23 +18451,23 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 
       {view==='calendar' && calendarMode==='week' && (
         <ScheduleCalendarView dates={dates} residents={visibleResidents} sched={sched} coverageByDate={coverageByDate}
-          areaFilter={areaFilter} jcDaySet={jcDaySet} onChipClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+          areaFilter={areaFilter} jcDaySet={jcDaySet} onChipClick={(res,ds)=>{ if(!readOnly) setPicker({resident:res,dateStr:ds}); }}/>
       )}
 
       {view==='calendar' && calendarMode==='month' && (
         <MonthCalendarView dates={dates} residents={visibleResidents} sched={sched} coverageByDate={coverageByDate}
           areaFilter={areaFilter} blockStart={block.startDate} blockEnd={block.endDate}
-          onChipClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+          onChipClick={(res,ds)=>{ if(!readOnly) setPicker({resident:res,dateStr:ds}); }}/>
       )}
 
       {view==='calendar' && calendarMode==='resident' && (
         <PerResidentMonthView dates={dates} allResidents={visibleResidents} sched={sched} block={block}
           dayRules={dayRules} appSettings={appSettings} ayConf={ayConf} violMap={violMap} jeopardySchedule={block.jeopardySchedule}
-          onCellClick={(res,ds)=>setPicker({resident:res,dateStr:ds})}/>
+          onCellClick={(res,ds)=>{ if(!readOnly) setPicker({resident:res,dateStr:ds}); }}/>
       )}
 
-      <SinceGeneratePanel block={block} allResidents={allResidents} updateBlockTracked={updateBlockTracked} showToast={showToast}
-        errorCountFor={(blk)=>validateAll(allResidents, blk.schedule||{}, blk, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf).filter(i=>i.level==='error').length}/>
+      {!readOnly && <SinceGeneratePanel block={block} allResidents={allResidents} updateBlockTracked={updateBlockTracked} showToast={showToast}
+        errorCountFor={(blk)=>validateAll(allResidents, blk.schedule||{}, blk, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf).filter(i=>i.level==='error').length}/>}
 
       {/* Mobile/tablet drawer — full-width, below the grid rather than squeezed beside it. Ref'd
           by selectCell so a phone/tablet tap scrolls the panel (and its inspector) into view. */}
@@ -18435,12 +18475,12 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         <div ref={reviewPanelMobileRef} className="no-print lg:hidden mt-4">
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
             blockStart={block.startDate} allResidents={allResidents} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow}
-            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            selectedCell={readOnly?null:selectedCell} inspectorData={readOnly?null:inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
-            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}
-            issueAcks={block.issueAcks} onAckIssues={ackIssues} onUnackIssues={unackIssues}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={readOnly?undefined:()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
+            solverAlt={readOnly?null:solverAlt} onOpenSolverAlt={readOnly?undefined:openSolverAlt}
+            issueAcks={block.issueAcks} onAckIssues={readOnly?undefined:ackIssues} onUnackIssues={readOnly?undefined:unackIssues}/>
         </div>
       )}
       </div>
@@ -18460,12 +18500,12 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         <div className="no-print hidden lg:block shrink-0 sticky top-3" style={{width:320, height:`calc(100vh - ${fullscreen ? '3rem' : '8rem'})`}}>
           <ReviewPanel panelIssues={panelIssues} report={block.generationReport} appSettings={appSettings}
             blockStart={block.startDate} allResidents={allResidents} onJumpToCell={jumpToCell} onJumpToRow={jumpToResidentRow} onClose={()=>setReviewPanelOpen(false)}
-            selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
+            selectedCell={readOnly?null:selectedCell} inspectorData={readOnly?null:inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
-            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}
-            issueAcks={block.issueAcks} onAckIssues={ackIssues} onUnackIssues={unackIssues}/>
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={readOnly?undefined:()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
+            solverAlt={readOnly?null:solverAlt} onOpenSolverAlt={readOnly?undefined:openSolverAlt}
+            issueAcks={block.issueAcks} onAckIssues={readOnly?undefined:ackIssues} onUnackIssues={readOnly?undefined:unackIssues}/>
         </div>
       )}
       </div>
@@ -20083,7 +20123,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
             </button>
             {ackedOpen && (
               <ul className="space-y-1">
-                {ackedGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, { acked: issueAcks, onUnack: onUnackIssues }))}
+                {ackedGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, onUnackIssues ? { acked: issueAcks, onUnack: onUnackIssues } : null))}
               </ul>
             )}
           </section>
@@ -24412,25 +24452,44 @@ function BlockStepsRow({ block, hasReport, errorCount, published, hasSnapshot, h
   );
 }
 
-function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, blocksHistory, onPickBlock, onGoToGenerate, onGoToErrors, onPublish, onExport }) {
+// Sticky notice shown on every read-only peek view (Dashboard block card, Schedule). z-40: above grid
+// chrome (cells 10 -> header 20 -> corner 30), below the app header (50). Colors reuse the amber tokens
+// that already have .dark overrides in index.css.
+function PeekBanner({ peekBlock, liveBlock, onMakeActive, onBack, sticky = false }) {
+  const dates = peekBlock.startDate && peekBlock.endDate ? `${prettyDate(peekBlock.startDate)} → ${prettyDate(peekBlock.endDate)}` : 'No dates';
+  return (
+    <div role="status" data-testid="peek-banner"
+      className={`no-print flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 ${sticky ? 'sticky top-0 z-40 shadow-sm' : ''}`}>
+      <span className="font-medium min-w-0">
+        Viewing {peekBlock.name || 'Untitled block'} ({dates}) &mdash; read-only
+      </span>
+      <span className="ml-auto flex flex-wrap items-center gap-2">
+        <Button variant="primary" size="sm" onClick={onMakeActive}>Make this the active block</Button>
+        <Button variant="secondary" size="sm" onClick={onBack}>Back to {liveBlock.name || 'active block'}</Button>
+      </span>
+    </div>
+  );
+}
+
+function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, blocksHistory, onPickBlock, onGoToGenerate, onGoToErrors, onPublish, onExport, peekBlock }) {
   // In-place switcher: the live block's AY blocks; picking one keeps the current tab (loadBlock's
   // save-first guard still applies), the last item is the old "go to the Dashboard" behaviour.
   const switchItems = useMemo(() => {
     const rows = buildRailBlocks({ blocksHistory, liveBlock: block, ay: block.academicYear });
     const items = rows.map((r, i) => ({
-      key: r.key, icon: r.isLive ? Check : undefined, disabled: r.isLive,
-      label: `${railNumeral(r.name, i)} · ${shortDateRange(r.startDate, r.endDate) || 'No dates'}${r.isLive ? ' (open)' : ''}`,
+      key: r.key, icon: (peekBlock ? r.id === peekBlock.id : r.isLive) ? Check : undefined, disabled: peekBlock ? r.id === peekBlock.id : r.isLive,
+      label: `${railNumeral(r.name, i)} · ${shortDateRange(r.startDate, r.endDate) || 'No dates'}${r.isLive ? (peekBlock ? ' (active)' : ' (open)') : (peekBlock && r.id === peekBlock.id ? ' (viewing)' : '')}`,
       onClick: () => onPickBlock(r.snap),
     }));
     if (items.length) items.push({ separator: true });
     items.push({ key: '__all', label: 'All blocks on Dashboard', onClick: onSwitch });
     return items;
-  }, [blocksHistory, block, onPickBlock, onSwitch]);
+  }, [blocksHistory, block, onPickBlock, onSwitch, peekBlock]);
   return (
     <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
       <div className="flex items-center gap-2 min-w-0 shrink-0">
         <CalendarDays size={14} className="text-primary shrink-0"/>
-        <span className="font-medium text-foreground truncate">Editing: {block.name || 'Untitled block'}</span>
+        <span className="font-medium text-foreground truncate">{peekBlock ? `Active: ${block.name || 'Untitled block'} · viewing ${peekBlock.name || 'another block'} read-only` : `Editing: ${block.name || 'Untitled block'}`}</span>
         <span className="hidden sm:inline text-muted-foreground">
           {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
         </span>
@@ -24438,11 +24497,11 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
         <LastEditedLine log={block.activityLog} viewer={viewer}/>
       </div>
 
-      <BlockStepsRow block={block} hasReport={hasReport} errorCount={errorCount} published={published}
-        hasSnapshot={hasSnapshot} handlers={{ onGoToGenerate, onGoToErrors, onPublish, onExport, onSave }}/>
+      {!peekBlock && <BlockStepsRow block={block} hasReport={hasReport} errorCount={errorCount} published={published}
+        hasSnapshot={hasSnapshot} handlers={{ onGoToGenerate, onGoToErrors, onPublish, onExport, onSave }}/>}
 
       <div className="ml-auto flex items-center gap-2">
-        <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>
+        {!peekBlock && <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>}
         <PopMenu items={switchItems} triggerLabel="Switch block" triggerTitle={`Switch block within ${block.academicYear || 'this academic year'}`}
           triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.ghost} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
           Switch block <ChevronDown size={13}/>
@@ -24452,7 +24511,36 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
   );
 }
 
-function buildSnapData(block) {
+// Snapshot (blocksHistory entry) -> live-shaped block. Pure; shared by doLoadBlock and the read-only
+// peek view so both interpret a snapshot identically (untrusted-shape guards included).
+export function snapToBlock(snap) {
+  const d=snap.data||{};
+  return { id:snap.id, name:snap.name||d.name||'', academicYear:snap.academicYear||d.academicYear||((snap.startDate||d.startDate)?getAcademicYearFor(snap.startDate||d.startDate):getAcademicYear()),
+    startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
+    emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
+    schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
+    conferences:d.conferences||{}, generationReport:d.generationReport||null,
+    // Generate-time baselines (omit key when absent, never null; plain-object guard for untrusted shape).
+    ...(d.lastGenerated && typeof d.lastGenerated === 'object' && !Array.isArray(d.lastGenerated) ? { lastGenerated: d.lastGenerated } : {}),
+    ...(d.generatedWithGaps && typeof d.generatedWithGaps === 'object' && !Array.isArray(d.generatedWithGaps) ? { generatedWithGaps: d.generatedWithGaps } : {}),
+    // Untrusted shape (old snapshot, hand-edited storage, foreign backup) — guard with
+    // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
+    overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],
+    activityLog: normalizeActivityLog(d.activityLog),
+    handOverrides: normalizeHandOverrides(d.handOverrides),
+    issueAcks: normalizeAcks(d.issueAcks),
+    // Same untrusted-shape guard for the three jeopardy tracks (each must be a plain object,
+    // not an array/string/etc — a pre-feature snapshot simply has none of these keys) and the
+    // Metro admin-month ranges list.
+    jeopardySchedule: {
+      pgy1: (d.jeopardySchedule?.pgy1 && typeof d.jeopardySchedule.pgy1 === 'object' && !Array.isArray(d.jeopardySchedule.pgy1)) ? d.jeopardySchedule.pgy1 : {},
+      pgy2: (d.jeopardySchedule?.pgy2 && typeof d.jeopardySchedule.pgy2 === 'object' && !Array.isArray(d.jeopardySchedule.pgy2)) ? d.jeopardySchedule.pgy2 : {},
+      pgy3: (d.jeopardySchedule?.pgy3 && typeof d.jeopardySchedule.pgy3 === 'object' && !Array.isArray(d.jeopardySchedule.pgy3)) ? d.jeopardySchedule.pgy3 : {},
+    },
+    metroJeopardyRanges: Array.isArray(d.metroJeopardyRanges) ? d.metroJeopardyRanges : [] };
+}
+
+export function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
            generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
@@ -24707,6 +24795,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [toastHistoryOpen, setToastHistoryOpen] = useState(false);
   const [switchPending, setSwitchPending] = useState(null);
   const [switchStay, setSwitchStay] = useState(false);
+  // Read-only "peek" at another saved block (id of a blocksHistory snapshot). Session state only,
+  // never persisted or synced: the live block is untouched, so no save-first prompt is needed.
+  const [peekSnapId, setPeekSnapId] = useState(null);
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
   // any) had no confirmed QGenda task and fell back to their on-screen label. exportConfirm itself
@@ -25908,6 +25999,41 @@ export default function ResidentScheduler({ viewer } = {}) {
   );
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
   const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
+  // Peek: derived (never a copy in state) so a deleted/renamed snapshot is reflected immediately.
+  // Peeking the live block's own id is meaningless -> treated as no peek.
+  const peekSnap = useMemo(
+    () => (peekSnapId && peekSnapId !== block.id ? blocksHistory.find(b => b.id === peekSnapId) || null : null),
+    [peekSnapId, block.id, blocksHistory]);
+  const peekBlock = useMemo(() => (peekSnap ? snapToBlock(peekSnap) : null), [peekSnap]);
+  const peekAyConf = peekBlock ? (ayData[peekBlock.academicYear] || { ...DEFAULT_AY_CONF }) : null;
+  const peekResidents = useMemo(
+    () => (peekBlock ? composeAllResidents(emRoster, peekBlock, blocksHistory) : []),
+    [peekBlock, emRoster, blocksHistory]);
+  // Same validateAll call as the live `issues` memo, only computed while a peek is open.
+  const peekIssues = useMemo(
+    () => (peekBlock ? validateAll(peekResidents, peekBlock.schedule || {}, peekBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, peekAyConf) : []),
+    [peekBlock, peekResidents, eligOverrides, appSettings, dayRules, coverage, blocksHistory, peekAyConf]);
+  const peekIssueCounts = useMemo(() => ({
+    errors: peekIssues.filter(i => i.level === 'error').length,
+    warns: peekIssues.filter(i => i.level !== 'error').length,
+  }), [peekIssues]);
+  const peekSchedulableCount = useMemo(() => peekResidents.filter(isSchedulable).length, [peekResidents]);
+  // Click on the rail / Switch-block menu: the live block just clears the peek, any other block is
+  // opened read-only. No save prompt - nothing about the live block changes.
+  function peekOrOpenBlock(snap) {
+    if (!snap || snap.id === block.id) setPeekSnapId(null);
+    else setPeekSnapId(snap.id);
+  }
+  function makePeekActive() {
+    if (!peekSnap) return;
+    const snap = peekSnap;
+    setPeekSnapId(null);
+    loadBlock(snap, { stayOnTab: true });
+  }
+  // Peek only makes sense on the views that render a block read-only (Dashboard block card, Schedule).
+  useEffect(() => {
+    if (peekSnapId && tab !== 'dashboard' && tab !== 'schedule') setPeekSnapId(null);
+  }, [tab, peekSnapId]);
   // Derived, not stored — so any code path that changes block/blocksHistory (including raw
   // setBlock/setBlocksHistory callers like the cloud-sync mount overlay and Master Matrix
   // re-import, which bypass updateBlock) recomputes the pill correctly instead of desyncing.
@@ -25967,7 +26093,8 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function undoSchedule() {
-    if (!undoStack.length) return;
+    if (peekSnap || !undoStack.length) return; // history belongs to the live block
+
     const prev = undoStack[undoStack.length - 1];
     setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }]);
     setUndoStack(s => s.slice(0, -1));
@@ -25975,7 +26102,8 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function redoSchedule() {
-    if (!redoStack.length) return;
+    if (peekSnap || !redoStack.length) return;
+
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
       const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }];
@@ -25997,7 +26125,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [undoStack, redoStack, block]);
+  }, [undoStack, redoStack, block, peekSnap]);
 
   function saveBlock() {
     // Drop acks whose issue no longer exists so they don't accumulate (Wave E2).
@@ -26048,30 +26176,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   function doLoadBlock(snap, opts) {
-    const d=snap.data||{};
-    setBlock({ id:snap.id, name:snap.name||d.name||'', academicYear:snap.academicYear||d.academicYear||((snap.startDate||d.startDate)?getAcademicYearFor(snap.startDate||d.startDate):getAcademicYear()),
-      startDate:snap.startDate||d.startDate||'', endDate:snap.endDate||d.endDate||'',
-      emBlockAssignments:d.emBlockAssignments||{}, offServiceResidents:d.offServiceResidents||[],
-      schedule:d.schedule||{}, specialDays:d.specialDays||{codeBlueDays:[],advocacyDays:[],procDays:[],anesDays:[]},
-      conferences:d.conferences||{}, generationReport:d.generationReport||null,
-      // Generate-time baselines (omit key when absent, never null; plain-object guard for untrusted shape).
-      ...(d.lastGenerated && typeof d.lastGenerated === 'object' && !Array.isArray(d.lastGenerated) ? { lastGenerated: d.lastGenerated } : {}),
-      ...(d.generatedWithGaps && typeof d.generatedWithGaps === 'object' && !Array.isArray(d.generatedWithGaps) ? { generatedWithGaps: d.generatedWithGaps } : {}),
-      // Untrusted shape (old snapshot, hand-edited storage, foreign backup) — guard with
-      // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
-      overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],
-      activityLog: normalizeActivityLog(d.activityLog),
-      handOverrides: normalizeHandOverrides(d.handOverrides),
-      issueAcks: normalizeAcks(d.issueAcks),
-      // Same untrusted-shape guard for the three jeopardy tracks (each must be a plain object,
-      // not an array/string/etc — a pre-feature snapshot simply has none of these keys) and the
-      // Metro admin-month ranges list.
-      jeopardySchedule: {
-        pgy1: (d.jeopardySchedule?.pgy1 && typeof d.jeopardySchedule.pgy1 === 'object' && !Array.isArray(d.jeopardySchedule.pgy1)) ? d.jeopardySchedule.pgy1 : {},
-        pgy2: (d.jeopardySchedule?.pgy2 && typeof d.jeopardySchedule.pgy2 === 'object' && !Array.isArray(d.jeopardySchedule.pgy2)) ? d.jeopardySchedule.pgy2 : {},
-        pgy3: (d.jeopardySchedule?.pgy3 && typeof d.jeopardySchedule.pgy3 === 'object' && !Array.isArray(d.jeopardySchedule.pgy3)) ? d.jeopardySchedule.pgy3 : {},
-      },
-      metroJeopardyRanges: Array.isArray(d.metroJeopardyRanges) ? d.metroJeopardyRanges : [] });
+    setBlock(snapToBlock(snap));
     setSwitchPending(null);
     setUndoStack([]); setRedoStack([]); // undo history belongs to the block it was made in
     if (!(opts && opts.stayOnTab === true)) setTab('schedule');
@@ -26627,7 +26732,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           hasReport={!!block.generationReport} errorCount={issueCounts.errors}
           published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
           onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
-          blocksHistory={blocksHistory} onPickBlock={snap => loadBlock(snap, { stayOnTab: true })}
+          blocksHistory={blocksHistory} onPickBlock={peekOrOpenBlock} peekBlock={peekBlock}
           onGoToGenerate={goToGenerateStep} onGoToErrors={goToErrorsStep}
           onPublish={requestPublishStep} onExport={goToExportStep}/>
       )}
@@ -26661,19 +26766,34 @@ export default function ResidentScheduler({ viewer } = {}) {
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
               setImportLog={setImportLog} importLog={importLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
-              liveSetup={liveSetup} onNavigateFix={navigateToFix}
+              liveSetup={liveSetup} onNavigateFix={navigateToFix} onPeekBlock={peekOrOpenBlock}
+              peek={peekBlock ? { block: peekBlock, issueCounts: peekIssueCounts, schedulableCount: peekSchedulableCount, residentCount: peekResidents.length,
+                shiftCount: Object.values(peekBlock.schedule || {}).reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0),
+                onMakeActive: makePeekActive, onBack: () => setPeekSnapId(null) } : null}
               stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
           {tab==='em' && <EMResidentsTab moveGuard={moveImpact.guard} emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
           {tab==='offservice' && <OffServiceTab moveGuard={moveImpact.guard} block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
-          {tab==='schedule' && (
+          {tab==='schedule' && peekBlock && <PeekBanner sticky peekBlock={peekBlock} liveBlock={block} onMakeActive={makePeekActive} onBack={() => setPeekSnapId(null)}/>}
+          {tab==='schedule' && peekBlock && (
+            <div className="mt-3">
+              <ScheduleGrid key={`peek-${peekBlock.id}`} readOnly allResidents={peekResidents} block={peekBlock}
+                updateBlock={NOOP_UPDATE} updateBlockTracked={NOOP_UPDATE} onUndo={NOOP_UPDATE} onRedo={NOOP_UPDATE} canUndo={false} canRedo={false}
+                eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={NOOP_UPDATE} dayRules={dayRules} coverage={coverage}
+                blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={peekSchedulableCount}
+                blockSaveState="saved" ayConf={peekAyConf} issues={peekIssues} liveSetup={null} onNavigateFix={navigateToFix}
+                sickCallRequest={null} onConsumeSickCallRequest={NOOP_UPDATE} demoMode={demoMode} solverRunTarget={solverRunTarget}
+                setSolverRunTarget={NOOP_UPDATE} viewer={viewer}/>
+            </div>
+          )}
+          {tab==='schedule' && !peekBlock && (
             <div className="mb-3 empty:hidden">
               <UnseenEditsBanner log={block.activityLog} viewer={viewer} seenAt={uiPrefsApi.prefs.blockSeen?.[block.id || '_current']}
                 onDismiss={() => uiPrefsApi.markBlockSeen(block.id || '_current')}/>
             </div>
           )}
-          {tab==='schedule' && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} liveSetup={liveSetup} onNavigateFix={navigateToFix} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
+          {tab==='schedule' && !peekBlock && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} liveSetup={liveSetup} onNavigateFix={navigateToFix} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
             onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} viewer={viewer}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
