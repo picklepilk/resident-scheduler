@@ -82,4 +82,9 @@ describe('missingRuleDates', () => {
     expect(missingRuleDates({ block, ayConf: {}, rules: [{ ...rules[0], enabled: false }] })).toEqual([]);
     expect(missingRuleDates({ block, ayConf: {}, rules: [{ ...rules[0], suggested: ['2026-09-04'] }] })).toEqual([]);
   });
+  it('explicit [] list (opted out) is quiet; absent warns; non-empty list outside block still warns', () => {
+    expect(missingRuleDates({ block, ayConf: withLoggedDates({}, 'firstFriday', []), rules })).toEqual([]);
+    expect(missingRuleDates({ block, ayConf: withLoggedDates({}, 'firstFriday', ['2026-12-04']), rules })).toHaveLength(1);
+    expect(missingRuleDates({ block, ayConf: {}, rules })).toHaveLength(1);
+  });
 });

@@ -27,4 +27,12 @@ describe('pre-generate readiness gate', () => {
     const ok = checkGenerateReadiness({ ...args, ayConf: fx.ayConf }).messages.filter(m => /dates logged/.test(m));
     expect(ok).toEqual([]);
   });
+
+  it('warns when the rule-date migration has not run, quiet once marked', () => {
+    const fx = makeFixture('standard');
+    const base = { allResidents: fx.allResidents, block: fx.block, dayRules: fx.dayRules, ayConf: fx.ayConf };
+    const msg = s => checkGenerateReadiness({ ...base, appSettings: s }).messages.filter(m => /not yet migrated/.test(m));
+    expect(msg({})).toHaveLength(1);
+    expect(msg({ ruleDatesMigrated: true })).toEqual([]);
+  });
 });

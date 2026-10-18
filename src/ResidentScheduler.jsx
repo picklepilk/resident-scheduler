@@ -228,7 +228,7 @@ export const DEFAULT_DAY_RULES = {
     dayTypeRestrictions: [{ days: [3], mode: 'noDay' }],
     // Wellness Wednesday — the 1st Wednesday on/after the block's own start date is a day/eve
     // off for EM Home PGY-1 (night starting that Wednesday still allowed). Block-relative, not
-    // calendar-month-relative — see nthWeekdayOnOrAfter/computedDayRules handling.
+    // calendar-month-relative — the ordinal now only feeds the Suggest buttons (lib/ruleDates.js); dates are chief-logged.
     computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }],
     shiftGates: [
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'],
@@ -2517,7 +2517,7 @@ function getBlockProgress(startStr, endStr) {
 // POD's hard PGY-3 requirement (see SENIOR_COMPOSITION.POD) has THREE independent exceptions. This
 // one is the block's own PGY-3 Wellness Wednesday (3rd Wednesday on/after the block's start date —
 // see DEFAULT_DAY_RULES.EM_HOME_3's computedDayRules), when PGY-3s are off day/eve program-wide and
-// a PGY-2 substituting for the missing PGY-3 is explicitly allowed. Reuses nthWeekdayOnOrAfter
+// a PGY-2 substituting for the missing PGY-3 is explicitly allowed. Uses the logged PGY-3 Wellness Wednesday list (lib/ruleDates.js)
 // (ordinal 3, Wednesday) rather than reimplementing the same block-relative date math. A second,
 // isConferenceAwayFor (declared below getConferencesInBlock, further down this file — a PGY-3-away
 // conference like ACEP is the same kind of "primary PGY substitute allowed" exception, just
@@ -2866,6 +2866,9 @@ export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf =
   const messages = [];
   for (const m of getMissingSpecialDayLists(allResidents, block, dayRules)) {
     messages.push(`No ${m.label.toLowerCase()} entered — some residents' eligibility rules depend on them (Dashboard tab → Special Days)`);
+  }
+  if (appSettings && appSettings.ruleDatesMigrated !== true) {
+    messages.push('Rule dates not yet migrated (cloud not loaded) -- First Friday / Wellness Wednesday / Journal Club dates may be missing');
   }
   for (const m of missingRuleDates({ block, ayConf, rules: ruleDateChecksForBlock(block, dayRules, appSettings, allResidents) })) {
     messages.push(m.message);
@@ -24607,7 +24610,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   // describes (a pre-overlay run would migrate the stale local copy, burn the marker, then be
   // overwritten by the unmigrated cloud row).
   useEffect(() => {
-    if (!dbReady) return;
+    // Local-only installs set dbReady synchronously, so `dbReady || !SUPABASE_ENABLED` is the same gate;
+    // a FAILED cloud load stays unmigrated on purpose (checkGenerateReadiness warns about it).
+    if (!(dbReady || !SUPABASE_ENABLED)) return;
     if (appSettings?.ruleDatesMigrated === true) return;
     const snapBlocks = (Array.isArray(blocksHistory) ? blocksHistory : []).map(sn => ({
       startDate: sn?.startDate ?? sn?.data?.startDate, academicYear: sn?.academicYear,

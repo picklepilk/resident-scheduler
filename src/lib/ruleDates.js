@@ -186,6 +186,8 @@ export function missingRuleDates({ block, ayConf, rules }) {
     if (!r.enabled) continue;
     const suggested = (r.suggested || []).filter(d => d >= block.startDate && d <= block.endDate);
     if (!suggested.length) continue;
+    // An explicitly stored EMPTY list = the chief opted this rule out for the AY/PGY: no warning.
+    if (hasStoredList(r.ruleKey, ayConf, r.sub) && loggedDates(r.ruleKey, ayConf, r.sub).length === 0) continue;
     if (loggedDatesInRange(r.ruleKey, ayConf, block.startDate, block.endDate, r.sub).length) continue;
     const label = r.label || RULE_LABELS[r.ruleKey] || r.ruleKey;
     out.push({
