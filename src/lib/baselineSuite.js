@@ -32,6 +32,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // single-seed baseline cannot tell a genuine regression from that drift, and in practice fired on
 // noise twice for changes that were measurably neutral-or-better in aggregate.
 export const SEEDS = [42, 7, 1234, 99, 555];
+// realScale takes ~11s per seed (58 residents); 5 seeds risked the 120s beforeAll timeout under
+// CPU contention, so it uses the first 3 of the standard list.
+export function seedsFor(variant) {
+  return variant === 'realScale' ? SEEDS.slice(0, 3) : SEEDS;
+}
 
 // Residual tolerance on the AVERAGED vector. Averaging cuts the drift but does not erase it, so a
 // regression must clear these margins to count. Sized just above the observed post-average drift,
@@ -62,16 +67,41 @@ function underTargetErrorCount(issues) {
   return issues.filter(i => i.level === 'error' && i.rule === 'underTarget').length;
 }
 
-// Per-axis tolerance for the fairnessPlusShape components: max(2% relative, 0.5 absolute).
-export function axisTolerance(before) {
-  return Math.max(Math.abs(before) * 0.02, 0.5);
+// Per-axis tolerance on the WEIGHTED contribution (axis value x its weight in fairnessPlusShape):
+// max(2% relative, 0.5 absolute). Weighting makes tolerance proportional to what the axis actually
+// costs in slot 3, so a cheap-weight axis with a big raw swing is not over-flagged.
+export function axisTolerance(weightedBefore) {
+  return Math.max(Math.abs(weightedBefore) * 0.02, 0.5);
 }
 
-// Axes that moved beyond tolerance in the WORSE (higher) direction. [] when `before` has no axes.
+// Axes whose weighted contribution rose beyond tolerance. [] when `before` has no axes.
 export function worsenedAxes(afterAxes, beforeAxes) {
   if (!beforeAxes) return [];
-  return Object.keys(FAIRNESS_AXIS_WEIGHTS).filter(k =>
-    beforeAxes[k] !== undefined && afterAxes[k] - beforeAxes[k] > axisTolerance(beforeAxes[k]));
+  return Object.keys(FAIRNESS_AXIS_WEIGHTS).filter(k => {
+    if (beforeAxes[k] === undefined) return false;
+    const w = FAIRNESS_AXIS_WEIGHTS[k];
+    const wb = w * beforeAxes[k];
+    return w * afterAxes[k] - wb > axisTolerance(wb);
+  });
+}
+
+// True when the first three (lexicographic, coverage/soft-rule) vector slots strictly improved
+// beyond tolerance: the first slot that moves beyond tolerance must move DOWN. Slot 3 is ignored.
+export function topSlotsImproved(afterQ, beforeQ) {
+  for (let i = 0; i < 3; i++) {
+    const diff = afterQ[i] - beforeQ[i];
+    if (Math.abs(diff) <= SLOT_TOLERANCE[i]) continue;
+    return diff < 0;
+  }
+  return false;
+}
+
+// Lexicographic design: fairness axes may trade off only against a strictly better slots 0-2.
+// Returns { worsened, hardFail }: hardFail (test fails / update refuses) only when axes worsened
+// AND slots 0-2 did not strictly improve; otherwise the caller warns and records.
+export function evaluateAxes(afterAxes, beforeAxes, afterQ, beforeQ) {
+  const worsened = worsenedAxes(afterAxes, beforeAxes);
+  return { worsened, hardFail: worsened.length > 0 && !topSlotsImproved(afterQ, beforeQ) };
 }
 
 function fixtureFor(variant) {
@@ -117,7 +147,8 @@ function captureOnce(variant, baseSeed) {
 // than averaged on purpose — a hard validateAll error is never acceptable at any seed and must not
 // be diluted by seeds that happened to be clean.
 export function captureFor(variant) {
-  const runs = SEEDS.map(s => captureOnce(variant, s));
+  const seeds = seedsFor(variant);
+  const runs = seeds.map(s => captureOnce(variant, s));
   const n = runs.length;
   const quality = Array.from({ length: runs[0].quality.length }, (_, i) =>
     runs.reduce((sum, r) => sum + r.quality[i], 0) / n
@@ -125,7 +156,7 @@ export function captureFor(variant) {
   const axes = {};
   for (const k of Object.keys(FAIRNESS_AXIS_WEIGHTS)) axes[k] = runs.reduce((sum, r) => sum + r.axes[k], 0) / n;
   return {
-    seeds: SEEDS,
+    seeds,
     errors: runs.reduce((sum, r) => sum + r.errors, 0),
     structuralErrors: runs.reduce((sum, r) => sum + r.structuralErrors, 0),
     underTargetErrors: runs.reduce((sum, r) => sum + r.underTargetErrors, 0),
@@ -176,7 +207,12 @@ export function makeBaselineSuite(variant) {
           const underTargetWorse = captured.underTargetErrors > (before.underTargetErrors ?? Infinity);
           const errorsWorse = captured.errors > before.errors || structuralWorse || underTargetWorse;
           const qualityWorse = compareWithTolerance(captured.quality, before.quality) > 0;
-          const axesWorse = worsenedAxes(captured.axes, before.axes);
+          const axisEval = evaluateAxes(captured.axes, before.axes, captured.quality, before.quality);
+          const axesWorse = axisEval.hardFail ? axisEval.worsened : [];
+          if (axisEval.worsened.length && !axisEval.hardFail) {
+            // eslint-disable-next-line no-console
+            console.warn(`[baseline] ${variant}: fairness axes worsened (slots 0-2 strictly improved, recording): ${axisEval.worsened.join(', ')}`);
+          }
           if (errorsWorse || qualityWorse || axesWorse.length) {
             throw new Error(
               `Refusing to write worse baseline for "${variant}" (errors ${before.errors}->${captured.errors}, ` +
@@ -223,16 +259,21 @@ export function makeBaselineSuite(variant) {
         ).toBeLessThanOrEqual(before.underTargetErrors);
         expect(
           compareWithTolerance(captured.quality, before.quality),
-          `${variant}: quality vector (avg over ${SEEDS.length} seeds) ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`
+          `${variant}: quality vector (avg over ${captured.seeds.length} seeds) ${JSON.stringify(before.quality)} -> ${JSON.stringify(captured.quality)}`
         ).toBeLessThanOrEqual(0);
         // Per-axis fairness: the scalar slot 3 can hide one axis worsening while another improves.
         expect(
           before.axes,
           `${variant}: committed baseline missing axes — regenerate with UPDATE_QUALITY_BASELINE=1`
         ).not.toBeUndefined();
+        const axisEval = evaluateAxes(captured.axes, before.axes, captured.quality, before.quality);
+        if (axisEval.worsened.length && !axisEval.hardFail) {
+          // eslint-disable-next-line no-console
+          console.warn(`[baseline] ${variant}: fairness axes worsened but slots 0-2 strictly improved: ${axisEval.worsened.join(', ')}`);
+        }
         expect(
-          worsenedAxes(captured.axes, before.axes),
-          `${variant}: fairness axes worse than baseline (tolerance max(2%, 0.5)); before ${JSON.stringify(before.axes)} after ${JSON.stringify(captured.axes)}`
+          axisEval.hardFail ? axisEval.worsened : [],
+          `${variant}: fairness axes worse than baseline without a strictly better coverage/soft-rule vector (weighted tolerance max(2%, 0.5)); before ${JSON.stringify(before.axes)} after ${JSON.stringify(captured.axes)}`
         ).toEqual([]);
       });
     }

@@ -50,12 +50,16 @@ function parseArgs(argv) {
 }
 
 function refuseUntrackedRepoPath(file) {
-  const abs = path.resolve(file);
-  const rel = path.relative(repoRoot, abs);
+  let abs = path.resolve(file);
+  try { abs = fs.realpathSync(abs); } catch { /* missing file: later read reports it */ }
+  let root = repoRoot;
+  try { root = fs.realpathSync(repoRoot); } catch { /* keep */ }
+  const rel = path.relative(root, abs);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return abs; // outside the repo
   try {
-    execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: repoRoot, stdio: 'ignore' });
-  } catch {
+    execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: root, stdio: 'ignore' });
+  } catch (e) {
+    if (e.status !== 1) throw new Error(`could not run git check-ignore for ${rel} (exit ${e.status ?? e.code}); is git installed and is this a git repo?`);
     throw new Error(`refusing ${rel}: inside the repo and NOT gitignored (real data could be committed). Move it to bench-input/ or outside the repo.`);
   }
   return abs;

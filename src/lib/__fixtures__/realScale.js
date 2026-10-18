@@ -19,7 +19,7 @@
 //   Off-service (partial windows: 50% one 5-10 day 'ranges' window, 40% 2-weekday 'days'
 //   subset, 10% 'full'): PEDS-2 x4, PEDS-3 x2, IM-2 x8, NEURO-1 x6, ANES-1 x4, PSYCH-1 x4,
 //   POD-1 x4                                                                                  = 32
-//   Total 58. Vacations: 10 EM residents, 7-day windows spread over the block. One ACEP
+//   Total 58. Vacations: 7 EM residents, 7-day windows spread over the block. One ACEP
 //   conference window (2026-07-20..07-23) via ayConf. TRAUMA-D minimum waived (rotation-only,
 //   as in the `feasible` variant) so it does not dominate the miss count.
 // MEASURED HEADROOM (seed 42): local best-of-20 unfilled 37 (20 vs 100 attempts: 37 vs 37, so more
@@ -92,7 +92,7 @@ export function makeRealScaleFixture({ seed = 20260706 } = {}) {
   // Off-service: partial availability windows (the shape that creates real-block headroom).
   const offService = (cat, pgy, n) => add(n, () => {
     const kind = rnd();
-    if (kind < 0.5) { // one contiguous range, 7-14 days
+    if (kind < 0.5) { // one contiguous range, 5-10 days
       const len = 5 + pick(6);
       const s = pick(BLOCK_DATES.length - len + 1);
       return { category: cat, pgy, availabilityMode: 'ranges', availableRanges: [{ start: BLOCK_DATES[s], end: BLOCK_DATES[s + len - 1] }] };
