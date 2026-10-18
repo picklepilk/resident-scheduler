@@ -22,7 +22,7 @@ import {
 import RequestsTab from './RequestsTab';
 import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken, getAccessToken, resolveAuthToken } from './supabaseClient';
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
-import { dayOpenSlots, summarizeBlockCoverage, shiftChipLabel } from './lib/coverageDaySummary.js';
+import { dayIsUngenerated, dayOpenSlots, summarizeBlockCoverage, shiftChipLabel } from './lib/coverageDaySummary.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
 import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
@@ -9857,9 +9857,9 @@ function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameByI
     <div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2 text-xs">
         <span className="font-medium text-foreground">
-          {summary.totalOpen === 0 ? 'No open slots' : `${summary.totalOpen} open slot${summary.totalOpen === 1 ? '' : 's'} across ${summary.daysWithOpen} day${summary.daysWithOpen === 1 ? '' : 's'}`}
+          {summary.notGenerated ? 'Not generated yet' : summary.totalOpen === 0 ? 'No open slots' : `${summary.totalOpen} open slot${summary.totalOpen === 1 ? '' : 's'} across ${summary.daysWithOpen} day${summary.daysWithOpen === 1 ? '' : 's'}`}
         </span>
-        {summary.worst && <span className="text-muted-foreground">Worst: {prettyDate(summary.worst.ds)} ({summary.worst.open} open)</span>}
+        {summary.worst && !summary.notGenerated && <span className="text-muted-foreground">Worst: {prettyDate(summary.worst.ds)} ({summary.worst.open} open)</span>}
         <span className="flex flex-wrap items-center gap-1 ml-auto text-muted-foreground">
           <span className="cov-chip cov-chip-red">below min</span>
           <span className="cov-chip cov-chip-amber">over max</span>
@@ -9891,12 +9891,13 @@ function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameByI
                   <div className="flex items-start justify-between gap-1">
                     <span className="text-[11px] font-semibold">{label}</span>
                     {open > 0
-                      ? <span className="cov-open-score font-mono tabular-nums text-[10px]">-{open} open</span>
+                      ? <span className={`${dayIsUngenerated(cov) ? 'opacity-60' : 'cov-open-score'} font-mono tabular-nums text-[10px]`}>-{open} open</span>
                       : <span className="font-mono tabular-nums text-[10px] opacity-60">{cov?.filled ?? 0}/{cov?.minTotal ?? 0}</span>}
                   </div>
                   <div className="flex flex-wrap gap-0.5 mt-1">
                     {activeShifts.map(s => {
                       const info = cov?.perShift[s.id];
+                      if (!info) return null;
                       const chipStatus = shiftCellStatus(info);
                       const who = info && info.count > 0
                         ? Object.keys(schedule).filter(rid => schedule[rid]?.[ds] === s.id).map(rid => nameById[rid] || rid).join(', ')
@@ -9905,7 +9906,7 @@ function BlockMonthGrid({ dates, coverageByDate, activeShifts, schedule, nameByI
                         <span key={s.id} title={info ? `${s.label}: ${info.count}/${info.min}${who ? ` — ${who}` : ''}` : s.label}
                           className={`cov-chip cov-chip-${chipStatus}`}>
                           <span>{shiftChipLabel(s)}</span>
-                          <span className="font-mono tabular-nums font-semibold">{info ? `${info.count}/${info.min}` : '0/0'}</span>
+                          <span className="font-mono tabular-nums font-semibold">{info.count}/{info.min}</span>
                         </span>
                       );
                     })}
