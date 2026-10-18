@@ -23440,9 +23440,11 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null, lastGenerated:block.lastGenerated||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
+           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
-           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
+           startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear,
+           // Key only when present: a null/absent mismatch would make every pre-existing snapshot compare dirty.
+           ...(block.lastGenerated ? { lastGenerated: block.lastGenerated } : {}) };
 }
 
 // ─── OVERRIDE CAPTURE (Phase 3) ─────────────────────────────────────────────
