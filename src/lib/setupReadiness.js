@@ -29,7 +29,7 @@ export function computeSetupGaps(input = {}) {
   } = input;
   const gaps = [];
   // Default BLOCKING (the rule/resident silently does not work); holidays, conferences, pending requests
-  // and pressure pass severity: 'advisory' explicitly.
+  // and pending requests pass severity: 'advisory' explicitly.
   const add = g => gaps.push({ severity: 'blocking', suppresses: [], ...g });
 
   if (!validDate(block.startDate) || !validDate(block.endDate) || block.endDate < block.startDate) {
@@ -107,13 +107,6 @@ export function computeSetupGaps(input = {}) {
   if (supplyDemand && supplyDemand.supply > 0) {
     const ratio = supplyDemand.demand / supplyDemand.supply;
     pressure = { ratio, level: pressureLevel(ratio), demand: supplyDemand.demand, supply: supplyDemand.supply };
-    if (pressure.level) {
-      add({
-        id: 'pressure', severity: 'advisory', label: `Demand vs supply: ${pressure.level} (${Math.round(ratio * 100)}%)`,
-        detail: `Targets total ${pressure.demand} vs ${pressure.supply} slots of coverage capacity (${Math.round(ratio * 100)}%) -- level: ${pressure.level}; if tight, expect under-target residents (raise coverage maxes or lower targets) (Scheduling Rules tab)`,
-        fixTarget: { tab: 'rules' }, suppresses: [],
-      });
-    }
   }
   return { gaps, pressure };
 }

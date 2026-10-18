@@ -2917,7 +2917,7 @@ export function buildSetupReadiness({ allResidents, block, dayRules, ayConf = {}
 }
 
 export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf = {}, eligOverrides, appSettings, coverage, blocksHistory, mode, rangeStart, rangeEnd, pendingByResident }) {
-  const { gaps } = buildSetupReadiness({ allResidents, block, dayRules, ayConf, appSettings, coverage, pendingByResident });
+  const { gaps, pressure } = buildSetupReadiness({ allResidents, block, dayRules, ayConf, appSettings, coverage, pendingByResident });
   const messages = gaps.map(g => g.detail);
   // Kept-cell hard-error warning (CLAUDE.md "chief sees red validateAll errors after hand-editing/
   // locking cells or partial regenerate"): the generator/repair pass never overwrites a
@@ -2930,7 +2930,7 @@ export function checkGenerateReadiness({ allResidents, block, dayRules, ayConf =
     const split = violatingCells(issues, block.schedule || {}, block.lockedCells || {});
     keptViolations = keptCellsForMode(split, mode, rangeStart, rangeEnd);
   }
-  return { messages, gaps, blockingGapCount: blockingGapCount(gaps), keptViolations };
+  return { messages, gaps, pressure, blockingGapCount: blockingGapCount(gaps), keptViolations };
 }
 
 // Shared list-builder for AY conference date ranges — both getConferencesInBlock (block-range
@@ -17472,6 +17472,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           : null,
         messages: confirmGenerate.messages,
         gaps: confirmGenerate.gaps,
+        pressure: confirmGenerate.pressure,
         keptViolations: confirmGenerate.keptViolations,
         onFixAndGenerate: () => clearViolatorsThenGenerate(confirmGenerate.keptViolations.fixable,
           cleared => runGenerate(false, cleared, confirmGenerate.deepSolve)),
@@ -17486,6 +17487,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         note: 'This clears all current assignments — including ones you entered manually — and regenerates the whole schedule from scratch. You can undo this afterward with Ctrl+Z or the Undo button.',
         messages: generateReadiness.messages,
         gaps: generateReadiness.gaps,
+        pressure: generateReadiness.pressure,
         keptViolations: generateReadiness.keptViolations,
         onFixAndGenerate: null, // always empty under a full clear — see KeptCellViolationsPanel's comment
         onCancel: () => setConfirmRegen(false),
@@ -17501,6 +17503,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           : <>This clears every <strong>unlocked</strong> assignment in the block and refills them. Locked cells are left untouched. You can undo this afterward with Ctrl+Z or the Undo button.</>,
         messages: generateReadiness.messages,
         gaps: generateReadiness.gaps,
+        pressure: generateReadiness.pressure,
         keptViolations: generateReadiness.keptViolations,
         onFixAndGenerate: () => clearViolatorsThenGenerate(generateReadiness.keptViolations.fixable,
           cleared => runPartialRegenerate(confirmPartialRegen, cleared)),
@@ -17917,7 +17920,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             {genConfirmSpec.note && (
               <p className="text-sm text-gray-600">{genConfirmSpec.note}</p>
             )}
-            <ReadinessWarningPanel messages={genConfirmSpec.messages} gaps={genConfirmSpec.gaps} onFix={t => { genConfirmSpec.onCancel(); onNavigateFix && onNavigateFix(t); }}/>
+            <ReadinessWarningPanel messages={genConfirmSpec.messages} gaps={genConfirmSpec.gaps} pressure={genConfirmSpec.pressure} onFix={t => { genConfirmSpec.onCancel(); onNavigateFix && onNavigateFix(t); }}/>
             <KeptCellViolationsPanel violations={genConfirmSpec.keptViolations} onFixAndGenerate={genConfirmSpec.onFixAndGenerate}/>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={genConfirmSpec.onCancel}>Cancel</Button>
@@ -18195,13 +18198,18 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 // offers Cancel or an explicit override, matching ShiftPickerModal's "Assign Anyway" philosophy.
 // Shared by the pre-Generate readiness modal and the Clear & Regenerate confirm modal — same
 // red warning-panel style as DragConfirmModal's violation list below.
-function ReadinessWarningPanel({ messages, gaps, onFix }) {
-  if (gaps && gaps.length) return (
+function ReadinessWarningPanel({ messages, gaps, pressure, onFix }) {
+  const pressureLine = pressure && pressure.level
+    ? <p className="text-xs text-gray-600 mb-3" data-testid="pressure-line">Demand vs supply: {pressure.level} ({Math.round(pressure.ratio * 100)}%) -- targets {pressure.demand} vs {pressure.supply} slots of capacity.</p>
+    : null;
+  if (gaps && gaps.length) return (<>
     <div className={`${gaps.some(g => g.severity === 'blocking') ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'} border rounded-lg p-3 mb-3`} data-testid="readiness-gaps">
       <div className={`flex items-center gap-1.5 ${gaps.some(g => g.severity === 'blocking') ? 'text-red-700' : 'text-amber-700'} font-medium text-sm mb-1`}><AlertCircle size={13}/> {gaps.some(g => g.severity === 'blocking') ? 'Setup needs attention' : 'Setup notes'} ({gaps.length})</div>
       <SetupGapRows gaps={gaps} onFix={onFix}/>
     </div>
-  );
+    {pressureLine}
+  </>);
+  if (pressureLine && !messages.length) return pressureLine;
   if (!messages.length) return null;
   return (
     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">

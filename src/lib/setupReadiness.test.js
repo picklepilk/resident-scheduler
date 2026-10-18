@@ -34,11 +34,11 @@ describe('computeSetupGaps', () => {
     expect(pressureLevel(0.84)).toBe('moderate');
     expect(pressureLevel(0.85)).toBe('tight');
   });
-  it('pressure is advisory at every level', () => {
+  it('pressure is informational only, never a gap', () => {
     for (const [d, lvl] of [[50, 'light'], [70, 'moderate'], [90, 'tight']]) {
       const r = computeSetupGaps({ block: okBlock, supplyDemand: { demand: d, supply: 100 } });
-      expect(r.gaps.map(g => g.id)).toEqual(['pressure']);
-      expect(r.gaps[0].severity).toBe('advisory');
+      expect(r.gaps).toEqual([]);
+      expect(buildGapStamp(r.gaps)).toBeNull();
       expect(r.pressure.level).toBe(lvl);
     }
   });
