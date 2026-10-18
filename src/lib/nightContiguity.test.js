@@ -167,12 +167,15 @@ const CEILINGS = {
   // which a score()/ordering change cannot route around.
   understaffed: { twoSegment: 8, mergeable: 8 },
   // 2026-10-16: 13 -> 11 (same look-ahead fix).
-  vacationHeavy: { twoSegment: 11, mergeable: 11 },
+  // 2026-10-18: 11 -> 13 (ranking follows Soft Rule Priority: postNightRest no longer counts in
+  // blockingWarnCount, so best-of-N picks a different winner; trades hole count for night shape).
+  vacationHeavy: { twoSegment: 13, mergeable: 13 },
   // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
   // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
   // the other 3 variants' wins, and why generator.baseline.conferenceBlock.test.js's own
   // quality-vector gate still passes unchanged despite it).
-  conferenceBlock: { twoSegment: 13, mergeable: 13 },
+  // 2026-10-18: 13 -> 15 (same ranking change as vacationHeavy above).
+  conferenceBlock: { twoSegment: 15, mergeable: 15 },
 };
 
 // Index-space run detection, mirroring ResidentScheduler.jsx's own nightRunSegmentsIdx exactly
