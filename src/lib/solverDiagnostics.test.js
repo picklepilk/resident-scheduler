@@ -2,7 +2,7 @@
 // attachSolverDiagnostics: a solver-winner result gets the same under-target / unfilled-slot
 // diagnostics the local winner gets, as plain data only, without changing the solver schedule.
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generateScheduleBest, attachSolverDiagnostics } from '../ResidentScheduler.jsx';
+import { generateScheduleBest, generateSchedule, attachSolverDiagnostics } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 import { getBlockDates } from './dates.js';
 
@@ -40,10 +40,28 @@ describe('attachSolverDiagnostics', () => {
     expect(JSON.parse(JSON.stringify(out.report))).toEqual(out.report); // plain data
     // The scratch pass may legitimately refill the hole (then no diagnostics), but when it does
     // report one, it must be the documented shape.
+    // No fill pass runs, so the fillable hole STILL gets diagnostics (every resident is classified).
     const u = out.report.unfilled[0];
-    if (u.blockers) { expect(typeof u.blockers).toBe('object'); expect(Array.isArray(u.nearMiss)).toBe(true); }
+    expect(typeof u.blockers).toBe('object');
+    expect(Array.isArray(u.nearMiss)).toBe(true);
+    expect(Object.values(u.blockers).reduce((a, b) => a + b, 0)).toBe(args.allResidents.length);
     const ut = out.report.underTarget[0];
-    if (ut.blockedBy) { expect(typeof ut.blockedBy).toBe('object'); expect(typeof ut.openSlots).toBe('number'); }
+    expect(typeof ut.blockedBy).toBe('object');
+    expect(typeof ut.openSlots).toBe('number');
+  });
+
+  it('diagnosticsOnly generateSchedule leaves every cell exactly as given (no fill, no top-up)', () => {
+    const schedule = JSON.parse(JSON.stringify(base.schedule));
+    const dates = getBlockDates(args.block.startDate, args.block.endDate);
+    const rid = Object.keys(schedule)[0];
+    for (const ds of dates.slice(0, 5)) schedule[rid][ds] = '';
+    const before = JSON.stringify(schedule);
+    const res = generateSchedule({
+      ...args, block: { ...args.block, schedule }, clearFirst: false, repair: false,
+      deferUnderTargetDiagnostics: true, diagnosticsOnly: true, seedUnfilled: [],
+    });
+    expect(JSON.stringify(res.schedule)).toBe(before);
+    expect(res.report.filled).toBe(0);
   });
 
   it('is a no-op for a report with nothing to explain', () => {

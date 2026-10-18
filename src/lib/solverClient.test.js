@@ -243,6 +243,21 @@ describe('solverClient — resolveSolverTarget (pure fallback decision)', () => 
   });
 });
 
+describe('probeSolverJobsMode', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('resolves null on failure/non-ok, real mode otherwise', async () => {
+    vi.resetModules();
+    const { probeSolverJobsMode } = await import('./solverClient.js');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('x')));
+    expect(await probeSolverJobsMode('https://p.test')).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
+    expect(await probeSolverJobsMode('https://p.test')).toBeNull();
+    expect(await probeSolverJobsMode('')).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    expect(await probeSolverJobsMode('https://p.test')).toBe('memory');
+  });
+});
+
 describe('getSolverJobsMode', () => {
   afterEach(() => vi.unstubAllGlobals());
   it('reads /health jobs, caches per url, failure -> memory uncached', async () => {

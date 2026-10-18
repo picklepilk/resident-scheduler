@@ -23,7 +23,8 @@ export function solverTimeoutMs(budgetSeconds) {
 
 export function backendFor({ usingLocal, jobsMode }) {
   if (usingLocal) return 'local';
-  return jobsMode === 'durable' ? 'modal' : 'fly';
+  if (jobsMode === 'durable') return 'modal';
+  return jobsMode === 'memory' ? 'fly' : 'cloud'; // unknown (probe failed) stays plain cloud
 }
 export function backendLabel(backend) {
   if (backend === 'local') return 'This computer';

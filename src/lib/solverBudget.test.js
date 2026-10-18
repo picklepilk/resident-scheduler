@@ -30,6 +30,8 @@ describe('backend labels', () => {
     expect(backendFor({ usingLocal: true, jobsMode: 'durable' })).toBe('local');
     expect(backendFor({ usingLocal: false, jobsMode: 'durable' })).toBe('modal');
     expect(backendFor({ usingLocal: false, jobsMode: 'memory' })).toBe('fly');
+    expect(backendFor({ usingLocal: false, jobsMode: null })).toBe('cloud');
+    expect(backendLabel('cloud')).toBe('Cloud');
     expect(backendLabel('modal')).toBe('Cloud (Modal)');
     expect(backendLabel('fly')).toBe('Cloud (Fly)');
     expect(backendLabel('local')).toBe('This computer');
