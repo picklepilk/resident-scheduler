@@ -148,9 +148,19 @@ function captureOnce(variant, baseSeed) {
 // Averages every SEEDS run. `errors`/`structuralErrors`/`underTargetErrors` are all SUMMED rather
 // than averaged on purpose — a hard validateAll error is never acceptable at any seed and must not
 // be diluted by seeds that happened to be clean.
-export function captureFor(variant) {
+//
+// Async on purpose: it yields to the event loop between seeds. A vitest worker that runs
+// synchronously for longer than the RPC timeout (60s) throws `Timeout calling "onTaskUpdate"` the
+// moment its loop frees, because the timers phase runs before the already-queued reply is read.
+// Capping workers does not help (measured: same 2 errors at 4 workers on an idle machine); keeping
+// each uninterrupted stretch to one seed does.
+export async function captureFor(variant) {
   const seeds = seedsFor(variant);
-  const runs = seeds.map(s => captureOnce(variant, s));
+  const runs = [];
+  for (const s of seeds) {
+    runs.push(captureOnce(variant, s));
+    await new Promise(resolve => setImmediate(resolve));
+  }
   const n = runs.length;
   const quality = Array.from({ length: runs[0].quality.length }, (_, i) =>
     runs.reduce((sum, r) => sum + r.quality[i], 0) / n
@@ -192,7 +202,7 @@ function loadBaseline(variant) {
 export function makeBaselineSuite(variant) {
   describe(`generator quality baseline — ${variant}`, () => {
     let captured;
-    beforeAll(() => { captured = captureFor(variant); });
+    beforeAll(async () => { captured = await captureFor(variant); });
 
     if (process.env.UPDATE_QUALITY_BASELINE === '1') {
       it('writes the committed baseline', () => {

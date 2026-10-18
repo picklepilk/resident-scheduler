@@ -24,8 +24,12 @@ const KNOWN_LEGAL_UNUSED = new Set(['conferenceBlock:1234:syn_kilo']);
 
 describe('generateScheduleBest — under-target lift completeness (A4)', () => {
   for (const variant of VARIANTS) {
-    it(`every still-under-target resident has zero legal-but-unused open slots (${variant})`, () => {
+    // Async + a setImmediate yield per seed: vitest's between-test awaits are microtasks, so without a
+    // real macrotask this whole file (~80s) is one uninterrupted block and the worker's RPC timer
+    // (60s) fires before the queued reply is read — `Timeout calling "onTaskUpdate"`.
+    it(`every still-under-target resident has zero legal-but-unused open slots (${variant})`, async () => {
       for (const baseSeed of SEEDS) {
+        await new Promise(resolve => setImmediate(resolve));
         const fixture = makeFixture(variant);
         const { report } = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed });
         for (const u of report.underTarget) {
