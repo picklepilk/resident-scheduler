@@ -60,6 +60,7 @@ import { deriveBlockSteps } from './lib/blockStatus.js';
 import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
 import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
 import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
+import { partitionAcked, addAcks, removeAcks, normalizeAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -15908,6 +15909,11 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     () => groupPanelIssues(issues || [], EXPORT_BLOCKING_RULE_IDS),
     [issues]
   );
+  // Acknowledge / un-acknowledge (Wave E2): warnings only (addAcks skips errors), stored on
+  // block.issueAcks via ONE functional updateBlockTracked. Export-blocking semantics are untouched.
+  const ackBy = viewer?.email || viewer?.userId || '';
+  const ackIssues = (list, note) => updateBlockTracked(b => ({ ...b, issueAcks: addAcks(b.issueAcks, list, { by: ackBy, note }) }));
+  const unackIssues = list => updateBlockTracked(b => ({ ...b, issueAcks: removeAcks(b.issueAcks, list) }));
 
   // Rule-domain helpers shared by the Cell inspector (P3, below), the Sick-call cover modal, AND
   // the Coverage board's day-floor empty-slot panel — see useCellHelpers (HOOKS section) for what
@@ -17580,7 +17586,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
             onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
-            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
+            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}
+            issueAcks={block.issueAcks} onAckIssues={ackIssues} onUnackIssues={unackIssues}/>
         </div>
       )}
       </div>
@@ -17604,7 +17611,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
             onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
-            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
+            solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}
+            issueAcks={block.issueAcks} onAckIssues={ackIssues} onUnackIssues={unackIssues}/>
         </div>
       )}
       </div>
@@ -18943,8 +18951,19 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
 function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
-  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt }) {
-  const { mustFix, orderedWarns } = panelIssues;
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt, issueAcks, onAckIssues, onUnackIssues }) {
+  const { mustFix } = panelIssues;
+  // Acknowledged warnings collapse into their own section (Wave E2); errors never partition out.
+  const { active: orderedWarns, acked: ackedWarns } = useMemo(
+    () => partitionAcked(panelIssues.orderedWarns, issueAcks), [panelIssues.orderedWarns, issueAcks]);
+  const [ackedOpen, setAckedOpen] = useState(false);
+  const canAck = !!onAckIssues;
+  const ackWithNote = list => {
+    let n = '';
+    try { n = window.prompt('Optional note for this acknowledgement:', ''); } catch { n = ''; }
+    if (n !== null) onAckIssues(list, n || '');
+  };
+  const ackedGroups = useMemo(() => groupIssuesByKind(ackedWarns, EXPORT_BLOCKING_RULE_IDS, SHIFT_LABEL_BY_ID), [ackedWarns]);
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
   // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
   // which case this falls back to the lists rather than showing a blank inspector.
@@ -19035,11 +19054,26 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
               <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
             ) : (
               <ul className="space-y-1">
-                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow))}
+                {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, canAck ? { onAck: ackWithNote } : null))}
               </ul>
             )
           )}
         </section>
+
+        {ackedWarns.length > 0 && (
+          <section>
+            <button type="button" onClick={()=>setAckedOpen(o=>!o)}
+              className="w-full flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground mb-1.5">
+              <span>Acknowledged ({ackedWarns.length})</span>
+              <ChevronDown size={12} className={`shrink-0 transition-transform ${ackedOpen?'rotate-180':''}`}/>
+            </button>
+            {ackedOpen && (
+              <ul className="space-y-1">
+                {ackedGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, { acked: issueAcks, onUnack: onUnackIssues }))}
+              </ul>
+            )}
+          </section>
+        )}
 
         {report && (
           <section>
@@ -19331,16 +19365,18 @@ function SickCallCoverModal({ allResidents, block, plan, residentId, onResidentI
 // no point wrapping a single row behind a collapse/expand click — anything bigger becomes a
 // collapsed IssueGroupRow. Shared by both the Must-fix (>10) and Should-look-at group lists so they
 // can't render this decision differently.
-function renderIssueOrGroup(group, tone, onJumpToCell, onJumpToRow) {
+function renderIssueOrGroup(group, tone, onJumpToCell, onJumpToRow, ack) {
   return group.count === 1
-    ? <IssueRow key={issueKey(group.items[0])} issue={group.items[0]} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>
-    : <IssueGroupRow key={group.key} group={group} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>;
+    ? <IssueRow key={issueKey(group.items[0])} issue={group.items[0]} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow} ack={ack}/>
+    : <IssueGroupRow key={group.key} group={group} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow} ack={ack}/>;
 }
 
 // Collapsed "kind" row for the panel-flood fix (groupIssuesByKind) — "Isolated night stints · 43"
 // collapsed by default, expanding in place to the individual IssueRow list (same click-to-jump
 // behavior per row as the ungrouped rendering, just nested one level).
-function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow }) {
+// `ack`: null (no ack UI), { onAck(list) } on active warnings, or { acked, onUnack(list) } in the
+// Acknowledged section (Wave E2).
+function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow, ack }) {
   const [open, setOpen] = useState(false);
   return (
     <li>
@@ -19353,9 +19389,15 @@ function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow }) {
         </span>
         <ChevronRight size={12} className={`shrink-0 transition-transform ${open?'rotate-90':''}`}/>
       </button>
+      {ack && group.items.some(isAckable) && (
+        <button type="button" className="mt-0.5 ml-2 text-[11px] text-muted-foreground hover:text-primary underline"
+          onClick={() => (ack.onAck ? ack.onAck(group.items) : ack.onUnack(group.items))}>
+          {ack.onAck ? `Acknowledge all ${group.count} ${group.label}` : `Un-acknowledge all ${group.count}`}
+        </button>
+      )}
       {open && (
         <ul className="mt-1 ml-2 space-y-1 border-l border-border pl-2">
-          {group.items.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow}/>)}
+          {group.items.map(issue => <IssueRow key={issueKey(issue)} issue={issue} tone={tone} onJumpToCell={onJumpToCell} onJumpToRow={onJumpToRow} ack={ack}/>)}
         </ul>
       )}
     </li>
@@ -19367,7 +19409,7 @@ function IssueGroupRow({ group, tone, onJumpToCell, onJumpToRow }) {
 // issueJumpTarget), or is disabled when the issue names no resident at all (a block-wide coverage
 // gap). `labelForIssue` is the ONLY place this renders "what rule is this" — never issue.rule
 // directly, so an unmapped id can't leak through as a bare programmer string (see lib/reviewPanel.js).
-function IssueRow({ issue, tone, onJumpToCell, onJumpToRow }) {
+function IssueRow({ issue, tone, onJumpToCell, onJumpToRow, ack }) {
   const target = issueJumpTarget(issue);
   const jumpable = !!target;
   const handleClick = () => {
@@ -19391,6 +19433,15 @@ function IssueRow({ issue, tone, onJumpToCell, onJumpToRow }) {
           {labelForIssue(issue)}
         </div>
       </button>
+      {ack && isAckable(issue) && (
+        <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+          {ack.acked && ack.acked[ackKeyFor(issue)]?.note && <span className="italic truncate" title={ack.acked[ackKeyFor(issue)].note}>{ack.acked[ackKeyFor(issue)].note}</span>}
+          <button type="button" className="ml-auto hover:text-primary underline shrink-0"
+            onClick={() => (ack.onAck ? ack.onAck([issue]) : ack.onUnack([issue]))}>
+            {ack.onAck ? 'Acknowledge' : 'Un-acknowledge'}
+          </button>
+        </div>
+      )}
     </li>
   );
 }
@@ -23386,7 +23437,7 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
 function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
-           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
+           generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[], issueAcks:normalizeAcks(block.issueAcks),
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
 }
@@ -24747,12 +24798,15 @@ export default function ResidentScheduler({ viewer } = {}) {
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf]);
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
-    warns: issues.filter(i=>i.level!=='error').length,
+    // Acknowledged warnings (block.issueAcks, Wave E2) drop out of the headline warning count only;
+    // restWarns below still counts an acknowledged export-blocking warning (export gate unchanged).
+    warns: partitionAcked(issues, block.issueAcks).active.filter(i=>i.level!=='error').length,
+    ackedBlocking: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule) && isAckable(i) && partitionAcked([i], block.issueAcks).acked.length).length,
     // Soft-rule warnings flagged blocksExport in SOFT_RULES (currently just postNightRest) are
     // still safety-relevant enough that exporting the schedule (CSV/QGenda/PDF) should gate on
     // them same as a hard error — see requestExport below.
     restWarns: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
-  }),[issues]);
+  }),[issues, block.issueAcks]);
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
   const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
   // Derived, not stored — so any code path that changes block/blocksHistory (including raw
@@ -24899,6 +24953,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
       overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],
       activityLog: normalizeActivityLog(d.activityLog),
+      issueAcks: normalizeAcks(d.issueAcks),
       // Same untrusted-shape guard for the three jeopardy tracks (each must be a plain object,
       // not an array/string/etc — a pre-feature snapshot simply has none of these keys) and the
       // Metro admin-month ranges list.
@@ -25581,6 +25636,7 @@ export default function ResidentScheduler({ viewer } = {}) {
                 pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
                 pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
               ].filter(Boolean).join(' and ')} — see the Violations tab.
+              {issueCounts.ackedBlocking > 0 && ` (${issueCounts.ackedBlocking} of the rest warning${issueCounts.ackedBlocking!==1?'s':''} acknowledged, but still export-blocking.)`}
             </p>
           )}
           {exportConfirm==='qgenda' && exportUnmapped.length > 0 && (
