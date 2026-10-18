@@ -66,6 +66,7 @@ import { deriveBlockSteps } from './lib/blockStatus.js';
 import { ayOptionsFor, buildRailBlocks, railNumeral, todayMarker, shortDateRange } from './lib/blockRail.js';
 import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
 import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
+import { netNewIssues, capRows } from './lib/moveImpact.js';
 import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
@@ -9067,6 +9068,60 @@ function Modal({ title, onClose, children, wide = false }) {
   );
 }
 
+// ─── MOVE IMPACT (Wave E3) ───
+// Shared guard for date-list edits the schedule depends on. guard(candidate, apply, label):
+// candidate is the hypothetical { ayConf?, emRoster?, block? } (each a value or fn(current) -> next);
+// evaluate() re-runs validateAll on the CURRENT block with it. Zero net-new errors/blocking
+// warnings -> apply() silently; otherwise the MoveImpactModal asks first. An evaluation failure
+// never blocks an edit.
+// Resident fields whose edits go through the move-impact guard.
+const MOVE_IMPACT_FIELDS = ['vacationDates', 'approvedDatesOff', 'jeopardyDates', 'jcPresentDates', 'availableRanges', 'canWorkDates', 'availabilityMode'];
+
+function useMoveImpact({ baseline, evaluate, isBlocking, residentName, onOpenReview }) {
+  const [pending, setPending] = useState(null);
+  function guard(candidate, apply, label) {
+    let net = [];
+    try { net = netNewIssues(baseline, evaluate(candidate), isBlocking); } catch { net = []; }
+    if (!net.length) { apply(); return true; }
+    setPending({ net, apply, label: label || 'this change' });
+    return false; // false = waiting on the confirm modal
+  }
+  const close = () => setPending(null);
+  const modal = pending ? (
+    <MoveImpactModal net={pending.net} label={pending.label} residentName={residentName}
+      onCancel={close}
+      onApply={() => { const a = pending.apply; close(); a(); }}
+      onApplyReview={onOpenReview ? () => { const a = pending.apply; close(); a(); onOpenReview(); } : null}/>
+  ) : null;
+  return { guard, modal };
+}
+
+function MoveImpactModal({ net, label, residentName, onCancel, onApply, onApplyReview }) {
+  const { rows, more, total } = capRows(net, 20);
+  return (
+    <div className="relative z-[60]"><Modal title={`This change breaks ${total} scheduled shift${total === 1 ? '' : 's'}`} onClose={onCancel} wide>
+      <p className="text-sm text-gray-700 mb-1">Applying {label} would add {total} new error{total === 1 ? '' : 's'} or export-blocking warning{total === 1 ? '' : 's'} in the current block.</p>
+      <p className="text-xs text-gray-500 mb-3">Only the block loaded now was checked; the edit itself may apply to the whole academic year.</p>
+      <ul className="space-y-1 max-h-72 overflow-y-auto text-xs border border-gray-200 rounded-lg p-2 bg-gray-50">
+        {rows.map((i, n) => (
+          <li key={n} className="text-gray-800">
+            <span className="font-semibold">{i.residentId ? residentName(i.residentId) : 'Block'}</span>
+            {i.dateStr ? ` · ${i.dateStr}` : ''}{i.shiftId ? ` · ${i.shiftId}` : ''}
+            <span className="text-gray-500"> · {i.rule || 'rule'}</span>
+            {i.message ? <div className="text-gray-600">{i.message}</div> : null}
+          </li>
+        ))}
+        {more > 0 && <li className="text-gray-500 italic">and {more} more</li>}
+      </ul>
+      <div className="flex flex-wrap justify-end gap-2 mt-4">
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">Cancel</button>
+        {onApplyReview && <button type="button" onClick={onApplyReview} className="px-3 py-1.5 text-sm rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-50">Apply &amp; open Review</button>}
+        <button type="button" onClick={onApply} className="px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700">Apply anyway</button>
+      </div>
+    </Modal></div>
+  );
+}
+
 // **bold** is the only markup supported — deliberately, so entries stay plain strings that can't
 // inject markup into the page. Shared by WhatsNewModal and WhatsNewTab so the banner and the
 // archive can't drift on how a changelog item renders.
@@ -11025,7 +11080,7 @@ function AyFairnessLedgerCard({ ledger }) {
 }
 
 function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayConf, dayRules, issueCounts, coverage, blocksHistory, loadBlock, toggleBlockPublished, deleteBlockSnapshot, setTab,
-  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers }) {
+  emRoster, setEmRoster, setBlocksHistory, ayData, updateAyData, moveGuard, appSettings, setAppSettings, onSaveBlock, onNewBlock, showToast, blockSaveState, onBlockReset, deleteCurrentBlock, currentSnapPublished, setImportLog, importLog, onRequestSickCallCover, viewer, stepHandlers }) {
   const progress     = getBlockProgress(block.startDate, block.endDate);
   const confsInBlock = getConferencesInBlock(block.startDate, block.endDate, ayConf);
   // Read through resolveTwelveHourWindows (not the raw conf) so this card shows exactly what the
@@ -11150,8 +11205,15 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
   }), [selectedAy, block, allResidents, blocksHistory, selectedAyConf, appSettings]);
 
   function updSD(field, newDates) {
-    updateBlock(b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: newDates } }));
+    const fn = b => ({ ...b, specialDays: { ...(b.specialDays || {}), [field]: newDates } });
+    if (moveGuard) moveGuard({ block: fn }, () => updateBlock(fn), 'this special-day change'); else updateBlock(fn);
   }
+  // AY-wide edits (JC / First Friday / Wellness / holidays / conference / 12h): impact is evaluated
+  // only for the loaded block, and only when the edited AY is that block's AY.
+  const guardAy = conf => {
+    const apply = () => updateAyData(selectedAy, conf);
+    if (moveGuard && selectedAy === block.academicYear) moveGuard({ ayConf: conf }, apply, 'this date change'); else apply();
+  };
 
   const CONF_COLORS = { acep:'bg-red-100 text-red-700 border-red-200', ite:'bg-amber-100 text-amber-700 border-amber-200',
                         aaem:'bg-blue-100 text-blue-700 border-blue-200', saem:'bg-purple-100 text-purple-700 border-purple-200' };
@@ -11431,18 +11493,21 @@ function DashboardTab({ block, updateBlock, allResidents, schedulableCount, ayCo
         </div>
         {selectedAy && (
           <CollapsibleCard title="AY settings" subtitle={aySummary} prefId="dash.aySettings" defaultOpen={false}>
+            {selectedAy !== block.academicYear && (
+              <p className="text-xs text-amber-700 mb-2">Impact check covers the loaded block only ({block.academicYear}); edits to {selectedAy} are not checked against it.</p>
+            )}
             <div className="rounded-lg overflow-hidden border border-primary/20">
               <AYConferenceEditor ay={selectedAy} conf={selectedAyConf}
-                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+                onUpdate={guardAy}/>
               <JournalClubDatesEditor ay={selectedAy} conf={selectedAyConf}
-                onUpdate={conf => updateAyData(selectedAy, conf)} block={block}/>
-              <RuleDatesEditor ay={selectedAy} conf={selectedAyConf} onUpdate={conf => updateAyData(selectedAy, conf)}
+                onUpdate={guardAy} block={block}/>
+              <RuleDatesEditor ay={selectedAy} conf={selectedAyConf} onUpdate={guardAy}
                 block={block} blockStarts={railBlocks.map(b => b.startDate).filter(Boolean)} dayRules={dayRules}
                 wellnessEnabled={appSettings?.wellnessWednesdaysEnabled !== false}/>
               <HolidayDatesEditor ay={selectedAy} conf={selectedAyConf}
-                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+                onUpdate={guardAy}/>
               <TwelveHourWindowsEditor ay={selectedAy} conf={selectedAyConf}
-                onUpdate={conf => updateAyData(selectedAy, conf)}/>
+                onUpdate={guardAy}/>
             </div>
           </CollapsibleCard>
         )}
@@ -12577,7 +12642,7 @@ function EditResidentModal({ resident, persistentOnly = false, onClose, onSave, 
       lockPgy={false}
       initial={resident}
       onClose={onClose}
-      onSubmit={data => { onSave({ ...resident, ...data }); onClose(); }}
+      onSubmit={data => { const applied = onSave({ ...resident, ...data }, onClose); if (applied !== false) onClose(); }}
     />
   );
 }
@@ -13637,7 +13702,7 @@ function ImportAcademicModal({ emRoster, setEmRoster, ayData, updateAyData, onCl
                   <p className="text-gray-500">
                     JC dates: <span className="text-green-700">+{ay.jc.added.length} added</span> ·{' '}
                     <span className={ay.jc.removed.length ? 'text-red-600' : ''}>−{ay.jc.removed.length} removed</span> · {ay.jc.same.length} unchanged
-                    {!ay.jc.custom && ' (current list is the default first Tuesdays)'}
+                    {ay.jc.current.length === 0 && ' (no Journal Club dates logged yet)'}
                   </p>
                   {(ay.jc.added.length > 0 || ay.jc.removed.length > 0) && (
                     <p className="text-gray-500">
@@ -13731,7 +13796,7 @@ function SourcesPanel({ importLog, block, ay, onClose }) {
 
 // ─── EM RESIDENTS TAB ─────────────────────────────────────────────────────────
 
-function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings, showToast, ayData = {}, blocksHistory = [], setImportLog, allResidents = [], pendingByResident }) {
+function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, appSettings, showToast, ayData = {}, blocksHistory = [], setImportLog, allResidents = [], pendingByResident }) {
   // showAdd: null | { pgy, category }
   const [showAdd, setShowAdd]         = useState(null);
   const [showImport, setShowImport]   = useState(false);
@@ -13761,8 +13826,21 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
 
   function addRes(r)  { setEmRoster(p => [...p, r]); }
 
-  function saveEdit(updated) {
-    setEmRoster(p => p.map(r => r.id === updated.id ? updated : r));
+  // Returns false when the move-impact confirm is open (the edit modal then stays open, form intact;
+  // `done` closes it once the chief applies).
+  function saveEdit(updated, done) {
+    const fn = p => p.map(r => r.id === updated.id ? updated : r);
+    const cur = emRoster.find(r => r.id === updated.id);
+    if (moveGuard && cur && MOVE_IMPACT_FIELDS.some(f => JSON.stringify(cur[f] ?? null) !== JSON.stringify(updated[f] ?? null))) {
+      return moveGuard({ emRoster: fn }, () => { setEmRoster(fn); done && done(); }, 'these date changes');
+    }
+    setEmRoster(fn);
+  }
+
+  // Inline date-list edits go through the move-impact guard (Wave E3).
+  function guardRoster(id, field, d) {
+    const fn = p => p.map(r => r.id === id ? { ...r, [field]: d } : r);
+    if (moveGuard) moveGuard({ emRoster: fn }, () => setEmRoster(fn), 'this date change'); else setEmRoster(fn);
   }
 
   function removeRes(id) {
@@ -13929,19 +14007,19 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
                               <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
                                 <DateListEditor label="Approved Dates Off"
                                   dates={res.approvedDatesOff || []}
-                                  onUpdate={d => setEmRoster(p => p.map(r => r.id === res.id ? { ...r, approvedDatesOff: d } : r))}
+                                  onUpdate={d => guardRoster(res.id, 'approvedDatesOff', d)}
                                   chipClass="bg-orange-100 text-orange-700 border border-orange-200" accent="orange" allowRange/>
                                 <DateListEditor label="Vacation Dates"
                                   dates={res.vacationDates || []}
-                                  onUpdate={d => setEmRoster(p => p.map(r => r.id === res.id ? { ...r, vacationDates: d } : r))}
+                                  onUpdate={d => guardRoster(res.id, 'vacationDates', d)}
                                   chipClass="bg-teal-100 text-teal-700 border border-teal-200" accent="teal" allowRange/>
                                 <DateListEditor label="Jeopardy Call Dates"
                                   dates={res.jeopardyDates || []}
-                                  onUpdate={d => setEmRoster(p => p.map(r => r.id === res.id ? { ...r, jeopardyDates: d } : r))}
+                                  onUpdate={d => guardRoster(res.id, 'jeopardyDates', d)}
                                   chipClass="bg-purple-100 text-purple-700 border border-purple-200" accent="purple" allowRange/>
                                 <DateListEditor label="Journal Club presenting"
                                   dates={res.jcPresentDates || []}
-                                  onUpdate={d => setEmRoster(p => p.map(r => r.id === res.id ? { ...r, jcPresentDates: d } : r))}
+                                  onUpdate={d => guardRoster(res.id, 'jcPresentDates', d)}
                                   chipClass="bg-blue-100 text-blue-700 border border-blue-200" accent="blue"/>
                                 <div className="sm:col-span-2">
                                   <label className="block text-xs font-semibold text-gray-600 mb-0.5">QGenda Staff ID</label>
@@ -14164,7 +14242,7 @@ function EMResidentsTab({ emRoster, setEmRoster, block, updateBlock, appSettings
 
 // ─── OFF-SERVICE TAB ──────────────────────────────────────────────────────────
 
-function OffServiceTab({ block, updateBlock, appSettings, allResidents, blocksHistory, setImportLog, pendingByResident }) {
+function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResidents, blocksHistory, setImportLog, pendingByResident }) {
   // showAdd: null | { category }
   const [showAdd, setShowAdd]           = useState(null);
   const [showImport, setShowImport]     = useState(false);
@@ -14182,11 +14260,16 @@ function OffServiceTab({ block, updateBlock, appSettings, allResidents, blocksHi
 
   function addRes(r) { updateBlock(b => ({ ...b, offServiceResidents: [...(b.offServiceResidents || []), r] })); }
 
-  function saveEdit(updated) {
-    updateBlock(b => ({
+  function saveEdit(updated, done) {
+    const fn = b => ({
       ...b,
       offServiceResidents: b.offServiceResidents.map(r => r.id === updated.id ? updated : r),
-    }));
+    });
+    const cur = (block.offServiceResidents || []).find(r => r.id === updated.id);
+    if (moveGuard && cur && MOVE_IMPACT_FIELDS.some(f => JSON.stringify(cur[f] ?? null) !== JSON.stringify(updated[f] ?? null))) {
+      return moveGuard({ block: fn }, () => { updateBlock(fn); done && done(); }, 'these date changes');
+    }
+    updateBlock(fn);
   }
 
   function removeRes(id) {
@@ -14197,7 +14280,10 @@ function OffServiceTab({ block, updateBlock, appSettings, allResidents, blocksHi
   }
 
   function setField(id, f, v) {
-    updateBlock(b => ({ ...b, offServiceResidents: b.offServiceResidents.map(r => r.id === id ? { ...r, [f]: v } : r) }));
+    const fn = b => ({ ...b, offServiceResidents: b.offServiceResidents.map(r => r.id === id ? { ...r, [f]: v } : r) });
+    // Date-bearing fields go through the move-impact guard (Wave E3).
+    if (moveGuard && ['approvedDatesOff', 'availableRanges', 'canWorkDates', 'availabilityMode'].includes(f)) moveGuard({ block: fn }, () => updateBlock(fn), 'this availability change');
+    else updateBlock(fn);
   }
 
   function shiftCount(id) { return Object.values(sched[id] || {}).filter(Boolean).length; }
@@ -24355,6 +24441,38 @@ export function migratePedsPgy1ToPgy2(list) {
 // `viewer` ({email, userId, role}) is supplied by AppGate, which has already resolved the session
 // and profile. Optional on purpose: the unconfigured-dev-build path renders this component with no
 // session at all, and the header simply omits the identity chip in that case.
+// Composes the runtime resident list (roster + per-block assignments + off-service) -- module-level
+// so the move-impact hook can evaluate a hypothetical roster/block without a second copy.
+function composeAllResidents(emRoster, block, blocksHistory) {
+    const em = emRoster.map(r=>({
+      ...r,
+      blockType: block.emBlockAssignments?.[r.id]?.blockType ?? 'EM',
+      isChief:   !!(block.emBlockAssignments?.[r.id]?.isChief),
+      // Buy-down seam: denormalizes onto the runtime resident object exactly like blockType/
+      // isChief above, so every getShiftTarget call site (generator, buildQualityInput,
+      // validateAll, grid/card display) picks it up with no signature change. targetDelta is left
+      // as-is (undefined when absent) — getShiftTarget's own Number.isFinite guard handles that.
+      targetDelta: block.emBlockAssignments?.[r.id]?.targetDelta,
+      targetNote: block.emBlockAssignments?.[r.id]?.targetNote,
+      targetIsBuyDown: !!(block.emBlockAssignments?.[r.id]?.targetIsBuyDown),
+    }));
+    // Off-service rotation-window delta (1.11): composed HERE, once, so generator/validateAll/
+    // every UI surface that reads allResidents can't disagree on an off-service resident's
+    // effective target — see offServiceWindowTargetDelta's own header comment. Off-service
+    // residents have no dedicated buy-down UI today (unlike EM roster's emBlockAssignments), but
+    // resident.targetDelta is still composed with, never overwritten by, whatever might already
+    // be on the raw record. OffServiceTab itself edits the RAW block.offServiceResidents record
+    // (untouched by this), but looks up this composed value by id for its own target display —
+    // see its allResidents prop — so its display can't drift from this.
+    const off = (block.offServiceResidents || []).map(r => {
+      const windowDelta = offServiceWindowTargetDelta(r, block, blocksHistory);
+      if (windowDelta == null) return r;
+      const chiefDelta = Number(r.targetDelta) || 0;
+      return { ...r, targetDelta: chiefDelta + windowDelta };
+    });
+    return [...em, ...off];
+}
+
 export default function ResidentScheduler({ viewer } = {}) {
   // Called here (not inside <UiPrefsProvider> below) so this component's own body — specifically
   // goToErrorsStep, which needs to open the Schedule tab's review panel from OUTSIDE the Provider's
@@ -25529,35 +25647,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     setTimeout(()=>setToast(null),5000);
   }
 
-  const allResidents = useMemo(()=>{
-    const em = emRoster.map(r=>({
-      ...r,
-      blockType: block.emBlockAssignments?.[r.id]?.blockType ?? 'EM',
-      isChief:   !!(block.emBlockAssignments?.[r.id]?.isChief),
-      // Buy-down seam: denormalizes onto the runtime resident object exactly like blockType/
-      // isChief above, so every getShiftTarget call site (generator, buildQualityInput,
-      // validateAll, grid/card display) picks it up with no signature change. targetDelta is left
-      // as-is (undefined when absent) — getShiftTarget's own Number.isFinite guard handles that.
-      targetDelta: block.emBlockAssignments?.[r.id]?.targetDelta,
-      targetNote: block.emBlockAssignments?.[r.id]?.targetNote,
-      targetIsBuyDown: !!(block.emBlockAssignments?.[r.id]?.targetIsBuyDown),
-    }));
-    // Off-service rotation-window delta (1.11): composed HERE, once, so generator/validateAll/
-    // every UI surface that reads allResidents can't disagree on an off-service resident's
-    // effective target — see offServiceWindowTargetDelta's own header comment. Off-service
-    // residents have no dedicated buy-down UI today (unlike EM roster's emBlockAssignments), but
-    // resident.targetDelta is still composed with, never overwritten by, whatever might already
-    // be on the raw record. OffServiceTab itself edits the RAW block.offServiceResidents record
-    // (untouched by this), but looks up this composed value by id for its own target display —
-    // see its allResidents prop — so its display can't drift from this.
-    const off = (block.offServiceResidents || []).map(r => {
-      const windowDelta = offServiceWindowTargetDelta(r, block, blocksHistory);
-      if (windowDelta == null) return r;
-      const chiefDelta = Number(r.targetDelta) || 0;
-      return { ...r, targetDelta: chiefDelta + windowDelta };
-    });
-    return [...em, ...off];
-  },[emRoster,block.emBlockAssignments,block.offServiceResidents,block.startDate,block.endDate,blocksHistory]);
+  const allResidents = useMemo(()=>composeAllResidents(emRoster,block,blocksHistory),[emRoster,block.emBlockAssignments,block.offServiceResidents,block.startDate,block.endDate,blocksHistory]);
 
   const schedulableCount = useMemo(()=>allResidents.filter(isSchedulable).length,[allResidents]);
 
@@ -25565,6 +25655,20 @@ export default function ResidentScheduler({ viewer } = {}) {
   // stat tiles — running it once per relevant state change instead of once per consumer.
   const issues = useMemo(()=>validateAll(allResidents,block.schedule||{},block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf),[allResidents,block,eligOverrides,appSettings,dayRules,coverage,blocksHistory,currentAyConf]);
   const ackPart = useMemo(()=>partitionAcked(issues, block.issueAcks),[issues, block.issueAcks]);
+  // Move-impact guard (Wave E3) shared by every date-list editor; see useMoveImpact.
+  const resolveCand = (c, cur) => (typeof c === 'function' ? c(cur) : c);
+  const moveImpact = useMoveImpact({
+    baseline: issues,
+    evaluate: (c) => {
+      const nb = c.block !== undefined ? resolveCand(c.block, block) : block;
+      const nr = c.emRoster !== undefined ? resolveCand(c.emRoster, emRoster) : emRoster;
+      const nc = c.ayConf !== undefined ? resolveCand(c.ayConf, currentAyConf) : currentAyConf;
+      return validateAll(composeAllResidents(nr, nb, blocksHistory), nb.schedule || {}, nb, eligOverrides, appSettings, dayRules, coverage, blocksHistory, nc);
+    },
+    isBlocking: (i) => !!i && (i.level === 'error' || EXPORT_BLOCKING_RULE_IDS.has(i.rule)),
+    residentName: (id) => { const r = allResidents.find(x => x.id === id); return r ? `${r.firstName} ${r.lastName}` : String(id); },
+    onOpenReview: () => goToErrorsStep(),
+  });
   const issueCounts = useMemo(()=>({
     errors: issues.filter(i=>i.level==='error').length,
     // Acknowledged warnings (block.issueAcks, Wave E2) drop out of the headline warning count only;
@@ -26323,20 +26427,21 @@ export default function ResidentScheduler({ viewer } = {}) {
           mobileOpen={navOpen} onNavigate={()=>setNavOpen(false)}/>
 
         {/* Main content */}
+        {moveImpact.modal}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
           {tab==='dashboard' && (
             <DashboardTab block={block} updateBlock={updateBlock} allResidents={allResidents} schedulableCount={schedulableCount}
               ayConf={currentAyConf} dayRules={dayRules} issueCounts={issueCounts} coverage={coverage} blocksHistory={blocksHistory}
               loadBlock={loadBlock} toggleBlockPublished={toggleBlockPublished} deleteBlockSnapshot={deleteBlockSnapshot} setTab={setTab}
               emRoster={emRoster} setEmRoster={setEmRoster} setBlocksHistory={setBlocksHistory}
-              ayData={ayData} updateAyData={updateAyData} appSettings={appSettings} setAppSettings={setAppSettings}
+              ayData={ayData} updateAyData={updateAyData} moveGuard={moveImpact.guard} appSettings={appSettings} setAppSettings={setAppSettings}
               onSaveBlock={saveBlock} onNewBlock={newBlock} showToast={showToast} blockSaveState={blockSaveState}
               onBlockReset={blockReset} deleteCurrentBlock={deleteCurrentBlock} currentSnapPublished={!!matchingSnap?.published}
               setImportLog={setImportLog} importLog={importLog} onRequestSickCallCover={requestSickCallCover} viewer={viewer}
               stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
-          {tab==='em' && <EMResidentsTab emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
-          {tab==='offservice' && <OffServiceTab block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
+          {tab==='em' && <EMResidentsTab moveGuard={moveImpact.guard} emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
+          {tab==='offservice' && <OffServiceTab moveGuard={moveImpact.guard} block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && (
             <div className="mb-3 empty:hidden">
