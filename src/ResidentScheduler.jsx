@@ -70,7 +70,8 @@ import { findFixablePlans, isFixableBlocked } from './lib/slotFixes.js';
 import { scanUnderTargetSlots, topBlockerReasons } from './lib/underTargetExplainer.js';
 import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
-import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor } from './lib/rulePolicy.js';
+import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor, isHandOverridable } from './lib/rulePolicy.js';
+import { getHandOverride, applyHandOverrideToViolations, applyHandOverridesToIssues, syncHandOverrides, normalizeHandOverrides, handOverrideCells, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides } from './lib/handOverrides.js';
 import { worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
@@ -928,6 +929,10 @@ const DAY_MARKERS = {
   VAC: { label: 'VAC', chip: 'bg-teal-100 text-teal-700',     onShift: 'bg-white text-teal-700 ring-1 ring-teal-500',     dark: 'bg-white/15 text-teal-300',   title: 'Vacation' },
   J:   { label: 'J',   chip: 'bg-purple-100 text-purple-700', onShift: 'bg-white text-purple-700 ring-1 ring-purple-500', dark: 'bg-white/15 text-purple-300', title: 'Jeopardy call' },
   R:   { label: 'R',   chip: 'bg-blue-100 text-blue-700',     onShift: 'bg-white text-blue-700 ring-1 ring-blue-500',     dark: 'bg-white/15 text-blue-300',   title: 'Day-off request pending' },
+  // Hand override (2026-10-18): a chief confirmed placing this shift despite a program-tier rule
+  // (block.handOverrides, src/lib/handOverrides.js). Amber "!" corner badge; the cell-specific
+  // tooltip (rules + note + who/when) is built by overrideTooltip, `title` is the legend text.
+  OVERRIDE: { label: '!', chip: 'bg-amber-100 text-amber-800', onShift: 'bg-white text-amber-700 ring-1 ring-amber-500', dark: 'bg-white/15 text-amber-300', title: 'Hand override - shift placed despite a program rule (confirmed by the chief)' },
 };
 
 // RequestsTab.jsx's ApprovalQueue.decide() stamps the resident/admin explanation for an approved
@@ -2004,7 +2009,7 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
     const runAfter = nightRunAfter(rs, dateStr);
     const totalRun = runBefore + 1 + runAfter;
     if (totalRun > NIGHT_RULES.maxRun)
-      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax' });
+      violations.push({ message: `${totalRun} consecutive night shifts — max is ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), rule: 'nightRunMax', measured: totalRun });
     if (!nightOnly) {
       const totalNights = countNightsInSchedule(rs) + 1;
       if (totalNights > NIGHT_RULES.maxPerBlock)
@@ -4132,7 +4137,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         .filter(([ds, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(ds).getDay() === 3).length;
       if (wedNightCount > 1)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
-          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator') });
+          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), measured: wedNightCount });
     }
 
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
@@ -4172,10 +4177,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const pedsHalfCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
-          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator') });
+          message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), measured: traumaHalfCount });
       if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'traumaPedsSplit',
-          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator') });
+          message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), measured: pedsHalfCount });
     }
 
     // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
@@ -4184,7 +4189,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator') });
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -4355,7 +4360,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         const touchesEdge = runStart === blockDates[0] || blockDates[runEndIdx] === blockDates[blockDates.length - 1];
         if (runLen > NIGHT_RULES.maxRun)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightRunMax',
-            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator') });
+            message: `${runLen} consecutive night shifts (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — max ${NIGHT_RULES.maxRun}`, level: severityFor('nightRunMax', 'validator'), measured: runLen });
         else if (runLen < NIGHT_RULES.minRun && !nOnly && !touchesEdge)
           // anchorDate (not dateStr): the run's first date, so a review-panel row can jump straight
           // to it — see reviewPanel.js's issueJumpTarget. Deliberately a SEPARATE field from dateStr:
@@ -4542,7 +4547,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     level: 'warn',
   });
 
-  return issues;
+  // Hand overrides (2026-10-18): a violation covered by a confirmed block.handOverrides entry for
+  // this exact cell+shift becomes a flagged 'warn' (overridden: true) - never export-blocking, since
+  // the program-tier ids aren't in EXPORT_BLOCKING_RULE_IDS. Stale entries (cell changed) are inert.
+  return applyHandOverridesToIssues(issues, block.handOverrides, schedule);
 }
 
 // ─── JEOPARDY AUTO-FILL ─────────────────────────────────────────────────────
@@ -7067,6 +7075,17 @@ const LONG_SOLVE_POLL_MS = 15000;
 // built without it is byte-identical to a pre-R9 payload — see the dedicated test in
 // ResidentScheduler.test.js.
 export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null }) {
+  // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
+  // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
+  // sends the generate path to its existing "optimizer unavailable -> keep the built-in result"
+  // fallback (the built-in engine keeps the cell via keptCells); the long-solve path surfaces the
+  // message as its "Could not start" toast.
+  const unsafeOverrides = solverUnsafeHandOverrides(block.handOverrides, block.schedule, Object.fromEntries(allResidents.map(r => [r.id, r])), isTraumaCapSubject);
+  if (unsafeOverrides.length) {
+    const err = new Error(`Optimizer skipped: ${unsafeOverrides.length} hand override${unsafeOverrides.length !== 1 ? 's' : ''} of program rules cannot be honoured by the optimizer (undo or clear them to use it) - used the built-in engine`);
+    err.code = 'HAND_OVERRIDES'; err.count = unsafeOverrides.length;
+    throw err;
+  }
   const dates = getBlockDates(block.startDate, block.endDate);
   const sd = block.specialDays || {};
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
@@ -14990,7 +15009,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   if (resident.category === 'EM_BAMC' && shift?.type === 'night' && dow === 3) {
     const wedNightCount = Object.entries(hypRow).filter(([d, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(d).getDay() === 3).length;
     if (wedNightCount > 1)
-      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight' });
+      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: wedNightCount });
   }
 
   // 13. Trauma/Peds split sub-caps (program tier — always hard).
@@ -15000,11 +15019,11 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
       if (shift.area === 'TRAUMA') {
         const traumaHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'TRAUMA').length;
         if (traumaHalfCount > TRAUMA_PEDS_SPLIT.trauma)
-          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+          vs.push({ message: `Trauma/Peds split: ${traumaHalfCount} trauma shifts — trauma half target is ${TRAUMA_PEDS_SPLIT.trauma}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit', measured: traumaHalfCount });
       } else if (shift.area === 'PED') {
         const pedsHalfCount = Object.values(hypRow).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
         if (pedsHalfCount > TRAUMA_PEDS_SPLIT.peds)
-          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit' });
+          vs.push({ message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), rule: 'traumaPedsSplit', measured: pedsHalfCount });
       }
     }
   }
@@ -15016,10 +15035,12 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
     const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
     if (jcTotal > JC_MAX_PER_AY)
-      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy' });
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
   }
 
-  return vs;
+  // Hand overrides: if this exact cell already holds a confirmed override for `sid`, its covered
+  // violations read as flagged warns (same downgrade validateAll applies).
+  return applyHandOverrideToViolations(vs, getHandOverride(block.handOverrides, block.schedule, resident.id, dateStr, sid));
 }
 
 // ─── SHIFT OVERLAP HOVER CARD ──────────────────────────────────────────────
@@ -15087,10 +15108,15 @@ function ShiftOverlapHoverCard({ anchorRect, shiftId, dateStr, overlap }) {
 // explicit confirm step that gets stamped into block.overrideLog (see withOverrideEvents/
 // updateBlockTracked). `advisory`: everything else (postNightRest and other untiered soft warnings)
 // — informational only, exactly like today's plain "Assign/Swap/Move Anyway".
+// 2026-10-18: program-tier rules and rotationEligibility (isHandOverridable) are no longer in
+// `blocking` - an 'error' carrying one of those ids is `overridable` behind the same confirm step
+// (recorded in block.handOverrides, see lib/handOverrides.js). Any other error (ACGME hours/rest,
+// vacation, unknown/ruleless) still blocks with no way through.
 function classifyForHandEdit(violations) {
-  const blocking = violations.filter(v => v.level === 'error');
-  const overridable = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier === 'override');
-  const advisory = violations.filter(v => v.level !== 'error' && RULE_POLICY[v.rule]?.tier !== 'override');
+  const isErr = v => v.level === 'error';
+  const blocking = violations.filter(v => isErr(v) && !isHandOverridable(v.rule));
+  const overridable = violations.filter(v => isErr(v) ? isHandOverridable(v.rule) : RULE_POLICY[v.rule]?.tier === 'override');
+  const advisory = violations.filter(v => !isErr(v) && RULE_POLICY[v.rule]?.tier !== 'override');
   return { blocking, overridable, advisory };
 }
 
@@ -15114,7 +15140,11 @@ function OverrideConfirmPanel({ overridable, note, onNoteChange }) {
   return (
     <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3">
       <div className="flex items-center gap-1.5 text-amber-800 font-medium text-sm mb-1"><AlertTriangle size={13}/> Override program rule</div>
-      {overridable.map((w, i) => <p key={i} className="text-xs text-amber-700 ml-4">{w.message}</p>)}
+      {overridable.map((w, i) => (
+        <p key={i} className="text-xs text-amber-700 ml-4">
+          {RULE_POLICY[w.rule]?.label && <span className="font-semibold">{RULE_POLICY[w.rule].label}: </span>}{w.message}
+        </p>
+      ))}
       <label className="block text-xs text-amber-700 mt-2 ml-4">
         Note (optional)
         <textarea value={note} onChange={e => onNoteChange(e.target.value)} rows={2}
@@ -15129,6 +15159,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
   const [pending, setPending] = useState(null);
   const [confirmingOverride, setConfirmingOverride] = useState(false);
   const [overrideNote, setOverrideNote] = useState('');
+  const [showNeedsOverride, setShowNeedsOverride] = useState(false);
   // A different candidate shift invalidates whatever override confirmation was in progress for the
   // previous one — never carry a stale note/confirm state onto a newly-picked shift.
   useEffect(() => { setConfirmingOverride(false); setOverrideNote(''); }, [pending]);
@@ -15157,8 +15188,28 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 
   const { blocking, overridable } = classifyForHandEdit(v);
 
+  // Shifts the eligibility rules exclude but a chief may still place by hand (2026-10-18): every
+  // blocking reason is a hand-overridable rule (program tier / rotationEligibility - see
+  // isHandOverridable). Computed lazily - only after the chief opens the "needs override" section -
+  // since it runs cellViolations once per excluded shift. A shift that also trips an unbreakable
+  // rule (ACGME hours/rest, vacation, work restriction) is NOT offered. The generator never sees
+  // any of this: it keeps using getEligibleShifts alone.
+  const needsOverrideShifts = useMemo(() => {
+    if (!showNeedsOverride) return [];
+    const have = new Set(eligible);
+    const out = [];
+    for (const s of SHIFTS) {
+      if (have.has(s.id)) continue;
+      const vs = cellViolations(resident, dateStr, s.id, block, eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory);
+      const { blocking: b, overridable: o } = classifyForHandEdit(vs);
+      if (!b.length && o.length) out.push(s.id);
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNeedsOverride, resident, dateStr, block]);
+
   function confirm() {
-    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null;
+    const overrideMeta = overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null, cells: handOverrideCells(overridable, { residentId: resident.id, dateStr }) } : null;
     onSelect(pending, overrideMeta);
     showToast(`Assigned ${pending} to ${name} on ${display}`, v.length>0?'amber':'green');
     onClose();
@@ -15211,6 +15262,37 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
           })}
         </div>
       )}
+
+      {/* Hand-override path: ineligible shifts whose ONLY blockers are hand-overridable rules. */}
+      <div className="mb-3">
+        <button type="button" onClick={()=>setShowNeedsOverride(o=>!o)}
+          className="flex items-center gap-1 text-xs text-amber-700 hover:text-amber-800 font-medium">
+          <Unlock size={12}/> {showNeedsOverride ? 'Hide shifts that need an override' : 'Show shifts that need an override'}
+        </button>
+        {showNeedsOverride && (
+          needsOverrideShifts.length === 0 ? (
+            <p className="text-xs text-gray-500 mt-1.5">No shifts can be placed by override on this date.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {needsOverrideShifts.map(sid => {
+                const s = SHIFT_MAP[sid]; if (!s) return null;
+                const active = pending === sid;
+                return (
+                  <button key={sid} onClick={()=>setPending(active ? null : sid)}
+                    title="Not allowed by the scheduling rules - can be placed by hand after an override confirm"
+                    className={`flex flex-col items-start px-3 py-2 rounded-lg border-2 border-dashed text-left transition-all opacity-80 ${active?'border-amber-500 bg-amber-50':'border-amber-300 hover:border-amber-500'}`}>
+                    <div className="flex items-center gap-2 w-full">
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${s.chip}`}>{sid}</span>
+                      <Unlock size={12} className="text-amber-600 ml-auto"/>
+                    </div>
+                    <span className="text-[10px] text-amber-700 mt-0.5">requires override</span>
+                  </button>
+                );
+              })}
+            </div>
+          )
+        )}
+      </div>
 
       {pending && overlapInfo && (
         <div className="mb-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
@@ -15931,6 +16013,10 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     () => groupPanelIssues(issues || [], EXPORT_BLOCKING_RULE_IDS),
     [issues]
   );
+  const handOverrideList = useMemo(
+    () => listHandOverrides(block.handOverrides, sched, Object.fromEntries(allResidents.map(r => [r.id, r]))),
+    [block.handOverrides, sched, allResidents]
+  );
 
   // Rule-domain helpers shared by the Cell inspector (P3, below), the Sick-call cover modal, AND
   // the Coverage board's day-floor empty-slot panel — see useCellHelpers (HOOKS section) for what
@@ -16327,13 +16413,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
       { ...block, schedule: scheduleClearing(src.resId, src.ds) },
       eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
-    ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }));
+    ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: tgtRes.id, dateStr: tgtDs } }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
           { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
           eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
-        ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule }))
+        ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: srcRes.id, dateStr: src.ds } }))
       : [];
 
     const violations = [...violTgt, ...violSrc];
@@ -16523,6 +16609,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           unshippedSolver: winner === 'cpsat' ? null : { genBlock, schedule: solverRes.schedule, lockedCells: genBlock.lockedCells },
         };
       } catch (e) {
+        if (e?.code === 'HAND_OVERRIDES') return { ...localRes, engineUsed: 'skipped-overrides', engineLabel: 'Built-in (hand overrides present)', skippedOverrideCount: e.count, relaxed: false };
         console.warn('Solver unavailable — using the already-computed built-in schedule:', e);
         let engineComparison = null;
         try {
@@ -16574,12 +16661,13 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         : (u === 0
             ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+      if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
       if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -16630,11 +16718,12 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         : (u === 0
             ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
             : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+      if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
       if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
       if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
-      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
+      showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
       generatingRef.current = false;
       stopGenProgress();
@@ -16799,6 +16888,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         {dates.map(ds=>{
           const sid=sched[res.id]?.[ds]||null;
           const isLocked=!!(block.lockedCells?.[res.id]?.[ds]);
+          // Confirmed hand override covering this cell's current shift (null once the cell changes).
+          const handOv=sid?getHandOverride(block.handOverrides, sched, res.id, ds):null;
           // P2 (review panel): hard errors keep the red ring; a cell whose ONLY issues are warnings
           // gets a small corner dot instead — a bigger/darker one when the warning actually blocks
           // export, a plain one when it's purely advisory — see the in-grid legend below.
@@ -16933,6 +17024,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
               {shift && cornerLabel && <span className={`absolute bottom-0.5 left-0.5 w-2 h-2 rounded-full ring-1 ring-white z-10 ${cornerDotColor}`} title={dayMarkerText}/>}
               {isJeopardy&&!isJeoBlocked && <span className={`absolute top-0 right-0 text-[10px] leading-none font-bold rounded-bl px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.J.onShift}`} title={DAY_MARKERS.J.title}>J</span>}
               {isPendingRequest && <span className={`absolute top-0 left-0 text-[10px] leading-none font-bold rounded-br px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.R.onShift}`} title={DAY_MARKERS.R.title}>R</span>}
+              {handOv && <span data-hand-override className={`absolute bottom-0 left-1/2 -translate-x-1/2 text-[10px] leading-none font-bold rounded-t px-1 py-px z-10 shadow-sm ${DAY_MARKERS.OVERRIDE.onShift}`} title={overrideTooltip(handOv)}>{DAY_MARKERS.OVERRIDE.label}</span>}
               {/* P2: soft warns (postNightRest etc.) get a small dot instead of the red ring so hard
                   vs soft reads at a glance — see the in-grid legend below. Centered at the top edge
                   so it never competes with the R/J/lock/day-marker corners. */}
@@ -17297,6 +17389,8 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
         <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.VAC.chip}`} title={DAY_MARKERS.VAC.title}>VAC</span>
         <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.J.chip}`} title={DAY_MARKERS.J.title}>J</span>
         <span>= Grand Rounds day · JC presenting · wellness Wednesday · approved off · vacation · jeopardy call</span>
+        <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.OVERRIDE.chip}`} title={DAY_MARKERS.OVERRIDE.title}>{DAY_MARKERS.OVERRIDE.label}</span>
+        <span>= hand override</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation (error)</span>
         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"/><span className="text-amber-600 font-medium">dot</span></span>
@@ -17355,7 +17449,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
           onConfirm={() => {
             // lockedCells must clear alongside schedule — otherwise a lock entry points at a cell
             // that no longer exists, invisible with no UI to find or remove it (see CLAUDE.md).
-            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {} }, { kind: 'clear' }, viewer));
+            updateBlock(b => withActivity(b, { ...b, schedule: {}, generationReport: null, lockedCells: {}, handOverrides: {} }, { kind: 'clear' }, viewer));
             setConfirmClear(false);
             showToast('Schedule cleared', 'amber');
           }}
@@ -17602,7 +17696,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
             solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
         </div>
       )}
@@ -17626,7 +17720,7 @@ function ScheduleGrid({ allResidents, block, updateBlock, updateBlockTracked, on
             selectedCell={selectedCell} inspectorData={inspectorData} onClearSelection={()=>setSelectedCell(null)}
             onChangeShift={()=>{ if(inspectorData) setPicker({resident:inspectorData.resident,dateStr:inspectorData.dateStr}); }}
             onUnlockCell={()=>{ if(inspectorData) toggleLock(inspectorData.resident.id, inspectorData.dateStr); }}
-            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)}
+            onGive={applyGive} onSwap={applySwap} onAssign={applyAssign} onOpenSickCallCover={()=>setSickCallModalOpen(true)} handOverrideList={handOverrideList}
             solverAlt={solverAlt} onOpenSolverAlt={openSolverAlt}/>
         </div>
       )}
@@ -17765,7 +17859,7 @@ function DragConfirmModal({ dropConfirm, onCancel, onConfirm }) {
   const verb = kind === 'swap' ? 'Swap' : 'Move';
 
   function confirm() {
-    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null } : null);
+    onConfirm(overridable.length ? { ruleIds: [...new Set(overridable.map(w => w.rule).filter(Boolean))], note: overrideNote.trim() || null, cells: handOverrideCells(overridable) } : null);
   }
 
   return (
@@ -18966,7 +19060,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
 // supplied by the desktop sidebar (the mobile drawer's own toolbar toggle button already covers
 // closing it there).
 function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResidents, onJumpToCell, onJumpToRow, onClose,
-  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt }) {
+  selectedCell, inspectorData, onClearSelection, onChangeShift, onUnlockCell, onGive, onSwap, onAssign, onOpenSickCallCover, solverAlt, onOpenSolverAlt, handOverrideList = [] }) {
   const { mustFix, orderedWarns } = panelIssues;
   // P3: selecting a grid cell switches this panel from the issue lists to the Cell inspector —
   // `inspectorData` is null while ScheduleGrid resolves the resident (or on a stale selection), in
@@ -19063,6 +19157,26 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
             )
           )}
         </section>
+
+        {handOverrideList.length > 0 && (
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-wide text-amber-700 mb-1.5">
+              {handOverrideList.length} hand override{handOverrideList.length !== 1 ? 's' : ''}
+            </h3>
+            <ul className="space-y-1">
+              {handOverrideList.map(o => (
+                <li key={`${o.residentId}_${o.dateStr}`}>
+                  <button type="button" onClick={()=>onJumpToCell?.(o.residentId, o.dateStr)}
+                    className="w-full text-left text-xs rounded-md border border-amber-200 bg-amber-50 px-2 py-1 hover:bg-amber-100">
+                    <span className="font-semibold">{o.name}</span> · {o.shiftId} · {formatDisplayDate(o.dateStr)}
+                    <span className="block text-amber-800">{o.ruleLabels.join('; ')}</span>
+                    {o.note && <span className="block text-gray-600 italic">{o.note}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {report && (
           <section>
@@ -21714,6 +21828,7 @@ function UserGuideTab({ onNavigate }) {
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.OFF.chip}`}>OFF</span> approved day off</span>
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.VAC.chip}`}>VAC</span> vacation</span>
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.J.chip}`}>J</span> jeopardy call</span>
+          <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.OVERRIDE.chip}`}>{DAY_MARKERS.OVERRIDE.label}</span> hand override (program rule broken by hand, confirmed)</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
         </div>
@@ -23410,6 +23525,7 @@ function buildSnapData(block) {
   return { emBlockAssignments:block.emBlockAssignments||{}, offServiceResidents:block.offServiceResidents||[],
            schedule:block.schedule||{}, specialDays:block.specialDays||{}, conferences:block.conferences||{},
            generationReport:block.generationReport||null, overrideLog:block.overrideLog||[], activityLog:block.activityLog||[],
+           handOverrides:normalizeHandOverrides(block.handOverrides),
            jeopardySchedule:block.jeopardySchedule||{pgy1:{},pgy2:{},pgy3:{}}, metroJeopardyRanges:block.metroJeopardyRanges||[],
            startDate:block.startDate, endDate:block.endDate, name:block.name, academicYear:block.academicYear };
 }
@@ -24776,6 +24892,12 @@ export default function ResidentScheduler({ viewer } = {}) {
     // them same as a hard error — see requestExport below.
     restWarns: issues.filter(i=>EXPORT_BLOCKING_RULE_IDS.has(i.rule)).length,
   }),[issues]);
+  // Confirmed hand overrides of program rules (lib/handOverrides.js) - flagged warnings, never
+  // export-blocking, but listed in the export-confirm dialog so the chief sees them at export.
+  const handOverrideList = useMemo(
+    ()=>listHandOverrides(block.handOverrides, block.schedule||{}, Object.fromEntries(allResidents.map(r=>[r.id,r]))),
+    [block.handOverrides, block.schedule, allResidents]
+  );
   const hasSchedule = useMemo(()=>Object.values(block.schedule||{}).some(rs=>Object.values(rs||{}).some(Boolean)),[block.schedule]);
   const matchingSnap = useMemo(() => blocksHistory.find(b => b.id === block.id), [blocksHistory, block.id]);
   // Derived, not stored — so any code path that changes block/blocksHistory (including raw
@@ -24810,7 +24932,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // recording regardless of whether the schedule under it was generated or hand-built.
   function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
-      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
@@ -24819,7 +24941,10 @@ export default function ResidentScheduler({ viewer } = {}) {
     // logged automatically instead of being silently missed. The diff runs against `prev` inside
     // the updater — not the `block` closure — so it always sees the authoritative previous state.
     setBlock(prev => {
-      const next = typeof fn === 'function' ? fn(prev) : { ...prev, ...fn };
+      let next = typeof fn === 'function' ? fn(prev) : { ...prev, ...fn };
+      // Hand overrides ride the SAME block update as the cell change (one undo restores both) and
+      // prune themselves whenever a cell stops holding the overridden shift. See lib/handOverrides.js.
+      next = syncHandOverrides(prev, next, overrideMeta, viewer?.email ?? null);
       if (overrideMeta) {
         const events = diffScheduleCells(prev.schedule, next.schedule);
         if (events.length) {
@@ -24836,20 +24961,20 @@ export default function ResidentScheduler({ viewer } = {}) {
   function undoSchedule() {
     if (!undoStack.length) return;
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells }]);
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells }, { kind: 'undo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
     if (!redoStack.length) return;
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
-      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells }];
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides }];
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells }, { kind: 'undo', note: 'redo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
@@ -24922,6 +25047,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       // Array.isArray rather than `|| []`, matching reconcileTabOrder's convention.
       overrideLog: Array.isArray(d.overrideLog) ? d.overrideLog : [],
       activityLog: normalizeActivityLog(d.activityLog),
+      handOverrides: normalizeHandOverrides(d.handOverrides),
       // Same untrusted-shape guard for the three jeopardy tracks (each must be a plain object,
       // not an array/string/etc — a pre-feature snapshot simply has none of these keys) and the
       // Metro admin-month ranges list.
@@ -25160,19 +25286,20 @@ export default function ResidentScheduler({ viewer } = {}) {
       // "nothing imports" if QGenda rejects an unrecognized task string, so the chief needs the
       // chance to bail out and fix it in Settings before the file leaves the browser.
       const { unmapped } = buildQGendaCSVRows(variant || 'minimal');
-      if (unmapped.length > 0 || pendingErrorCount() > 0 || pendingRestWarnCount() > 0) {
+      if (unmapped.length > 0 || pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || handOverrideList.length > 0) {
         setExportConfirm(kind); setExportVariant(variant); setExportUnmapped(unmapped); return;
       }
       runExport(kind, variant);
       return;
     }
-    if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0) { setExportConfirm(kind); return; }
+    if (pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || handOverrideList.length > 0) { setExportConfirm(kind); return; }
     runExport(kind);
   }
 
   const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
   // QGENDA_NAME_FORMAT_LABEL is module-level now — shared with SettingsTab's "QGenda Task Names" card.
 
+  const exportHasProblems = pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || (exportConfirm==='qgenda' && exportUnmapped.length > 0);
   const isSwitchNew = switchPending==='__new__';
   const pendingSnap = !isSwitchNew&&switchPending?switchPending:null;
 
@@ -25591,11 +25718,11 @@ export default function ResidentScheduler({ viewer } = {}) {
           ids whose QGenda task fell back to an on-screen label — see requestExport) alongside the
           usual validateAll issues, but reuses this same dialog rather than a second mechanism. */}
       {exportConfirm && (
-        <ConfirmDialog icon={AlertTriangle} tone="danger" title="Unresolved issues in this schedule"
+        <ConfirmDialog icon={AlertTriangle} tone={exportHasProblems ? 'danger' : 'warn'} title={exportHasProblems ? 'Unresolved issues in this schedule' : 'Hand overrides in this schedule'}
           actions={
             <>
               <Button variant="ghost" size="sm" onClick={()=>{setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);}}>Cancel</Button>
-              <Button variant="danger" size="sm" onClick={()=>runExport(exportConfirm, exportVariant)}>Export Anyway</Button>
+              <Button variant={exportHasProblems ? 'danger' : 'primary'} size="sm" onClick={()=>runExport(exportConfirm, exportVariant)}>{exportHasProblems ? 'Export Anyway' : 'Export'}</Button>
             </>
           }>
           {(pendingErrorCount() > 0 || pendingRestWarnCount() > 0) && (
@@ -25612,9 +25739,21 @@ export default function ResidentScheduler({ viewer } = {}) {
               ({[...new Set(exportUnmapped)].join(', ')}) — they will export under their on-screen shift label. Set task names in Settings → QGenda.
             </p>
           )}
-          <p className="mt-2">
+          {handOverrideList.length > 0 && (
+            <div className="mt-2 text-xs">
+              <p className="font-medium">{handOverrideList.length} hand override{handOverrideList.length!==1?'s':''} (program rules broken by hand, confirmed - not blocking):</p>
+              <ul className="list-disc ml-5 max-h-32 overflow-y-auto">
+                {handOverrideList.map(o => (
+                  <li key={`${o.residentId}_${o.dateStr}`}>
+                    {o.name} - {o.shiftId} on {formatDisplayDate(o.dateStr)}: {o.ruleLabels.join('; ')}{o.note ? ` (${o.note})` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {exportHasProblems && <p className="mt-2">
             Exporting now will carry {(pendingErrorCount()+pendingRestWarnCount()+(exportConfirm==='qgenda'?exportUnmapped.length:0))===1?'it':'them'} into {EXPORT_KIND_LABEL[exportConfirm] || 'the export'}.
-          </p>
+          </p>}
         </ConfirmDialog>
       )}
 
