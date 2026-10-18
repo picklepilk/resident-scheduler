@@ -48,8 +48,8 @@ export function resolvePeople(parsed, emRoster, match, mapping = {}) {
 
 const ayStartDate = y => `${y}-07-01`;
 
-// Preview model. Per AY: JC date diff (added/removed/same vs the currently RESOLVED list, which
-// includes derived first-Tuesdays), lecture/M&M counts new vs already stored, presenter adds.
+// Preview model. Per AY: JC date diff (added/removed/same vs the chief-logged list; an absent
+// list is EMPTY, nothing is derived), lecture/M&M counts new vs already stored, presenter adds.
 export function buildAcademicPlan({ parsed, emRoster, ayData, match, mapping = {} }) {
   const people = resolvePeople(parsed, emRoster, match, mapping);
   const resolved = people.filter(p => p.residentId);
@@ -91,19 +91,19 @@ export function buildAcademicPlan({ parsed, emRoster, ayData, match, mapping = {
   } };
 }
 
-// Single seam for "write JC dates for an AY". D1 will redirect this to the chief-logged rule-date
-// lists; today the store is ayData[AY].jcDates (an explicit array materializes the list).
+// Single seam for "write JC dates for an AY". The store is ayData[AY].jcDates, the same chief-logged
+// list ruleDates/resolveJcDates read (an explicit array materializes the list).
 export function writeJcDatesToAy(ayData, ay, dates) {
   const conf = (ayData || {})[ay] || {};
   return { ...(ayData || {}), [ay]: { ...conf, jcDates: [...new Set(dates)].sort() } };
 }
 
 // Default JC write mode per AY: 'off' for AYs with <3 file dates (stray typo guard); 'replace' when
-// nothing would be removed or the current list is just the derived default; else 'union' so
-// chief-added dates (and their presenters) are never silently dropped. 'replace' is explicit opt-in.
+// nothing would be removed (incl. an absent/empty logged list); else 'union' so
+// chief-logged dates (and their presenters) are never silently dropped. 'replace' is explicit opt-in.
 export function defaultJcMode(ay) {
   if (!ay.writeJcDefault || !ay.jc.file.length) return 'off';
-  return ay.jc.removed.length > 0 && ay.jc.custom ? 'union' : 'replace';
+  return ay.jc.removed.length > 0 ? 'union' : 'replace';
 }
 
 // Applies the plan. opts.jcMode = { [ay]: 'off'|'union'|'replace' } (defaults via defaultJcMode).
