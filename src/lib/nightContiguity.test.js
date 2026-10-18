@@ -168,7 +168,8 @@ const CEILINGS = {
   understaffed: { twoSegment: 8, mergeable: 8 },
   // 2026-10-16: 13 -> 11 (same look-ahead fix).
   // 2026-10-18: 11 -> 13 (ranking follows Soft Rule Priority: postNightRest no longer counts in
-  // blockingWarnCount, so best-of-N picks a different winner; trades hole count for night shape).
+  // blockingWarnCount, so best-of-N picks a different winner via the tie-break path; the hole count
+  // is not lower, the night shape is simply worse for the new winner).
   vacationHeavy: { twoSegment: 13, mergeable: 13 },
   // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
   // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
