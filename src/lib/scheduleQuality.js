@@ -22,6 +22,44 @@ import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 // should score. Exported so a test can assert against the real number instead of restating it.
 export const AREA_CONCENTRATION_FLOOR = 0.5;
 
+// Night-run shape costs (2026-10-28, chief explicitly wants each resident's nights consolidated
+// into as few runs as possible with no standalone single nights; supersedes the old "61% of real
+// runs are 1-3 nights" calibration that kept these at 2.3 / 4). An EXTRA run (every run beyond a
+// resident's first, edge runs included) costs AVOIDABLE when the resident's whole night total fits
+// in one run, FORCED otherwise. A standalone interior single night additionally costs SINGLETON.
+// Exported so night-merge moves and tests share the numbers. Real Block 6: chief hand schedule had
+// 6 isolated singles / 13 multi-run residents vs 24 / 29 from the generator.
+export const NIGHT_EXTRA_RUN_AVOIDABLE = 6;
+export const NIGHT_EXTRA_RUN_FORCED = 2;
+export const NIGHT_SINGLETON_COST = 6;
+
+// Maximal consecutive-date night runs for one resident row -> [{start, end, len}] (indices into
+// `dates`). `isNight(shiftId)` is passed in so callers keep one definition of "night".
+export function nightRunsOf(rs, dates, isNight) {
+  const runs = [];
+  let i = 0;
+  while (i < dates.length) {
+    if (!isNight(rs[dates[i]])) { i++; continue; }
+    let j = i;
+    while (j + 1 < dates.length && isNight(rs[dates[j + 1]]) && toDateStr(addDays(parseDate(dates[j]), 1)) === dates[j + 1]) j++;
+    runs.push({ start: i, end: j, len: j - i + 1 });
+    i = j + 1;
+  }
+  return runs;
+}
+
+// Night-shape cost of one resident's runs (the single implementation behind nightShapePenalty AND
+// the night-merge move's cheap pre-filter, so they cannot drift). `lastIdx` = last date index.
+export function nightFragmentationCost(runs, lastIdx, maxRun) {
+  const totalNights = runs.reduce((sum, run) => sum + run.len, 0);
+  const avoidableSplit = totalNights <= maxRun;
+  let cost = Math.max(runs.length - 1, 0) * (avoidableSplit ? NIGHT_EXTRA_RUN_AVOIDABLE : NIGHT_EXTRA_RUN_FORCED);
+  for (const run of runs) {
+    if (run.len === 1 && run.start > 0 && run.end < lastIdx) cost += NIGHT_SINGLETON_COST;
+  }
+  return cost;
+}
+
 // Population standard deviation (denominator = N, not N-1) — we're measuring spread within a
 // fixed, fully-known group (every resident in that category/pgy cohort on this block), not
 // estimating a sample statistic, so population stddev is the correct measure here.
@@ -333,69 +371,25 @@ export function computeQualityMetrics({
   for (const r of residents) {
     if (nightOnlyIds.has(r.id)) continue;
     const rs = schedule[r.id] || {};
-    const runs = [];
-    let i = 0;
-    while (i < dates.length) {
-      if (!isNightShiftId(rs[dates[i]])) { i++; continue; }
-      const start = i;
-      let j = i;
-      while (
-        j + 1 < dates.length &&
-        isNightShiftId(rs[dates[j + 1]]) &&
-        toDateStr(addDays(parseDate(dates[j]), 1)) === dates[j + 1]
-      ) j++;
-      runs.push({ start, end: j, len: j - start + 1 });
-      i = j + 1;
-    }
+    const runs = nightRunsOf(rs, dates, isNightShiftId);
     // Second-rest-day penalty is checked against every run (only the run's OWN end matters — a
     // run touching the block's START but not its end is still fully checkable), unlike the
     // shortness/fragmentation/trauma-position penalties below, which are edge-exempt on BOTH
     // sides (see traumaRunPenaltyFor/secondRestDayPenaltyFor's own comments for why).
     for (const run of runs) secondRestDayPenalty += secondRestDayPenaltyFor(rs, run, dates, lastIdx);
-    // AVOIDABLE vs FORCED fragmentation (chief preference, 2026-10-14: "bigger preference is for
-    // the night shifts to be contiguously scheduled if able" — NIGHT_RULES.maxRun stays a hard 6,
-    // never relaxed by this). `totalNights` sums EVERY run (edge runs included — a run touching
-    // the block boundary still used up one of this resident's nights, even though its own SHAPE
-    // isn't judgeable from inside this block) against `nightRules.maxRun`: if the resident's whole
-    // block's worth of nights would already fit in one run, nothing structural forced the split —
-    // this generator's own `nightCapped`/`nightStintCapped` hard rules keep every one of ITS
-    // outputs at <=maxRun total already (so every 2-segment case it produces lands here), but a
-    // hand-edited or imported schedule can still exceed that, which is exactly the FORCED case
-    // this split exists to tell apart (more nights than one run could ever hold, so extra runs are
-    // unavoidable structure, not a generator miss).
-    const totalNights = runs.reduce((sum, run) => sum + run.len, 0);
-    const avoidableSplit = totalNights <= nightRules.maxRun;
-    const interior = runs.filter(run => run.start > 0 && run.end < lastIdx);
-    interior.forEach((run, idx) => {
-      const { len } = run;
-      // Night-run SHAPE relaxation (chief-directed — mirrors ResidentScheduler.jsx's own
-      // nightCluster relaxation in score(): his real hand-built schedules run mostly 1-3 nights,
-      // 61% of real runs, not the aspirational 5-6 NIGHT_RULES ideal). Runs of 2-6 now incur NO
-      // shortness penalty at all; only a genuinely ISOLATED single night (run length 1) is still
-      // penalized, at the same magnitude as before. The block-edge exemption is UNCHANGED.
-      if (len === 1) nightShapePenalty += (nightRules.minRun - 1);
-      // len 2..maxRun: no shortness penalty. len > maxRun: validateAll's hard rule already
-      // forbids this; not this scorer's job to penalize twice.
-      //
-      // Fragmentation: every run beyond the first costs more when it was AVOIDABLE (2.3) than when
-      // it was FORCED (2, the original flat cost) — see `avoidableSplit` above. A genuinely forced
-      // 3rd+ run (more nights than maxRun can hold in one stretch) still only costs the original 2
-      // — raising ITS cost too would just punish residents for a shape nothing could have avoided.
-      //
-      // 2.3, not a larger value: MEASURED (2026-10-14) against all 4 committed
-      // qualityBaseline.*.json fixtures. At 6 (and even at 3) every baseline REGRESSED by 20-37
-      // points on this slot, because most avoidable splits on these fixtures can't actually be
-      // merged by any legal rearrangement (coverage/target slack already consumed; EM_EMS/EM_TOX
-      // `blockEntireDay` windows and ACGME hour/streak caps block the gap days at the ELIGIBILITY
-      // level). A dedicated "night-stint merge" repair move was tried and dropped for the same
-      // reason — near-zero hit rate. 2.3 is the largest value inside every baseline's 1%-relative
-      // tolerance (baselineSuite.js SLOT3_RELATIVE_TOLERANCE) without forcing, and it already buys
-      // the measured improvement (via best-of-20 selection, see nightContiguity.test.js). Revisit
-      // upward only alongside a merge mechanism that can use cross-date donors — otherwise a bigger
-      // number just scores the same unfixable schedules worse.
-      if (idx > 0) nightShapePenalty += avoidableSplit ? 2.3 : 2;
-      traumaRunPenalty += traumaRunPenaltyFor(rs, run, dates);
-    });
+    // AVOIDABLE vs FORCED fragmentation (chief preference 2026-10-14, strengthened 2026-10-28:
+    // consolidate nights into as few runs as possible; NIGHT_RULES.maxRun stays a hard 6).
+    // `totalNights` sums EVERY run against `nightRules.maxRun`: if the resident's whole block of
+    // nights fits in one run, the split was avoidable. EVERY run beyond the first is charged, edge
+    // runs included (an edge run is still one of the resident's runs); only the SINGLETON charge is
+    // interior-only, since an edge run may continue into the adjacent block. See
+    // nightFragmentationCost. History: 2.3/4 (2026-10-14, raising it regressed baselines because no
+    // merge mechanism existed) -> now paired with the night-merge move in ResidentScheduler.jsx.
+    nightShapePenalty += nightFragmentationCost(runs, lastIdx, nightRules.maxRun);
+    for (const run of runs) {
+      if (run.start > 0 && run.end < lastIdx) traumaRunPenalty += traumaRunPenaltyFor(rs, run, dates);
+    }
+
   }
 
   // workShapePenalty: the shape of each resident's WORKED days across the block, regardless of

@@ -8,7 +8,7 @@
 // report.podSubstitutes[] log. Mirrors emCompositionAndPgyGating.test.js's own hand-built-resident/
 // fixed-block pattern (same file's Wellness-Wednesday date constants) rather than reinventing one.
 import { describe, it, expect } from 'vitest';
-import { validateAll, generateSchedule, generateScheduleBest, getEligibleShifts } from '../ResidentScheduler.jsx';
+import { validateAll, generateSchedule, generateScheduleBest, replayNightMerge, getEligibleShifts } from '../ResidentScheduler.jsx';
 import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
@@ -275,7 +275,7 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
       let replaySchedule;
       if (!res.report.replay.truePrimaryOnly) {
         // Single-step replay contract: unchanged from before this fix.
-        replaySchedule = generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: res.report.replay.repair }).schedule;
+        replaySchedule = replayNightMerge(fx, generateSchedule({ ...fx, rng: mulberry32(res.report.replay.seed), repair: res.report.replay.repair })).schedule;
       } else {
         sawTruePrimaryOnly = true;
         // Two-step replay contract (the fix under test): step 1 reproduces the pre-fix winner...
@@ -288,13 +288,13 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
         }
         // ...step 2 replays Phase 3b alone on top of it, exactly as generateScheduleBest's own
         // gap-fix block does.
-        replaySchedule = generateSchedule({
+        replaySchedule = replayNightMerge(fx, generateSchedule({
           ...fx,
           block: { ...fx.block, schedule: base.schedule },
           rng: mulberry32(res.report.replay.seed),
           repair: 'truePrimaryOnly',
           keptCellsOverride: trueKeptCells,
-        }).schedule;
+        })).schedule;
       }
       expect(replaySchedule, `seed ${baseSeed}`).toEqual(res.schedule);
     }

@@ -33,7 +33,7 @@ import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
-import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
+import { computeQualityMetrics, computeQualityVector, betterQuality, nightRunsOf, nightFragmentationCost } from './lib/scheduleQuality.js';
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
@@ -5591,11 +5591,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           (r.jcPresentDates || []).includes(nextDs) ||
           (r.grLectureDates || []).includes(toDateStr(addDays(parseDate(ds), 2)));
         if ((t - assigned[r.id]) < 2 || strandedTomorrow) nightCluster = -1.5;
-        else if (priorRunCount >= 2) nightCluster = -2.5; // would start a 3rd+ separate run
-        else if (priorRunCount === 1) nightCluster = -0.8; // would start a 2nd separate run
+        else if (priorRunCount >= 2) nightCluster = -3.5; // would start a 3rd+ separate run
+        else if (priorRunCount === 1) nightCluster = -2; // would start a 2nd separate run (was -0.8 until 2026-10-28)
       }
     } else if (runBefore === 1) {
-      nightCluster = -0.625; // stranding an isolated single night — still penalized
+      nightCluster = -1; // stranding an isolated single night (was -0.625 until 2026-10-28)
     }
     // Trauma-night-within-run soft preferences (chief-directed, mirrors the hard traumaRunCapped
     // exclusion in candidatePool — see traumaNightRunCount's own comment): 1 trauma night per run
@@ -7828,6 +7828,37 @@ const LNS_MIN_WINDOW = 3;
 const LNS_WINDOW_SPREAD = 3; // window = 3..5 days
 const LNS_UNFILLED_FOCUS = 0.2;
 const LNS_UNDERTARGET_FOCUS = 0.65;
+// Slice of the under-target band (taken from its top end) re-aimed at night fragmentation: windows
+// centred on the gap between a resident's separate night runs / around a standalone single night.
+const LNS_NIGHT_FOCUS = 0.3;
+const LNS_NIGHT_MAX_WINDOW = 8;
+
+// Picks a fragmented resident (>=2 night runs) and returns {center, k} for an LNS window covering
+// the gap between its shortest run and the nearest other run. d2/d3 are the iteration's existing
+// rng draws (no extra draws, so the draw count per iteration stays fixed). null = nothing to merge.
+function nightFragmentWindow(schedule, dates, residents, d2, d3) {
+  const frag = [];
+  for (const r of residents) {
+    const runs = nightRunsOf(schedule[r.id] || {}, dates, isNightShiftId);
+    if (runs.length >= 2) frag.push(runs);
+  }
+  if (!frag.length) return null;
+  const runs = frag[Math.floor(d2 * frag.length)];
+  // Prefer the shortest run (a single first); d3 picks among ties.
+  const minLen = Math.min(...runs.map(x => x.len));
+  const shortest = runs.filter(x => x.len === minLen);
+  const R = shortest[Math.floor(d3 * shortest.length)];
+  let T = null, best = Infinity;
+  for (const o of runs) {
+    if (o === R) continue;
+    const gap = o.start > R.end ? o.start - R.end : R.start - o.end;
+    if (gap < best) { best = gap; T = o; }
+  }
+  const lo = Math.max(0, Math.min(R.start, T.start) - 1);
+  const hi = Math.min(dates.length - 1, Math.max(R.end, T.end) + 1);
+  const k = Math.max(LNS_MIN_WINDOW, Math.min(LNS_NIGHT_MAX_WINDOW, hi - lo + 1));
+  return { center: lo + Math.floor((hi - lo) / 2), k };
+}
 
 function mergeLnsReport(prevRep, newRep, clearedDates) {
   const keepOutside = (list, key) => (Array.isArray(list) ? list : []).filter(e => !clearedDates.has(e?.[key]));
@@ -7872,9 +7903,12 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
     const d1 = rng(), d2 = rng(), d3 = rng(), d4 = rng(), d5 = rng();
     const rep = cur.result.report;
     const unf = rep.unfilled || [], ut = rep.underTarget || [];
-    let center;
+    let center, nightWin = null, nightK = 0;
     if (unf.length && d1 < LNS_UNFILLED_FOCUS) {
       center = idxOf.get(unf[Math.floor(d2 * unf.length)].dateStr);
+    } else if (d1 >= LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS - LNS_NIGHT_FOCUS && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS && (nightWin = nightFragmentWindow(cur.result.schedule, dates, args.allResidents, d2, d3))) {
+      // Night-merge focus (2026-10-28): window spans the gap between a fragmented resident's runs.
+      center = nightWin.center; nightK = nightWin.k;
     } else if (ut.length && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS) {
       const rid = ut[Math.floor(d2 * ut.length)].residentId;
       const free = dates.map((ds, i) => (cur.result.schedule[rid]?.[ds] ? -1 : i)).filter(i => i >= 0);
@@ -7883,7 +7917,7 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
       center = Math.floor(d2 * n);
     }
     if (center == null) center = Math.floor(d2 * n);
-    const k = Math.min(n, LNS_MIN_WINDOW + Math.floor(d4 * LNS_WINDOW_SPREAD));
+    const k = Math.min(n, nightK || (LNS_MIN_WINDOW + Math.floor(d4 * LNS_WINDOW_SPREAD)));
     const start = Math.max(0, Math.min(n - k, center - Math.floor(k / 2)));
     const windowDates = dates.slice(start, start + k);
     const subSeed = Math.floor(d5 * 4294967296) >>> 0;
@@ -7919,6 +7953,108 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
   return { current: cur, ran, accepted };
 }
 
+// ─── NIGHT-MERGE MOVE (2026-10-28) ───
+// Chief wants each resident's nights consolidated into as few runs as possible, no standalone
+// singles. Pairwise night SWAP between residents X and Y: X's standalone single night (shift sA on
+// date d) is handed to Y (who is empty on d), and in exchange Y hands X one night shift sB on a
+// date e adjacent to one of X's OTHER night runs (X empty on e). Per-date/per-shift coverage and
+// every resident's shift count are unchanged, so only shape moves. Candidates are pre-ranked by the
+// cheap per-row night-shape delta (nightFragmentationCost, the SAME function the quality metric
+// uses) and adopted ONLY on strict betterQuality of the full scoreGenerationResult, so hard
+// eligibility, rest, seniority (validateAll errors) and blocking warnings can never get worse --
+// this is the transactional contract LNS uses. Never touches locked cells or trueKeptCells.
+// Deterministic (no rng, no time cap; evals/accepts are count-capped) so replay is exact:
+// replayNightMerge(args, result) re-runs it on the same input.
+const NIGHT_MERGE_MAX_EVALS = 40; // each eval is a full validateAll + quality pass (~0.15 s on a Pi)
+const NIGHT_MERGE_MAX_ACCEPT = 120;
+const NIGHT_MERGE_MAX_RUN = 3; // dissolve runs up to this long
+
+function nightMergePass({ args, current, rulePriority, trueKeptCells }) {
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  const n = dates.length;
+  const lastIdx = n - 1;
+  const locked = args.block.lockedCells || {};
+  const nightOnlyIds = new Set(args.allResidents.filter(r => isNightOnlyResident(r, args.eligOverrides || {})).map(r => r.id));
+  const frozen = (rid, ds) => trueKeptCells.has(`${rid}|${ds}`) || !!locked[rid]?.[ds];
+  const rowCost = rs => nightFragmentationCost(nightRunsOf(rs, dates, isNightShiftId), lastIdx, NIGHT_RULES.maxRun);
+  let cur = current, evals = 0, accepted = 0;
+  const rejected = new Set();
+  // Exchange ownership of X's cells on `ds` with Y's cells on `es` (all night shifts). Dates keep
+  // their shift ids, so per-date/per-shift coverage and both residents' counts are unchanged.
+  const swapped = (rowX, rowY, ds, es) => {
+    const nx = { ...rowX }, ny = { ...rowY };
+    ds.forEach(d => { ny[d] = rowX[d]; delete nx[d]; });
+    es.forEach(e => { nx[e] = rowY[e]; delete ny[e]; });
+    return [nx, ny];
+  };
+  const eligMemo = new Map();
+  const eligListOf = r => {
+    let v = eligMemo.get(r.id);
+    if (!v) { v = new Set(getEffectiveEligibility(r, args.eligOverrides || {}, args.dayRules || {}).list); eligMemo.set(r.id, v); }
+    return v;
+  };
+  for (let guard = 0; guard < NIGHT_MERGE_MAX_ACCEPT && evals < NIGHT_MERGE_MAX_EVALS; guard++) {
+    const sched = cur.result.schedule;
+    const cands = [];
+    for (const X of args.allResidents) {
+      if (nightOnlyIds.has(X.id)) continue;
+      const rowX = sched[X.id] || {};
+      const runs = nightRunsOf(rowX, dates, isNightShiftId);
+      if (runs.length < 2) continue;
+      const costX = nightFragmentationCost(runs, lastIdx, NIGHT_RULES.maxRun);
+      for (const R of runs) {
+        if (R.len > NIGHT_MERGE_MAX_RUN) continue;
+        const ds = dates.slice(R.start, R.end + 1);
+        if (ds.some(d => frozen(X.id, d))) continue;
+        for (const T of runs) {
+          if (T === R || T.len + R.len > NIGHT_RULES.maxRun) continue;
+          for (const dir of [1, -1]) {
+            // L cells growing T outward on one side, entirely inside the block, never touching R.
+            const eis = [];
+            for (let q = 1; q <= R.len; q++) eis.push(dir > 0 ? T.end + q : T.start - q);
+            if (eis.some(ei => ei < 0 || ei > lastIdx || (ei >= R.start && ei <= R.end))) continue;
+            const es = eis.map(ei => dates[ei]);
+            if (es.some(e => rowX[e] || frozen(X.id, e))) continue;
+            for (const Y of args.allResidents) {
+              if (Y.id === X.id) continue;
+              const rowY = sched[Y.id] || {};
+              if (es.some(e => !isNightShiftId(rowY[e]) || frozen(Y.id, e))) continue;
+              if (ds.some(d => rowY[d] || frozen(Y.id, d))) continue;
+              // Static rotation eligibility both ways (cheap; DOW/rest/etc. left to the full score).
+              if (es.some(e => !eligListOf(X).has(rowY[e])) || ds.some(d => !eligListOf(Y).has(rowX[d]))) continue;
+              const key = `${X.id}|${Y.id}|${ds.join(',')}|${es.join(',')}`;
+              if (rejected.has(key)) continue;
+              const [nx, ny] = swapped(rowX, rowY, ds, es);
+              const delta = rowCost(nx) - costX + (nightOnlyIds.has(Y.id) ? 0 : rowCost(ny) - rowCost(rowY));
+              if (delta < 0) cands.push({ delta, key, X, Y, nx, ny });
+            }
+          }
+        }
+      }
+    }
+    if (!cands.length) break;
+    cands.sort((a, b) => a.delta - b.delta || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    let adopted = false;
+    for (const c of cands) {
+      if (evals >= NIGHT_MERGE_MAX_EVALS) break;
+      evals++;
+      const schedule = { ...sched, [c.X.id]: c.nx, [c.Y.id]: c.ny };
+      const result = { schedule, report: cur.result.report };
+      const score = scoreGenerationResult(result, args, rulePriority);
+      if (betterQuality(score, cur.score)) { cur = { ...cur, result, score }; accepted++; adopted = true; break; }
+      rejected.add(c.key);
+    }
+    if (!adopted) break;
+  }
+  return { current: cur, evals, accepted };
+}
+
+export function replayNightMerge(args, result) {
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  const cur = { result, score: scoreGenerationResult(result, args, rulePriority) };
+  return nightMergePass({ args, current: cur, rulePriority, trueKeptCells: originalKeptCells(args) }).current.result;
+}
+
 // Best-of-N restart: runs generateSchedule `attempts` times with distinct seeds (generation is
 // nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
 // different schedules), scores each with scoreGenerationResult, and keeps the strictly best
@@ -7942,6 +8078,10 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
 //     repair: 'truePrimaryOnly', clearFirst: false, block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
+// Night-merge (2026-10-28): when `repair` is on, `nightMergePass` runs on the winner after the steps
+// above and BEFORE LNS, and once more after LNS (only if LNS ran). Both are deterministic, so replay
+// = `replayNightMerge(args, result)` at each of those points (LNS replay below starts from the
+// post-merge schedule).
 // LNS (B1): when `report.replay.lns` is non-null ({seed, iters}), the winner above is only the
 // PRE-LNS schedule; reproduce the final one with `replayLns(args, preLnsResult, report.replay.lns)`
 // (exported below; it drives the same lnsPassSteps from the same start score). `iters` is the count
@@ -8152,6 +8292,15 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // B1: LNS ruin-and-recreate on the settled winner (opt-in via lnsIters; the UI path passes it).
   // `best` is replaced only on strict betterQuality inside lnsPassSteps. Runs BEFORE the one-shot
   // diagnostics below so they describe the final schedule.
+  // Night-merge (2026-10-28): consolidate fragmented night runs by pairwise swaps. Runs before LNS
+  // (so LNS refills start from consolidated nights) and again after it. Same `repair` gate as LNS.
+  let nightMergeInfo = null;
+  const runNightMerge = () => {
+    const nm = nightMergePass({ args, current: best, rulePriority, trueKeptCells: originalKeptCells(args) });
+    best = nm.current;
+    nightMergeInfo = { passes: (nightMergeInfo?.passes || 0) + 1, accepted: (nightMergeInfo?.accepted || 0) + nm.accepted, evals: (nightMergeInfo?.evals || 0) + nm.evals };
+  };
+  if (repair) { yield { phase: 'finalize' }; runNightMerge(); }
   let lnsInfo = null;
   // `repair` gate: repair:false callers want the raw unrepaired attempt (and its replay with
   // repair:false), which an LNS pass would silently mutate.
@@ -8169,6 +8318,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       lnsInfo = { seed: lnsSeed, iters: st.value.ran, accepted: st.value.accepted };
     }
   }
+
+  if (repair && lnsInfo && lnsInfo.iters > 0) runNightMerge();
 
   // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
   // definition in generateSchedule). Deleted afterwards because the report is persisted onto the
@@ -8197,6 +8348,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // repair:false (a repair:true replay would mutate it into a different schedule).
   best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null };
   if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
+  if (nightMergeInfo) best.result.report.nightMergeAccepted = nightMergeInfo.accepted;
+  if (nightMergeInfo) best.result.report.nightMergeEvals = nightMergeInfo.evals;
   return best.result;
 }
 
