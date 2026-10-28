@@ -37,7 +37,7 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, probeSolverHealth, getSolverUrl, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
@@ -16110,6 +16110,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
   const [localStatus, setLocalStatus] = useState(undefined); // undefined checking | null down | {ortools,cpus}
   const [jobsMode, setJobsMode] = useState(null);            // null unknown/loading | 'durable' | 'memory'
+  const [hostKind, setHostKind] = useState(null);            // /health host hint ('pi') or null
   useEffect(() => {
     let cancelled = false;
     const poll = () => { if (typeof document !== 'undefined' && document.hidden) return; checkLocalSolverHealth().then(r => { if (!cancelled) setLocalStatus(r); }); };
@@ -16120,10 +16121,10 @@ function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
   useEffect(() => {
     if (!SOLVER_ENABLED) return undefined;
     let cancelled = false;
-    probeSolverJobsMode(getSolverUrl()).then(m => { if (!cancelled) setJobsMode(m); });
+    probeSolverHealth(getSolverUrl()).then(h => { if (!cancelled) { setJobsMode(h?.mode ?? null); setHostKind(h?.host ?? null); } });
     return () => { cancelled = true; };
   }, []);
-  const cloudLabel = jobsMode === 'durable' ? 'Cloud (Modal)' : jobsMode === 'memory' ? 'Cloud (Fly)' : 'Cloud';
+  const cloudLabel = backendLabel(backendFor({ usingLocal: false, jobsMode, host: hostKind }));
   const localDot = localStatus === undefined ? 'bg-gray-300' : localStatus ? 'bg-green-500' : 'bg-red-400';
   const localTip = localStatus === undefined ? 'checking…' : localStatus ? `running · OR-Tools ${localStatus.ortools} · ${localStatus.cpus} core${localStatus.cpus === 1 ? '' : 's'}` : `not running at ${LOCAL_SOLVER_URL}`;
   const options = [
@@ -17346,9 +17347,11 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         // Jobs mode (Modal durable vs Fly memory) decides the budget, so probe it BEFORE building
         // the payload. Cached per URL; the local target never needs it.
         // null = probe failed: behave as Fly (legacy sync path) but label the backend just "Cloud".
-        jobsMode = usingLocal ? 'memory' : await probeSolverJobsMode(solverTargetUrl);
-        backend = backendFor({ usingLocal, jobsMode });
-        solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve });
+        // Pi host: /health also carries host/preferJobs/defaultBudgetSeconds (budget 300 s via jobs).
+        const hostInfo = usingLocal ? null : await probeSolverHealth(solverTargetUrl);
+        jobsMode = usingLocal ? 'memory' : (hostInfo?.mode ?? null);
+        backend = backendFor({ usingLocal, jobsMode, host: hostInfo?.host });
+        solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve, hostBudgetSeconds: hostInfo?.defaultBudgetSeconds });
         const solverLabel = backendLabel(backend);
         // Deep solve (admin opt-in) only raises the budget further on Fly; Modal and this computer
         // already run the long budget by default (see solverBudgetSeconds).
@@ -17368,7 +17371,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         const solveTimeoutMs = solverTimeoutMs(solveBudgetSec);
         // Durable backend (Modal: POST /solve disabled) => submit-then-poll; legacy Fly and the
         // local run-local target keep the synchronous solveRemote path exactly as before.
-        const durable = jobsMode === 'durable';
+        const durable = jobsMode === 'durable' || (!usingLocal && hostInfo?.preferJobs === true);
         const runJob = async () => {
           const ac = new AbortController();
           genSolveAbortRef.current = ac;

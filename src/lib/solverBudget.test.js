@@ -19,6 +19,15 @@ describe('solverBudgetSeconds', () => {
     expect(solverBudgetSeconds({ usingLocal: false, jobsMode: 'memory', deep: false })).toBe(120);
     expect(solverBudgetSeconds({ usingLocal: false, jobsMode: undefined })).toBe(120);
   });
+  it('server-advertised default budget (Pi) applies to cloud only; deep never drops below 300', () => {
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: 300 })).toBe(300);
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: 240 })).toBe(240);
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: 240, deep: true })).toBe(300);
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: 600, deep: true })).toBe(600);
+    expect(solverBudgetSeconds({ usingLocal: true, hostBudgetSeconds: 60 })).toBe(300);
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: null })).toBe(120);
+    expect(solverBudgetSeconds({ jobsMode: 'memory', hostBudgetSeconds: 'x' })).toBe(120);
+  });
   it('timeout is budget + 60 s', () => {
     expect(solverTimeoutMs(120)).toBe(180000);
     expect(solverTimeoutMs(300)).toBe(360000);
@@ -35,6 +44,9 @@ describe('backend labels', () => {
     expect(backendLabel('modal')).toBe('Cloud (Modal)');
     expect(backendLabel('fly')).toBe('Cloud (Fly)');
     expect(backendLabel('local')).toBe('This computer');
+    expect(backendFor({ usingLocal: false, jobsMode: 'memory', host: 'pi' })).toBe('pi');
+    expect(backendFor({ usingLocal: true, jobsMode: 'memory', host: 'pi' })).toBe('local');
+    expect(backendLabel('pi')).toBe('Cloud (Pi)');
   });
 });
 

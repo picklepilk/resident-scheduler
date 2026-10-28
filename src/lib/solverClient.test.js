@@ -258,6 +258,26 @@ describe('probeSolverJobsMode', () => {
   });
 });
 
+describe('probeSolverHealth', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('returns host hints (Pi), defaults them off for Fly, caches per url', async () => {
+    vi.resetModules();
+    const { probeSolverHealth, markSolverJobsDurable } = await import('./solverClient.js');
+    const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jobs: 'memory', host: 'pi', preferJobs: true, defaultBudgetSeconds: 300 }) });
+    vi.stubGlobal('fetch', f);
+    expect(await probeSolverHealth('https://pi.test')).toEqual({ mode: 'memory', host: 'pi', preferJobs: true, defaultBudgetSeconds: 300 });
+    await probeSolverHealth('https://pi.test');
+    expect(f).toHaveBeenCalledTimes(1);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jobs: 'memory' }) }));
+    expect(await probeSolverHealth('https://fly.test')).toEqual({ mode: 'memory', host: null, preferJobs: false, defaultBudgetSeconds: null });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ defaultBudgetSeconds: -5, host: 7 }) }));
+    expect(await probeSolverHealth('https://bad.test')).toEqual({ mode: 'memory', host: null, preferJobs: false, defaultBudgetSeconds: null });
+    markSolverJobsDurable('https://pi.test');
+    expect((await probeSolverHealth('https://pi.test')).mode).toBe('durable');
+    expect((await probeSolverHealth('https://pi.test')).host).toBe('pi');
+  });
+});
+
 describe('getSolverJobsMode', () => {
   afterEach(() => vi.unstubAllGlobals());
   it('reads /health jobs, caches per url, failure -> memory uncached', async () => {

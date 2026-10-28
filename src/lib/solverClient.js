@@ -132,27 +132,39 @@ export function normalizeSolverTarget(v) {
 // submit-then-poll job) or 'memory' (legacy Fly — synchronous /solve). Fetched once per URL per
 // session (module scope); ANY failure reads as 'memory' so behavior stays exactly the legacy
 // solveRemote path. Failures are not cached, so a transient blip retries next Generate.
-const jobsModeCache = new Map();
-// Like getSolverJobsMode but a failed/unknown probe resolves null instead of 'memory', so UI can
-// label the backend plain "Cloud" rather than claiming Fly.
+const healthCache = new Map(); // url -> { mode, host, preferJobs, defaultBudgetSeconds }
+// Full /health read: { mode: 'durable'|'memory', host: string|null, preferJobs: bool,
+// defaultBudgetSeconds: number|null } or null when unreachable. `host`/`preferJobs`/
+// `defaultBudgetSeconds` are optional server hints (the Pi sets SOLVER_HOST_KIND=pi); absent = Fly/Modal.
 // `fresh: true` skips the cache read (reachability checks must ask "reachable right now").
-export async function probeSolverJobsMode(url, { timeoutMs = 20000, fresh = false } = {}) {
+export async function probeSolverHealth(url, { timeoutMs = 20000, fresh = false } = {}) {
   if (!url) return null;
-  if (!fresh && jobsModeCache.has(url)) return jobsModeCache.get(url);
+  if (!fresh && healthCache.has(url)) return healthCache.get(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${url}/health`, { signal: controller.signal });
     if (!res.ok) return null;
     const json = await res.json();
-    const mode = json?.jobs === 'durable' ? 'durable' : 'memory';
-    jobsModeCache.set(url, mode);
-    return mode;
+    const budget = Number(json?.defaultBudgetSeconds);
+    const info = {
+      mode: json?.jobs === 'durable' ? 'durable' : 'memory',
+      host: typeof json?.host === 'string' && json.host ? json.host : null,
+      preferJobs: json?.preferJobs === true,
+      defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+    };
+    healthCache.set(url, info);
+    return info;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+// Like getSolverJobsMode but a failed/unknown probe resolves null instead of 'memory', so UI can
+// label the backend plain "Cloud" rather than claiming Fly.
+export async function probeSolverJobsMode(url, opts) {
+  return (await probeSolverHealth(url, opts))?.mode ?? null;
 }
 export async function getSolverJobsMode(url, opts) {
   return (await probeSolverJobsMode(url, opts)) ?? 'memory';
@@ -161,7 +173,8 @@ export async function getSolverJobsMode(url, opts) {
 // Called when a synchronous /solve answers 400 use_jobs: the backend is durable even though the
 // health probe missed it (e.g. cold container timeout). Future Generates go straight to jobs.
 export function markSolverJobsDurable(url) {
-  if (url) jobsModeCache.set(url, 'durable');
+  if (!url) return;
+  healthCache.set(url, { host: null, preferJobs: false, defaultBudgetSeconds: null, ...healthCache.get(url), mode: 'durable' });
 }
 
 // Which local-engine budget a Generate call should use. The short "polished" (warm-start) run only
