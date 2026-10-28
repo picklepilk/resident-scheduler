@@ -287,3 +287,13 @@ describe('markSolverJobsDurable', () => {
     expect(f).not.toHaveBeenCalled();
   });
 });
+
+describe('shouldPolishLocal', () => {
+  it('polishes only when solver configured, no override skip, and reachable', async () => {
+    const { shouldPolishLocal } = await freshModule();
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 0, solverReachable: true })).toBe(true);
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 0, solverReachable: false })).toBe(false);
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 2, solverReachable: true })).toBe(false);
+    expect(shouldPolishLocal({ solverPossible: false, solverReachable: true })).toBe(false);
+  });
+});

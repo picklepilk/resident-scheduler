@@ -162,3 +162,11 @@ export async function getSolverJobsMode(url, opts) {
 export function markSolverJobsDurable(url) {
   if (url) jobsModeCache.set(url, 'durable');
 }
+
+// Which local-engine budget a Generate call should use. The short "polished" (warm-start) run only
+// pays off when a solver will actually take over: configured (`solverPossible`), no hand overrides
+// the optimizer can't honour, AND reachable right now. Otherwise the local result is the final
+// answer and deserves the full built-in budget.
+export function shouldPolishLocal({ solverPossible, overrideSkipCount = 0, solverReachable }) {
+  return Boolean(solverPossible) && !overrideSkipCount && Boolean(solverReachable);
+}

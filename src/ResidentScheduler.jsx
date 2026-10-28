@@ -37,7 +37,7 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
@@ -17282,9 +17282,24 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     const overrideSkipCount = solverPossible
       ? solverUnsafeHandOverrides(genBlock.handOverrides, genBlock.schedule, Object.fromEntries(allResidents.map(r => [r.id, r])), isTraumaCapSubject).length
       : 0;
-    setGenStageLabel((solverPossible && !overrideSkipCount) ? 'Generating (built-in engine)…' : 'Preparing…');
+    // Configured is not reachable: probe BEFORE the local run (short timeout; also what the solver
+    // path below reuses) so an unreachable optimizer gets the full built-in budget instead of the
+    // short warm-start one. A missed probe does not skip the solver attempt later, it only sizes
+    // the local run. Reachable-but-fails-later still ships the polished local result (no 2nd run).
+    const wantsLocalSolver = solverRunTarget === 'local';
+    let localHealthy = false;
+    let solverReachable = false;
+    if (solverPossible && !overrideSkipCount) {
+      setGenStageLabel('Preparing…');
+      await yieldToPaint();
+      localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
+      const { url: probeUrl, usingLocal: probeLocal } = resolveSolverTarget({ preference: solverRunTarget, localHealthy });
+      solverReachable = probeLocal || (appSettings.useSolverService !== false && Boolean(probeUrl)
+        && (await probeSolverJobsMode(probeUrl, { timeoutMs: 5000 })) != null);
+    }
+    setGenStageLabel(shouldPolishLocal({ solverPossible, overrideSkipCount, solverReachable }) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
-    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, (!solverPossible || overrideSkipCount) ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
+    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, shouldPolishLocal({ solverPossible, overrideSkipCount, solverReachable }) ? POLISHED_ENGINE_OPTS : BUILTIN_ENGINE_OPTS,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
         : p.phase === 'lns' ? { phase: 'local', polishing: true, done: 0, total: 0 } // 'Polishing best attempt…'
@@ -17311,8 +17326,6 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // (cheap, ~ms when it's running) rather than trusting a stale earlier status read — the whole
     // point is "reachable right now". resolveSolverTarget is the pure fallback decision: 'local'
     // falls back to the configured cloud URL when unreachable, never straight to failure.
-    const wantsLocalSolver = solverRunTarget === 'local';
-    const localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
     const { url: solverTargetUrl, usingLocal } = resolveSolverTarget({
       preference: solverRunTarget, localHealthy,
     });
