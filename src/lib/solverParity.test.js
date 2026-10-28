@@ -41,7 +41,10 @@ const SOLVER_DIR = path.join(REPO_ROOT, 'solver-service');
 // Windows-only dev environment (see CLAUDE.md) — .venv/Scripts/python.exe is the Windows venv
 // layout (POSIX venvs use bin/python instead). Not resolved dynamically since this repo's own
 // solver-service README documents the Windows path as the supported local-dev setup.
-const PYTHON = path.join(SOLVER_DIR, '.venv', 'Scripts', 'python.exe');
+// Linux/macOS (the Pi): same venv, POSIX layout.
+const PYTHON = process.platform === 'win32'
+  ? path.join(SOLVER_DIR, '.venv', 'Scripts', 'python.exe')
+  : path.join(SOLVER_DIR, '.venv', 'bin', 'python');
 
 (RUN_PARITY ? describe : describe.skip)('solver parity — real CP-SAT subprocess vs JS validateAll', () => {
   it('a real solve on a real payload produces a schedule with zero structural validateAll errors', () => {

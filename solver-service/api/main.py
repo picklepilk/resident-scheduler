@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.auth import AuthResult
+from api.concurrency import solve_slot
 from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from api.pna import PrivateNetworkAccessMiddleware
@@ -106,6 +107,9 @@ def solve_endpoint(
     except PayloadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # One solve at a time per process, shared with POST /jobs (api/concurrency.py).
+    if not solve_slot.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="a solve is already running on this server")
     try:
         result = solve(payload)
     except RuntimeError as exc:
@@ -113,6 +117,8 @@ def solve_endpoint(
         # not a client error. Client falls back to the JS engine on any
         # non-200.
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        solve_slot.release()
 
     return build_response(payload.version, result)
 

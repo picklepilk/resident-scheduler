@@ -1,0 +1,29 @@
+# systemd USER unit for the CP-SAT solver on the Pi (picklehub).
+# Install:  see ../../DEPLOY-PI.md
+#   mkdir -p ~/.config/systemd/user ~/.config/resident-solver
+#   cp deploy/pi/resident-solver.service ~/.config/systemd/user/
+#   cp deploy/pi/solver.env.example ~/.config/resident-solver/solver.env && chmod 600 ~/.config/resident-solver/solver.env
+#   systemctl --user daemon-reload && systemctl --user enable --now resident-solver
+# Loginctl linger is already on for this user, so it starts at boot without a login.
+[Unit]
+Description=Resident scheduler CP-SAT solver (127.0.0.1 only; exposed via Tailscale Funnel)
+After=network-online.target
+
+[Service]
+Type=simple
+# %h = home dir. Adjust if the repo lives elsewhere.
+WorkingDirectory=%h/projects/resident-scheduler/solver-service
+EnvironmentFile=%h/.config/resident-solver/solver.env
+# Refuse to start with auth off or without an email allowlist: this service is publicly reachable
+# through Funnel, and any signed-up Supabase account (incl. app role 'pending') passes the plain
+# 'authenticated' check.
+ExecStartPre=/bin/sh -c 'test "$SOLVER_AUTH_MODE" = supabase && test -n "$SOLVER_ALLOWED_EMAILS" && test -n "$SUPABASE_URL"'
+# Loopback bind is the point: only `tailscale funnel` (local proxy) can reach it.
+ExecStart=%h/projects/resident-scheduler/solver-service/.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8765 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+# Leave a core of headroom for the rest of the Pi (CP-SAT otherwise takes all 4).
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -66,6 +66,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import AuthResult, require_auth
+from api.concurrency import solve_slot
 from api.ratelimit import _client_ip, enforce_poll_ip_limit, enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import SolveRequest
 from solver.io.payload import PayloadError, parse_payload
@@ -192,6 +193,7 @@ class InMemoryJobs:
                 job.finished_at = time.time()
         finally:
             end_stoppable_run()
+            _release_slot()
             with self._lock:
                 if self._current_job_id == job.id:
                     self._current_job_id = None
@@ -204,6 +206,8 @@ class InMemoryJobs:
                 if current is not None and current.status in ("queued", "running"):
                     raise JobConflict("a solve job is already running on this server")
 
+            if not solve_slot.acquire(blocking=False):
+                raise JobConflict("a solve is already running on this server")
             job_id = str(uuid.uuid4())
             job = _Job(id=job_id, owner=owner, budget_seconds=payload.config.max_time_seconds)
             self._jobs[job_id] = job
@@ -532,6 +536,14 @@ def cancel_job(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+def _release_slot() -> None:
+    """Release the shared solve slot; a stale release (after reset_jobs_store) is a no-op."""
+    try:
+        solve_slot.release()
+    except RuntimeError:
+        pass
+
+
 def reset_jobs_store() -> None:
     """Test-only: drop all job state (and the cached backend) between test cases."""
     global _backend
@@ -539,3 +551,5 @@ def reset_jobs_store() -> None:
         if _backend is not None:
             _backend[1].reset()
         _backend = None
+    if solve_slot.locked():
+        _release_slot()

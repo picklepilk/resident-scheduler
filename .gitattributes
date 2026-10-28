@@ -1,1 +1,2 @@
 graphify-out/graph.json merge=graphify
+solver-service/deploy/pi/* text eol=lf
