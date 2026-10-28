@@ -135,9 +135,10 @@ export function normalizeSolverTarget(v) {
 const jobsModeCache = new Map();
 // Like getSolverJobsMode but a failed/unknown probe resolves null instead of 'memory', so UI can
 // label the backend plain "Cloud" rather than claiming Fly.
-export async function probeSolverJobsMode(url, { timeoutMs = 20000 } = {}) {
+// `fresh: true` skips the cache read (reachability checks must ask "reachable right now").
+export async function probeSolverJobsMode(url, { timeoutMs = 20000, fresh = false } = {}) {
   if (!url) return null;
-  if (jobsModeCache.has(url)) return jobsModeCache.get(url);
+  if (!fresh && jobsModeCache.has(url)) return jobsModeCache.get(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

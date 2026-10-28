@@ -17295,7 +17295,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
       const { url: probeUrl, usingLocal: probeLocal } = resolveSolverTarget({ preference: solverRunTarget, localHealthy });
       solverReachable = probeLocal || (appSettings.useSolverService !== false && Boolean(probeUrl)
-        && (await probeSolverJobsMode(probeUrl, { timeoutMs: 5000 })) != null);
+        && (await probeSolverJobsMode(probeUrl, { timeoutMs: 5000, fresh: true })) != null);
     }
     setGenStageLabel(shouldPolishLocal({ solverPossible, overrideSkipCount, solverReachable }) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
