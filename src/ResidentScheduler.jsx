@@ -2173,7 +2173,7 @@ function getFm1PedsCap(target) { return target != null ? Math.ceil(target / 3) :
 // EM Home and EM BAMC residents default to the 'EM' rotation when no blockType is on file —
 // this matches how EM Home residents already default (see the roster creation sites) and fixes
 // EM_BAMC residents added via the Off-Service tab, which never assigns them a blockType at all.
-function isSchedulable(resident) {
+export function isSchedulable(resident) {
   if (isEmResident(resident)) {
     const bt = BLOCK_TYPE_MAP[resident.blockType || 'EM'];
     return bt ? bt.schedulable : false;
