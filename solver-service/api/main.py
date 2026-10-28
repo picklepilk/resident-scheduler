@@ -88,7 +88,7 @@ def health() -> dict:
         "cpus": os.cpu_count() or 1,
         "jobs": "durable" if jobs_backend_name() == "modal" else "memory",
     }
-    # Optional host hints (SOLVER_HOST_KIND=pi): `host` names the box so the app can label it,
+    # Optional host hints (SOLVER_HOST_KIND=pi or pc; any non-empty value is echoed as `host`): `host` names the box so the app can label it,
     # `defaultBudgetSeconds` is the Generate budget it should use, `preferJobs` asks the app to
     # submit-then-poll (/jobs) instead of one long synchronous /solve. `jobs` stays truthful.
     host = os.environ.get("SOLVER_HOST_KIND", "").strip().lower()

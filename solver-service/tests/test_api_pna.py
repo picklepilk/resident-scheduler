@@ -92,3 +92,12 @@ def test_health_host_hints_pi(monkeypatch):
     assert TestClient(app).get("/health").json()["defaultBudgetSeconds"] == 240
     monkeypatch.setenv("SOLVER_DEFAULT_BUDGET_SECONDS", "junk")
     assert TestClient(app).get("/health").json()["defaultBudgetSeconds"] == 300
+
+
+def test_health_host_hints_pc(monkeypatch):
+    monkeypatch.setenv("SOLVER_HOST_KIND", "pc")
+    monkeypatch.delenv("SOLVER_DEFAULT_BUDGET_SECONDS", raising=False)
+    body = TestClient(app).get("/health").json()
+    assert body["jobs"] == "memory"
+    assert body["host"] == "pc" and body["preferJobs"] is True
+    assert body["defaultBudgetSeconds"] == 300
