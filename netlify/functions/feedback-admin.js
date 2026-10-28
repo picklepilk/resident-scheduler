@@ -43,7 +43,7 @@ export const handler = async (event) => {
 
   if (event.httpMethod === 'GET') {
     const res = await withTimeout(
-      `${SUPABASE_URL}/rest/v1/feedback?app_name=eq.${APP_NAME}&select=*&order=created_at.desc`,
+      `${SUPABASE_URL}/rest/v1/feedback?app=eq.${APP_NAME}&select=*&order=created_at.desc`,
       { headers: sbHeaders }
     );
     if (!res.ok) {
@@ -66,7 +66,7 @@ export const handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: 'id and a valid status (new|reviewed|resolved) are required' }) };
     }
     const res = await withTimeout(
-      `${SUPABASE_URL}/rest/v1/feedback?id=eq.${id}&app_name=eq.${APP_NAME}`,
+      `${SUPABASE_URL}/rest/v1/feedback?id=eq.${id}&app=eq.${APP_NAME}`,
       {
         method: 'PATCH',
         headers: { ...sbHeaders, Prefer: 'return=representation' },

@@ -21731,45 +21731,47 @@ function downloadBackupBlob(data, demoMode) {
 }
 
 // ─── FEEDBACK ─────────────────────────────────────────────────────────────────
-// A brand-new table, structurally unrelated to the single-row res_state document — it needs
-// many independent rows (one per report), so it deliberately does NOT reuse res_state's sync
-// machinery (sbFetch is reused as the transport, but not syncBindings/LS_BACKUP_KEYS/the
-// debounced-save effect). Schema (run once in the same shared Supabase project's SQL editor —
-// see docs/superpowers/plans/2026-07-18-user-feedback-plan.md Task 1 for the full statement):
-//   create table feedback (
-//     id uuid primary key default gen_random_uuid(), created_at timestamptz not null default now(),
-//     app_name text not null default 'resident-scheduler',
-//     type text not null check (type in ('bug','crash','idea')), message text not null,
-//     contact text, page text, user_agent text, app_version text,
-//     status text not null default 'new' check (status in ('new','reviewed','resolved')), meta jsonb
-//   );
-//   alter table feedback enable row level security;
-//   create policy "anyone can submit feedback" on feedback for insert with check (true);
-// No select/update/delete policy for anon — the admin view (see netlify/functions/
-// feedback-admin.js) goes through a service-role key instead. Every insert hardcodes
-// app_name: 'resident-scheduler' so a future em-scheduler feedback feature on the same
-// project/table can't collide with this app's rows.
-//
-// Insert-only via the anon key. `prefer: 'return=minimal'` is required (not sbFetch's default
-// return=representation) — Postgres RLS only returns an INSERT...RETURNING row if a SELECT
-// policy also grants access to it, and there deliberately isn't one for anon; requesting a
-// representation here would come back empty/confusing instead of erroring loudly.
-export const submitFeedback = async ({ type, message, contact, page, meta }) => {
+// Rows live in the shared `public.feedback` table (EM Scheduling Supabase project, shared with
+// em-scheduler; schema + RLS in em-scheduler repo supabase/migrations/009_feedback.sql). Each insert sets app =
+// 'resident-scheduler', reported_by = the signed-in user (RLS requires reported_by = auth.uid())
+// and reporter_name = their email. RLS lets a user SELECT only their own rows, so "My reports"
+// works through the same sbFetch. The table may not exist yet: callers use isFeedbackUnavailable
+// (PostgREST 42P01 / PGRST205) to show a friendly message instead of an error.
+// `prefer: 'return=minimal'` on insert: sbFetch's default return=representation needs SELECT.
+export const FEEDBACK_UNAVAILABLE_MSG = 'Feedback is unavailable right now.';
+export const isFeedbackUnavailable = (e) => /42P01|PGRST205|schema cache/.test(String(e?.message || ''));
+
+export const submitFeedback = async ({ type, message, page, meta }) => {
   if (!SUPABASE_ENABLED) return;
+  const { data } = supabase ? await supabase.auth.getSession() : { data: null };
+  const user = data?.session?.user;
+  if (!user) throw new Error('Sign in to send feedback.');
   await sbFetch('/feedback', {
     method: 'POST',
     prefer: 'return=minimal',
     body: {
-      app_name: 'resident-scheduler',
+      app: 'resident-scheduler',
       type,
-      message,
-      contact: contact || null,
+      message: String(message || '').slice(0, 2000),
       page: page || null,
       user_agent: (typeof navigator !== 'undefined' && navigator.userAgent) || null,
       app_version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null,
       meta: meta || null,
+      reported_by: user.id,
+      reporter_name: user.email || '',
     },
   });
+};
+
+export const listMyFeedback = async (limit = 20) => {
+  if (!SUPABASE_ENABLED) return [];
+  try {
+    const rows = await sbFetch(`/feedback?app=eq.resident-scheduler&select=id,created_at,type,message,status,admin_reply,admin_reply_at&order=created_at.desc&limit=${limit}`);
+    return rows || [];
+  } catch (e) {
+    if (isFeedbackUnavailable(e)) return [];
+    throw e;
+  }
 };
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
@@ -22897,21 +22899,30 @@ function FeedbackWidget({ page, showToast }) {
   const [open, setOpen] = useState(false);
   const [type, setType] = useState('bug');
   const [message, setMessage] = useState('');
-  const [contact, setContact] = useState('');
+  const [mine, setMine] = useState([]);
+  const [unavailable, setUnavailable] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  function reset() { setType('bug'); setMessage(''); setContact(''); }
+  function reset() { setType('bug'); setMessage(''); setUnavailable(false); }
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    listMyFeedback().then(rows => { if (alive) setMine(rows); }).catch(() => {});
+    return () => { alive = false; };
+  }, [open]);
 
   async function handleSubmit() {
     if (!message.trim()) { showToast('Please describe the issue or idea first', 'red'); return; }
     setSubmitting(true);
     try {
-      await submitFeedback({ type, message: message.trim(), contact: contact.trim(), page });
+      await submitFeedback({ type, message: message.trim(), page });
       showToast('Thanks — feedback sent', 'green');
       reset();
       setOpen(false);
     } catch (e) {
-      showToast(`Could not send feedback: ${e.message}`, 'red');
+      if (isFeedbackUnavailable(e)) { setUnavailable(true); showToast(FEEDBACK_UNAVAILABLE_MSG, 'amber'); }
+      else showToast(`Could not send feedback: ${e.message}`, 'red');
     } finally {
       setSubmitting(false);
     }
@@ -22926,6 +22937,7 @@ function FeedbackWidget({ page, showToast }) {
       {open && (
         <Modal title="Send Feedback" onClose={() => { setOpen(false); reset(); }}>
           <div className="space-y-4">
+            {unavailable && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{FEEDBACK_UNAVAILABLE_MSG} Try again later.</p>}
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">Type</label>
               <div className="flex gap-1.5">
@@ -22946,12 +22958,6 @@ function FeedbackWidget({ page, showToast }) {
                 placeholder="What happened, or what would help?"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1.5">Contact (optional)</label>
-              <input type="text" value={contact} onChange={e => setContact(e.target.value)}
-                placeholder="Email, if you'd like a reply"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
-            </div>
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={() => { setOpen(false); reset(); }} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
               <button onClick={handleSubmit} disabled={submitting}
@@ -22959,6 +22965,23 @@ function FeedbackWidget({ page, showToast }) {
                 {submitting ? 'Sending…' : 'Send'}
               </button>
             </div>
+            {mine.length > 0 && (
+              <div className="border-t border-gray-100 pt-3">
+                <p className="text-xs font-semibold text-gray-500 mb-2">My reports</p>
+                <ul className="space-y-2">
+                  {mine.map(r => (
+                    <li key={r.id} className="text-xs text-gray-700 border border-gray-100 rounded-lg p-2">
+                      <div className="flex justify-between text-gray-400">
+                        <span>{r.type} · {r.status}</span>
+                        <span>{new Date(r.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap">{r.message}</p>
+                      {r.admin_reply && <p className="mt-1.5 bg-blue-50 border border-blue-100 rounded px-2 py-1 text-blue-900"><span className="font-semibold">Reply:</span> {r.admin_reply}</p>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </Modal>
       )}
