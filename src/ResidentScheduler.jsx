@@ -92,6 +92,7 @@ import { offServiceStraddle } from './lib/offServiceWindow.js';
 import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
 import { snapshotsEqual } from './lib/snapshotCompare.js';
 import { rankedBelowCoverage, RANKED_SOFT_RULE_ISSUES } from './lib/rulePriorityRanking.js';
+import { buildFeedbackRow, myFeedbackPath, FEEDBACK_MESSAGE_MAX } from './lib/feedback.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
 
@@ -21732,11 +21733,11 @@ function downloadBackupBlob(data, demoMode) {
 
 // ─── FEEDBACK ─────────────────────────────────────────────────────────────────
 // Rows live in the shared `public.feedback` table (EM Scheduling Supabase project, shared with
-// em-scheduler; schema + RLS in em-scheduler repo supabase/migrations/009_feedback.sql). Each insert sets app =
+// em-scheduler; applied as migration round11_feedback_rich_shape). Each insert sets app =
 // 'resident-scheduler', reported_by = the signed-in user (RLS requires reported_by = auth.uid())
 // and reporter_name = their email. RLS lets a user SELECT only their own rows, so "My reports"
-// works through the same sbFetch. The table may not exist yet: callers use isFeedbackUnavailable
-// (PostgREST 42P01 / PGRST205) to show a friendly message instead of an error.
+// works through the same sbFetch. The table is live; the isFeedbackUnavailable fail-soft path
+// (PostgREST 42P01 / PGRST205) remains only as a safety net.
 // `prefer: 'return=minimal'` on insert: sbFetch's default return=representation needs SELECT.
 export const FEEDBACK_UNAVAILABLE_MSG = 'Feedback is unavailable right now.';
 export const isFeedbackUnavailable = (e) => /42P01|PGRST205|schema cache/.test(String(e?.message || ''));
@@ -21746,27 +21747,19 @@ export const submitFeedback = async ({ type, message, page, meta }) => {
   const { data } = supabase ? await supabase.auth.getSession() : { data: null };
   const user = data?.session?.user;
   if (!user) throw new Error('Sign in to send feedback.');
-  await sbFetch('/feedback', {
-    method: 'POST',
-    prefer: 'return=minimal',
-    body: {
-      app: 'resident-scheduler',
-      type,
-      message: String(message || '').slice(0, 2000),
-      page: page || null,
-      user_agent: (typeof navigator !== 'undefined' && navigator.userAgent) || null,
-      app_version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null,
-      meta: meta || null,
-      reported_by: user.id,
-      reporter_name: user.email || '',
-    },
+  const row = buildFeedbackRow({
+    type, message, page, meta, user,
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+    appVersion: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null,
   });
+  if (!row) throw new Error('Write a message first.');
+  await sbFetch('/feedback', { method: 'POST', prefer: 'return=minimal', body: row });
 };
 
 export const listMyFeedback = async (limit = 20) => {
   if (!SUPABASE_ENABLED) return [];
   try {
-    const rows = await sbFetch(`/feedback?app=eq.resident-scheduler&select=id,created_at,type,message,status,admin_reply,admin_reply_at&order=created_at.desc&limit=${limit}`);
+    const rows = await sbFetch(myFeedbackPath(limit));
     return rows || [];
   } catch (e) {
     if (isFeedbackUnavailable(e)) return [];
@@ -22902,17 +22895,27 @@ function FeedbackWidget({ page, showToast }) {
   const [mine, setMine] = useState([]);
   const [unavailable, setUnavailable] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => { if (alive) setSignedIn(Boolean(data?.session?.user)); }).catch(() => {});
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => setSignedIn(Boolean(session?.user)));
+    return () => { alive = false; sub?.subscription?.unsubscribe(); };
+  }, []);
 
   function reset() { setType('bug'); setMessage(''); setUnavailable(false); }
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !signedIn) return;
     let alive = true;
     listMyFeedback().then(rows => { if (alive) setMine(rows); }).catch(() => {});
     return () => { alive = false; };
-  }, [open]);
+  }, [open, signedIn]);
 
   async function handleSubmit() {
+    if (!signedIn) { showToast('Sign in to send feedback', 'red'); return; }
     if (!message.trim()) { showToast('Please describe the issue or idea first', 'red'); return; }
     setSubmitting(true);
     try {
@@ -22937,6 +22940,7 @@ function FeedbackWidget({ page, showToast }) {
       {open && (
         <Modal title="Send Feedback" onClose={() => { setOpen(false); reset(); }}>
           <div className="space-y-4">
+            {!signedIn && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Sign in to send feedback.</p>}
             {unavailable && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{FEEDBACK_UNAVAILABLE_MSG} Try again later.</p>}
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">Type</label>
@@ -22954,13 +22958,13 @@ function FeedbackWidget({ page, showToast }) {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1.5">Message <span className="text-red-500">*</span></label>
-              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4}
+              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={4} maxLength={FEEDBACK_MESSAGE_MAX}
                 placeholder="What happened, or what would help?"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"/>
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={() => { setOpen(false); reset(); }} className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700">Cancel</button>
-              <button onClick={handleSubmit} disabled={submitting}
+              <button onClick={handleSubmit} disabled={submitting || !signedIn}
                 className="px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 disabled:opacity-50 text-white rounded-lg font-medium">
                 {submitting ? 'Sending…' : 'Send'}
               </button>
