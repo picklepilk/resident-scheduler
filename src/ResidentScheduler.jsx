@@ -3,6 +3,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import UpdateBanner from './UpdateBanner.jsx';
+import FeedbackDialog from './FeedbackDialog.jsx';
 import {
   Plus, Minus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
   X, ChevronDown, Download, Info, RefreshCw, CheckCircle, AlertCircle,
@@ -25338,6 +25339,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // src/lib/signOutCleanup.js for exactly which keys survive (device-local prefs only). Only when
   // cloud sync is configured: with no cloud, localStorage IS the only copy of the data, and
   // sign-out must never destroy someone's only copy.
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [signOutWarning, setSignOutWarning] = useState(null); // null | 'conflict' | 'error' | 'unsynced'
 
   function clearLocalDataForSignOut() {
@@ -26542,6 +26544,12 @@ export default function ResidentScheduler({ viewer } = {}) {
               {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
             </button>
             {AUTH_ENABLED && (
+              <button onClick={()=>setFeedbackOpen(true)} title="Send feedback" aria-label="Send feedback"
+                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                <MessageSquare size={16}/>
+              </button>
+            )}
+            {AUTH_ENABLED && (
               <button onClick={()=>requestSignOut()} title="Sign out" aria-label="Sign out"
                 className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
                 <LogOut size={16}/>
@@ -26739,6 +26747,8 @@ export default function ResidentScheduler({ viewer } = {}) {
           this just makes the choice explicit rather than the sign-out button appearing to do
           nothing. 'error': the last save failed outright (dbError), so local data may be the only
           copy of that edit. */}
+      {feedbackOpen && <FeedbackDialog onClose={()=>setFeedbackOpen(false)}/>}
+
       {signOutWarning && (
         <ConfirmDialog icon={AlertTriangle} tone="warn"
           title={signOutWarning === 'conflict' ? "Unresolved save conflict" : signOutWarning === 'unsynced' ? "Not synced to the cloud" : "Last cloud save failed"}
