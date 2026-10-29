@@ -79,7 +79,7 @@ function reportCrash(message, stack) {
     submitFeedback({
       type: 'crash',
       message: String(message || 'Unknown error').slice(0, 500),
-      meta: { stack: stack || null },
+      meta: { stack: stack ? String(stack).slice(0, 3000) : null },
     }).catch(() => {}); // a failed report must never itself throw an unhandledrejection
   } catch {
     // sessionStorage unavailable (e.g. private browsing) — skip crash capture entirely

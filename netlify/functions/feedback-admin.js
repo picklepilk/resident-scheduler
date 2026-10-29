@@ -4,6 +4,7 @@
 // the anon key and can only INSERT, per the table's RLS policy (see
 // docs/superpowers/plans/2026-07-18-user-feedback-plan.md Task 1).
 const APP_NAME = 'resident-scheduler';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // id goes into a PostgREST filter: no stray query params
 
 export const handler = async (event) => {
   const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
@@ -43,7 +44,7 @@ export const handler = async (event) => {
 
   if (event.httpMethod === 'GET') {
     const res = await withTimeout(
-      `${SUPABASE_URL}/rest/v1/feedback?app_name=eq.${APP_NAME}&select=*&order=created_at.desc`,
+      `${SUPABASE_URL}/rest/v1/feedback?app=eq.${APP_NAME}&select=*&order=created_at.desc`,
       { headers: sbHeaders }
     );
     if (!res.ok) {
@@ -62,11 +63,11 @@ export const handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON body' }) };
     }
     const { id, status } = payload;
-    if (!id || !['new', 'reviewed', 'resolved'].includes(status)) {
-      return { statusCode: 400, body: JSON.stringify({ error: 'id and a valid status (new|reviewed|resolved) are required' }) };
+    if (!id || !UUID_RE.test(String(id)) || !['new', 'reviewed', 'resolved'].includes(status)) {
+      return { statusCode: 400, body: JSON.stringify({ error: 'a uuid id and a valid status (new|reviewed|resolved) are required' }) };
     }
     const res = await withTimeout(
-      `${SUPABASE_URL}/rest/v1/feedback?id=eq.${id}&app_name=eq.${APP_NAME}`,
+      `${SUPABASE_URL}/rest/v1/feedback?id=eq.${id}&app=eq.${APP_NAME}`,
       {
         method: 'PATCH',
         headers: { ...sbHeaders, Prefer: 'return=representation' },
