@@ -1471,3 +1471,7 @@ Optional "stick close to the starting schedule" penalty. Motivation: warm-starte
 - **Report:** `report.hintStickiness = {weight, changedCells}` (strict pass-1 results only; absent when off).
 - **App:** `appSettings.solverStickToHint` (default false, Settings > optimizer, "Keep optimizer changes small") sets `config.hintStickiness = HINT_STICKINESS_WEIGHT` (100, about one small shape defect: workShape 100, fairness 100, isolatedNight 300) in `buildSolverPayload` when a hint is passed. An explicit caller `config.hintStickiness` wins.
 - **Tuning:** raise the weight to move fewer cells; very large values approximate "don't change anything not needed by a higher tier".
+
+## Portfolio auto default (2026-10-30)
+
+`config.portfolio` absent no longer means 1: the service picks K=2 when the effective worker count (`_num_workers`, honoring `config.numWorkers` and `SOLVER_NUM_WORKERS`) is >= 12 (`AUTO_PORTFOLIO_MIN_WORKERS`), else K=1. An explicit value (1..8, including 1) always wins. Auto-picked K=2 sets `report.portfolio.auto = true`. Basis: one run each on a real 58-resident block, 16 cores, 300 s budget: K=1 -> 1 open coverage slot, quality 1010; K=2 -> 0 open slots, quality 984 (best); K=4 -> 1 open slot, 995.
