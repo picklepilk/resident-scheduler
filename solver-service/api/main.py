@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from api.auth import AuthResult
 from api.concurrency import solve_slot
+from api.concurrency import solve_slot
 from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from solver.runner import runner_info
@@ -89,6 +90,8 @@ def health() -> dict:
         "cpus": os.cpu_count() or 1,
         "jobs": "durable" if jobs_backend_name() == "modal" else "memory",
         "runner": runner_info(),
+        # Modal scales out (no one-at-a-time slot), so never busy there.
+        "busy": False if jobs_backend_name() == "modal" else solve_slot.locked(),
     }
 
 

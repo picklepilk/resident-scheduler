@@ -53,3 +53,23 @@ def test_jobs_submit_409_while_slot_held():
     client = TestClient(app)
     assert solve_slot.acquire(blocking=False)
     assert client.post("/jobs", json=make_payload()).status_code == 409
+
+
+def test_health_busy_reflects_slot():
+    client = TestClient(app)
+    assert client.get("/health").json()["busy"] is False
+    assert solve_slot.acquire(blocking=False)
+    try:
+        assert client.get("/health").json()["busy"] is True
+    finally:
+        solve_slot.release()
+    assert client.get("/health").json()["busy"] is False
+
+
+def test_health_busy_false_on_modal(monkeypatch):
+    monkeypatch.setattr("api.main.jobs_backend_name", lambda: "modal")
+    assert solve_slot.acquire(blocking=False)
+    try:
+        assert TestClient(app).get("/health").json()["busy"] is False
+    finally:
+        solve_slot.release()

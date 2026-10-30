@@ -184,3 +184,5 @@ class HealthResponse(BaseModel):
     # Identity + live load of the answering process (solver/runner.py): lets the app prove WHERE a
     # solve runs instead of trusting its own routing. Optional so older clients/tests are unaffected.
     runner: dict | None = None
+    # True while a solve holds the one-at-a-time slot (app's solver pool skips busy machines).
+    busy: bool = False

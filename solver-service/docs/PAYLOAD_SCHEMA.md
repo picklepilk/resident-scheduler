@@ -1420,3 +1420,7 @@ Portfolio bench (2026-10-18, `scripts/bench-engines.mjs --fixture realScale`, lo
 K=4 (2 workers per run) is far worse than K=1 (8 workers on one run) at equal wall time: CP-SAT's
 own multi-worker portfolio beats K independent thin runs here. Client default stays 1 (off). Re-run
 on a real backup before revisiting.
+
+## `GET /health`: `busy` (solver pool)
+
+`busy: bool` is true while a solve (`/solve` or an in-memory job) holds the one-at-a-time slot (`api/concurrency.py` `solve_slot`). The app's solver pool skips busy machines. Always `false` on the Modal backend (it scales out; no slot). `runner` is unchanged.
