@@ -14,15 +14,16 @@ import { SHIFTS, SHIFT_MAP } from './shifts.js';
 // Chief edits are stored as a
 // sparse override object in localStorage (res_coverage) and merged over these defaults — same
 // idiom as dayRules/eligOverrides. Min/max do NOT vary by day of week (two narrow exceptions:
-// POD's Mon/Tue max bump, DOW_COVERAGE_MAX_OVERRIDE below, and POD-D/FLEX-D's Wednesday
+// POD's every-day max-3 raise guard, DOW_COVERAGE_MAX_OVERRIDE below, and POD-D/FLEX-D's Wednesday
 // min+max drop, DOW_COVERAGE_OVERRIDE below); PED-S is the one shift whose very
 // EXISTENCE varies by day of week, handled separately via SHIFT_DOW (see Chunk 3/PED-S).
 export const DEFAULT_COVERAGE_MINMAX = {
-  // Baseline min 2/max 2 every day; POD is chief-directed "no priority for a 3rd resident" outside
-  // Mon/Tue (see DOW_COVERAGE_MAX_OVERRIDE) — a staffed POD shift also requires an EM PGY-3 with
-  // no fallback exception except the block's own PGY-3 Wellness Wednesday (see
-  // podWellnessSubstituteAllowed/SENIOR_COMPOSITION.POD).
-  'POD-D': { min: 2, max: 2 }, 'POD-E': { min: 2, max: 2 }, 'POD-N': { min: 2, max: 2 },
+  // POD: min 2 ("ideally 2"), max 3 EVERY day on D/E/N (chief + PD, 2026-10-30; was max 2 except
+  // Mon/Tue). The 3rd body only ever comes from the optional top-up toward max (under-target
+  // residents / off-service obligations), never from the hard-minimum pass. A staffed POD shift also
+  // requires an EM PGY-3 with no fallback exception except the block's own PGY-3 Wellness Wednesday
+  // (see podWellnessSubstituteAllowed/SENIOR_COMPOSITION.POD).
+  'POD-D': { min: 2, max: 3 }, 'POD-E': { min: 2, max: 3 }, 'POD-N': { min: 2, max: 3 },
   // PED-S: "no priority" per chief — best-effort fill only (min:0), same treatment as PED-N.
   // PED-N-FM is the FM-3-only 23:00–08:00 Peds night split out of PED-N (see the comment on
   // DEFAULT_COVERAGE_MINMAX above) — same best-effort min:0 treatment.
@@ -49,12 +50,13 @@ export const DEFAULT_COVERAGE_MINMAX = {
 export const DEFAULT_COVERAGE = Object.fromEntries(
   SHIFTS.map(s => [s.id, DEFAULT_COVERAGE_MINMAX[s.id] ?? { min: 1, max: 1 }])
 );
-// The one narrow day-of-week exception to "coverage min/max don't vary by day of week" (see the
-// comment above DEFAULT_COVERAGE_MINMAX): POD's max rises to 3 on Mon/Tue only (chief-directed,
-// AY26/27) — every other day of the week (and every other shift) stays at the plain base max.
-// Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param; the
-// Rules-tab coverage editor itself stays min/max-only (see its one-line caption near the POD row).
-export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1: 3, 2: 3 }, 'POD-N': { 1: 3, 2: 3 } };
+// Raise-only day-of-week max floor (see getCoverageFor): POD D/E/N max is 3 on EVERY day of the week
+// (chief + PD, 2026-10-30; previously Mon/Tue only). The base DEFAULT_COVERAGE_MINMAX max is now 3
+// too, so this table is a MASK GUARD: a saved res_coverage override of {max:2} (an old chief edit
+// equal to the superseded default) is still raised to 3 here, because the override is raise-only.
+// Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param.
+const ALL_DOWS_MAX3 = { 0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 };
+export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': ALL_DOWS_MAX3, 'POD-E': ALL_DOWS_MAX3, 'POD-N': ALL_DOWS_MAX3 };
 
 // Chief's rule: Wednesday is Grand Rounds day — every EM Home/BAMC PGY carries a Wednesday-day
 // dayTypeRestriction that keeps them off POD-D/FLEX-D entirely (they're at GR), so those shifts
@@ -72,7 +74,7 @@ export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1
 // Deliberate choice: the Rules-tab `coverage` state is a single dow-independent number the chief
 // sets for "a normal day" — it was never asked to describe a Grand Rounds Wednesday, so it isn't
 // a signal to preserve a bigger Wednesday number the way DOW_COVERAGE_MAX_OVERRIDE preserves a
-// chief-customized Mon/Tue POD bump. Applying this AFTER the chief override also matches how
+// chief-customized POD max bump. Applying this AFTER the chief override also matches how
 // DOW_COVERAGE_MAX_OVERRIDE and the TRAUMA_SOLO_IDS clamp both already operate on the resolved
 // base rather than gating on whether the base came from a default or an override.
 export const DOW_COVERAGE_OVERRIDE = {
@@ -267,7 +269,7 @@ function applyTraumaClampAndDow(shiftId, base, dow) {
     if (raiseOverride != null && raiseOverride > result.max) result = { min: result.min, max: raiseOverride };
     // Direct replacement, not a clamp — see DOW_COVERAGE_OVERRIDE's own comment for why. Applied
     // after the raise-only override above; the two never target the same shiftId+dow today
-    // (POD-D's raise entries are Mon/Tue, this override's are Wednesday), but this ordering means
+    // (POD-D's raise entries are every day, so the Wednesday direct override below WINS and keeps POD-D at min 1 / max 2 that day), but this ordering means
     // the Wednesday GR/APP rule would win if that ever changed.
     const directOverride = DOW_COVERAGE_OVERRIDE[shiftId]?.[dow];
     if (directOverride != null) result = { min: directOverride.min, max: directOverride.max };

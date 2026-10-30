@@ -35,13 +35,33 @@ function compositionIssues(allResidents, schedule, appSettings, ayConf) {
 }
 
 describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
-  it('FLEX staffed by a PGY-3 alone on an ordinary Wednesday evening is a hard error', () => {
+  // 2026-10-30 (chief + PD): an EM Home PGY-3 satisfies FLEX's senior requirement as well as a PGY-2.
+  it('FLEX staffed by a PGY-3 alone on an ordinary Wednesday evening raises no issue', () => {
     const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
     const schedule = { p3: { [ORDINARY_WED]: 'FLEX-E' } };
-    const issues = compositionIssues([pgy3], schedule);
+    expect(compositionIssues([pgy3], schedule)).toEqual([]);
+  });
+
+  it('FLEX staffed by only a PGY-1 still errors, naming PGY-2 or PGY-3', () => {
+    const pgy1 = res({ id: 'p1', category: 'EM_HOME', pgy: 1 });
+    const schedule = { p1: { [ORDINARY_WED]: 'FLEX-E' } };
+    const issues = compositionIssues([pgy1], schedule);
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'flexSeniorComposition', dateStr: ORDINARY_WED, shiftId: 'FLEX-E' });
-    expect(issues[0].message).toContain('PGY-2');
+    expect(issues[0]).toMatchObject({ rule: 'flexSeniorComposition', dateStr: ORDINARY_WED, shiftId: 'FLEX-E' });
+    expect(issues[0].message).toContain('PGY-2 or PGY-3');
+  });
+
+  it('FLEX staffed by an EM_BAMC PGY-3 alone still errors (composition is EM Home only)', () => {
+    const bamc3 = res({ id: 'b3', category: 'EM_BAMC', pgy: 3 });
+    const schedule = { b3: { [ORDINARY_WED]: 'FLEX-E' } };
+    expect(compositionIssues([bamc3], schedule)).toHaveLength(1);
+  });
+
+  it('FLEX staffed by a PGY-2 plus a PGY-3 raises no composition or PGY-gating issue', () => {
+    const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
+    const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
+    const schedule = { p2: { [ORDINARY_WED]: 'FLEX-E' }, p3: { [ORDINARY_WED]: 'FLEX-E' } };
+    expect(compositionIssues([pgy2, pgy3], schedule).filter(i => i.rule === 'flexSeniorComposition' || i.rule === 'seniorPgyGating')).toEqual([]);
   });
 
   it('FLEX staffed by a PGY-3 alone on FLEX\'s OWN Wellness Wednesday (2nd) raises no issue', () => {
@@ -50,12 +70,10 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     expect(compositionIssues([pgy3], schedule)).toEqual([]);
   });
 
-  it('FLEX staffed by a PGY-3 alone on POD\'s Wellness Wednesday (3rd, not FLEX\'s own) still errors', () => {
+  it('FLEX staffed by a PGY-3 alone on POD\'s Wellness Wednesday (3rd) raises no issue either', () => {
     const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
     const schedule = { p3: { [POD_WW]: 'FLEX-E' } };
-    const issues = compositionIssues([pgy3], schedule);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].level).toBe('warn');
+    expect(compositionIssues([pgy3], schedule)).toEqual([]);
   });
 
   it('FLEX staffed by a PGY-2 (the primary) on an ordinary day raises no issue', () => {
@@ -86,13 +104,10 @@ describe('1.8 FLEX PGY-2 requirement is hard (mirrors POD)', () => {
     expect(issues[0].message).toContain('PGY-3');
   });
 
-  it('with wellnessWednesdaysEnabled OFF, a PGY-3-only FLEX group on FLEX\'s computed 2nd Wednesday still errors', () => {
+  it('with wellnessWednesdaysEnabled OFF, a PGY-3-only FLEX group is still fine (no substitute needed)', () => {
     const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
     const schedule = { p3: { [FLEX_WW]: 'FLEX-E' } };
-    const issues = compositionIssues([pgy3], schedule, { wellnessWednesdaysEnabled: false });
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ level: 'warn', rule: 'flexSeniorComposition', dateStr: FLEX_WW, shiftId: 'FLEX-E' });
-    expect(issues[0].message).toContain('PGY-2');
+    expect(compositionIssues([pgy3], schedule, { wellnessWednesdaysEnabled: false })).toEqual([]);
   });
 
   it('with wellnessWednesdaysEnabled explicitly ON, the POD substitution on the 3rd Wednesday is unaffected', () => {
@@ -199,13 +214,11 @@ describe('Conference-aware seniority fallback (POD/FLEX primary PGY away at a co
     expect(compositionIssues([pgy3], schedule, {}, { aaemStart, aaemEnd })).toEqual([]);
   });
 
-  it('the identical PGY-3-only FLEX group with no AAEM configured still errors', () => {
+  it('the identical PGY-3-only FLEX group with no AAEM configured is also fine (PGY-3 satisfies FLEX outright)', () => {
     const aaemStart = '2026-07-13';
     const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
     const schedule = { p3: { [aaemStart]: 'FLEX-E' } };
-    const issues = compositionIssues([pgy3], schedule, {}, {});
-    expect(issues).toHaveLength(1);
-    expect(issues[0].message).toContain('PGY-2');
+    expect(compositionIssues([pgy3], schedule, {}, {})).toEqual([]);
   });
 
   it('with wellnessWednesdaysEnabled OFF, the ACEP conference substitution is unaffected (independent toggles)', () => {

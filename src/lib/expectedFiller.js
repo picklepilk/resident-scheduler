@@ -79,10 +79,11 @@ function requirementFor(shiftId, dateStr, seniorityRules) {
     return { requirement: null, requirementKind: null };
   }
 
-  const kind = comp.primary === 3 ? 'pgy3' : 'pgy2';
+  const primaries = comp.primaries || [comp.primary];
+  const kind = primaries.length > 1 ? 'pgy2or3' : primaries[0] === 3 ? 'pgy3' : 'pgy2';
   const sub = typeof substituteStatus === 'function' ? substituteStatus(shift.area, dateStr) : null;
-  const base = `${shift.area} needs a PGY-${comp.primary}`;
-  if (sub === 'wellness' || sub === 'conference') {
+  const base = `${shift.area} needs a PGY-${primaries.join(' or PGY-')}`;
+  if (comp.fallback != null && (sub === 'wellness' || sub === 'conference')) {
     const tag = sub === 'wellness' ? 'Wellness Wed' : 'conference';
     return { requirement: `${base}, PGY-${comp.fallback} allowed today (${tag})`, requirementKind: kind };
   }

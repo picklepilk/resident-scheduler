@@ -20,7 +20,18 @@ const VARIANTS = ['standard', 'understaffed', 'vacationHeavy', 'conferenceBlock'
 // quality vector and no longer pay blockingWarnCount, so a repair lift that costs a postNightRest
 // warning is (correctly) not strictly better and an unrepaired winner can keep legal headroom. Known
 // measured exception, pinned so any NEW occurrence still fails.
-const KNOWN_LEGAL_UNUSED = new Set(['conferenceBlock:1234:syn_kilo']);
+//
+// 2026-10-30 (chief-rules change set): on conferenceBlock seeds 42/7/1234 the winner is now a
+// `truePrimaryOnly` replay (replay.truePrimaryOnly === true, replay.repair === false: the
+// POD-PGY-2-substitute gap-fix path, which by design runs NO fill pass and NO repairPass, so Phase 5
+// never runs on it). syn_lima keeps legal-but-unused slots there (best-effort PED-N/PED-S and 12h
+// conference-day headroom). Verified NOT a Phase 5 budget issue (liftBudget 400 -> 4000 changes
+// nothing) and not a lift defect: the lift never ran on that winner. Same class as the 2026-10-18
+// entry above. Any NEW occurrence still fails.
+const KNOWN_LEGAL_UNUSED = new Set([
+  'conferenceBlock:1234:syn_kilo',
+  'conferenceBlock:42:syn_lima', 'conferenceBlock:7:syn_lima', 'conferenceBlock:1234:syn_lima',
+]);
 
 describe('generateScheduleBest — under-target lift completeness (A4)', () => {
   for (const variant of VARIANTS) {

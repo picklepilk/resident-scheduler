@@ -134,13 +134,11 @@ describe('2b-2 PGY gating — validateAll warnings', () => {
     expect(warns[0]).toMatchObject({ residentId: 'p2', level: 'warn', dateStr: ORDINARY_DAY, shiftId: 'POD-D' });
   });
 
-  it('EM PGY-3 on FLEX while an EM PGY-2 already covers the senior requirement warns', () => {
+  it('EM PGY-3 on FLEX alongside an EM PGY-2 is NOT gated any more (PGY-3 satisfies FLEX outright, 2026-10-30)', () => {
     const pgy2 = res({ id: 'p2', category: 'EM_HOME', pgy: 2 });
     const pgy3 = res({ id: 'p3', category: 'EM_HOME', pgy: 3 });
     const schedule = { p2: { [ORDINARY_DAY]: 'FLEX-E' }, p3: { [ORDINARY_DAY]: 'FLEX-E' } };
-    const warns = pgyGateWarnings([pgy2, pgy3], schedule);
-    expect(warns).toHaveLength(1);
-    expect(warns[0].residentId).toBe('p3');
+    expect(pgyGateWarnings([pgy2, pgy3], schedule)).toEqual([]);
   });
 
   it('EM PGY-2 alone on POD (no PGY-3 anywhere) does NOT get the PGY-gating warning — only the hard error', () => {

@@ -39,7 +39,7 @@ broke the old scheme. Instead:
     sum is comfortably below coverageMin's 1,000,000 with a >100x margin,
     asserted by `tests/test_weight_tiering.py` (see that file's
     `_anti_fill_sum` for the exact per-term accounting, updated for batch 2's
-    2026-08-22 addition of traumaSecondInRun/traumaMidRun/
+    2026-08-22 addition of traumaSecondInRun/
     nightDurationAlternation/secondRestDay -- `pedsInternNightDeficit` is
     excluded from that sum on purpose: like targetDeficit, it pushes TOWARD
     assigning a shift, not away from it).
@@ -85,7 +85,6 @@ from solver.model.trauma_runs import (
     add_night_duration_alternation_terms,
     add_peds_intern_night_deficit_term,
     add_second_rest_day_terms,
-    add_trauma_mid_run_terms,
     add_trauma_second_in_run_terms,
 )
 from solver.model.variables import VarStore, as_literal, candidates_by_date, resident_candidates
@@ -825,7 +824,6 @@ def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup,
 
 def _add_trauma_run_batch2_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
     add_trauma_second_in_run_terms(model, payload, store, group, int(weights["traumaSecondInRun"]["perUnit"]))
-    add_trauma_mid_run_terms(model, payload, store, group, int(weights["traumaMidRun"]["perUnit"]))
     add_night_duration_alternation_terms(
         model, payload, store, group, int(weights["nightDurationAlternation"]["perUnit"])
     )

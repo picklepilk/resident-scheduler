@@ -1475,3 +1475,10 @@ Optional "stick close to the starting schedule" penalty. Motivation: warm-starte
 ## Portfolio auto default (2026-10-30)
 
 `config.portfolio` absent no longer means 1: the service picks K=2 when the effective worker count (`_num_workers`, honoring `config.numWorkers` and `SOLVER_NUM_WORKERS`) is >= 12 (`AUTO_PORTFOLIO_MIN_WORKERS`), else K=1. An explicit value (1..8, including 1) always wins. Auto-picked K=2 sets `report.portfolio.auto = true`. Basis: one run each on a real 58-resident block, 16 cores, 300 s budget: K=1 -> 1 open coverage slot, quality 1010; K=2 -> 0 open slots, quality 984 (best); K=4 -> 1 open slot, 995.
+
+## 2026-10-30 chief-rules changes (JS payload + solver in lockstep)
+
+- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more, so `emPgy3ResidentIds` is always sent **empty** and `flexPgy3Fallback` is inert (weight key kept in `config/default_weights.json` because the model and tests still read it; `podPgy2Fallback` is unchanged).
+- **`traumaMidRun` removed**: weight key, `add_trauma_mid_run_terms` and its objective call are gone (trauma-night position in a run is no longer a rule). Hard cap (rule 43) and `traumaSecondInRun` are unchanged.
+- **Final-Sunday overnight rule removed**: no `finalSundayUnconfirmed` preference is emitted and `eligible` no longer strips night shifts on the final Sunday.
+- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday stays min 1 / max 2.

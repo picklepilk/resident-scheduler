@@ -105,18 +105,6 @@ function traumaCountInRun(rs, run, dates) {
   return n;
 }
 
-// Number of TRAUMA-N placements sitting strictly mid-run (not first/last shift of the run) —
-// same "midRunCount" component scheduleQuality.js's own traumaRunPenaltyFor computes internally
-// (that function also adds max(0, traumaCount-1), which is a different, already-covered concern
-// here: the hard 0-tolerance ">2 per run" assertion below).
-function midRunTraumaCount(rs, run, dates) {
-  let n = 0;
-  for (let i = run.start; i <= run.end; i++) {
-    if (rs[dates[i]] === 'TRAUMA-N' && i > run.start && i < run.end) n++;
-  }
-  return n;
-}
-
 // Total min-coverage slots vs. filled slots across the whole block — same SHIFT_DOW/12h-window
 // resolution generator.harness.test.js's own "accounting invariants" test uses (see that file's
 // comment on why the SHIFT_DOW guard and the 4-arg getCoverageFor call are both required). Filled
@@ -264,25 +252,8 @@ describe('chief benchmark — (b) generator vs benchmark', () => {
     }
   });
 
-  // Chief's own mid-run trauma placement count (from benchmarkMetrics.nightRuns.traumaPositions):
-  // start 6 + end 7 + middle 2 + only 1 + bookend 0 = 16 TRAUMA-N total, 2 of them mid-run. This
-  // is a SOFT rule (mid-run trauma placement is a score() nudge, not a pool-exclusion — the hard
-  // 0-tolerance ">2 per run" cap is asserted separately, immediately above, and holds regardless
-  // of anything below) — measured generateScheduleBest output moved from 2 to 3 mid-run
-  // placements between two authoring passes of this file, tracking in-flight soft-weight changes
-  // to the trauma-run scoring terms elsewhere in this same batch (ResidentScheduler.jsx's
-  // trauma-run soft weights / scheduleQuality.js's traumaRunPenaltyFor are both still being
-  // tuned per the plan doc's "EXECUTION STATE" at the time this file was written). +2 slack
-  // absorbs that kind of small, expected drift on a genuinely soft metric without masking a real
-  // regression (a jump to, say, 8+ would still fail loudly).
-  const CHIEF_MID_RUN_TRAUMA = 2;
-  const MID_RUN_TRAUMA_SLACK = 2;
-
-  it('mid-run trauma placements stay within slack of the chief benchmark', () => {
-    const dates = getBlockDates(chiefFixture.block.startDate, chiefFixture.block.endDate);
-    const midRunTotal = genRuns.reduce((a, r) => a + midRunTraumaCount(r.rs, r, dates), 0);
-    expect(midRunTotal).toBeLessThanOrEqual(CHIEF_MID_RUN_TRAUMA + MID_RUN_TRAUMA_SLACK);
-  });
+  // (Mid-run trauma placement assertion REMOVED 2026-10-30: trauma-night position within a run is
+  // no longer a rule; the hard <=2-per-run cap above is kept.)
 
   // Chief benchmark: 15 isolated single-night runs (benchmarkMetrics.isolatedSingleNightCount /
   // runLengthHistogram['1']), out of 62 total night runs. Measured generateScheduleBest output on

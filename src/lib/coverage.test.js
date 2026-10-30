@@ -74,7 +74,23 @@ describe('getCoverageFor: base lookup', () => {
   });
 });
 
-describe('getCoverageFor: DOW_COVERAGE_MAX_OVERRIDE (POD Mon/Tue bump)', () => {
+describe('getCoverageFor: POD max 3 every day (DOW_COVERAGE_MAX_OVERRIDE raise guard)', () => {
+  it('POD-D/E/N default max is 3 on every day of the week, min stays 2 (POD-D Wednesday excepted)', () => {
+    for (const id of ['POD-D', 'POD-E', 'POD-N']) {
+      expect(DEFAULT_COVERAGE[id]).toEqual({ min: 2, max: 3 });
+      for (const dow of [0, 1, 2, 3, 4, 5, 6]) {
+        if (id === 'POD-D' && dow === 3) continue; // Grand Rounds/APP drop, separate rule
+        expect(getCoverageFor(id, {}, dow)).toEqual({ min: 2, max: 3 });
+      }
+    }
+  });
+
+  it('a saved chief override of the OLD default max 2 cannot mask the new max 3 (raise-only guard)', () => {
+    for (const dow of [0, 4, 5, 6]) {
+      expect(getCoverageFor('POD-N', { 'POD-N': { min: 2, max: 2 } }, dow)).toEqual({ min: 2, max: 3 });
+    }
+  });
+
   it('raises POD-D max to 3 on Monday (dow=1)', () => {
     expect(getCoverageFor('POD-D', {}, 1)).toEqual({ min: 2, max: 3 });
   });
@@ -83,11 +99,9 @@ describe('getCoverageFor: DOW_COVERAGE_MAX_OVERRIDE (POD Mon/Tue bump)', () => {
     expect(getCoverageFor('POD-D', {}, 2)).toEqual({ min: 2, max: 3 });
   });
 
-  it('does not raise POD-D max via DOW_COVERAGE_MAX_OVERRIDE on Wednesday (dow=3 has no entry there)', () => {
-    // Wednesday DOES change POD-D's coverage, but via the separate DOW_COVERAGE_OVERRIDE
-    // (Grand Rounds/APP-coverage rule) -- see the "DOW_COVERAGE_OVERRIDE" describe block below,
-    // not this raise-only mechanism. {min:2,max:2} would be the answer with that rule absent.
-    expect(DOW_COVERAGE_MAX_OVERRIDE['POD-D'][3]).toBeUndefined();
+  it('POD-D Wednesday still resolves to the Grand Rounds/APP direct override (min 1 / max 2), which wins over the raise', () => {
+    // The separate DOW_COVERAGE_OVERRIDE replaces both min and max AFTER the raise-only guard.
+    expect(DOW_COVERAGE_MAX_OVERRIDE['POD-D'][3]).toBe(3);
     expect(getCoverageFor('POD-D', {}, 3)).toEqual({ min: 1, max: 2 });
   });
 
@@ -119,7 +133,7 @@ describe('getCoverageFor: DOW_COVERAGE_OVERRIDE (POD-D/FLEX-D Wednesday GR+APP d
     }
   });
 
-  it('does not affect POD-D on Sun/Thu/Fri/Sat -- Mon/Tue keep their own separate raise (DOW_COVERAGE_MAX_OVERRIDE), untouched by this rule', () => {
+  it('does not affect POD-D on Sun/Thu/Fri/Sat -- it stays at the (now max-3) default there, untouched by this rule', () => {
     for (const dow of [0, 4, 5, 6]) {
       expect(getCoverageFor('POD-D', {}, dow)).toEqual(DEFAULT_COVERAGE['POD-D']);
     }
@@ -147,7 +161,7 @@ describe('getCoverageFor: DOW_COVERAGE_OVERRIDE (POD-D/FLEX-D Wednesday GR+APP d
     expect(getCoverageFor('POD-D', { 'POD-D': { min: 0, max: 1 } }, 3)).toEqual({ min: 1, max: 2 });
   });
 
-  it('does not interact with DOW_COVERAGE_MAX_OVERRIDE -- POD-D Mon/Tue bump is untouched', () => {
+  it('does not interact with DOW_COVERAGE_MAX_OVERRIDE -- POD-D Mon/Tue stay max 3', () => {
     expect(getCoverageFor('POD-D', {}, 1)).toEqual({ min: 2, max: 3 });
     expect(getCoverageFor('POD-D', {}, 2)).toEqual({ min: 2, max: 3 });
     expect(DOW_COVERAGE_OVERRIDE['POD-D'][1]).toBeUndefined();
