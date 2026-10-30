@@ -6,7 +6,12 @@ $ErrorActionPreference = 'Stop'
 $serviceDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $envFile = Join-Path $env:APPDATA 'resident-solver\solver.env'
 
-function Fail($msg) { [Console]::Error.WriteLine($msg); exit 1 }
+# The task runs hidden, so everything (guard failures + uvicorn output) also goes to a log file.
+$logFile = Join-Path $env:LOCALAPPDATA 'resident-solver\solver.log'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logFile) | Out-Null
+function Log($msg) { Add-Content -Path $logFile -Value ("{0:s} {1}" -f (Get-Date), $msg) }
+function Fail($msg) { Log $msg; [Console]::Error.WriteLine($msg); exit 1 }
+Log "starting (pid $PID)"
 
 if (-not (Test-Path $envFile)) { Fail "Missing $envFile (run install-service.ps1)" }
 
@@ -31,5 +36,7 @@ $py = Join-Path $serviceDir '.venv\Scripts\python.exe'
 if (-not (Test-Path $py)) { Fail "Missing venv at $py (run install-service.ps1)" }
 
 Set-Location $serviceDir
-& $py -m uvicorn api.main:app --host 127.0.0.1 --port 8766
+$ErrorActionPreference = 'Continue'   # uvicorn logs to stderr; don't treat that as a terminating error
+& $py -m uvicorn api.main:app --host 127.0.0.1 --port 8766 2>&1 | ForEach-Object { $line = "$_"; Write-Host $line; Add-Content -Path $logFile -Value $line }
+Log "uvicorn exited ($LASTEXITCODE)"
 exit $LASTEXITCODE
