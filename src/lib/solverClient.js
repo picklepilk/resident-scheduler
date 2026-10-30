@@ -99,7 +99,7 @@ export async function checkLocalSolverHealth({ timeoutMs = 1500 } = {}) {
     const res = await fetch(`${LOCAL_SOLVER_URL}/health`, { signal: controller.signal });
     if (!res.ok) return null;
     const json = await res.json();
-    return { ortools: json?.ortools ?? null, cpus: json?.cpus ?? null };
+    return { ortools: json?.ortools ?? null, cpus: json?.cpus ?? null, runner: json?.runner ?? null };
   } catch {
     return null;
   } finally {
@@ -133,6 +133,10 @@ export function normalizeSolverTarget(v) {
 // session (module scope); ANY failure reads as 'memory' so behavior stays exactly the legacy
 // solveRemote path. Failures are not cached, so a transient blip retries next Generate.
 const jobsModeCache = new Map();
+// Solver's self-reported host (health.runner) per URL, from the same probe; lets the UI verify where a
+// synchronous (non-job) solve runs, since that path never produces progress ticks.
+const runnerCache = new Map();
+export const getCachedRunner = url => runnerCache.get(url) ?? null;
 // Like getSolverJobsMode but a failed/unknown probe resolves null instead of 'memory', so UI can
 // label the backend plain "Cloud" rather than claiming Fly.
 export async function probeSolverJobsMode(url, { timeoutMs = 20000 } = {}) {
@@ -146,6 +150,7 @@ export async function probeSolverJobsMode(url, { timeoutMs = 20000 } = {}) {
     const json = await res.json();
     const mode = json?.jobs === 'durable' ? 'durable' : 'memory';
     jobsModeCache.set(url, mode);
+    if (json?.runner) runnerCache.set(url, json.runner);
     return mode;
   } catch {
     return null;

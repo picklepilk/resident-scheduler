@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 
 from ortools.sat.python import cp_model
 
+from solver.runner import runner_info
+
 # ─── Cancellable background solves (jobs API, api/jobs.py) ─────────────────
 # `solve()` itself knows nothing about jobs/threads -- this is a thin,
 # additive registry so a job runner thread can ask whatever CpSolver
@@ -150,6 +152,7 @@ class ProgressReporter:
                 "elapsed": round(time.time() - self._t0, 1),
                 "budget": self.budget,
                 "best": self.best,
+                "runner": runner_info(),
             })
         except Exception:
             pass

@@ -181,3 +181,6 @@ class HealthResponse(BaseModel):
     # "durable" = Modal-backed jobs (client must submit-then-poll; /solve answers 400 use_jobs),
     # "memory" = in-process jobs (Fly / local). Defaulted so older clients/tests are unaffected.
     jobs: str = "memory"
+    # Identity + live load of the answering process (solver/runner.py): lets the app prove WHERE a
+    # solve runs instead of trusting its own routing. Optional so older clients/tests are unaffected.
+    runner: dict | None = None

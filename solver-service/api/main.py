@@ -21,6 +21,7 @@ from api.auth import AuthResult
 from api.concurrency import solve_slot
 from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
+from solver.runner import runner_info
 from api.pna import PrivateNetworkAccessMiddleware
 from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
@@ -87,6 +88,7 @@ def health() -> dict:
         "ortools": ORTOOLS_VERSION,
         "cpus": os.cpu_count() or 1,
         "jobs": "durable" if jobs_backend_name() == "modal" else "memory",
+        "runner": runner_info(),
     }
 
 

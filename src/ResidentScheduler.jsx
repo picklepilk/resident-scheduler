@@ -37,7 +37,8 @@ import { computeQualityMetrics, computeQualityVector, betterQuality } from './li
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
+import RunLocationPanel from './RunLocationPanel.jsx';
+import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
@@ -17344,7 +17345,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           : `Optimizing on ${solverLabel} — up to ${approxMinutes(solveBudgetSec)}…`);
         solveStartedAt = Date.now();
         genSolverStartRef.current = solveStartedAt;
-        setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec });
+        setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec, claim: usingLocal ? 'this-computer' : 'cloud', jobsMode, runner: usingLocal ? null : getCachedRunner(solverTargetUrl) });
         const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
           config: { maxTimeSeconds: solveBudgetSec } });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
@@ -17361,7 +17362,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           genSolveAbortRef.current = ac;
           try {
             return await solveViaJob(payload, { url: solverTargetUrl, accessToken, timeoutMs: solveTimeoutMs, signal: ac.signal,
-              onProgress: pr => setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec,
+              onProgress: pr => setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec, claim: usingLocal ? 'this-computer' : 'cloud', jobsMode, runner: pr.runner,
                 elapsed: pr.elapsed, budget: pr.budget, stage: pr.stage, stages: pr.stages }) });
           } finally {
             if (genSolveAbortRef.current === ac) genSolveAbortRef.current = null;
@@ -17922,6 +17923,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                   <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none" style={{ width: pct + '%' }}/>
                 </div>
                 {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+                <RunLocationPanel stage={genProgress?.phase === 'solver' ? 'solver' : genProgress?.phase === 'local' ? 'builtin' : 'idle'}
+                  claim={genProgress?.claim || (solverRunTarget === 'local' ? 'this-computer' : 'cloud')} runner={genProgress?.runner} jobsMode={genProgress?.jobsMode}/>
               </>);
             })()}
             <div className="text-xs text-muted-foreground font-mono tabular-nums">{genElapsedSec}s elapsed</div>
@@ -17949,6 +17952,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               ? 'Long solve finished — locked cells were kept.'
               : `Long solve running${longSolveJob.usingLocal ? ' on this computer' : ''} — ${longSolveElapsedSec}s of ~${Math.round((longSolveJob.budgetSeconds||0)/60)} min elapsed. Locked cells are kept; you can keep working.${longSolveJob.usingLocal ? ' No Fly autostop limit here.' : ''}`}
           </span>
+          {longSolveSpinning && (
+            <div className="basis-full"><RunLocationPanel stage="solver" claim={longSolveJob.usingLocal ? 'this-computer' : 'cloud'}
+              runner={longSolveStatus?.progress?.runner || (longSolveJob.usingLocal ? null : getCachedRunner(longSolveJob.solverTargetUrl))}/></div>
+          )}
           {longSolveStatus?.status === 'done' ? (
             <>
               <Button variant="primary" size="sm" onClick={reviewLongSolve}>Review</Button>
