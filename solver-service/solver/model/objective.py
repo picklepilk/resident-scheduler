@@ -664,6 +664,86 @@ def _add_work_shape_term(model, payload: Payload, store: VarStore, group: TermGr
         group.add(fragment_cost, excess)
 
 
+# ---- rule 37b: areaSpread (2026-10-30) ----
+#
+# Mirrors scheduleQuality.js's `areaSpread` (AREA_CONCENTRATION_FLOOR = 0.5): per resident,
+# penalty = max(0, topAreaCount - ceil(worked * 0.5)), where `worked` = every day carrying ANY
+# shift and the tally covers shifts whose area is known. The JS term has FAIRNESS_AXIS_WEIGHTS
+# coefficient 2; scale derivation (x50, same as isolatedNight 300 = JS singleton 6, nightFragment
+# 300 = JS 6): 2 * 50 = 100 -> `areaSpread.perUnit`.
+#
+# Linearization: worked = sum of the resident's x vars; ceil_floor = ceil(worked * 50 / 100) via
+# add_division_equality(worked*50 + 99, 100) (exact floor division of a non-negative);
+# excess >= count_a - ceil_floor for each area a and excess >= 0, minimized (positive weight), which
+# equals max(0, max_a count_a - ceil_floor).
+# Deviation from JS: residents with fewer than 2 distinct areas among their candidate x vars are
+# skipped. With one area, topArea == worked, so the JS charge is a function of worked only; in
+# CP-SAT that would act as a per-assignment anti-fill cost rather than a shape preference.
+AREA_CONCENTRATION_FLOOR_PCT = 50
+
+
+def _add_area_spread_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights.get("areaSpread", {}).get("perUnit", 0))
+    if coef == 0:
+        return
+    D = len(payload.block.dates)
+    for resident in payload.residents:
+        by_area: dict = {}
+        all_vars = []
+        for d in payload.block.dates:
+            for sid, var in store.by_resident_date.get((resident.id, d), []):
+                all_vars.append(var)
+                area = payload.shifts[sid].area if sid in payload.shifts else None
+                if area:
+                    by_area.setdefault(area, []).append(var)
+        if len(by_area) < 2:
+            continue
+        worked = model.new_int_var(0, D, f"areaSpread_worked[{resident.id}]")
+        model.add(worked == sum(all_vars))
+        ceil_floor = model.new_int_var(0, D, f"areaSpread_ceil[{resident.id}]")
+        model.add_division_equality(
+            ceil_floor, worked * AREA_CONCENTRATION_FLOOR_PCT + 99, model.new_constant(100)
+        )
+        excess = model.new_int_var(0, D, f"areaSpread_excess[{resident.id}]")
+        for vs in by_area.values():
+            model.add(excess >= sum(vs) - ceil_floor)
+        group.add(coef, excess)
+
+
+# ---- rule 37c: shortNightStint (2026-10-30) ----
+#
+# Mirrors the validateAll warning "Isolated night stint of N -- aim for minRun-idealRun in a
+# row" (ResidentScheduler.jsx): a night run with len < NIGHT_RULES.minRun (5) is flagged unless
+# the resident is night-only (solver: nightExempt) or the run touches the block's first/last date.
+# Cost per flagged run = perUnit * (SHORT_NIGHT_STINT_MIN_RUN - len), for len 2..4 only.
+# Length-1 interior runs are already charged by `isolatedNight` (300) and are NOT charged again
+# here (no double counting). Weight: perUnit 60 -> len 4: 60, 3: 120, 2: 180, all below the
+# 300 a single isolated night costs, so the preference order is 5+ < 4 < 3 < 2 < 1. (x50 scale:
+# 60 = 1.2 JS nightShape units per missing night.) Edge runs are exempt, matching the validator.
+SHORT_NIGHT_STINT_MIN_RUN = 5
+
+
+def _add_short_night_stint_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights.get("shortNightStint", {}).get("perUnit", 0))
+    if coef == 0:
+        return
+    dates = payload.block.dates
+    D = len(dates)
+    for resident in payload.residents:
+        if resident.night_exempt:
+            continue
+        nights = [store.night[(resident.id, d)] for d in dates]
+        for length in range(2, SHORT_NIGHT_STINT_MIN_RUN):
+            # interior only: a day before (start >= 1) and a day after (start + length <= D - 1)
+            for start in range(1, D - length):
+                lit = model.new_bool_var(f"shortNightStint[{resident.id}]: start={start},len={length}")
+                span = [nights[start - 1], nights[start + length]]
+                span += [nights[start + i].negated() for i in range(length)]
+                span.append(lit)
+                model.add_bool_or(span)
+                group.add(coef * (SHORT_NIGHT_STINT_MIN_RUN - length), lit)
+
+
 # ---- rules 38-41: band8 ----
 
 def _add_weekend_off_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
@@ -821,6 +901,8 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_isolated_night_term(model, payload, store, tier_quality, weights)
     _add_night_fragment_term(model, payload, store, tier_quality, weights)
     _add_work_shape_term(model, payload, store, tier_quality, weights)
+    _add_area_spread_term(model, payload, store, tier_quality, weights)
+    _add_short_night_stint_term(model, payload, store, tier_quality, weights)
     _add_band8_terms(model, payload, store, tier_quality, weights)
     _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)
     _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)

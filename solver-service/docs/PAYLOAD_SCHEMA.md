@@ -1433,3 +1433,30 @@ edge runs included (was: interior runs only, so edge run + interior run cost 0).
 115 -> 300 (JS 2.3 -> 6), `forcedCost` stays 100 (JS 2), `isolatedNight.perUnit` 200 -> 300 (JS
 singleton 4 -> 6). The singleton charge is still interior-only. Supersedes the "61% of real runs are
 1-3 nights" calibration.
+
+## Area spread and short night stint terms (2026-10-30)
+
+Two new `TIER_QUALITY` terms in `objective.py`, registered right after `_add_work_shape_term`.
+Motivation: on a real 58-resident block the solver beat the JS engine overall but made `areaSpread`
+worse (96 -> 118; no solver term existed) and left 31 "Isolated night stint of N" validator warnings.
+
+**`areaSpread.perUnit` = 100** (`_add_area_spread_term`). Mirrors `scheduleQuality.js` `areaSpread`:
+per resident, `max(0, topAreaCount - ceil(worked * 0.5))` (`AREA_CONCENTRATION_FLOOR` = 0.5).
+`worked` = sum of the resident's x vars; `ceil_floor = (worked*50 + 99) // 100` via
+`add_division_equality`; `excess >= count_area - ceil_floor` per area, minimized. Scale: JS
+coefficient 2 (`FAIRNESS_AXIS_WEIGHTS.areaSpread`) x 50 (the same x50 mapping as `isolatedNight` 300 =
+JS singleton 6) = 100. Deviation: a resident with fewer than 2 distinct areas among their candidate
+x vars is skipped (with one area the JS charge depends only on `worked` and would become a
+per-assignment anti-fill cost in CP-SAT).
+
+**`shortNightStint.perUnit` = 60** (`_add_short_night_stint_term`). Mirrors the `validateAll` warning
+"Isolated night stint of N": night run of length < `NIGHT_RULES.minRun` (5), skipped for night-only
+residents (`nightExempt`) and for runs touching the block's first or last date. Cost per run =
+`60 * (5 - len)` for len 2..4 (180 / 120 / 60). Length-1 interior runs are NOT charged here
+(`isolatedNight`, 300, already covers them, so no double counting); a 2-night stint (180) is cheaper
+than an isolated single night (300). The JS scorer has no matching term (it charges only singleton and
+fragmentation), so this is validator-driven, not a scorer mirror. Per-run cost scales with shortfall so
+the optimizer prefers 4 over 3 over 2 nights; cost literals are one-sided (lower-bounded) like
+`isolatedNight`'s.
+
+Tests: `tests/test_area_spread_term.py`, `tests/test_short_night_stint_term.py`.
