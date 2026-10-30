@@ -36,6 +36,9 @@ class Config:
     coverage_min_mode: str = "elastic_always"  # or "hard_then_elastic"
     max_verification_resolves: int = 2
     weights: dict = field(default_factory=dict)
+    # 2026-10-30: per-changed-cell penalty vs the hint (TIER_QUALITY); None = use
+    # default_weights.json hintStickiness.perChange; 0 = off. See hint_stickiness.py.
+    hint_stickiness: int | None = None
     # R9: staged (lexicographic-tiered) objective vs. the original single
     # weighted sum -- see solver/model/objective.py's `stage_exprs` and
     # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
@@ -407,6 +410,7 @@ def parse_payload(raw: dict) -> Payload:
             stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
             portfolio=max(1, min(8, int(config_raw.get("portfolio", 1) or 1))),
+            hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(

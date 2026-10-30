@@ -203,12 +203,19 @@ def test_overstaff_coverage_is_cheaper_than_any_target_shortfall():
 # (c) positivity
 # ---------------------------------------------------------------------------
 
+# Opt-in terms whose default weight is 0 = off; the payload's config turns them on.
+OFF_BY_DEFAULT = {("hintStickiness", "perChange")}
+
+
 def test_all_default_weights_are_positive_ints():
     weights = load_default_weights()
     for name, sub in weights.items():
         assert isinstance(sub, dict), name
         for key, value in sub.items():
             assert isinstance(value, int), f"{name}.{key}"
+            if (name, key) in OFF_BY_DEFAULT:
+                assert value == 0, f"{name}.{key}"
+                continue
             assert value > 0, f"{name}.{key}"
 
 
@@ -307,9 +314,11 @@ def test_build_objective_applied_weights_are_positive_ints():
     never 0 or negative."""
     info = _build_objective_for(make_payload())
     for name, sub in info.weights.items():
-        values = sub.values() if isinstance(sub, dict) else [sub]
-        for value in values:
+        items = sub.items() if isinstance(sub, dict) else [(None, sub)]
+        for key, value in items:
             assert isinstance(value, int)
+            if (name, key) in OFF_BY_DEFAULT:
+                continue
             assert value > 0
 
 

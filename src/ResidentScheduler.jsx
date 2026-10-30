@@ -7141,6 +7141,13 @@ const LONG_SOLVE_POLL_MS = 15000;
 // (not even an empty array) when `hint` isn't passed or resolves to zero cells, so a payload
 // built without it is byte-identical to a pre-R9 payload — see the dedicated test in
 // ResidentScheduler.test.js.
+// Per-changed-cell cost of the solver's optional stick-to-hint term (quality tier). Scale:
+// solver-service/config/default_weights.json's shape terms (workShape 100/100, fairness 100,
+// isolatedNight/nightFragment 300), so one moved cell ~ one small shape defect: the optimizer
+// still makes a change that fixes a real defect, but not a cosmetic reshuffle. It sits in the
+// lowest tier, so it can never trade away coverage, hard rules, targets or rest.
+export const HINT_STICKINESS_WEIGHT = 100;
+
 export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null }) {
   // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
   // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
@@ -7507,6 +7514,9 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     coverageMinMode: 'elastic_always',
     maxVerificationResolves: 2,
     weights: {},
+    // "Keep optimizer changes small" (appSettings.solverStickToHint): penalize every cell that
+    // differs from the hint. Only meaningful with a hint; an explicit caller config wins (below).
+    ...(appSettings.solverStickToHint === true && hintCells.length ? { hintStickiness: HINT_STICKINESS_WEIGHT } : {}),
     ...config,
   };
 
@@ -22432,6 +22442,15 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               <span>
                 <span className="block text-xs font-semibold text-gray-700">Use optimizer service</span>
                 <span className="block text-xs text-gray-400">Generate Schedule uses the external CP-SAT optimizer when reachable, falling back to the built-in generator on any failure. Uncheck to always use the built-in generator.</span>
+              </span>
+            </label>
+
+          <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={appSettings.solverStickToHint === true}
+                onChange={e=>updS('solverStickToHint', e.target.checked)} className="rounded mt-0.5"/>
+              <span>
+                <span className="block text-xs font-semibold text-gray-700">Keep optimizer changes small</span>
+                <span className="block text-xs text-gray-400">The optimizer starts from the built-in schedule. On: it moves fewer cells, so there is less to review, at some cost to quality.</span>
               </span>
             </label>
 
