@@ -3,6 +3,8 @@
 Written 2026-10-27. Alternative to Fly/Modal (`fly.toml`, `DEPLOY-MODAL.md`). Jobs backend stays
 `memory` (default): `/solve` and `/jobs` both work, one solve at a time per process.
 
+Windows PCs as additional pool members: see `DEPLOY-WINDOWS.md`.
+
 ## Layout
 - venv: `solver-service/.venv` (`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`; ortools has an aarch64 wheel, 9.15.6755 verified).
 - systemd **user** unit: `deploy/pi/resident-solver.service` -> `~/.config/systemd/user/`. Binds `127.0.0.1:8765` only, `Restart=on-failure`. `ExecStartPre` refuses to start unless `SOLVER_AUTH_MODE=supabase`, `SOLVER_ALLOWED_EMAILS` and `SUPABASE_URL` are set.
