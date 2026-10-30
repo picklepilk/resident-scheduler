@@ -10,10 +10,13 @@ export const DEEP_SOLVE_MAX_TIME_SECONDS = 300;
 // Backends with real headroom (the user's own machine, or Modal's durable jobs with more CPU) get
 // the long budget on every Generate; the small shared Fly box keeps 120 s unless Deep Solve.
 // jobsMode: 'durable' (Modal) | 'memory' (Fly) | anything else reads as memory.
-export function solverBudgetSeconds({ usingLocal = false, jobsMode = 'memory', deep = false } = {}) {
-  if (deep) return DEEP_SOLVE_MAX_TIME_SECONDS;
+// hostBudgetSeconds: the server's /health `defaultBudgetSeconds` (Pi = 300); honored on the cloud
+// target only, and Deep Solve never drops below DEEP.
+export function solverBudgetSeconds({ usingLocal = false, jobsMode = 'memory', deep = false, hostBudgetSeconds = null } = {}) {
+  const host = !usingLocal && Number.isFinite(hostBudgetSeconds) && hostBudgetSeconds > 0 ? hostBudgetSeconds : null;
+  if (deep) return Math.max(DEEP_SOLVE_MAX_TIME_SECONDS, host ?? 0);
   if (usingLocal || jobsMode === 'durable') return DEEP_SOLVE_MAX_TIME_SECONDS;
-  return DEFAULT_SOLVE_MAX_TIME_SECONDS;
+  return host ?? DEFAULT_SOLVE_MAX_TIME_SECONDS;
 }
 
 // Client-side request timeout: budget plus 60 s of queue/transfer slack.
@@ -21,15 +24,19 @@ export function solverTimeoutMs(budgetSeconds) {
   return budgetSeconds * 1000 + 60000;
 }
 
-export function backendFor({ usingLocal, jobsMode }) {
+export function backendFor({ usingLocal, jobsMode, host = null }) {
   if (usingLocal) return 'local';
+  if (host === 'pc') return 'pc';
+  if (host === 'pi') return 'pi';
   if (jobsMode === 'durable') return 'modal';
   return jobsMode === 'memory' ? 'fly' : 'cloud'; // unknown (probe failed) stays plain cloud
 }
 export function backendLabel(backend) {
+  if (backend === 'pc') return 'Remote PC';
   if (backend === 'local') return 'This computer';
   if (backend === 'modal') return 'Cloud (Modal)';
   if (backend === 'fly') return 'Cloud (Fly)';
+  if (backend === 'pi') return 'Cloud (Pi)';
   return 'Cloud';
 }
 

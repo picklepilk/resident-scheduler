@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 // B1: time-budgeted attempts + LNS ruin-and-recreate post-pass of generateScheduleBest.
 import { describe, it, expect } from 'vitest';
-import { generateScheduleBest, generateScheduleBestAsync, replayLns, validateAll, hasFallbackComposition } from '../ResidentScheduler.jsx';
+import { generateScheduleBest, generateScheduleBestAsync, replayLns, replayNightMerge, validateAll, hasFallbackComposition } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 const errorsOf = (fx, schedule) => validateAll(
@@ -49,7 +49,8 @@ describe('generateScheduleBest — LNS', () => {
     expect(a.report.replay.lns).toEqual({ seed: expect.any(Number), iters: 12 });
     expect(a.report.computeUnderTargetDiagnostics).toBeUndefined();
     expect(a.report.computeUnfilledDiagnostics).toBeUndefined();
-    const replayed = replayLns(args, pre, a.report.replay.lns);
+    // 2026-10-28: a night-merge pass follows LNS (only when LNS ran), so replay applies it too.
+    const replayed = replayNightMerge(args, replayLns(args, pre, a.report.replay.lns));
     expect(replayed.schedule).toEqual(a.schedule);
   });
 });

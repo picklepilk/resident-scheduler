@@ -1424,3 +1424,12 @@ on a real backup before revisiting.
 ## `GET /health`: `busy` (solver pool)
 
 `busy: bool` is true while a solve (`/solve` or an in-memory job) holds the one-at-a-time slot (`api/concurrency.py` `solve_slot`). The app's solver pool skips busy machines. Always `false` on the Modal backend (it scales out; no slot). `runner` is unchanged.
+
+## 2026-10-28: night consolidation (chief explicitly wants as few night runs as possible)
+
+`_add_night_fragment_term` (rule 36b) now counts EVERY night run: `extra = max(total_runs - 1, 0)`,
+edge runs included (was: interior runs only, so edge run + interior run cost 0). Mirrors
+`scheduleQuality.js`'s `nightFragmentationCost`. Weights (x50 scale): `nightFragment.avoidableCost`
+115 -> 300 (JS 2.3 -> 6), `forcedCost` stays 100 (JS 2), `isolatedNight.perUnit` 200 -> 300 (JS
+singleton 4 -> 6). The singleton charge is still interior-only. Supersedes the "61% of real runs are
+1-3 nights" calibration.

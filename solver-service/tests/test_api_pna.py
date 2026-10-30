@@ -72,3 +72,32 @@ def test_non_preflight_request_without_pna_header_is_unaffected():
     resp = TestClient(app).get("/health")
     assert resp.status_code == 200
     assert "access-control-allow-private-network" not in {k.lower() for k in resp.headers}
+
+
+def test_health_host_hints_absent_by_default(monkeypatch):
+    monkeypatch.delenv("SOLVER_HOST_KIND", raising=False)
+    body = TestClient(app).get("/health").json()
+    assert body["jobs"] == "memory"
+    assert "host" not in body and "preferJobs" not in body and "defaultBudgetSeconds" not in body
+
+
+def test_health_host_hints_pi(monkeypatch):
+    monkeypatch.setenv("SOLVER_HOST_KIND", "pi")
+    monkeypatch.delenv("SOLVER_DEFAULT_BUDGET_SECONDS", raising=False)
+    body = TestClient(app).get("/health").json()
+    assert body["jobs"] == "memory"  # truthful: in-memory jobs
+    assert body["host"] == "pi" and body["preferJobs"] is True
+    assert body["defaultBudgetSeconds"] == 300
+    monkeypatch.setenv("SOLVER_DEFAULT_BUDGET_SECONDS", "240")
+    assert TestClient(app).get("/health").json()["defaultBudgetSeconds"] == 240
+    monkeypatch.setenv("SOLVER_DEFAULT_BUDGET_SECONDS", "junk")
+    assert TestClient(app).get("/health").json()["defaultBudgetSeconds"] == 300
+
+
+def test_health_host_hints_pc(monkeypatch):
+    monkeypatch.setenv("SOLVER_HOST_KIND", "pc")
+    monkeypatch.delenv("SOLVER_DEFAULT_BUDGET_SECONDS", raising=False)
+    body = TestClient(app).get("/health").json()
+    assert body["jobs"] == "memory"
+    assert body["host"] == "pc" and body["preferJobs"] is True
+    assert body["defaultBudgetSeconds"] == 300

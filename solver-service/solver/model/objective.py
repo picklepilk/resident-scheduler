@@ -530,11 +530,11 @@ def _add_isolated_night_term(model, payload: Payload, store: VarStore, group: Te
 # production block but left residents-with-2-segments at 28/28 unchanged --
 # see this task's report).
 #
-# JS semantics reproduced here: for each non-night-exempt resident, every
-# INTERIOR night run (neither touching the block's first nor last date -- a
-# run touching either edge may continue into the adjacent block, so its
-# shape can't be judged from inside this one) beyond that resident's FIRST
-# interior run costs `nightFragment.avoidableCost` if the resident's TOTAL
+# JS semantics reproduced here (CHANGED 2026-10-28, chief explicitly wants
+# nights consolidated into as few runs as possible: EVERY night run, edge runs
+# included, beyond that resident's FIRST run is one extra run; only the
+# singleton charge in rule 36 stays interior-only). For each non-night-exempt
+# resident, every such extra run costs `nightFragment.avoidableCost` if the resident's TOTAL
 # nights this block (every run, edge runs included) is <= NIGHT_RUN_MAX --
 # i.e. everything could structurally have fit in one run, so the split was
 # avoidable -- or `nightFragment.forcedCost` otherwise (more total nights
@@ -586,11 +586,10 @@ def _add_night_fragment_term(model, payload: Payload, store: VarStore, group: Te
         total_nights = model.new_int_var(0, D, f"nightFragTotalNights[{resident.id}]")
         model.add(total_nights == sum(nights))
 
-        interior_runs = model.new_int_var(-2, D, f"nightFragInteriorRuns[{resident.id}]")
-        model.add(interior_runs == total_runs - nights[0] - nights[-1])
-
+        # 2026-10-28: ALL runs count (edge runs included), mirroring scheduleQuality.js's
+        # nightFragmentationCost -- every run beyond a resident's first is one extra run.
         fragment_extra = model.new_int_var(0, D, f"nightFragExtra[{resident.id}]")
-        model.add_max_equality(fragment_extra, [interior_runs - 1, 0])
+        model.add_max_equality(fragment_extra, [total_runs - 1, 0])
 
         avoidable = model.new_bool_var(f"nightFragAvoidable[{resident.id}]")
         model.add(total_nights <= NIGHT_RUN_MAX).only_enforce_if(avoidable)

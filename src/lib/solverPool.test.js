@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseSolverPool, canPickSolverMachine, pickSolverTarget, isRemoteTarget, poolTargetName } from './solverPool.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { parseSolverPool, canPickSolverMachine, pickSolverTarget, isRemoteTarget, poolTargetName, probeSolverHealth } from './solverPool.js';
 import { LOCAL_SOLVER_URL } from './solverClient.js';
 
 const pool = [
@@ -61,5 +61,20 @@ describe('pickSolverTarget', () => {
   it('local not running -> Auto over pool', () => {
     expect(pickSolverTarget({ preference: 'local', localStatus: null, poolStatus: pool }))
       .toMatchObject({ name: 'PicklePower', usingLocal: false });
+  });
+});
+
+describe('probeSolverHealth host hints', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const stub = json => vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => json })));
+  it('carries host/preferJobs/defaultBudgetSeconds from /health', async () => {
+    stub({ jobs: 'memory', host: 'pc', preferJobs: true, defaultBudgetSeconds: 300, busy: true, runner: { cpus: 8 } });
+    expect(await probeSolverHealth('https://x.test')).toEqual({ online: true, busy: true, runner: { cpus: 8 }, jobsMode: 'memory', host: 'pc', preferJobs: true, defaultBudgetSeconds: 300 });
+  });
+  it('absent hints read as null/false; offline row has the same shape', async () => {
+    stub({ jobs: 'durable' });
+    expect(await probeSolverHealth('https://x.test')).toMatchObject({ online: true, jobsMode: 'durable', host: null, preferJobs: false, defaultBudgetSeconds: null });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
+    expect(await probeSolverHealth('https://x.test')).toEqual({ online: false, busy: false, runner: null, jobsMode: null, host: null, preferJobs: false, defaultBudgetSeconds: null });
   });
 });

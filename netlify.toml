@@ -64,8 +64,11 @@
 #   - Optional CP-SAT solver posts to `${VITE_SOLVER_URL}/solve`; connect-src names the live host
 #     (resident-scheduler-solver.fly.dev, confirmed from the deployed page 2026-10-15). Supabase is
 #     pinned to this project's own host too. A new solver/Supabase host must be added here.
-#     The solver pool (VITE_SOLVER_POOL) hosts are the picklepower/picklebook/picklehub Tailscale
-#     Funnel URLs on :10000; every pool machine URL must appear in connect-src.
+#     The solver pool (VITE_SOLVER_POOL) machines are the picklepower/picklebook/picklehub Tailscale
+#     Funnel URLs on :10000, named as exact origins (no wildcard, so a typo'd or other tailnet host
+#     stays blocked). Every pool machine URL must appear in connect-src; adding/renaming a machine =
+#     edit this line AND the Netlify env value together. A CSP entry grants reachability only: the
+#     server enforces Supabase auth + its email allowlist.
 #   - "Run the optimizer on this computer" (2026-10-16, see solver-service/run-local.ps1|sh and
 #     docs/security-headers.md): Settings → Optimizer → "This computer" targets a solver running
 #     on the admin's own machine at a fixed loopback address. connect-src allows both

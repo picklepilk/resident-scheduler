@@ -18,6 +18,9 @@ Pool member, same shape as the Pi (`DEPLOY-PI.md`). Do this on each PC (`picklep
 - Stop: `Stop-ScheduledTask ResidentSolver`. Funnel off: `tailscale funnel --https=10000 off`.
 - Remove: `.\install-service.ps1 -Uninstall` (keeps venv and solver.env).
 
+## Host hint
+`solver.env` sets `SOLVER_HOST_KIND=pc`: `/health` then also reports `host: "pc"`, `preferJobs: true` and `defaultBudgetSeconds` (env `SOLVER_DEFAULT_BUDGET_SECONDS`, default 300). The app's pool probe reads these, so Generate on this machine uses the jobs path and a 300 s budget. Leave it out and the app falls back to its 120 s default.
+
 ## Security posture
 Same as the Pi: Supabase JWT verified via JWKS, then email must be in `SOLVER_ALLOWED_EMAILS`; `/health` open; per-user and preauth rate limits, 5 MiB body cap, CORS = Netlify origin only. Bind is loopback; only Funnel exposes it.
 

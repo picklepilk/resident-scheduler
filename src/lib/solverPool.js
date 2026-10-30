@@ -53,17 +53,26 @@ export function canPickSolverMachine(email, rawList = readGlobal('__SOLVER_PICKE
 export const poolTargetName = pref => (typeof pref === 'string' && pref.startsWith('pool:') ? pref.slice(5) : null);
 export const isRemoteTarget = pref => pref === 'cloud' || poolTargetName(pref) !== null;
 
-// One /health probe -> { online, busy, runner, jobsMode }. Never throws.
+// One /health probe -> { online, busy, runner, jobsMode, host, preferJobs, defaultBudgetSeconds }.
+// host/preferJobs/defaultBudgetSeconds are the server's SOLVER_HOST_KIND hints (pi|pc); absent
+// = null/false/null (Fly/Modal/local). Never throws.
+const OFFLINE = { online: false, busy: false, runner: null, jobsMode: null, host: null, preferJobs: false, defaultBudgetSeconds: null };
 export async function probeSolverHealth(url, { timeoutMs = 2500 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${url}/health`, { signal: controller.signal });
-    if (!res.ok) return { online: false, busy: false, runner: null, jobsMode: null };
+    if (!res.ok) return OFFLINE;
     const json = await res.json();
-    return { online: true, busy: json?.busy === true, runner: json?.runner ?? null, jobsMode: json?.jobs === 'durable' ? 'durable' : 'memory' };
+    const budget = Number(json?.defaultBudgetSeconds);
+    return {
+      online: true, busy: json?.busy === true, runner: json?.runner ?? null, jobsMode: json?.jobs === 'durable' ? 'durable' : 'memory',
+      host: typeof json?.host === 'string' && json.host ? json.host : null,
+      preferJobs: json?.preferJobs === true,
+      defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+    };
   } catch {
-    return { online: false, busy: false, runner: null, jobsMode: null };
+    return OFFLINE;
   } finally {
     clearTimeout(timer);
   }

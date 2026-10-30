@@ -16,7 +16,7 @@ from solver.model.objective import TermGroup
 from solver.model.variables import build_variables
 from tests.helpers import make_payload, make_resident
 
-FRAG_WEIGHTS = {"nightFragment": {"avoidableCost": 115, "forcedCost": 100}}
+FRAG_WEIGHTS = {"nightFragment": {"avoidableCost": 300, "forcedCost": 100}}
 
 REST_SHIFT = {"N": {"startH": 23, "durationH": 8, "type": "night", "area": "POD"}}
 
@@ -97,17 +97,16 @@ def test_forced_split_is_penalized_at_forced_cost():
     assert _cost_of(model, store, group.terms) == FRAG_WEIGHTS["nightFragment"]["forcedCost"]
 
 
-def test_edge_touching_run_is_not_counted_as_fragmentation():
-    """A run touching the block's FIRST date is exempt (may continue from
-    the adjacent block) -- only the genuinely interior 2nd run counts, so
-    there's exactly 1 countable interior run here, not 2, and the cost is 0."""
+def test_edge_touching_run_counts_as_a_run():
+    """2026-10-28: an edge run is still one of the resident's runs, so edge run +
+    interior run == 2 runs == 1 extra run (avoidable: 4 total nights <= 6)."""
     dates = _dates(6)
     night_dates = [dates[0], dates[1], dates[3], dates[4]]  # run [0,1] touches the left edge; run [3,4] interior
     payload, model, store = _build(dates, night_dates)
 
     group = TermGroup("t")
     objective_mod._add_night_fragment_term(model, payload, store, group, FRAG_WEIGHTS)
-    assert _cost_of(model, store, group.terms) == 0
+    assert _cost_of(model, store, group.terms) == FRAG_WEIGHTS["nightFragment"]["avoidableCost"]
 
 
 def test_night_exempt_resident_is_skipped():

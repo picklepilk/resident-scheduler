@@ -186,3 +186,7 @@ class HealthResponse(BaseModel):
     runner: dict | None = None
     # True while a solve holds the one-at-a-time slot (app's solver pool skips busy machines).
     busy: bool = False
+    # Optional host hints from SOLVER_HOST_KIND (see api/main.py health()); absent on Fly/Modal/local.
+    host: Optional[str] = None
+    preferJobs: Optional[bool] = None
+    defaultBudgetSeconds: Optional[int] = None

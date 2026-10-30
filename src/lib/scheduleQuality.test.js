@@ -12,6 +12,9 @@ import {
   traumaRunPenaltyFor,
   secondRestDayPenaltyFor,
   AREA_CONCENTRATION_FLOOR,
+  NIGHT_SINGLETON_COST,
+  NIGHT_EXTRA_RUN_AVOIDABLE,
+  NIGHT_EXTRA_RUN_FORCED,
 } from './scheduleQuality.js';
 
 const NIGHT_RULES = { minRun: 4, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
@@ -137,7 +140,9 @@ describe('computeQualityMetrics — night-run shape', () => {
     // why 2.3, not the originally-floated 6, is the committed magnitude).
     // fragmented: 3 runs × (+(minRun-1) for len1, minRun=4 here) + 2 fragmentation bonuses
     // (beyond-first, avoidable) × +2.3 = 9 + 4.6 = 13.6
-    expect(fragmented.nightShapePenalty).toBeCloseTo(13.6, 5);
+    // 2026-10-28 constants: 3 interior singles x NIGHT_SINGLETON_COST + 2 extra runs x
+    // NIGHT_EXTRA_RUN_AVOIDABLE.
+    expect(fragmented.nightShapePenalty).toBeCloseTo(3 * NIGHT_SINGLETON_COST + 2 * NIGHT_EXTRA_RUN_AVOIDABLE, 5);
     // clustered: single len-5 run — inside the relaxed 2-6 no-shortness-penalty band (see the
     // dedicated relaxation test below) -> 0.
     expect(clustered.nightShapePenalty).toBeCloseTo(0, 5);
@@ -160,7 +165,7 @@ describe('computeQualityMetrics — night-run shape', () => {
       computeQualityMetrics({ ...baseInput, nightRules: rules, schedule: runOf(2, len), dates }).nightShapePenalty;
 
     // Isolated single night (len 1) — still penalized, same minRun-1 magnitude as before.
-    expect(penaltyForLen(1)).toBeCloseTo(rules.minRun - 1, 5);
+    expect(penaltyForLen(1)).toBeCloseTo(NIGHT_SINGLETON_COST, 5);
     // Runs of length 2 through 6 (the maxRun cap) — NO shortness penalty at all under the
     // relaxation, including the two lengths (2, 4) that used to be penalized (3 and 1 respectively).
     for (let len = 2; len <= 6; len++) {
@@ -175,10 +180,14 @@ describe('computeQualityMetrics — night-run shape', () => {
     const touchesEnd = { r1: { [dates[4]]: 'POD-N' } };
     const touchesBoth = { r1: { [dates[0]]: 'POD-N', [dates[4]]: 'POD-N' } };
 
-    for (const schedule of [touchesStart, touchesEnd, touchesBoth]) {
+    // The SINGLETON charge is exempt at an edge; a single edge run is one run, so no fragmentation.
+    for (const schedule of [touchesStart, touchesEnd]) {
       const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
       expect(metrics.nightShapePenalty).toBe(0);
     }
+    // 2026-10-28: edge runs still COUNT as runs -- two edge singles = one extra (avoidable) run.
+    const both = computeQualityMetrics({ ...baseInput, schedule: touchesBoth, dates });
+    expect(both.nightShapePenalty).toBeCloseTo(NIGHT_EXTRA_RUN_AVOIDABLE, 5);
 
     // Contrast: the same single night shifted one day inward (interior) IS penalized.
     const interiorSingle = { r1: { [dates[1]]: 'POD-N' } };
@@ -217,8 +226,8 @@ describe('computeQualityMetrics — night-run shape', () => {
 
     // Both runs in each schedule are length 2-6, so neither schedule incurs ANY shortness penalty
     // — the entire nightShapePenalty in each case is pure fragmentation (one "beyond the first" run).
-    expect(avoidable.nightShapePenalty).toBeCloseTo(2.3, 5);
-    expect(forced.nightShapePenalty).toBeCloseTo(2, 5);
+    expect(avoidable.nightShapePenalty).toBeCloseTo(NIGHT_EXTRA_RUN_AVOIDABLE, 5);
+    expect(forced.nightShapePenalty).toBeCloseTo(NIGHT_EXTRA_RUN_FORCED, 5);
   });
 });
 

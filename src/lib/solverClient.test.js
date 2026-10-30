@@ -261,6 +261,26 @@ describe('probeSolverJobsMode', () => {
   });
 });
 
+describe('probeSolverHealth', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('returns host hints (Pi), defaults them off for Fly, caches per url', async () => {
+    vi.resetModules();
+    const { probeSolverHealth, markSolverJobsDurable } = await import('./solverClient.js');
+    const f = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jobs: 'memory', host: 'pi', preferJobs: true, defaultBudgetSeconds: 300 }) });
+    vi.stubGlobal('fetch', f);
+    expect(await probeSolverHealth('https://pi.test')).toEqual({ mode: 'memory', host: 'pi', preferJobs: true, defaultBudgetSeconds: 300 });
+    await probeSolverHealth('https://pi.test');
+    expect(f).toHaveBeenCalledTimes(1);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jobs: 'memory' }) }));
+    expect(await probeSolverHealth('https://fly.test')).toEqual({ mode: 'memory', host: null, preferJobs: false, defaultBudgetSeconds: null });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ defaultBudgetSeconds: -5, host: 7 }) }));
+    expect(await probeSolverHealth('https://bad.test')).toEqual({ mode: 'memory', host: null, preferJobs: false, defaultBudgetSeconds: null });
+    markSolverJobsDurable('https://pi.test');
+    expect((await probeSolverHealth('https://pi.test')).mode).toBe('durable');
+    expect((await probeSolverHealth('https://pi.test')).host).toBe('pi');
+  });
+});
+
 describe('getSolverJobsMode', () => {
   afterEach(() => vi.unstubAllGlobals());
   it('reads /health jobs, caches per url, failure -> memory uncached', async () => {
@@ -288,5 +308,37 @@ describe('markSolverJobsDurable', () => {
     vi.stubGlobal('fetch', f);
     expect(await getSolverJobsMode('https://c.test')).toBe('durable');
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe('shouldPolishLocal', () => {
+  it('polishes only when solver configured, no override skip, and reachable', async () => {
+    const { shouldPolishLocal } = await freshModule();
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 0, solverReachable: true })).toBe(true);
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 0, solverReachable: false })).toBe(false);
+    expect(shouldPolishLocal({ solverPossible: true, overrideSkipCount: 2, solverReachable: true })).toBe(false);
+    expect(shouldPolishLocal({ solverPossible: false, solverReachable: true })).toBe(false);
+  });
+});
+
+describe('normalizeSolverTarget — legacy remote ids', () => {
+  const POOL = [{ name: 'PicklePower', url: 'https://picklepower.x.ts.net:10000' }, { name: 'Pickle Book', url: 'https://picklebook.x.ts.net:10000' }];
+  it('maps remote:<slug> / pc:<slug> to pool:<Name> when a pool entry slugifies to it', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('remote:picklepower', { pool: POOL })).toBe('pool:PicklePower');
+    expect(normalizeSolverTarget('pc:pickle-book', { pool: POOL })).toBe('pool:Pickle Book');
+  });
+  it('falls back to cloud when no pool entry matches or no pool is configured', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('remote:gone', { pool: POOL })).toBe('cloud');
+    expect(normalizeSolverTarget('remote:picklepower')).toBe('cloud');
+    expect(normalizeSolverTarget('remote:picklepower', { pool: 'junk' })).toBe('cloud');
+  });
+  it('leaves current values alone', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('pool:X', { pool: POOL })).toBe('pool:X');
+    expect(normalizeSolverTarget('local', { pool: POOL })).toBe('local');
+    expect(normalizeSolverTarget('builtin')).toBe('builtin');
+    expect(normalizeSolverTarget(undefined)).toBe('cloud');
   });
 });

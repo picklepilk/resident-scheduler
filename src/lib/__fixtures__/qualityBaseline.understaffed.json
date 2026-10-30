@@ -13,19 +13,19 @@
     206,
     0,
     0,
-    228.061013442208
+    251.7915108662914
   ],
   "axes": {
     "underTargetTotal": 4,
     "deficitSpread": 0.02044289576821684,
     "holidaySpread": 0,
-    "nightSpread": 1.6959819536782028,
-    "weekendSpread": 1.4301731906141577,
-    "nightShapePenalty": 18.46,
-    "workShapePenalty": 162.2,
-    "areaSpread": 46.2,
+    "nightSpread": 1.7015924712580983,
+    "weekendSpread": 1.4943817702651625,
+    "nightShapePenalty": 38.4,
+    "workShapePenalty": 166.4,
+    "areaSpread": 47,
     "traumaRunPenalty": 1.2,
-    "secondRestDayPenalty": 9.6
+    "secondRestDayPenalty": 9.4
   },
   "unfilled": 206
 }

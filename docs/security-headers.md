@@ -107,3 +107,17 @@ machine at a fixed loopback address.
   — simplest to just not hand a real token to a process on the same machine for no benefit.
 - If the fixed local port (8765) ever changes, update both `run-local.ps1`/`run-local.sh`,
   `src/lib/solverClient.js`'s `LOCAL_SOLVER_URL`, and this `connect-src` line together.
+
+## Solver machine pool (Tailscale Funnel hosts)
+
+`VITE_SOLVER_POOL` (Netlify env, `Name=https://host:10000,...`, https only) lists the optimizer
+machines in Auto order. Setup: `solver-service/DEPLOY-WINDOWS.md`.
+
+- **`connect-src` lists the exact pool origins** `https://picklepower.tail424ec7.ts.net:10000`,
+  `https://picklebook.tail424ec7.ts.net:10000` and `https://picklehub.tail424ec7.ts.net:10000` (no
+  `*.ts.net` wildcard: that would let injected script exfiltrate to any tailnet host). Adding or
+  renaming a machine means editing `netlify.toml` and the env value together.
+- **The picker is not security.** `VITE_SOLVER_PICKER_EMAILS` only hides the manual machine picker
+  in the UI. Funnel hosts are reachable from the public internet, so the boundary is server-side:
+  each machine runs `SOLVER_AUTH_MODE=supabase` + `SOLVER_ALLOWED_EMAILS` + `SOLVER_CORS_ORIGINS`
+  (set only in its local, gitignored env file). No email address appears in the repo or bundle.

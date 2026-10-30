@@ -16,6 +16,9 @@ Windows PCs as additional pool members: see `DEPLOY-WINDOWS.md`.
 - Preauth per-IP limit (behind Funnel every caller is 127.0.0.1, so effectively a global cap — set `SOLVER_PREAUTH_RATE_*` high enough for polling), per-user bucket (6/min, burst 3), 5 MiB body cap, CORS allowlist = Netlify origin only.
 - `api/concurrency.py`: one solve at a time across `/solve` and `/jobs` (409 when busy; client falls back to the in-browser generator).
 
+## Budget and jobs path (2026-10-28)
+Set `SOLVER_HOST_KIND=pi` in `solver.env` (optional `SOLVER_DEFAULT_BUDGET_SECONDS`, default 300, clamped 10..1800). `/health` then adds `host: "pi"`, `preferJobs: true`, `defaultBudgetSeconds`; `jobs` stays `"memory"` (truthful). The app (`probeSolverHealth` in `src/lib/solverClient.js`) then labels "Cloud (Pi)", submits via `/jobs` + poll (no 6-minute synchronous request through Funnel), and uses the advertised budget (Deep Solve stays >= 300 s). Without the env var the Pi looks like Fly (120 s, sync `/solve`). A busy server answers 409 on submit; the app keeps the built-in result. Restart the unit after editing the env.
+
 ## App side (Netlify env, owner action)
 Set `VITE_SOLVER_URL=https://picklehub.tail424ec7.ts.net:10000` and redeploy. CSP `connect-src` must list it (see `netlify.toml`).
 
