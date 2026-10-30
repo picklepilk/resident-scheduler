@@ -78,6 +78,10 @@ export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': { 1: 3, 2: 3 }, 'POD-E': { 1
 export const DOW_COVERAGE_OVERRIDE = {
   'POD-D':  { 3: { min: 1, max: 2 } },
   'FLEX-D': { 3: { min: 1, max: 2 } },
+  // Midtrack Day on Wednesday (program decision 2026-10-30): only BAMC residents may work it (EM Home is at
+  // Grand Rounds; the eligibility strip lives in getEligibleShifts), so min 0 / max 1 — filled only by the
+  // optional top-up of an under-target BAMC resident, never demanded.
+  'MT-D':   { 3: { min: 0, max: 1 } },
 };
 
 // Trauma bays are single-resident by nature (validateAll's own double-booking error) — clamped

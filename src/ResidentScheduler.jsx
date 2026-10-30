@@ -265,10 +265,8 @@ export const DEFAULT_DAY_RULES = {
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] },
         allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true,
         asNeeded: true, asNeededLabel: 'US/EM outside Sat/Sun/Mon' },
-      // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
-      // only, so the manual picker can still place one when needed.
-      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
-        allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+      // (mt_intern_mon_tue_evenight REMOVED 2026-10-30 — program decision: EM Home and BAMC interns may
+      // work Midtrack Mon/Tue evenings and nights normally. Old shape kept in LEGACY_DAY_RULE_DEFAULTS.)
     ],
   },
   EM_HOME_2: {
@@ -277,8 +275,12 @@ export const DEFAULT_DAY_RULES = {
     // Wellness Wednesday — 2nd Wednesday on/after the block's start date, PGY-2.
     computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }],
     shiftGates: [
+      // AS NEEDED (program decision 2026-10-30): peds is the Peds/EM emphasis; Trauma only to fill a coverage
+      // minimum nothing else can. (TRAUMA-D is not in PGY-2's eligibility list at all, so in practice this
+      // relaxes TRAUMA-N, still inside its own hard trauma_n_window below.)
       { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'],
-        blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+        blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false,
+        asNeeded: true, asNeededLabel: 'Peds/EM on Trauma' },
       // EM/EMS ↔ EM/TOX weekday windows swap effective 2026-08-01 (chief-directed change). Before
       // that date: EMS covers Mon/Tue, TOX covers Thu/Fri. From that date on: TOX covers Mon/Tue,
       // EMS covers Thu/Fri. Both variants are overrideImmune so a matrix override can't leak a
@@ -322,12 +324,7 @@ export const DEFAULT_DAY_RULES = {
     // manual pick (scope:'generator' hides it from auto-fill; validateAll warns past one/block).
     dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }],
     specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
-    shiftGates: [
-      // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
-      // only, so the manual picker can still place one when needed.
-      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
-        allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
-    ],
+    // (mt_intern_mon_tue_evenight gate REMOVED 2026-10-30 — see EM_HOME_1.)
   },
   // Peds residents don't work Wednesdays at all (chief-directed, AY26/27) — replaces the old
   // "night before an advocacy day" mechanic entirely (see LEGACY_DAY_RULE_DEFAULTS for the old
@@ -336,21 +333,29 @@ export const DEFAULT_DAY_RULES = {
   // still can't take a Wednesday DAY shift (evening/night OK), while PGY-3 now works Wednesdays
   // with no restriction at all (chief-directed AY26/27 restructure).
   PEDS_2: { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }] },
+  // OFF-SERVICE weekday/shift-time restrictions are AS NEEDED (program decision 2026-10-30): the rule is the
+  // goal, broken only to fill a coverage MINIMUM nothing else can. fullBlockDays/onlyDays carry the flag at
+  // the entry level (`fullBlockAsNeeded` + `fullBlockLabel`), dayTypeRestrictions per entry (`asNeeded` +
+  // `asNeededLabel`). Date-specific unavailability (Code Blue / procedure / anesthesia days, first Friday,
+  // CCU nights flag) stays HARD.
   FM_1: {
-    fullBlockDays: [3,4],
-    dayTypeRestrictions: [{ days: [2], mode: 'noNight' }],
+    fullBlockDays: [3,4], fullBlockAsNeeded: true, fullBlockLabel: 'Family Med on Wed/Thu',
+    dayTypeRestrictions: [{ days: [2], mode: 'noNight', asNeeded: true, asNeededLabel: 'Family Med on a Tue night' }],
   },
-  FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3] },
+  FM_3: { onlyDaysEnabled: true, onlyDays: [1,2,3], fullBlockAsNeeded: true, fullBlockLabel: 'Family Med PGY-3 outside Mon-Wed' },
   IM_2: {
     // Chief-directed AY26/27 tightening: no Tuesday evening/night (day-only Tue) and no Wednesday
     // morning/evening (night-only Wed — Wednesday overnight still OK). Was Wed-day-only alone.
-    dayTypeRestrictions: [{ days: [2], mode: 'onlyDay' }, { days: [3], mode: 'onlyNight' }],
+    dayTypeRestrictions: [
+      { days: [2], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'IM on a Tue eve/night' },
+      { days: [3], mode: 'onlyNight', asNeeded: true, asNeededLabel: 'IM on a Wed day/eve' },
+    ],
     specialDayRules: [{ listKey: 'codeBlueDays', offset: 'sameDayAndDayBefore' }],
     residentFlagOverrides: [{ flag: 'isCCUNights', fullBlockDays: [2,3] }],
   },
-  NEURO_1: { fullBlockDays: [3,5] },
+  NEURO_1: { fullBlockDays: [3,5], fullBlockAsNeeded: true, fullBlockLabel: 'Neurology on Wed/Fri' },
   ANES_1: {
-    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Anesthesia on a Wed eve/night' }],
     specialDayRules: [{ listKey: 'anesDays', offset: 'sameDay' }],
     // Never schedule Anesthesia on the first Friday of the CALENDAR month (their social hour) —
     // computed from the date itself, not tied to the block's own start day.
@@ -358,11 +363,19 @@ export const DEFAULT_DAY_RULES = {
   },
   PSYCH_1: {
     // Monday: no night shifts. Tuesday: no DAY shifts (evening/night both allowed). Wednesday: day-only.
-    dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [2], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }],
+    dayTypeRestrictions: [
+      { days: [1], mode: 'noNight', asNeeded: true, asNeededLabel: 'Psych on a Mon night' },
+      { days: [2], mode: 'noDay', asNeeded: true, asNeededLabel: 'Psych on a Tue day' },
+      { days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Psych on a Wed eve/night' },
+    ],
   },
   POD_1: {
-    fullBlockDays: [6,0],
-    dayTypeRestrictions: [{ days: [5], mode: 'noNight' }, { days: [1], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }],
+    fullBlockDays: [6,0], fullBlockAsNeeded: true, fullBlockLabel: 'Podiatry on a weekend',
+    dayTypeRestrictions: [
+      { days: [5], mode: 'noNight', asNeeded: true, asNeededLabel: 'Podiatry on a Fri night' },
+      { days: [1], mode: 'noDay', asNeeded: true, asNeededLabel: 'Podiatry on a Mon day' },
+      { days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Podiatry on a Wed eve/night' },
+    ],
   },
 };
 
@@ -461,8 +474,23 @@ function getActiveCoverageShifts(dates, coverageByDate) {
 // chief's saved override replaces a key's default wholesale (getEffectiveDayRules /
 // getEffectiveEligibility), so a no-op override equal to ANY prior default would otherwise mask
 // the current, corrected default forever. See the one-time prune effect in the root component.
-const LEGACY_DAY_RULE_DEFAULTS = {
-  PSYCH_1: [{ fullBlockDays: [2], dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [3], mode: 'onlyDay' }] }],
+export const LEGACY_DAY_RULE_DEFAULTS = {
+  // Pre-as-needed shapes (2026-10-30: off-service weekday/shift-time restrictions became AS NEEDED).
+  PSYCH_1: [
+    { fullBlockDays: [2], dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [3], mode: 'onlyDay' }] },
+    { dayTypeRestrictions: [{ days: [1], mode: 'noNight' }, { days: [2], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }] },
+  ],
+  NEURO_1: [{ fullBlockDays: [3,5] }],
+  ANES_1: [{
+    dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }],
+    specialDayRules: [{ listKey: 'anesDays', offset: 'sameDay' }],
+    computedDayRules: [{ type: 'firstFridayOfMonth' }],
+  }],
+  FM_3: [{ onlyDaysEnabled: true, onlyDays: [1,2,3] }],
+  POD_1: [{
+    fullBlockDays: [6,0],
+    dayTypeRestrictions: [{ days: [5], mode: 'noNight' }, { days: [1], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }],
+  }],
   EM_BAMC_1: [
     { dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }] },
     // Pre-MT-intern-gate shape (still fullBlockDays:[4] Thursday GR + generator-scoped Wed-night exception, no shiftGates).
@@ -523,6 +551,15 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
       { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+    // Pre-MT-Mon/Tue-removal shape (us_em_window already asNeeded, generator-only mt_intern_mon_tue_evenight
+    // gate still present) — the live default immediately before the 2026-10-30 program decision that
+    // EM Home interns may work Midtrack Mon/Tue evenings/nights normally.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true, asNeeded: true, asNeededLabel: 'US/EM outside Sat/Sun/Mon' },
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ] },
   ],
@@ -610,6 +647,16 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
     ] },
+    // Pre-as-needed shape (peds_em_trauma_strip a plain hard gate) — the live default immediately before
+    // the 2026-10-30 decision that Peds/EM PGY-2 may work Trauma only AS NEEDED.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 2 }], shiftGates: [
+      { id: 'peds_em_trauma_strip', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'only', ids: ['PEDS_EM'] }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'em_ems_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_tox_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartBefore: '2026-08-01' } },
+      { id: 'em_ems_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_EMS'] }, allowedDays: [4,5], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'em_tox_window_aug26', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['EM_TOX'] }, allowedDays: [1,2], outsideAction: 'blockEntireDay', overrideImmune: true, activeWhen: { blockStartOnOrAfter: '2026-08-01' } },
+      { id: 'trauma_n_window', shiftIds: ['TRAUMA-N'], blockTypeFilter: null, allowedDays: [5,6,0,1], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
   ],
   EM_HOME_3: [
     { fullBlockDays: [3] },
@@ -662,7 +709,11 @@ const LEGACY_DAY_RULE_DEFAULTS = {
   // Pre-AY26/27-tightening shape (Wednesday day-shift-only, no Tuesday restriction at all) — the
   // live default immediately before IM residents also lost Tuesday eve/night and Wednesday
   // morning/eve (Wednesday overnight still allowed).
-  IM_2: [{ dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }] }],
+  IM_2: [
+    { dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }] },
+    // Pre-as-needed shape (Tue day-only / Wed night-only as plain hard restrictions).
+    { dayTypeRestrictions: [{ days: [2], mode: 'onlyDay' }, { days: [3], mode: 'onlyNight' }], specialDayRules: [{ listKey: 'codeBlueDays', offset: 'sameDayAndDayBefore' }], residentFlagOverrides: [{ flag: 'isCCUNights', fullBlockDays: [2,3] }] },
+  ],
   // Pre-PED-N-eligibility shape (fullBlockDays/dayTypeRestrictions only, no shiftGates at all) —
   // the live default immediately before FM-1 gained the Thu-Sun PED-N grant (AY26/27), and the
   // shape immediately before that grant's Thu-Sun confinement gate was removed entirely.
@@ -854,15 +905,15 @@ const ACGME_HOURS_RULE_NOTE = `ACGME EM weekly hour caps (6.17.a.3): while on an
 const RULE_NOTES = {
   EM_HOME_1: {
     blockTypeNotes: [
-      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: 'First/last 14 days split (enforced): trauma half = 8 Trauma Day shifts (Tue/Thu/Sat/Sun only, generated last), no other shifts on that half; peds half = 11 PED Day/Eve shifts, plus PED-N (now all 7 nights) when the chief enables "Allow Peds/Trauma interns to work Peds Night" (Rules tab, on by default).' },
+      { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: 'First/last 14 days split (enforced): trauma half = 8 Trauma Day shifts (Tue/Thu/Sat/Sun only, generated last), no other shifts on that half; peds half = 11 PED Day/Eve/Swing shifts, plus PED-N (now all 7 nights) when the chief enables "Allow Peds/Trauma interns to work Peds Night" (Rules tab, on by default).' },
       { ids: ['US_EM'], note: '5 EM shifts total. Sat/Sun/Mon (no Monday night) preferred; other days only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception).' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: ['Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
-      { ids: ['PEDS_EM'], note: '19 total; 10–12 Peds Day/Eve shifts (generator biases toward 10, hard-caps at 12), rest elsewhere. Enforced.' },
+      { ids: ['PEDS_EM'], note: '19 total; 10–12 Peds Day/Eve shifts (generator biases toward 10, hard-caps at 12), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
       { ids: ['EM_VAC'], note: '12 shifts total. Enforced.' },
       { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
@@ -881,6 +932,7 @@ const RULE_NOTES = {
   },
   EM_BAMC_1: {
     specialNotes: [
+      'Midtrack evenings/nights Mon/Tue: interns may work them normally (old avoid-Mon/Tue gate removed 2026-10-30). Midtrack Day on a Wednesday is BAMC-only (min 0 / max 1).',
       'Thursday: BAMC Grand Rounds — never schedulable, no exceptions. Enforced.',
       'Wednesday overnight (runs into Thursday GR): allowed once per block, manual assignment only — the generator never auto-places it; Validation warns past one.',
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
@@ -900,27 +952,28 @@ const RULE_NOTES = {
     specialNotes: ['Works Wednesdays with no restriction (chief-directed AY26/27 — previously no Wednesdays at all, like PGY-2).', 'Eligible for PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) alongside PED-D/PED-E — real staffing observed on live QGenda. PED-N-FM (FM-3\'s own Mon/Tue/Wed shift) stays out of reach.', 'Self-cover arrangement.'],
   },
   FM_1: {
-    specialNotes: ['PED-D/PED-E eligible as fill-in PRN (no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.', 'Has PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) eligibility (chief-directed). Coverage stays min 0/max 1 (best-effort, not required).', FINAL_SUNDAY_RULE_NOTE],
+    specialNotes: ['Weekday limits (no Wed/Thu, no Tue night) are AS NEEDED: broken only to fill a coverage minimum nothing else can, flagged as an exception.', 'PED-D/PED-E eligible as fill-in PRN (no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.', 'Has PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) eligibility (chief-directed). Coverage stays min 0/max 1 (best-effort, not required).', FINAL_SUNDAY_RULE_NOTE],
   },
   FM_3: {
-    specialNotes: ['FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, FM-1, and Peds PGY-2/3 may optionally cover the separate PED-N shift (19:00-04:00), which now runs all 7 nights, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
+    specialNotes: ['Mon/Tue/Wed-only availability is AS NEEDED: other days only to fill a coverage minimum (flagged).', 'FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, FM-1, and Peds PGY-2/3 may optionally cover the separate PED-N shift (19:00-04:00), which now runs all 7 nights, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
   },
   IM_2: {
-    specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab.'],
+    specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab. (Hard.)', 'Tuesday day-only / Wednesday night-only are AS NEEDED: broken only to fill a coverage minimum (flagged).'],
     tbdItems: ['CCU nights detection (currently manual checkbox on resident)'],
   },
   NEURO_1: {
+    specialNotes: ['No Wednesday/Friday shifts is AS NEEDED: broken only to fill a coverage minimum (flagged).'],
     softPrefs: ['Avoid Tuesday/Thursday night shifts when possible.'],
     tbdItems: ['Confirm eligible shift list with rotation director'],
   },
   ANES_1: {
-    specialNotes: ['1st Friday of each calendar month (social hour): never schedulable. Enforced.', 'Ultrasound days: off (email the ultrasound coordinator annually for dates).'],
+    specialNotes: ['Wednesday day-only is AS NEEDED: eve/night only to fill a coverage minimum (flagged).', '1st Friday of each calendar month (social hour): never schedulable. Enforced.', 'Ultrasound days: off (email the ultrasound coordinator annually for dates).'],
   },
   PSYCH_1: {
-    specialNotes: ['Monday: no night shifts. Tuesday: no day shifts (evening/night OK). Wednesday: day-only.'],
+    specialNotes: ['Monday: no night shifts. Tuesday: no day shifts (evening/night OK). Wednesday: day-only. All three are AS NEEDED: broken only to fill a coverage minimum (flagged).'],
   },
   POD_1: {
-    specialNotes: ['Podiatry typically only rotates with EM ~December–February and covers a low number of shifts — no built-in seasonality; confine a podiatry resident to those months via their Availability setting (Date ranges) on the resident profile / Off-Service tab.'],
+    specialNotes: ['Weekend / Mon-day / Wed / Fri-night limits are AS NEEDED: broken only to fill a coverage minimum (flagged).', 'Podiatry typically only rotates with EM ~December–February and covers a low number of shifts — no built-in seasonality; confine a podiatry resident to those months via their Availability setting (Date ranges) on the resident profile / Off-Service tab.'],
   },
 };
 
@@ -997,9 +1050,9 @@ export function offReasonText(resident, dateStr) {
 
 function describeDayRules(dr) {
   const out = [];
-  if (dr.fullBlockDays?.length) out.push({ label: dr.fullBlockDays.map(d=>DOW[d]).join('/'), rule: 'No shifts', type: 'block' });
-  if (dr.onlyDaysEnabled) out.push({ label: 'All other days', rule: `No shifts — only schedulable ${(dr.onlyDays||[]).map(d=>DOW[d]).join('/')}`, type: 'block' });
-  for (const r of dr.dayTypeRestrictions || []) out.push({ label: r.days.map(d=>DOW[d]).join('/'), rule: `${DOW_MODE_LABEL[r.mode] || r.mode}${r.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}`, type: 'restrict' });
+  if (dr.fullBlockDays?.length) out.push({ label: dr.fullBlockDays.map(d=>DOW[d]).join('/'), rule: `No shifts${dr.fullBlockAsNeeded ? ' (AS NEEDED - broken only to fill a coverage minimum)' : ''}`, type: 'block' });
+  if (dr.onlyDaysEnabled) out.push({ label: 'All other days', rule: `No shifts — only schedulable ${(dr.onlyDays||[]).map(d=>DOW[d]).join('/')}${dr.fullBlockAsNeeded ? ' (AS NEEDED - broken only to fill a coverage minimum)' : ''}`, type: 'block' });
+  for (const r of dr.dayTypeRestrictions || []) out.push({ label: r.days.map(d=>DOW[d]).join('/'), rule: `${DOW_MODE_LABEL[r.mode] || r.mode}${r.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}${r.asNeeded ? ' (AS NEEDED - broken only to fill a coverage minimum)' : ''}`, type: 'restrict' });
   for (const f of dr.residentFlagOverrides || []) out.push({ label: `${f.fullBlockDays.map(d=>DOW[d]).join('/')} (when ${f.flag})`, rule: 'No shifts', type: 'block' });
   for (const c of dr.computedDayRules || []) {
     if (c.type === 'wellnessWednesday') {
@@ -3817,6 +3870,11 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   // the shift on invalid days.
   eligible = eligible.filter(s => shiftActiveOnDow(s, dow));
 
+  // Midtrack Day on a Wednesday is BAMC-only (program decision 2026-10-30; hard, override-immune): EM Home is
+  // at Grand Rounds, every other category is stripped. MT-D Wednesday coverage is min 0 / max 1 (coverage.js
+  // DOW_COVERAGE_OVERRIDE), so it is only ever filled by the optional top-up.
+  if (dow === 3 && category !== 'EM_BAMC') eligible = eligible.filter(s => s !== 'MT-D');
+
   // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
   // per-resident assignment, not a category/PGY default): no evening/night shifts on Tuesdays.
   // Only the 'academic' role carries this restriction — the legacy isChief→'scheduling' fallback
@@ -3831,8 +3889,16 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
 
   // 1. Full-day block / restrict-to-only-these-days
-  if (dr.fullBlockDays?.includes(dow)) return [];
-  if (dr.onlyDaysEnabled && !(dr.onlyDays || []).includes(dow)) return [];
+  // (fullBlockAsNeeded: these two are AS NEEDED — see the AS-NEEDED RULES block; under ctx.relaxAsNeeded the
+  // day stays open and the entry is reported into ctx.asNeededSink, otherwise they strip exactly as before.)
+  if (dr.fullBlockDays?.includes(dow)) {
+    if (dr.fullBlockAsNeeded && ctx.relaxAsNeeded) ctx.asNeededSink?.push({ asNeededLabel: dr.fullBlockLabel, _strips: () => true });
+    else return [];
+  }
+  if (dr.onlyDaysEnabled && !(dr.onlyDays || []).includes(dow)) {
+    if (dr.fullBlockAsNeeded && ctx.relaxAsNeeded) ctx.asNeededSink?.push({ asNeededLabel: dr.fullBlockLabel, _strips: () => true });
+    else return [];
+  }
 
   // 1b. Computed-date rules — dates derived from the calendar itself, no manual list needed
   for (const c of dr.computedDayRules || []) {
@@ -3878,7 +3944,10 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   } else {
     for (const r of dr.dayTypeRestrictions || []) {
       if (r.scope === 'generator' && !ctx.forGenerator) continue; // manual picker still allows it
-      if (r.days.includes(dow)) eligible = eligible.filter(s => matchesMode(SHIFT_MAP[s]?.type, r.mode));
+      if (r.days.includes(dow)) {
+        if (r.asNeeded && ctx.relaxAsNeeded) { ctx.asNeededSink?.push({ asNeededLabel: r.asNeededLabel, _strips: (_d, sid) => !matchesMode(SHIFT_MAP[sid]?.type, r.mode) }); continue; }
+        eligible = eligible.filter(s => matchesMode(SHIFT_MAP[s]?.type, r.mode));
+      }
     }
   }
 
@@ -3906,7 +3975,8 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
     // the 11-shift peds sub-target via candidatePool's shift.area==='PED' filter, and score()'s
     // pedNPgy1Deprioritize is already 0 for these residents via hasPriorPedsTrauma.
     const allowPedNight = appSettings?.allowSplitPedsNights ?? true;
-    eligible = eligible.filter(s => s === 'PED-D' || s === 'PED-E' || (allowPedNight && s === 'PED-N'));
+    // PED-S (swing) is allowed alongside PED-D/E (program decision 2026-10-30).
+    eligible = eligible.filter(s => s === 'PED-D' || s === 'PED-E' || s === 'PED-S' || (allowPedNight && s === 'PED-N'));
   }
 
   // 6. Journal Club presenter — hard-strip shifts overlapping 18:00-21:00 on the resident's own
@@ -3964,6 +4034,7 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
 // Does shiftGate `g` strip `shiftId` on weekday `dow`? Mirrors the strip logic in getEligibleShifts's
 // gate loop (used only to LABEL an as-needed shift with the gate that withheld it).
 function gateStripsShift(g, dow, shiftId) {
+  if (g._strips) return g._strips(dow, shiftId); // synthetic sink entry from fullBlockDays/onlyDays/dayTypeRestrictions
   const matches = g.shiftIds === 'ALL' || (g.shiftIds || []).includes(shiftId);
   if (g.allowedDays) {
     if (!g.allowedDays.includes(dow)) return g.outsideAction === 'blockEntireDay' || matches;
@@ -3978,6 +4049,8 @@ export function residentHasAsNeededGate(resident, dayRules = {}) {
   const dr = getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules);
   const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
   const bt = resident.blockType || 'EM';
+  if (dr.fullBlockAsNeeded && (dr.fullBlockDays?.length || dr.onlyDaysEnabled)) return true;
+  if ((dr.dayTypeRestrictions || []).some(r => r.asNeeded)) return true;
   return (dr.shiftGates || []).some(g => g.asNeeded && blockTypeFilterPasses(g.blockTypeFilter, bt, traumaBlocks));
 }
 // Same signature as getEligibleShifts. Returns Map<shiftId, label> of shifts withheld ONLY by asNeeded
