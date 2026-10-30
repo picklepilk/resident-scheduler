@@ -8,7 +8,7 @@
 // of the monolith to work around import issues; if a future dependency breaks this, fix via
 // vitest.config.js deps.inline/alias, not extraction (see plan's "Key decisions & tradeoffs").
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generateSchedule, generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
+import { generateSchedule, generateScheduleBest, generateScheduleBestAsync, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates, parseDate } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
 import { SHIFT_MAP, SHIFT_DOW } from './shifts.js';
@@ -195,7 +195,10 @@ describe('generator harness — performance', () => {
   // still failing on an order-of-magnitude blowup (an accidental O(n^2), a runaway repair loop)
   // AND on a merely large one. The real number is printed below, so drift is visible in the log
   // even when it stays under the bar.
-  const MAX_CPU_MS = 8000;
+  // TEST_TIME_SCALE (see vitest.config.js) widens the cap on slow hosts; default 1 = 8000.
+  const parsedScale = Number(process.env.TEST_TIME_SCALE);
+  const TIME_SCALE = Number.isFinite(parsedScale) && parsedScale >= 1 ? parsedScale : 1;
+  const MAX_CPU_MS = 8000 * TIME_SCALE;
 
   // One shared generation for both tests below — this is the suite's single most expensive call,
   // and splitting the timing assertion from the shape assertions must not cost a second one.
@@ -205,10 +208,10 @@ describe('generator harness — performance', () => {
   // `attempts` too, deliberately; see the comment there.)
   let res;
   let cpuMs;
-  beforeAll(() => {
+  beforeAll(async () => {
     const fixture = makeFixture('standard');
     const startCpu = process.cpuUsage();
-    res = generateScheduleBest({ ...fixture }, { baseSeed: 100 });
+    res = await generateScheduleBestAsync({ ...fixture }, { baseSeed: 100 });
     const { user, system } = process.cpuUsage(startCpu);
     cpuMs = (user + system) / 1000;
     // eslint-disable-next-line no-console
