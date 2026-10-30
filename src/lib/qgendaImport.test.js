@@ -338,3 +338,20 @@ describe('DOW cross-check', () => {
     expect(buildQGendaImport(parsed, []).dowMismatches).toHaveLength(3);
   });
 });
+
+describe("jeopardy export/import round-trip", () => {
+  it("an exported jeopardy task re-imports as a jeopardy date inferring the right PGY", () => {
+    for (const pgy of [1, 2, 3]) {
+      const { task } = qgendaTaskFor("JEOPARDY", { pgy });
+      expect(task).toBe(`Res_Call PGY${pgy}`);
+      const grid = sheet({
+        band: ["Aug-26", "", "", "", "", "", ""], days: ["10", "11", "12", "13", "14", "15", "16"], dow: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        people: [{ name: "Rivera, Dana", cells: [task, "", "", "", "", "", ""] }],
+      });
+      const [entry] = parseQGendaGrid(grid).entries;
+      expect(entry.jeopardyDates).toEqual(["2026-08-10"]);
+      expect(entry.shifts).toEqual([]);
+      expect(entry.inferredPgy).toBe(pgy);
+    }
+  });
+});

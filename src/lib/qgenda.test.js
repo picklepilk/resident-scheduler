@@ -165,8 +165,15 @@ describe('jeopardy/call task resolution', () => {
     expect(QGENDA_JEOPARDY_TASK_ID).toBe('JEOPARDY');
   });
 
-  it('resolves to the default "Call" task with source:default', () => {
-    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 })).toEqual({ task: 'Call', source: 'default' });
+  it('resolves to Res_Call PGY<n> by resident PGY with source:default', () => {
+    for (const pgy of [1, 2, 3]) {
+      expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy })).toEqual({ task: `Res_Call PGY${pgy}`, source: 'default' });
+    }
+  });
+
+  it('unknown PGY falls back (source:fallback) so exportConfirm warns', () => {
+    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, {}).source).toBe('fallback');
+    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 4 }).source).toBe('fallback');
   });
 
   it('a chief override wins over the default, same mechanism as any real shift id', () => {
@@ -176,7 +183,7 @@ describe('jeopardy/call task resolution', () => {
   });
 
   it('a blank/whitespace-only override falls back to the default', () => {
-    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 }, { [QGENDA_JEOPARDY_TASK_ID]: '   ' }).task).toBe('Call');
+    expect(qgendaTaskFor(QGENDA_JEOPARDY_TASK_ID, { pgy: 2 }, { [QGENDA_JEOPARDY_TASK_ID]: '   ' }).task).toBe('Res_Call PGY2');
   });
 });
 
@@ -238,7 +245,7 @@ describe('qgendaRowValues', () => {
       Staff: 'Smith, John',
       Date: '8/10/2026',
       EndDate: '8/10/2026',
-      Task: 'Call',
+      Task: 'Res_Call PGY2',
       StartTime: '',
       EndTime: '',
     });
