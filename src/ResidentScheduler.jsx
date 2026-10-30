@@ -42,6 +42,7 @@ import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLo
 import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarget, poolTargetName, pickSolverTarget, probePool, probeSolverHealth } from './lib/solverPool.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
+import { needsManualReview, manualReviewTooltip, manualReviewLabel } from "./lib/manualReview.js";
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
@@ -17851,7 +17852,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // Straddle day-math for the row's own title (narrow name column has no room for the chip, but
     // the full hover/tap title should still say so) — see OffServiceStraddleBadge's header comment.
     const offStraddle = offStatus && offServiceStraddle(offStatus.ranges, block?.startDate, block?.endDate);
-    const rowTitle = [offSummary, offStraddle?.label].filter(Boolean).join(' · ') || undefined;
+    const rowTitle = [offSummary, offStraddle?.label, needsManualReview(res) ? manualReviewTooltip(res) : null].filter(Boolean).join(' · ') || undefined;
     // Wellness Wednesday ordinal depends only on res.category/res.pgy/dayRules — not on the date —
     // so it's hoisted here instead of being recomputed inside the per-date dates.map loop below.
     const wwOrdinal = res.category==='EM_HOME'
@@ -17880,6 +17881,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                 <div className="text-xs font-medium text-gray-800 truncate">{res.lastName}, {res.firstName}{chiefRole && CHIEF_ROLES[chiefRole]?<span title={CHIEF_ROLES[chiefRole].label}> ★{CHIEF_ROLES[chiefRole].badge}</span>:''}</div>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
+                  {needsManualReview(res) && (
+                    <span title={manualReviewTooltip(res)} data-testid="manual-review-badge"
+                      className="text-[10px] px-1 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 whitespace-nowrap">Review</span>
+                  )}
                   {res.blockType && res.category!=='PEDS' && (
                     <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
                   )}
@@ -20145,6 +20150,16 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
           </div>
           </ReportSubsection>
         )}
+
+        {(() => {
+          const reviewList = (allResidents || []).filter(needsManualReview);
+          if (!reviewList.length) return null;
+          return (
+            <p className="text-xs text-amber-700" title={reviewList.map(r => `${r.lastName}, ${r.firstName} (${manualReviewLabel(r)})`).join('; ')}>
+              EM/EMS and EM/TOX residents to review by hand: {reviewList.length}
+            </p>
+          );
+        })()}
 
         {report.underTarget.length > 0 && (
           <ReportSubsection compact={compact} title="Residents left under target" count={report.underTarget.length}>
@@ -22658,7 +22673,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
                 <div className="space-y-1.5">
                   {(() => {
                     const shiftId = QGENDA_JEOPARDY_TASK_ID;
-                    const placeholder = QGENDA_TASKS[shiftId];
+                    const placeholder = 'Res_Call PGY1 / PGY2 / PGY3 (by resident PGY)';
                     const override = (appSettings.qgendaTaskOverrides || {})[shiftId] ?? '';
                     return (
                       <div>
