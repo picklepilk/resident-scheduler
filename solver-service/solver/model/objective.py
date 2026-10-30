@@ -77,6 +77,7 @@ from solver.model import timing
 from solver.model.circadian import NIGHT_RUN_MAX
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
+from solver.model.hint_stickiness import add_hint_stickiness_term
 from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
 from solver.model.senior_composition import add_true_primary_preference_terms
 from solver.model.sequence_constraints import add_soft_sequence_constraint
@@ -826,6 +827,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)
     _add_true_primary_preference_term(model, payload, store, tier_quality, weights)
     _add_dow_preference_term(payload, store, tier_quality, weights)
+    add_hint_stickiness_term(model, payload, store, tier_quality, weights)
 
     groups = {TIER_ERRORS: tier_errors, TIER_BLOCKING: tier_blocking, TIER_RANK: tier_rank, TIER_REST: tier_rest, TIER_QUALITY: tier_quality}
     stage_exprs = {name: sum((coef * expr for coef, expr in g.terms), start=0) for name, g in groups.items()}

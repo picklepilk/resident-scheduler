@@ -77,6 +77,7 @@ from solver.model.objective import (
     TIER_REST,
     rest_outranks_coverage,
 )
+from solver.model.hint_stickiness import changed_cells, stickiness_weight
 from solver.report.builder import HARD_RELAXABLE_RULES, build_feasibility_report
 from solver.validate import validate_schedule
 
@@ -632,6 +633,9 @@ def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
 
     schedule = _extract_schedule(solver, store)
     report = _build_report(payload, solver, objective, hint_diag)
+    _stick_w = stickiness_weight(payload, objective.weights)
+    if _stick_w > 0 and payload.hint:
+        report["hintStickiness"] = {"weight": _stick_w, "changedCells": changed_cells(payload, schedule)}
     tiers = {name: round(solver.value(expr)) for name, expr in objective.stage_exprs.items()}
 
     failures = validate_schedule(payload, schedule)

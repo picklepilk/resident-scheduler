@@ -1433,3 +1433,14 @@ edge runs included (was: interior runs only, so edge run + interior run cost 0).
 115 -> 300 (JS 2.3 -> 6), `forcedCost` stays 100 (JS 2), `isolatedNight.perUnit` 200 -> 300 (JS
 singleton 4 -> 6). The singleton charge is still interior-only. Supersedes the "61% of real runs are
 1-3 nights" calibration.
+
+## hintStickiness (2026-10-30)
+
+Optional "stick close to the starting schedule" penalty. Motivation: warm-started from the browser engine, the polisher rewrote ~90% of cells (552-619 of 641) on a real block for a modest score gain.
+
+- **Field:** `config.hintStickiness` (int, weight per changed cell). Absent falls back to `config/default_weights.json` `hintStickiness.perChange` (0 = off). `0` = off. Only active when `hint` is non-empty.
+- **Semantics:** every (resident, date) cell whose final assignment differs from the hint costs `weight`: a hinted shift removed or replaced (`1 - x[r,h,d]`), or a new shift on a hint-empty cell (`sum x[r,*,d]`). A hinted cell that keeps its shift and gains a second one is not counted (multi-shift days are not expected). Linear, no extra variables or solves (`solver/model/hint_stickiness.py`, one call in `build_objective`).
+- **Tier:** `TIER_QUALITY` (lowest). It can only trade against shape/fairness terms, never coverage, hard rules, targets or rest; the hint pins and staged lexicographic bounds are unchanged.
+- **Report:** `report.hintStickiness = {weight, changedCells}` (strict pass-1 results only; absent when off).
+- **App:** `appSettings.solverStickToHint` (default false, Settings > optimizer, "Keep optimizer changes small") sets `config.hintStickiness = HINT_STICKINESS_WEIGHT` (100, about one small shape defect: workShape 100, fairness 100, isolatedNight 300) in `buildSolverPayload` when a hint is passed. An explicit caller `config.hintStickiness` wins.
+- **Tuning:** raise the weight to move fewer cells; very large values approximate "don't change anything not needed by a higher tier".

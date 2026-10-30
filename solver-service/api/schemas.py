@@ -42,6 +42,8 @@ class ConfigModel(_RequestModel):
     # Seed portfolio: K concurrent solves with distinct seeds, best kept (solver/solve.py).
     # Clamped to 1..8 by solver/io/payload.py.
     portfolio: int = 1
+    # Per-changed-cell penalty vs `hint` (quality tier); 0/absent = off. solver/model/hint_stickiness.py.
+    hintStickiness: Optional[int] = None
 
 
 class BlockModel(_RequestModel):
