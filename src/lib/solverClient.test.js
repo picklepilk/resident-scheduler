@@ -209,6 +209,9 @@ describe('solverClient — resolveSolverTarget (pure fallback decision)', () => 
     expect(normalizeSolverTarget('builtin')).toBe('builtin');
     expect(normalizeSolverTarget('cloud')).toBe('cloud');
     expect(normalizeSolverTarget('local')).toBe('local');
+    expect(normalizeSolverTarget('pool:PicklePower')).toBe('pool:PicklePower');
+    expect(normalizeSolverTarget('pool:')).toBe('cloud');
+    expect(normalizeSolverTarget('pool:  ')).toBe('cloud');
     for (const bad of [undefined, null, '', 'LOCAL', 'true', 7, {}, []]) expect(normalizeSolverTarget(bad)).toBe('cloud');
   });
 
