@@ -122,9 +122,10 @@ export function resolveSolverTarget({ preference, localHealthy }) {
   return { url: getSolverUrl(), usingLocal: false };
 }
 
-// Untrusted-shape guard for the device-local res_solver_target value: 'builtin' | 'cloud' | 'local';
+// Untrusted-shape guard for the device-local res_solver_target value: 'builtin' | 'cloud' (Auto) | 'local' | 'pool:<name>';
 // anything else (missing, legacy, hand-edited) reads as 'cloud', the long-standing default.
 export function normalizeSolverTarget(v) {
+  if (typeof v === 'string' && v.startsWith('pool:') && v.slice(5).trim()) return v; // manual pool machine
   return v === 'builtin' || v === 'local' ? v : 'cloud';
 }
 

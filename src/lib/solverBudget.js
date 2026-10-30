@@ -47,7 +47,7 @@ const plainScore = s => s
 // Builds report.engineComparison from pickEngineResult's `engineComparison` ({winner, solver, local},
 // winner 'cpsat'|'local') plus run context. Plain JSON only (numbers/strings/arrays) - the report is
 // persisted. 'tie' = solver result existed, did not strictly win, and scored identically.
-export function buildEngineComparison({ pick, target, backend, budgetSeconds, wallSeconds, solverStatus }) {
+export function buildEngineComparison({ pick, target, backend, budgetSeconds, wallSeconds, solverStatus, machine = null }) {
   const local = plainScore(pick?.local);
   const solver = plainScore(pick?.solver);
   let winner = 'local';
@@ -62,6 +62,7 @@ export function buildEngineComparison({ pick, target, backend, budgetSeconds, wa
     local,
     solver,
     winner,
+    ...(machine ? { machine: String(machine) } : {}),
   };
 }
 
