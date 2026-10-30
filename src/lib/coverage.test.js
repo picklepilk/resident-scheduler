@@ -146,7 +146,14 @@ describe('getCoverageFor: DOW_COVERAGE_OVERRIDE (POD-D/FLEX-D Wednesday GR+APP d
     expect(getCoverageFor('POD-N', {}, 3)).toEqual(DEFAULT_COVERAGE['POD-N']);
     expect(getCoverageFor('FLEX-E', {}, 3)).toEqual(DEFAULT_COVERAGE['FLEX-E']);
     expect(getCoverageFor('FLEX-N', {}, 3)).toEqual(DEFAULT_COVERAGE['FLEX-N']);
-    expect(getCoverageFor('MT-D', {}, 3)).toEqual(DEFAULT_COVERAGE['MT-D']);
+    expect(getCoverageFor('MT-E', {}, 3)).toEqual(DEFAULT_COVERAGE['MT-E']);
+    expect(getCoverageFor('MT-N', {}, 3)).toEqual(DEFAULT_COVERAGE['MT-N']);
+  });
+
+  it('drops MT-D to min:0/max:1 on Wednesday only (BAMC-only, optional top-up; program decision 2026-10-30)', () => {
+    expect(getCoverageFor('MT-D', {}, 3)).toEqual({ min: 0, max: 1 });
+    expect(getCoverageFor('MT-D', { 'MT-D': { min: 2, max: 3 } }, 3)).toEqual({ min: 0, max: 1 });
+    for (const dow of [0, 1, 2, 4, 5, 6]) expect(getCoverageFor('MT-D', {}, dow)).toEqual(DEFAULT_COVERAGE['MT-D']);
   });
 
   it('is a direct replacement, not a clamp -- overrides even a chief-customized higher value', () => {

@@ -1494,3 +1494,5 @@ Program decision: some scheduling rules are "the goal, but break as needed to fi
 - **`traumaMidRun` removed**: weight key, `add_trauma_mid_run_terms` and its objective call are gone (trauma-night position in a run is no longer a rule). Hard cap (rule 43) and `traumaSecondInRun` are unchanged.
 - **Final-Sunday overnight rule removed**: no `finalSundayUnconfirmed` preference is emitted and `eligible` no longer strips night shifts on the final Sunday.
 - **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday stays min 1 / max 2.
+
+**Extended 2026-10-30:** the same `asNeeded` list now also carries off-service weekday/shift-time restrictions (FM/IM/Neuro/Anes/Psych/Podiatry fullBlockDays, onlyDays and dayTypeRestrictions) and Peds/EM PGY-2 TRAUMA-N. No schema or solver change: the cells are produced by `getAsNeededShifts` and handled exactly as above. `coverage['MT-D'][<Wednesday>]` is now `{min:0,max:1}` and only EM_BAMC residents carry MT-D on Wednesdays in `eligible`; Trauma/Peds interns' peds-half `eligible` includes PED-S (no separate split filter in Python).

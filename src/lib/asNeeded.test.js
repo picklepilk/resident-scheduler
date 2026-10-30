@@ -211,17 +211,20 @@ describe('buildSolverPayload / mapSolverResult', () => {
     const payload = buildSolverPayload({ ...fixture, allResidents: [...fixture.allResidents, intern] });
     expect(payload.eligible.usem_pl[TUE]).toBeUndefined();
     expect(payload.asNeeded).toContainEqual({ residentId: 'usem_pl', date: TUE, shiftId: 'MT-D' });
-    expect(payload.asNeeded.every(c => c.residentId === 'usem_pl')).toBe(true);
-    expect(payload.asNeeded.some(c => c.date === TUE && c.shiftId === 'MT-D')).toBe(true);
+    // (the standard fixture also carries off-service residents whose weekday limits are as-needed too)
+    expect(payload.asNeeded.some(c => c.residentId === 'usem_pl' && c.date === TUE && c.shiftId === 'MT-D')).toBe(true);
     // Wednesday day shifts (GR) are not as-needed
-    expect(payload.asNeeded.find(c => c.date === WED && c.shiftId === 'MT-D')).toBeUndefined();
+    expect(payload.asNeeded.find(c => c.residentId === 'usem_pl' && c.date === WED && c.shiftId === 'MT-D')).toBeUndefined();
     // preferred window stays strict
     expect(payload.eligible.usem_pl[SAT]).toContain('MT-D');
-    expect(payload.asNeeded.find(c => c.date === SAT && c.shiftId === 'MT-D')).toBeUndefined();
+    expect(payload.asNeeded.find(c => c.residentId === 'usem_pl' && c.date === SAT && c.shiftId === 'MT-D')).toBeUndefined();
     expect(JSON.stringify(payload)).not.toMatch(/"(name|firstName|lastName)":/); // ids only
   });
   it('omits the field entirely when no resident carries an asNeeded gate', () => {
-    expect(buildSolverPayload(makeFixture('standard')).asNeeded).toBeUndefined();
+    const fx = makeFixture('standard');
+    const noGate = fx.allResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 3);
+    expect(noGate.length).toBeGreaterThan(0);
+    expect(buildSolverPayload({ ...fx, allResidents: noGate }).asNeeded).toBeUndefined();
   });
   it('mapSolverResult derives report.asNeededPlacements from the returned schedule (kept cells excluded)', () => {
     const r = usEm({ id: 'usem_pl' });

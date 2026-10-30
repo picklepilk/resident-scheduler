@@ -59,9 +59,11 @@ describe('generateScheduleBest — true-primary fix under Clear & Regenerate', (
   it('clearFirst:true yields the same schedule as the fill-from-empty run (fix not wiped)', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
-    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 7 });
-    expect(fresh.report.truePrimaryFixApplied).toBe(true); // seed chosen because the fix fires
-    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 7 });
+    // seed chosen because the fix fires (re-picked 2026-10-30 after the off-service as-needed rules shifted
+    // which attempt wins on this fixture: seed 7 no longer fires it, seeds 1/4/9/10/11 do).
+    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 1 });
+    expect(fresh.report.truePrimaryFixApplied).toBe(true);
+    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 1 });
     expect(cleared.report.truePrimaryFixApplied).toBe(true);
     expect(cleared.schedule).toEqual(fresh.schedule);
   }, 120000);
