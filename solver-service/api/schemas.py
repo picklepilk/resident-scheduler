@@ -181,3 +181,7 @@ class HealthResponse(BaseModel):
     # "durable" = Modal-backed jobs (client must submit-then-poll; /solve answers 400 use_jobs),
     # "memory" = in-process jobs (Fly / local). Defaulted so older clients/tests are unaffected.
     jobs: str = "memory"
+    # Optional host hints from SOLVER_HOST_KIND (see api/main.py health()); absent on Fly/Modal/local.
+    host: Optional[str] = None
+    preferJobs: Optional[bool] = None
+    defaultBudgetSeconds: Optional[int] = None

@@ -75,19 +75,32 @@ app.add_middleware(
 app.add_middleware(PrivateNetworkAccessMiddleware)
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse, response_model_exclude_none=True)
 def health() -> dict:
     # Deliberately open: no auth, no rate limit -- Fly's health check (and
     # anyone else) must always be able to reach this. `cpus` lets a caller (the app's "This
     # computer" Settings status line) show real parallelism without guessing.
     # `jobs`: "durable" (Modal: jobs survive container/tab loss, and /solve is disabled -- web
     # requests cap at 150s) or "memory" (Fly/local). The app reads it to pick submit-then-poll.
-    return {
+    out = {
         "status": "ok",
         "ortools": ORTOOLS_VERSION,
         "cpus": os.cpu_count() or 1,
         "jobs": "durable" if jobs_backend_name() == "modal" else "memory",
     }
+    # Optional host hints (SOLVER_HOST_KIND=pi or pc; any non-empty value is echoed as `host`): `host` names the box so the app can label it,
+    # `defaultBudgetSeconds` is the Generate budget it should use, `preferJobs` asks the app to
+    # submit-then-poll (/jobs) instead of one long synchronous /solve. `jobs` stays truthful.
+    host = os.environ.get("SOLVER_HOST_KIND", "").strip().lower()
+    if host:
+        out["host"] = host
+        out["preferJobs"] = True
+        try:
+            budget = int(os.environ.get("SOLVER_DEFAULT_BUDGET_SECONDS", "300"))
+        except ValueError:
+            budget = 300
+        out["defaultBudgetSeconds"] = max(10, min(budget, 1800))
+    return out
 
 
 @app.post("/solve", response_model=SolveResponse)

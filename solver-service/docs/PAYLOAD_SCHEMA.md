@@ -1420,3 +1420,12 @@ Portfolio bench (2026-10-18, `scripts/bench-engines.mjs --fixture realScale`, lo
 K=4 (2 workers per run) is far worse than K=1 (8 workers on one run) at equal wall time: CP-SAT's
 own multi-worker portfolio beats K independent thin runs here. Client default stays 1 (off). Re-run
 on a real backup before revisiting.
+
+## 2026-10-28: night consolidation (chief explicitly wants as few night runs as possible)
+
+`_add_night_fragment_term` (rule 36b) now counts EVERY night run: `extra = max(total_runs - 1, 0)`,
+edge runs included (was: interior runs only, so edge run + interior run cost 0). Mirrors
+`scheduleQuality.js`'s `nightFragmentationCost`. Weights (x50 scale): `nightFragment.avoidableCost`
+115 -> 300 (JS 2.3 -> 6), `forcedCost` stays 100 (JS 2), `isolatedNight.perUnit` 200 -> 300 (JS
+singleton 4 -> 6). The singleton charge is still interior-only. Supersedes the "61% of real runs are
+1-3 nights" calibration.

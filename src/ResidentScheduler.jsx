@@ -33,11 +33,11 @@ import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
-import { computeQualityMetrics, computeQualityVector, betterQuality } from './lib/scheduleQuality.js';
+import { computeQualityMetrics, computeQualityVector, betterQuality, nightRunsOf, nightFragmentationCost } from './lib/scheduleQuality.js';
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
-import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget } from './lib/solverClient.js';
+import { SOLVER_ENABLED, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, resolveSolverTarget, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, probeSolverHealth, getSolverUrl, normalizeSolverTarget, shouldPolishLocal, getExtraSolverTargets, findExtraSolverTarget, remoteTargetVisible } from './lib/solverClient.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import {
@@ -2173,7 +2173,7 @@ function getFm1PedsCap(target) { return target != null ? Math.ceil(target / 3) :
 // EM Home and EM BAMC residents default to the 'EM' rotation when no blockType is on file —
 // this matches how EM Home residents already default (see the roster creation sites) and fixes
 // EM_BAMC residents added via the Off-Service tab, which never assigns them a blockType at all.
-function isSchedulable(resident) {
+export function isSchedulable(resident) {
   if (isEmResident(resident)) {
     const bt = BLOCK_TYPE_MAP[resident.blockType || 'EM'];
     return bt ? bt.schedulable : false;
@@ -5591,11 +5591,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           (r.jcPresentDates || []).includes(nextDs) ||
           (r.grLectureDates || []).includes(toDateStr(addDays(parseDate(ds), 2)));
         if ((t - assigned[r.id]) < 2 || strandedTomorrow) nightCluster = -1.5;
-        else if (priorRunCount >= 2) nightCluster = -2.5; // would start a 3rd+ separate run
-        else if (priorRunCount === 1) nightCluster = -0.8; // would start a 2nd separate run
+        else if (priorRunCount >= 2) nightCluster = -3.5; // would start a 3rd+ separate run
+        else if (priorRunCount === 1) nightCluster = -2; // would start a 2nd separate run (was -0.8 until 2026-10-28)
       }
     } else if (runBefore === 1) {
-      nightCluster = -0.625; // stranding an isolated single night — still penalized
+      nightCluster = -1; // stranding an isolated single night (was -0.625 until 2026-10-28)
     }
     // Trauma-night-within-run soft preferences (chief-directed, mirrors the hard traumaRunCapped
     // exclusion in candidatePool — see traumaNightRunCount's own comment): 1 trauma night per run
@@ -7828,6 +7828,37 @@ const LNS_MIN_WINDOW = 3;
 const LNS_WINDOW_SPREAD = 3; // window = 3..5 days
 const LNS_UNFILLED_FOCUS = 0.2;
 const LNS_UNDERTARGET_FOCUS = 0.65;
+// Slice of the under-target band (taken from its top end) re-aimed at night fragmentation: windows
+// centred on the gap between a resident's separate night runs / around a standalone single night.
+const LNS_NIGHT_FOCUS = 0.3;
+const LNS_NIGHT_MAX_WINDOW = 8;
+
+// Picks a fragmented resident (>=2 night runs) and returns {center, k} for an LNS window covering
+// the gap between its shortest run and the nearest other run. d2/d3 are the iteration's existing
+// rng draws (no extra draws, so the draw count per iteration stays fixed). null = nothing to merge.
+function nightFragmentWindow(schedule, dates, residents, d2, d3) {
+  const frag = [];
+  for (const r of residents) {
+    const runs = nightRunsOf(schedule[r.id] || {}, dates, isNightShiftId);
+    if (runs.length >= 2) frag.push(runs);
+  }
+  if (!frag.length) return null;
+  const runs = frag[Math.floor(d2 * frag.length)];
+  // Prefer the shortest run (a single first); d3 picks among ties.
+  const minLen = Math.min(...runs.map(x => x.len));
+  const shortest = runs.filter(x => x.len === minLen);
+  const R = shortest[Math.floor(d3 * shortest.length)];
+  let T = null, best = Infinity;
+  for (const o of runs) {
+    if (o === R) continue;
+    const gap = o.start > R.end ? o.start - R.end : R.start - o.end;
+    if (gap < best) { best = gap; T = o; }
+  }
+  const lo = Math.max(0, Math.min(R.start, T.start) - 1);
+  const hi = Math.min(dates.length - 1, Math.max(R.end, T.end) + 1);
+  const k = Math.max(LNS_MIN_WINDOW, Math.min(LNS_NIGHT_MAX_WINDOW, hi - lo + 1));
+  return { center: lo + Math.floor((hi - lo) / 2), k };
+}
 
 function mergeLnsReport(prevRep, newRep, clearedDates) {
   const keepOutside = (list, key) => (Array.isArray(list) ? list : []).filter(e => !clearedDates.has(e?.[key]));
@@ -7872,9 +7903,12 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
     const d1 = rng(), d2 = rng(), d3 = rng(), d4 = rng(), d5 = rng();
     const rep = cur.result.report;
     const unf = rep.unfilled || [], ut = rep.underTarget || [];
-    let center;
+    let center, nightWin = null, nightK = 0;
     if (unf.length && d1 < LNS_UNFILLED_FOCUS) {
       center = idxOf.get(unf[Math.floor(d2 * unf.length)].dateStr);
+    } else if (d1 >= LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS - LNS_NIGHT_FOCUS && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS && (nightWin = nightFragmentWindow(cur.result.schedule, dates, args.allResidents, d2, d3))) {
+      // Night-merge focus (2026-10-28): window spans the gap between a fragmented resident's runs.
+      center = nightWin.center; nightK = nightWin.k;
     } else if (ut.length && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS) {
       const rid = ut[Math.floor(d2 * ut.length)].residentId;
       const free = dates.map((ds, i) => (cur.result.schedule[rid]?.[ds] ? -1 : i)).filter(i => i >= 0);
@@ -7883,7 +7917,7 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
       center = Math.floor(d2 * n);
     }
     if (center == null) center = Math.floor(d2 * n);
-    const k = Math.min(n, LNS_MIN_WINDOW + Math.floor(d4 * LNS_WINDOW_SPREAD));
+    const k = Math.min(n, nightK || (LNS_MIN_WINDOW + Math.floor(d4 * LNS_WINDOW_SPREAD)));
     const start = Math.max(0, Math.min(n - k, center - Math.floor(k / 2)));
     const windowDates = dates.slice(start, start + k);
     const subSeed = Math.floor(d5 * 4294967296) >>> 0;
@@ -7919,6 +7953,108 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
   return { current: cur, ran, accepted };
 }
 
+// ─── NIGHT-MERGE MOVE (2026-10-28) ───
+// Chief wants each resident's nights consolidated into as few runs as possible, no standalone
+// singles. Pairwise night SWAP between residents X and Y: X's standalone single night (shift sA on
+// date d) is handed to Y (who is empty on d), and in exchange Y hands X one night shift sB on a
+// date e adjacent to one of X's OTHER night runs (X empty on e). Per-date/per-shift coverage and
+// every resident's shift count are unchanged, so only shape moves. Candidates are pre-ranked by the
+// cheap per-row night-shape delta (nightFragmentationCost, the SAME function the quality metric
+// uses) and adopted ONLY on strict betterQuality of the full scoreGenerationResult, so hard
+// eligibility, rest, seniority (validateAll errors) and blocking warnings can never get worse --
+// this is the transactional contract LNS uses. Never touches locked cells or trueKeptCells.
+// Deterministic (no rng, no time cap; evals/accepts are count-capped) so replay is exact:
+// replayNightMerge(args, result) re-runs it on the same input.
+const NIGHT_MERGE_MAX_EVALS = 40; // each eval is a full validateAll + quality pass (~0.15 s on a Pi)
+const NIGHT_MERGE_MAX_ACCEPT = 120;
+const NIGHT_MERGE_MAX_RUN = 3; // dissolve runs up to this long
+
+function nightMergePass({ args, current, rulePriority, trueKeptCells }) {
+  const dates = getBlockDates(args.block.startDate, args.block.endDate);
+  const n = dates.length;
+  const lastIdx = n - 1;
+  const locked = args.block.lockedCells || {};
+  const nightOnlyIds = new Set(args.allResidents.filter(r => isNightOnlyResident(r, args.eligOverrides || {})).map(r => r.id));
+  const frozen = (rid, ds) => trueKeptCells.has(`${rid}|${ds}`) || !!locked[rid]?.[ds];
+  const rowCost = rs => nightFragmentationCost(nightRunsOf(rs, dates, isNightShiftId), lastIdx, NIGHT_RULES.maxRun);
+  let cur = current, evals = 0, accepted = 0;
+  const rejected = new Set();
+  // Exchange ownership of X's cells on `ds` with Y's cells on `es` (all night shifts). Dates keep
+  // their shift ids, so per-date/per-shift coverage and both residents' counts are unchanged.
+  const swapped = (rowX, rowY, ds, es) => {
+    const nx = { ...rowX }, ny = { ...rowY };
+    ds.forEach(d => { ny[d] = rowX[d]; delete nx[d]; });
+    es.forEach(e => { nx[e] = rowY[e]; delete ny[e]; });
+    return [nx, ny];
+  };
+  const eligMemo = new Map();
+  const eligListOf = r => {
+    let v = eligMemo.get(r.id);
+    if (!v) { v = new Set(getEffectiveEligibility(r, args.eligOverrides || {}, args.dayRules || {}).list); eligMemo.set(r.id, v); }
+    return v;
+  };
+  for (let guard = 0; guard < NIGHT_MERGE_MAX_ACCEPT && evals < NIGHT_MERGE_MAX_EVALS; guard++) {
+    const sched = cur.result.schedule;
+    const cands = [];
+    for (const X of args.allResidents) {
+      if (nightOnlyIds.has(X.id)) continue;
+      const rowX = sched[X.id] || {};
+      const runs = nightRunsOf(rowX, dates, isNightShiftId);
+      if (runs.length < 2) continue;
+      const costX = nightFragmentationCost(runs, lastIdx, NIGHT_RULES.maxRun);
+      for (const R of runs) {
+        if (R.len > NIGHT_MERGE_MAX_RUN) continue;
+        const ds = dates.slice(R.start, R.end + 1);
+        if (ds.some(d => frozen(X.id, d))) continue;
+        for (const T of runs) {
+          if (T === R || T.len + R.len > NIGHT_RULES.maxRun) continue;
+          for (const dir of [1, -1]) {
+            // L cells growing T outward on one side, entirely inside the block, never touching R.
+            const eis = [];
+            for (let q = 1; q <= R.len; q++) eis.push(dir > 0 ? T.end + q : T.start - q);
+            if (eis.some(ei => ei < 0 || ei > lastIdx || (ei >= R.start && ei <= R.end))) continue;
+            const es = eis.map(ei => dates[ei]);
+            if (es.some(e => rowX[e] || frozen(X.id, e))) continue;
+            for (const Y of args.allResidents) {
+              if (Y.id === X.id) continue;
+              const rowY = sched[Y.id] || {};
+              if (es.some(e => !isNightShiftId(rowY[e]) || frozen(Y.id, e))) continue;
+              if (ds.some(d => rowY[d] || frozen(Y.id, d))) continue;
+              // Static rotation eligibility both ways (cheap; DOW/rest/etc. left to the full score).
+              if (es.some(e => !eligListOf(X).has(rowY[e])) || ds.some(d => !eligListOf(Y).has(rowX[d]))) continue;
+              const key = `${X.id}|${Y.id}|${ds.join(',')}|${es.join(',')}`;
+              if (rejected.has(key)) continue;
+              const [nx, ny] = swapped(rowX, rowY, ds, es);
+              const delta = rowCost(nx) - costX + (nightOnlyIds.has(Y.id) ? 0 : rowCost(ny) - rowCost(rowY));
+              if (delta < 0) cands.push({ delta, key, X, Y, nx, ny });
+            }
+          }
+        }
+      }
+    }
+    if (!cands.length) break;
+    cands.sort((a, b) => a.delta - b.delta || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    let adopted = false;
+    for (const c of cands) {
+      if (evals >= NIGHT_MERGE_MAX_EVALS) break;
+      evals++;
+      const schedule = { ...sched, [c.X.id]: c.nx, [c.Y.id]: c.ny };
+      const result = { schedule, report: cur.result.report };
+      const score = scoreGenerationResult(result, args, rulePriority);
+      if (betterQuality(score, cur.score)) { cur = { ...cur, result, score }; accepted++; adopted = true; break; }
+      rejected.add(c.key);
+    }
+    if (!adopted) break;
+  }
+  return { current: cur, evals, accepted };
+}
+
+export function replayNightMerge(args, result) {
+  const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
+  const cur = { result, score: scoreGenerationResult(result, args, rulePriority) };
+  return nightMergePass({ args, current: cur, rulePriority, trueKeptCells: originalKeptCells(args) }).current.result;
+}
+
 // Best-of-N restart: runs generateSchedule `attempts` times with distinct seeds (generation is
 // nondeterministic — score()'s tie-break addend — so different seeds can produce meaningfully
 // different schedules), scores each with scoreGenerationResult, and keeps the strictly best
@@ -7942,6 +8078,10 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
 //     repair: 'truePrimaryOnly', clearFirst: false, block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
+// Night-merge (2026-10-28): when `repair` is on, `nightMergePass` runs on the winner after the steps
+// above and BEFORE LNS, and once more after LNS (only if LNS ran). Both are deterministic, so replay
+// = `replayNightMerge(args, result)` at each of those points (LNS replay below starts from the
+// post-merge schedule).
 // LNS (B1): when `report.replay.lns` is non-null ({seed, iters}), the winner above is only the
 // PRE-LNS schedule; reproduce the final one with `replayLns(args, preLnsResult, report.replay.lns)`
 // (exported below; it drives the same lnsPassSteps from the same start score). `iters` is the count
@@ -8152,6 +8292,15 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // B1: LNS ruin-and-recreate on the settled winner (opt-in via lnsIters; the UI path passes it).
   // `best` is replaced only on strict betterQuality inside lnsPassSteps. Runs BEFORE the one-shot
   // diagnostics below so they describe the final schedule.
+  // Night-merge (2026-10-28): consolidate fragmented night runs by pairwise swaps. Runs before LNS
+  // (so LNS refills start from consolidated nights) and again after it. Same `repair` gate as LNS.
+  let nightMergeInfo = null;
+  const runNightMerge = () => {
+    const nm = nightMergePass({ args, current: best, rulePriority, trueKeptCells: originalKeptCells(args) });
+    best = nm.current;
+    nightMergeInfo = { passes: (nightMergeInfo?.passes || 0) + 1, accepted: (nightMergeInfo?.accepted || 0) + nm.accepted, evals: (nightMergeInfo?.evals || 0) + nm.evals };
+  };
+  if (repair) { yield { phase: 'finalize' }; runNightMerge(); }
   let lnsInfo = null;
   // `repair` gate: repair:false callers want the raw unrepaired attempt (and its replay with
   // repair:false), which an LNS pass would silently mutate.
@@ -8169,6 +8318,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       lnsInfo = { seed: lnsSeed, iters: st.value.ran, accepted: st.value.accepted };
     }
   }
+
+  if (repair && lnsInfo && lnsInfo.iters > 0) runNightMerge();
 
   // Winner settled, so pay for the under-target shortfall scan exactly once (see the note at its
   // definition in generateSchedule). Deleted afterwards because the report is persisted onto the
@@ -8197,6 +8348,8 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // repair:false (a repair:true replay would mutate it into a different schedule).
   best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null };
   if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
+  if (nightMergeInfo) best.result.report.nightMergeAccepted = nightMergeInfo.accepted;
+  if (nightMergeInfo) best.result.report.nightMergeEvals = nightMergeInfo.evals;
   return best.result;
 }
 
@@ -16107,9 +16260,26 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
 // backend's /health jobs mode) | 'local' (solver on THIS computer, with a live status dot). The
 // value is the device-local res_solver_target (never synced); `solverAllowed` is the synced
 // "Use optimizer service" kill switch, which disables the two solver choices.
-function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
+function EnginePicker({ value, onChange, solverAllowed, compact = false, isAdmin = false }) {
+  // Named remote PCs (VITE_EXTRA_SOLVER_TARGETS): admin-only, and each shows only while its /health
+  // answers (they sit on the owner's tailnet, so other devices never reach them). Re-probed like local.
+  const [remoteHealth, setRemoteHealth] = useState({}); // id -> true|false
+  const extraTargets = useMemo(() => (isAdmin ? getExtraSolverTargets() : []), [isAdmin]);
+  useEffect(() => {
+    if (!extraTargets.length) return undefined;
+    let cancelled = false;
+    const poll = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      extraTargets.forEach(t => probeSolverHealth(t.url, { timeoutMs: 2500, fresh: true })
+        .then(h => { if (!cancelled) setRemoteHealth(prev => (prev[t.id] === Boolean(h) ? prev : { ...prev, [t.id]: Boolean(h) })); }));
+    };
+    poll();
+    const id = setInterval(poll, 10000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [extraTargets]);
   const [localStatus, setLocalStatus] = useState(undefined); // undefined checking | null down | {ortools,cpus}
   const [jobsMode, setJobsMode] = useState(null);            // null unknown/loading | 'durable' | 'memory'
+  const [hostKind, setHostKind] = useState(null);            // /health host hint ('pi') or null
   useEffect(() => {
     let cancelled = false;
     const poll = () => { if (typeof document !== 'undefined' && document.hidden) return; checkLocalSolverHealth().then(r => { if (!cancelled) setLocalStatus(r); }); };
@@ -16120,16 +16290,19 @@ function EnginePicker({ value, onChange, solverAllowed, compact = false }) {
   useEffect(() => {
     if (!SOLVER_ENABLED) return undefined;
     let cancelled = false;
-    probeSolverJobsMode(getSolverUrl()).then(m => { if (!cancelled) setJobsMode(m); });
+    probeSolverHealth(getSolverUrl()).then(h => { if (!cancelled) { setJobsMode(h?.mode ?? null); setHostKind(h?.host ?? null); } });
     return () => { cancelled = true; };
   }, []);
-  const cloudLabel = jobsMode === 'durable' ? 'Cloud (Modal)' : jobsMode === 'memory' ? 'Cloud (Fly)' : 'Cloud';
+  const cloudLabel = backendLabel(backendFor({ usingLocal: false, jobsMode, host: hostKind }));
   const localDot = localStatus === undefined ? 'bg-gray-300' : localStatus ? 'bg-green-500' : 'bg-red-400';
   const localTip = localStatus === undefined ? 'checking…' : localStatus ? `running · OR-Tools ${localStatus.ortools} · ${localStatus.cpus} core${localStatus.cpus === 1 ? '' : 's'}` : `not running at ${LOCAL_SOLVER_URL}`;
   const options = [
     { v: 'builtin', l: 'Built-in', d: 'Local JS generator, no optimizer', disabled: false },
     { v: 'cloud', l: cloudLabel, d: SOLVER_ENABLED ? 'Shared server (always on)' : 'Not configured in this build', disabled: !SOLVER_ENABLED || !solverAllowed },
     { v: 'local', l: 'This computer', d: `Faster, must be running (${localTip})`, disabled: !solverAllowed, dot: localDot },
+    ...extraTargets
+      .filter(t => remoteTargetVisible({ isAdmin, healthy: remoteHealth[t.id], selected: value === t.id }))
+      .map(t => ({ v: t.id, l: t.name, d: remoteHealth[t.id] ? 'Remote PC on the tailnet (reachable)' : 'Remote PC on the tailnet (not reachable)', disabled: !solverAllowed, dot: remoteHealth[t.id] ? 'bg-green-500' : 'bg-red-400' })),
   ];
   return (
     <div className="inline-flex flex-col gap-1">
@@ -16163,7 +16336,7 @@ function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpe
   const normPriority = normalizeRulePriority(appSettings?.rulePriority);
   const labels = qualityVectorLabels(normPriority);
   const winnerKey = c.winner === 'cpsat' ? 'solver' : c.winner;
-  const requested = c.target === 'local' ? 'This computer' : c.target === 'cloud' ? 'Cloud' : null;
+  const requested = c.target === 'local' ? 'This computer' : c.target === 'cloud' ? 'Cloud' : (typeof c.target === 'string' && c.target.startsWith('pc:')) ? (c.backend ? backendLabel(c.backend) : 'Remote PC') : null;
   const ranOn = c.backend ? backendLabel(c.backend) : null;
   const num = x => (typeof x === 'number' ? (Number.isInteger(x) ? String(x) : x.toFixed(1)) : '-');
   const row = (name, sc, win) => (
@@ -17278,13 +17451,28 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // The polished (longer) local run only makes sense as a warm start for a solver that can
     // actually run; kill switch off / no cloud URL / hand overrides the optimizer can't honour
     // all mean the local result IS the answer, so use the built-in budget.
-    const solverPossible = solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false;
+    const solverPossible = solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local' || Boolean(findExtraSolverTarget(solverRunTarget))) && appSettings.useSolverService !== false;
     const overrideSkipCount = solverPossible
       ? solverUnsafeHandOverrides(genBlock.handOverrides, genBlock.schedule, Object.fromEntries(allResidents.map(r => [r.id, r])), isTraumaCapSubject).length
       : 0;
-    setGenStageLabel((solverPossible && !overrideSkipCount) ? 'Generating (built-in engine)…' : 'Preparing…');
+    // Configured is not reachable: probe BEFORE the local run (short timeout; also what the solver
+    // path below reuses) so an unreachable optimizer gets the full built-in budget instead of the
+    // short warm-start one. A missed probe does not skip the solver attempt later, it only sizes
+    // the local run. Reachable-but-fails-later still ships the polished local result (no 2nd run).
+    const wantsLocalSolver = solverRunTarget === 'local';
+    let localHealthy = false;
+    let solverReachable = false;
+    if (solverPossible && !overrideSkipCount) {
+      setGenStageLabel('Preparing…');
+      await yieldToPaint();
+      localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
+      const { url: probeUrl, usingLocal: probeLocal } = resolveSolverTarget({ preference: solverRunTarget, localHealthy });
+      solverReachable = probeLocal || (appSettings.useSolverService !== false && Boolean(probeUrl)
+        && (await probeSolverJobsMode(probeUrl, { timeoutMs: 5000, fresh: true })) != null);
+    }
+    setGenStageLabel(shouldPolishLocal({ solverPossible, overrideSkipCount, solverReachable }) ? 'Generating (built-in engine)…' : 'Preparing…');
     await yieldToPaint();
-    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, (!solverPossible || overrideSkipCount) ? BUILTIN_ENGINE_OPTS : POLISHED_ENGINE_OPTS,
+    const localRes = await generateScheduleBestAsync({ ...baseArgs, block: genBlock, clearFirst }, shouldPolishLocal({ solverPossible, overrideSkipCount, solverReachable }) ? POLISHED_ENGINE_OPTS : BUILTIN_ENGINE_OPTS,
       p => setGenProgress(p.phase === 'attempt'
         ? { phase: 'local', done: p.done, total: p.total }
         : p.phase === 'lns' ? { phase: 'local', polishing: true, done: 0, total: 0 } // 'Polishing best attempt…'
@@ -17311,9 +17499,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     // (cheap, ~ms when it's running) rather than trusting a stale earlier status read — the whole
     // point is "reachable right now". resolveSolverTarget is the pure fallback decision: 'local'
     // falls back to the configured cloud URL when unreachable, never straight to failure.
-    const wantsLocalSolver = solverRunTarget === 'local';
-    const localHealthy = wantsLocalSolver ? Boolean(await checkLocalSolverHealth()) : false;
-    const { url: solverTargetUrl, usingLocal } = resolveSolverTarget({
+    const { url: solverTargetUrl, usingLocal, remote } = resolveSolverTarget({
       preference: solverRunTarget, localHealthy,
     });
     if (wantsLocalSolver && !usingLocal) {
@@ -17325,17 +17511,19 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     if (solverAllowed && solverTargetUrl) {
       // Declared outside the try so the catch can still describe what was attempted.
       let jobsMode = 'memory';
-      let backend = usingLocal ? 'local' : 'cloud';
-      let solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve });
+      let backend = usingLocal ? 'local' : remote ? backendFor({ remoteName: remote.name }) : 'cloud';
+      let solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve, remote: Boolean(remote) });
       const scoreArgs = { ...baseArgs, block: genBlock };
       let solveStartedAt = Date.now();
       try {
         // Jobs mode (Modal durable vs Fly memory) decides the budget, so probe it BEFORE building
         // the payload. Cached per URL; the local target never needs it.
         // null = probe failed: behave as Fly (legacy sync path) but label the backend just "Cloud".
-        jobsMode = usingLocal ? 'memory' : await probeSolverJobsMode(solverTargetUrl);
-        backend = backendFor({ usingLocal, jobsMode });
-        solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve });
+        // Pi host: /health also carries host/preferJobs/defaultBudgetSeconds (budget 300 s via jobs).
+        const hostInfo = usingLocal ? null : await probeSolverHealth(solverTargetUrl);
+        jobsMode = usingLocal ? 'memory' : (hostInfo?.mode ?? null);
+        backend = backendFor({ usingLocal, jobsMode, host: hostInfo?.host, remoteName: remote?.name });
+        solveBudgetSec = solverBudgetSeconds({ usingLocal, jobsMode, deep: deepSolve, hostBudgetSeconds: hostInfo?.defaultBudgetSeconds, remote: Boolean(remote) });
         const solverLabel = backendLabel(backend);
         // Deep solve (admin opt-in) only raises the budget further on Fly; Modal and this computer
         // already run the long budget by default (see solverBudgetSeconds).
@@ -17355,7 +17543,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         const solveTimeoutMs = solverTimeoutMs(solveBudgetSec);
         // Durable backend (Modal: POST /solve disabled) => submit-then-poll; legacy Fly and the
         // local run-local target keep the synchronous solveRemote path exactly as before.
-        const durable = jobsMode === 'durable';
+        const durable = jobsMode === 'durable' || Boolean(remote) || (!usingLocal && hostInfo?.preferJobs === true);
         const runJob = async () => {
           const ac = new AbortController();
           genSolveAbortRef.current = ac;
@@ -17378,7 +17566,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             if (usingLocal || !/use_jobs/.test(String(e?.message))) throw e;
             markSolverJobsDurable(solverTargetUrl);
             jobsMode = 'durable';
-            backend = backendFor({ usingLocal, jobsMode });
+            backend = backendFor({ usingLocal, jobsMode, remoteName: remote?.name });
             json = await runJob();
           }
         }
@@ -17419,7 +17607,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             budgetSeconds: solveBudgetSec, wallSeconds: (Date.now() - solveStartedAt) / 1000, solverStatus: 'unavailable',
           });
         } catch { /* comparison is advisory */ }
-        const engineLabel = `Built-in (${usingLocal ? 'this computer' : 'cloud'} unavailable)`;
+        const engineLabel = `Built-in (${usingLocal ? 'this computer' : remote ? remote.name : 'cloud'} unavailable)`;
         return { ...localRes, report: { ...localRes.report, engineComparison, engineLabel }, engineUsed: 'fallback', engineLabel, relaxed: false };
       }
     }
@@ -17973,7 +18161,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           {!readOnly && <>
           <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
           <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
-          <EnginePicker compact value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false}/>
+          <EnginePicker compact value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false} isAdmin={viewer?.role === 'admin'}/>
           <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)}
             title="Fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
             Generate Schedule
@@ -17983,7 +18171,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               as an explicit buildSolverPayload config override — the default Generate button above is untouched. Gated the same as
               the Settings → "Use optimizer service" toggle, OR'd with solverRunTarget === 'local'
               since the local target never depends on VITE_SOLVER_URL/SOLVER_ENABLED. */}
-          {solverRunTarget === 'cloud' && SOLVER_ENABLED && appSettings.useSolverService !== false && (
+          {((solverRunTarget === 'cloud' && SOLVER_ENABLED) || findExtraSolverTarget(solverRunTarget)) && appSettings.useSolverService !== false && (
             <Button variant="secondary" size="sm" icon={Zap} onClick={() => requestGenerate(true)}
               title={`Same as Generate Schedule, but lets the optimizer${solverRunTarget === 'local' ? ' on this computer' : ''} search for up to ${approxMinutes(DEEP_SOLVE_MAX_TIME_SECONDS)} instead of ${approxMinutes(DEFAULT_SOLVE_MAX_TIME_SECONDS)} — can fill more slots on a tight block. Only ships if it beats the regular result.`}>
               Deep Solve (~{Math.round(DEEP_SOLVE_MAX_TIME_SECONDS / 60)} min)
@@ -17994,7 +18182,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               and reviews the result in a playground when it's done (never straight into the real
               schedule). Same gate as Deep Solve: no solver, no job to submit. Disabled while one is
               already pending — see requestLongSolve's own guard. */}
-          {solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local') && appSettings.useSolverService !== false && (
+          {solverRunTarget !== 'builtin' && (SOLVER_ENABLED || solverRunTarget === 'local' || findExtraSolverTarget(solverRunTarget)) && appSettings.useSolverService !== false && (
             <span className="relative">
               <Button variant="secondary" size="sm" icon={Clock} disabled={!!longSolveJob?.jobId || longSolveSubmitting}
                 onClick={() => setLongSolveMenuOpen(o => !o)}
@@ -21864,7 +22052,7 @@ function ImportHistoryPanel({ importLog, setImportLog }) {
   );
 }
 
-function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, activeRowId, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave, solverRunTarget, setSolverRunTarget }) {
+function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSettings, showToast, demoMode, activeRowId, dbReady, onShowWhatsNew, importLog, setImportLog, flushPendingCloudSave, solverRunTarget, setSolverRunTarget, isAdmin = false }) {
   // Live "This computer" status (Optimizer settings below) — polled only while Settings is mounted
   // (this component unmounts when the tab changes, see the `{tab==='settings' && <SettingsTab.../>}`
   // call site), so there's no background polling cost the rest of the app pays. undefined =
@@ -22222,7 +22410,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-1">Optimizer — where to run</label>
             <p className="text-xs text-gray-400 mb-2">Built-in uses only the local JS generator (no optimizer). Cloud runs on the shared server (always on, no setup). This computer uses a copy of the optimizer running locally on this machine — much faster on a multi-core laptop, but only while you've started it here and only for this device (this choice is not synced to other admins).</p>
-            <EnginePicker value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false}/>
+            <EnginePicker value={solverRunTarget} onChange={setSolverRunTarget} solverAllowed={appSettings.useSolverService !== false} isAdmin={isAdmin}/>
             {solverRunTarget === 'local' && (
               <p className="text-xs mt-2">
                 {localSolverStatus === undefined && <span className="text-gray-400">Checking…</span>}
@@ -24958,7 +25146,8 @@ export default function ResidentScheduler({ viewer } = {}) {
   // preference must never sync — NOT in LS_BACKUP_KEYS/syncBindings.
   const [solverRunTargetRaw, setSolverRunTarget] = useLocalStorage('res_solver_target', 'cloud');
   // Untrusted shape (device storage): 'builtin' | 'cloud' | 'local', anything else reads as 'cloud'.
-  const solverRunTarget = normalizeSolverTarget(solverRunTargetRaw);
+  // A remote PC id ('pc:<slug>') survives only for an admin viewer on a build that still configures it.
+  const solverRunTarget = normalizeSolverTarget(solverRunTargetRaw, { allowRemote: viewer?.role === 'admin' });
 
   // Cross-device cloud sync (see the SUPABASE SYNC section). dbStatus/dbError feed
   // AutosaveIndicator's cloud states. dbReady gates the debounced cloud-save effect so it never
@@ -26867,7 +27056,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='requests' && <RequestsTab emRoster={emRoster} setEmRoster={setEmRoster} blocks={requestBlocks} onRequestsChanged={refreshPendingRequests} showToast={showToast} demoMode={demoMode} viewer={viewer} ayData={ayData}/>}
           {tab==='coverage' && <CoverageTab block={block} allResidents={allResidents} coverage={coverage} ayConf={currentAyConf} eligOverrides={eligOverrides} appSettings={appSettings} dayRules={dayRules} blocksHistory={blocksHistory} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
-          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget}/>}
+          {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} isAdmin={viewer?.role === 'admin'}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
           {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}

@@ -107,3 +107,20 @@ machine at a fixed loopback address.
   — simplest to just not hand a real token to a process on the same machine for no benefit.
 - If the fixed local port (8765) ever changes, update both `run-local.ps1`/`run-local.sh`,
   `src/lib/solverClient.js`'s `LOCAL_SOLVER_URL`, and this `connect-src` line together.
+
+## Owner's tailnet solver PCs (2026-10-28)
+
+`VITE_EXTRA_SOLVER_TARGETS` (Netlify env, `name=url,name=url`, https only) adds named picker entries
+("PicklePower", "PickleBook"). Setup: `solver-service/DEPLOY-PC.md`.
+
+- **`connect-src` lists the two exact origins** `https://picklepower.tail424ec7.ts.net:8765` and
+  `https://picklebook.tail424ec7.ts.net:8765`, matching how the Pi funnel origin was added (no
+  `*.ts.net` wildcard: that would let injected script exfiltrate to any tailnet host). Adding or
+  renaming a PC means editing `netlify.toml` and the env value together.
+- **Visibility is not security.** An entry shows only for an admin viewer whose `/health` probe
+  answers, and the hosts resolve only inside the owner's tailnet (`tailscale serve`, never
+  `funnel`), so other devices never see them. The security boundary is server-side: the PC runs
+  `SOLVER_AUTH_MODE=supabase` + `SOLVER_ALLOWED_EMAILS` (set only in the PC's gitignored
+  `.env.remote`) + `SOLVER_CORS_ORIGINS`. No email address appears in the repo or bundle.
+- Chrome may show a one-time local-network permission prompt: tailnet addresses (100.64/10) count
+  as a private network; the solver already answers PNA preflights (`api/pna.py`).
