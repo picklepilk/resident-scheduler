@@ -41,7 +41,8 @@ class ConfigModel(_RequestModel):
     symmetryLevel: Optional[int] = None
     # Seed portfolio: K concurrent solves with distinct seeds, best kept (solver/solve.py).
     # Clamped to 1..8 by solver/io/payload.py.
-    portfolio: int = 1
+    # Absent -> service auto-picks K (2 when >= 12 effective workers, else 1); explicit value always wins.
+    portfolio: Optional[int] = None
     # Per-changed-cell penalty vs `hint` (quality tier); 0/absent = off. solver/model/hint_stickiness.py.
     hintStickiness: Optional[int] = None
 

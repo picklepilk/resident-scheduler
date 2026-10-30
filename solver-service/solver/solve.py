@@ -531,10 +531,11 @@ class SolveResult:
 
 
 def solve(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
-    """Entry point. `config.portfolio` == 1 (default) is exactly `_solve_single`; K > 1 runs
-    `_solve_portfolio`. Everything else about the pipeline lives in `_solve_single`."""
-    if payload.config.portfolio > 1:
-        return _solve_portfolio(payload, cancel_event, on_progress)
+    """Entry point. K = `resolve_portfolio_k(config.portfolio, workers)`: 1 is exactly `_solve_single`;
+    K > 1 runs `_solve_portfolio`. Everything else about the pipeline lives in `_solve_single`."""
+    k = resolve_portfolio_k(payload.config.portfolio, _num_workers(payload))
+    if k > 1:
+        return _solve_portfolio(payload, cancel_event, on_progress, k=k, auto=payload.config.portfolio is None)
     return _solve_single(payload, cancel_event, on_progress)
 
 
@@ -707,14 +708,25 @@ def _result_rank_key(result: SolveResult) -> tuple:
     return (2, ())
 
 
-def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult:
+AUTO_PORTFOLIO_MIN_WORKERS = 12  # absent config.portfolio: K=2 at/above this many workers (2026-10-30 benchmark)
+
+
+def resolve_portfolio_k(config_portfolio, workers: int) -> int:
+    """Explicit `config.portfolio` (any value, incl. 1) wins; absent -> 2 with >= 12 workers, else 1."""
+    if config_portfolio is not None:
+        return config_portfolio
+    return 2 if workers >= AUTO_PORTFOLIO_MIN_WORKERS else 1
+
+
+def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None, auto: bool = False) -> SolveResult:
     """K independent full solves (seed = base + i), run concurrently in threads (OR-Tools releases
     the GIL), best by `_result_rank_key` wins, ties go to the lowest i. Workers are split
     `max(1, total // concurrent)` per run and each run gets the full `maxTimeSeconds`; if K exceeds
     the worker count, runs go in batches of `concurrent` runs and each run gets `maxTimeSeconds / batches`
     (wall time stays ~ maxTimeSeconds)."""
     cfg = payload.config
-    k = cfg.portfolio
+    if k is None:
+        k = cfg.portfolio
     total_workers = _num_workers(payload)
     concurrent = max(1, min(k, total_workers))
     per_run_workers = max(1, total_workers // concurrent)
@@ -783,7 +795,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress) -> SolveResult
             **({"error": str(_err)} if _err is not None else {}),
         })
     winner.report = dict(winner.report)
-    winner.report["portfolio"] = {"k": k, "winnerIndex": winner_index, "perRun": per_run}
+    winner.report["portfolio"] = {"k": k, "winnerIndex": winner_index, "perRun": per_run, **({"auto": True} if auto else {})}
     winner.seed = cfg.random_seed + winner_index
     return winner
 

@@ -23,8 +23,8 @@ def _raw(portfolio=None, workers=3, seconds=5):
 
 
 def test_config_default_and_clamp():
-    assert ConfigModel().portfolio == 1
-    assert parse_payload(_raw()).config.portfolio == 1
+    assert ConfigModel().portfolio is None
+    assert parse_payload(_raw()).config.portfolio is None
     assert parse_payload(_raw(0)).config.portfolio == 1
     assert parse_payload(_raw(-4)).config.portfolio == 1
     assert parse_payload(_raw(99)).config.portfolio == 8

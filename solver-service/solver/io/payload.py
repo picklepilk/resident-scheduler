@@ -82,7 +82,8 @@ class Config:
     symmetry_level: Optional[int] = None
     # Seed portfolio (solver/solve.py's `_solve_portfolio`): K independent solves of the same
     # payload with seeds random_seed+i, best kept. 1 = today's single solve, unchanged.
-    portfolio: int = 1
+    # None = absent: solve.py auto-picks K (`resolve_portfolio_k`). An explicit value (even 1) always wins.
+    portfolio: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -409,7 +410,7 @@ def parse_payload(raw: dict) -> Payload:
             objective_mode=config_raw.get("objectiveMode", "staged"),
             stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
-            portfolio=max(1, min(8, int(config_raw.get("portfolio", 1) or 1))),
+            portfolio=(max(1, min(8, int(config_raw["portfolio"] or 1))) if config_raw.get("portfolio") is not None else None),
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}
