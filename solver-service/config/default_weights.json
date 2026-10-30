@@ -24,7 +24,7 @@
   "flexPgy3Fallback": { "perUnit": 250 },
   "seniorTruePrimary": { "perUnit": 600 },
   "dowPreference": { "scale": 1 },
-  "areaSpread": { "perUnit": 0 },
-  "shortNightStint": { "perUnit": 0 },
+  "areaSpread": { "perUnit": 100 },
+  "shortNightStint": { "perUnit": 60 },
   "hintStickiness": { "perChange": 0 }
 }
