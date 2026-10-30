@@ -338,6 +338,27 @@ def _add_as_needed_term(payload: Payload, store: VarStore, group: TermGroup, wei
             group.add(coef, var)
 
 
+# ---- night excess: count-based as-needed rule (nights above the 6/block target) ----
+#
+# Program decision 2026-10-30: 6 nights/block is the goal; 7..12 (`caps.nightsMax`) only as needed to fill
+# coverage. circadian.py's `_add_night_cap` enforces the hard cap (nightsMax); here each night above the soft
+# target `caps.nights` costs `asNeededUse.perUnit`, in the SAME tier (TIER_RANK) as an as-needed cell, so
+# the solver reaches for a 7th+ night only when a coverage minimum needs it (coverageMin.perSlack is 50x
+# larger). Mirrors validateAll's `asNeededException` units (one per excess night). Skipped for night-exempt
+# residents and for payloads without `nightsMax` (legacy: `nights` is a hard cap, nothing can exceed it).
+def _add_night_excess_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights["asNeededUse"]["perUnit"])
+    dates = payload.block.dates
+    for resident in payload.residents:
+        target, hard = resident.caps.nights, resident.caps.nights_max
+        if resident.night_exempt or target is None or hard is None or hard <= target:
+            continue
+        night_vars = [store.night[(resident.id, d)] for d in dates]
+        excess = model.new_int_var(0, max(hard - target, 0), f"night_excess[{resident.id}]")
+        model.add(excess >= sum(night_vars) - target)
+        group.add(coef, excess)
+
+
 # ---- overstaffCoverage: last-resort +1-over-max, mirrors the JS repair
 # pass's Phase 5 `underTargetOverstaff` (see coverage.py's own module
 # docstring for the full policy). `overstaffCoverage.perUnit` (2000, see
@@ -912,6 +933,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
 
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
     _add_as_needed_term(payload, store, tier_rank, weights)
+    _add_night_excess_term(model, payload, store, tier_rank, weights)
     rest_first = rest_outranks_coverage(payload.rule_priority)
     rest_weights = weights
     if rest_first:

@@ -62,6 +62,8 @@ class ShiftModel(_RequestModel):
 
 class CapsModel(_RequestModel):
     nights: Optional[int] = None
+    nightsMax: Optional[int] = None
+    bamcGrExceptions: Optional[int] = None
     trauma: Optional[int] = None
     jcRemaining: Optional[int] = None
     bamcWedNights: Optional[int] = None

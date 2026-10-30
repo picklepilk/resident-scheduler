@@ -211,7 +211,7 @@ describe('buildSolverPayload / mapSolverResult', () => {
     const payload = buildSolverPayload({ ...fixture, allResidents: [...fixture.allResidents, intern] });
     expect(payload.eligible.usem_pl[TUE]).toBeUndefined();
     expect(payload.asNeeded).toContainEqual({ residentId: 'usem_pl', date: TUE, shiftId: 'MT-D' });
-    expect(payload.asNeeded.every(c => c.residentId === 'usem_pl')).toBe(true);
+    expect(payload.asNeeded.filter(c => c.residentId === 'usem_pl').length).toBeGreaterThan(0); // (BAMC residents also ship Thu-day/Wed-night cells)
     expect(payload.asNeeded.some(c => c.date === TUE && c.shiftId === 'MT-D')).toBe(true);
     // Wednesday day shifts (GR) are not as-needed
     expect(payload.asNeeded.find(c => c.date === WED && c.shiftId === 'MT-D')).toBeUndefined();
@@ -221,7 +221,9 @@ describe('buildSolverPayload / mapSolverResult', () => {
     expect(JSON.stringify(payload)).not.toMatch(/"(name|firstName|lastName)":/); // ids only
   });
   it('omits the field entirely when no resident carries an asNeeded gate', () => {
-    expect(buildSolverPayload(makeFixture('standard')).asNeeded).toBeUndefined();
+    const fx = makeFixture('standard');
+    // BAMC PGY-1s carry the Thu-day / Wed-night as-needed gates (2026-10-30) — drop them for the "no gate" case.
+    expect(buildSolverPayload({ ...fx, allResidents: fx.allResidents.filter(r => r.category !== 'EM_BAMC') }).asNeeded).toBeUndefined();
   });
   it('mapSolverResult derives report.asNeededPlacements from the returned schedule (kept cells excluded)', () => {
     const r = usEm({ id: 'usem_pl' });

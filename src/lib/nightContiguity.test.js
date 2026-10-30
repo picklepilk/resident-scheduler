@@ -170,7 +170,9 @@ const CEILINGS = {
   // 2026-10-18: 11 -> 13 (ranking follows Soft Rule Priority: postNightRest no longer counts in
   // blockingWarnCount, so best-of-N picks a different winner via the tie-break path; the hole count
   // is not lower, the night shape is simply worse for the new winner).
-  vacationHeavy: { twoSegment: 13, mergeable: 13 },
+  // 2026-10-30: 13 -> 14 (BAMC Thursday evening/night became ordinary + Thu-day/Wed-night as-needed:
+  // the BAMC roster's extra Thursday options re-order the best-of-N draw; +1 on this fixture only).
+  vacationHeavy: { twoSegment: 14, mergeable: 14 },
   // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
   // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
   // the other 3 variants' wins, and why generator.baseline.conferenceBlock.test.js's own

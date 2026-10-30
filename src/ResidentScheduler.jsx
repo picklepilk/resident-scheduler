@@ -316,13 +316,19 @@ export const DEFAULT_DAY_RULES = {
     ],
   },
   EM_BAMC_1: {
-    // Thursday = BAMC's own Grand Rounds — never schedulable, no exceptions.
-    fullBlockDays: [4],
-    // Wednesday overnight (runs into Thursday GR) is allowed once per block, but only as a
-    // manual pick (scope:'generator' hides it from auto-fill; validateAll warns past one/block).
-    dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }],
+    // Thursday = BAMC's own Grand Rounds (chief + program director, 2026-10-30). Thursday EVENING and NIGHT
+    // shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are
+    // AS NEEDED: the generator uses one only to fill an otherwise-empty coverage minimum, and AT MOST ONE of
+    // the two in total per block (hard, validateAll rule 'bamcWedNight'). `shiftTypes` narrows a gate to
+    // shifts of those types (see gateCoversShift).
     specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
     shiftGates: [
+      { id: 'bamc_thu_day', shiftIds: 'ALL', shiftTypes: ['day'], blockTypeFilter: null,
+        allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
+        asNeeded: true, asNeededLabel: 'BAMC Thursday day shift' },
+      { id: 'bamc_wed_night', shiftIds: 'ALL', shiftTypes: ['night'], blockTypeFilter: null,
+        allowedDays: [0,1,2,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
+        asNeeded: true, asNeededLabel: 'BAMC Wednesday night' },
       // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
@@ -478,6 +484,12 @@ const LEGACY_DAY_RULE_DEFAULTS = {
     { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+    // Pre-as-needed-Thursday shape (2026-10-30) — fullBlockDays:[4] Thursday GR never schedulable, Wednesday
+    // night manual-only via a generator-scoped noNight restriction, mt_intern gate only. An override equal to
+    // this would mask the Thu-day/Wed-night as-needed correction forever.
+    { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ] },
   ],
   // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
@@ -823,7 +835,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
-const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); max 6 total night shifts/block (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
+const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); aim for 6 night shifts/block; 7-12 are allowed ONLY AS NEEDED to fill a coverage minimum (the generator uses them last, Validation flags each night above 6 as an as-needed exception), and more than 12 is an error (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM PGY-2 — hard, sole exception the resident\'s own 2nd Wellness Wednesday (PGY-3 may substitute that one day). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation.';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
@@ -881,8 +893,7 @@ const RULE_NOTES = {
   },
   EM_BAMC_1: {
     specialNotes: [
-      'Thursday: BAMC Grand Rounds — never schedulable, no exceptions. Enforced.',
-      'Wednesday overnight (runs into Thursday GR): allowed once per block, manual assignment only — the generator never auto-places it; Validation warns past one.',
+      'Thursday is BAMC Grand Rounds (program decision 2026-10-30): Thursday evening and night shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED only — the generator uses one solely to fill an otherwise-empty coverage minimum ("BAMC Thursday day shift" / "BAMC Wednesday night" exceptions), and at most ONE of the two in total per block (hard; Validation errors on a second).',
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
@@ -1015,7 +1026,7 @@ function describeDayRules(dr) {
 function describeShiftGates(dr) {
   const out = [];
   for (const g of dr.shiftGates || []) {
-    const shiftLabel = g.shiftIds === 'ALL' ? 'All shifts' : g.shiftIds.join('/');
+    const shiftLabel = (g.shiftIds === 'ALL' ? 'All shifts' : g.shiftIds.join('/')) + (g.shiftTypes ? ` (${g.shiftTypes.join('/')} only)` : '');
     const filter = g.blockTypeFilter;
     const ids = filter?.ref === 'TRAUMA_BLOCKS' ? (dr.__traumaBlocks || TRAUMA_BLOCKS) : (filter?.ids || []);
     let scope = filter ? (filter.mode === 'only' ? 'on this rotation' : 'except on this rotation') : '';
@@ -1543,7 +1554,12 @@ function weeklyHourStats(rs) {
 // before returning to a day shift after a night run, and an evening shift can never be
 // immediately followed by a day shift the next day (or vice versa) — only a night shift or
 // another evening/day shift after a rest gap.
-export const NIGHT_RULES = { minRun: 5, idealRun: 6, maxRun: 6, postNightDayRestH: 24, maxPerBlock: 6 };
+// Nights per block (chief + program director, 2026-10-30): `targetPerBlock` (6) is the GOAL; 7..`maxPerBlock`
+// (12) is allowed ONLY AS NEEDED to fill a coverage minimum nothing else can fill (generator: the
+// asNeededFallback pool; validateAll: an `asNeededException` warn per night above the target); more than
+// `maxPerBlock` is a hard `nightsTotalBlock` error. maxRun (6 per contiguous run) is unchanged.
+export const NIGHT_RULES = { minRun: 5, idealRun: 6, maxRun: 6, postNightDayRestH: 24, targetPerBlock: 6, maxPerBlock: 12 };
+export const NIGHT_ABOVE_TARGET_LABEL = 'Night above 6 this block';
 
 // ─── NIGHT-AREA DIVERSITY (item 5, ported idea from sibling em-scheduler) ──────────────────
 // A small score() nudge toward spreading a resident's night shifts across POD/FLEX/PED/MT rather
@@ -2045,6 +2061,8 @@ function checkCircadianViolations(resident, dateStr, newShiftId, rs, { nightOnly
       const totalNights = countNightsInSchedule(rs) + 1;
       if (totalNights > NIGHT_RULES.maxPerBlock)
         violations.push({ message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator'), rule: 'nightsTotalBlock' });
+      else if (totalNights > NIGHT_RULES.targetPerBlock)
+        violations.push({ message: `${NIGHT_ABOVE_TARGET_LABEL} (${totalNights}) — used to fill coverage (as needed)`, level: severityFor('asNeededException', 'validator'), rule: 'asNeededException' });
     }
     // Mirror of the 'day' branch below, but looking forward — a fill pass can place this night
     // shift AFTER a day shift already sits on dateStr+1/+2 (e.g. the generator's optional pass
@@ -2204,6 +2222,16 @@ export function isSchedulable(resident) {
 // grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
 // — used by GR-lecture validation, the weekly-hour-cap GR window (lib/acgmeHours.js's grHoursOn),
 // and (historically) isStreakWorkDay below.
+// BAMC Grand Rounds as-needed cells (2026-10-30): a Thursday DAY shift or a Wednesday NIGHT shift (which runs into
+// Thursday GR). At most ONE of the two per block combined (rule 'bamcWedNight', hard). `dow` = getDay().
+function isBamcGrExceptionCell(category, shiftId, dow) {
+  if (category !== 'EM_BAMC') return false;
+  const t = SHIFT_MAP[shiftId]?.type;
+  return (t === 'night' && dow === 3) || (t === 'day' && dow === 4);
+}
+function countBamcGrExceptions(rs) {
+  return Object.entries(rs || {}).filter(([ds, s]) => s && isBamcGrExceptionCell('EM_BAMC', s, parseDate(ds).getDay())).length;
+}
 function grWorkDow(resident) {
   if (resident.category === 'EM_HOME') return 3;
   if (resident.category === 'EM_BAMC') return 4;
@@ -3860,12 +3888,12 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
     if (g.allowedDays) {
       if (!g.allowedDays.includes(dow)) {
         if (g.outsideAction === 'blockEntireDay') return [];
-        eligible = eligible.filter(s => !(gateShiftIds ? gateShiftIds.includes(s) : true));
+        eligible = eligible.filter(s => !gateCoversShift(g, s));
       } else if (g.nightExcludedDays?.includes(dow)) {
-        eligible = eligible.filter(s => !(gateShiftIds ? gateShiftIds.includes(s) : true) || SHIFT_MAP[s]?.type !== 'night');
+        eligible = eligible.filter(s => !gateCoversShift(g, s) || SHIFT_MAP[s]?.type !== 'night');
       }
-    } else if (gateShiftIds) {
-      eligible = eligible.filter(s => !gateShiftIds.includes(s));
+    } else if (gateShiftIds || g.shiftTypes) {
+      eligible = eligible.filter(s => !gateCoversShift(g, s));
     } else {
       return [];
     }
@@ -3961,10 +3989,16 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
 // the solver's constraints keep enforcing them for as-needed cells exactly as for any other cell.
 // Consumers: generateSchedule's 'asNeededFallback' stage (min pass only), validateAll/cellViolations
 // ('asNeededException' warn instead of the rotationEligibility error), buildSolverPayload (`asNeeded`).
+// Does shiftGate `g` cover `shiftId`? shiftIds ('ALL' | id list) optionally narrowed by `shiftTypes`
+// (['day'|'eve'|'night']) — used by the BAMC Thursday-day / Wednesday-night as-needed gates.
+function gateCoversShift(g, shiftId) {
+  if (g.shiftTypes && !g.shiftTypes.includes(SHIFT_MAP[shiftId]?.type)) return false;
+  return g.shiftIds === 'ALL' || (g.shiftIds || []).includes(shiftId);
+}
 // Does shiftGate `g` strip `shiftId` on weekday `dow`? Mirrors the strip logic in getEligibleShifts's
 // gate loop (used only to LABEL an as-needed shift with the gate that withheld it).
 function gateStripsShift(g, dow, shiftId) {
-  const matches = g.shiftIds === 'ALL' || (g.shiftIds || []).includes(shiftId);
+  const matches = gateCoversShift(g, shiftId);
   if (g.allowedDays) {
     if (!g.allowedDays.includes(dow)) return g.outsideAction === 'blockEntireDay' || matches;
     if (g.nightExcludedDays?.includes(dow)) return matches && SHIFT_MAP[shiftId]?.type === 'night';
@@ -3998,6 +4032,17 @@ export function getAsNeededShifts(resident, dateStr, specialDays = {}, eligOverr
   }
   return out;
 }
+// Night cells above the 6/block target (as-needed count exception): the 7th, 8th, ... night in date order.
+function nightExcessPlacements(resident, rs, dates) {
+  const out = [];
+  let n = 0;
+  for (const ds of dates) {
+    if (!isNightShiftId(rs[ds])) continue;
+    if (++n > NIGHT_RULES.targetPerBlock && n <= NIGHT_RULES.maxPerBlock)
+      out.push({ residentId: resident.id, name: `${resident.firstName} ${resident.lastName}`, dateStr: ds, shiftId: rs[ds], label: NIGHT_ABOVE_TARGET_LABEL });
+  }
+  return out;
+}
 // As-needed placements of a FINISHED schedule: every non-empty cell whose shift is not strictly eligible
 // but IS in the resident's as-needed set. `skipCell(rid, ds)` excludes cells the generator did not place
 // (kept/manual entries). Shared by generateSchedule/generateScheduleBest (report.asNeededPlacements) and
@@ -4008,6 +4053,9 @@ export function collectAsNeededPlacements({ allResidents, schedule, block, eligO
   const finalSunday = finalSundayOf(block);
   const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
   for (const r of allResidents) {
+    if (!isNightOnlyResident(r, eligOverrides)) {
+      for (const e of nightExcessPlacements(r, schedule[r.id] || {}, getBlockDates(block.startDate, block.endDate))) if (!(skipCell && skipCell(r.id, e.dateStr))) out.push(e);
+    }
     if (!residentHasAsNeededGate(r, dayRules)) continue;
     const rs = schedule[r.id] || {};
     const nextRotation = nextRotationFromSnapshot(r, nextBlockSnap);
@@ -4299,13 +4347,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Trauma shifts: ${traumaCount} — EM PGY-2/3 cap is ${traumaCap}/block (target 1–2)`, level: 'warn' });
     }
 
-    // BAMC: Wednesday overnight runs into Thursday's own Grand Rounds — allowed at most once/block
+    // BAMC: Thursday day shifts and Wednesday nights (run into Thursday GR) are as-needed only, at most ONE of
+    // them in total per block (2026-10-30). Each cell already carries its own asNeededException warn.
     if (resident.category === 'EM_BAMC') {
-      const wedNightCount = Object.entries(rs)
-        .filter(([ds, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(ds).getDay() === 3).length;
-      if (wedNightCount > 1)
+      const grExceptionCount = countBamcGrExceptions(rs);
+      if (grExceptionCount > 1)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
-          message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), measured: wedNightCount });
+          message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
     }
 
     // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
@@ -4576,6 +4624,11 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         if (totalNights > NIGHT_RULES.maxPerBlock)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightsTotalBlock',
             message: `${totalNights} night shifts this block — max is ${NIGHT_RULES.maxPerBlock}`, level: severityFor('nightsTotalBlock', 'validator') });
+        // 7..12 nights: allowed only as needed to fill coverage — one exception unit per night above the target.
+        const nightUnits = Math.min(totalNights, NIGHT_RULES.maxPerBlock) - NIGHT_RULES.targetPerBlock;
+        if (nightUnits > 0)
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'asNeededException', units: nightUnits,
+            message: `${NIGHT_ABOVE_TARGET_LABEL}: ${totalNights} nights (target ${NIGHT_RULES.targetPerBlock}, max ${NIGHT_RULES.maxPerBlock}) — used to fill coverage (as needed)`, level: severityFor('asNeededException', 'validator') });
         // Nights should land in one clean run per block. A 2nd separate stint is tolerated only
         // when necessary — warned, not blocked. A 3rd+ means nights are genuinely fragmented
         // across the block instead of clustered — chief-overridable-by-hand tier (nightStintCount),
@@ -5189,7 +5242,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // EM_BAMC's per-block Wednesday-night cap (validateAll's own warn: "BAMC allows at most one per
   // block, runs into Thursday GR") — seeded here and consulted by candidatePool's hard filter below
   // (item 1), same pattern as traumaCount/traumaCap.
-  const bamcWedNightCount = {};
+  const bamcGrExceptionCount = {};
   // Night-area diversity (item 5, see nightAreaDiversityTerm): per-resident count of night shifts
   // already worked in each of the four "diversity" areas this block, read by score().
   const nightAreaCount = {};
@@ -5222,7 +5275,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     pedsCount[r.id] = 0;
     pedNCount[r.id] = 0;
     nightCount[r.id] = 0;
-    bamcWedNightCount[r.id] = 0;
+    bamcGrExceptionCount[r.id] = 0;
     nightAreaCount[r.id] = Object.fromEntries(NIGHT_DIVERSITY_AREAS.map(a => [a, 0]));
     areaCount[r.id] = Object.fromEntries(SHIFT_AREAS.map(a => [a, 0]));
     nightOnly[r.id] = isNightOnlyResident(r, eligOverrides);
@@ -5250,7 +5303,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (sh?.type === 'night') nightCount[r.id]++;
       if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[r.id][sh.area]++;
       if (sh?.area) areaCount[r.id][sh.area]++;
-      if (r.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(sDs).getDay() === 3) bamcWedNightCount[r.id]++;
+      if (isBamcGrExceptionCell(r.category, sid, parseDate(sDs).getDay())) bamcGrExceptionCount[r.id]++;
       if (sid === 'TRAUMA-N') traumaNightYearly[r.id] = (traumaNightYearly[r.id] || 0) + 1;
       if (isHolidayDay(sDs)) holidayYearly[r.id] = (holidayYearly[r.id] || 0) + 1;
     }
@@ -5369,11 +5422,21 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // (rest, hours, streak, circadian, at-target, jeopardy, caps, ...) still applies to them in full.
   // fillDayPass uses it for MIN slots whose strict pool came back empty and nowhere else; the optional
   // (top-up) pass, repair and firstBlockingReason never set it.
-  let asNeededMode = false;
+  let asNeededMode = false; // false | 'cells' (inline as-needed gate cells) | 'late' (post-repair sweep: nights 7..12 + BAMC Thu-day/Wed-night)
   const asNeededFor = (r, ds) => asNeededByResident[r.id]?.[ds];
   const CANDIDATE_POOL_STAGES = [
-    { reason: 'noEligible', applies: () => !asNeededMode, keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
-    { reason: 'asNeededFallback', applies: () => asNeededMode, keep: (r, shift, ds) => !!asNeededFor(r, ds)?.has(shift.id) },
+    { reason: 'noEligible', applies: () => asNeededMode !== 'cells' && asNeededMode !== 'late', keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
+    // 'cells' (inline, fillDayPass): as-needed gate cells EXCEPT the BAMC Thursday-day/Wednesday-night ones.
+    // 'late' (lateAsNeededSweep, after fill + repair): strictly eligible residents (nights above 6 are admitted
+    // by the relaxed 'nightCapped' stage) PLUS the BAMC Thursday-day/Wednesday-night as-needed cells.
+    {
+      reason: 'asNeededFallback', applies: () => asNeededMode === 'cells' || asNeededMode === 'late',
+      keep: (r, shift, ds) => {
+        const late = asNeededMode === 'late';
+        if (late && eligCache[r.id][ds].has(shift.id)) return true;
+        return !!asNeededFor(r, ds)?.has(shift.id) && late === isBamcGrExceptionCell(r.category, shift.id, parseDate(ds).getDay());
+      },
+    },
     { reason: 'allWorking', keep: (r, shift, ds) => !schedule[r.id][ds] },
     // A jeopardy call may never land on a date the resident already works clinically (see
     // CLAUDE.md) — under any policy except 'off' this is now a hard exclusion, not a score()
@@ -5458,8 +5521,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // now applied here so the generator can't produce what Validation already flags.
     {
       reason: 'bamcWedNightCapped',
-      applies: (shift, ds) => shift.type === 'night' && parseDate(ds).getDay() === 3,
-      keep: r => !(r.category === 'EM_BAMC' && bamcWedNightCount[r.id] >= 1),
+      applies: (shift, ds) => isBamcGrExceptionCell('EM_BAMC', shift.id, parseDate(ds).getDay()),
+      keep: r => !(r.category === 'EM_BAMC' && bamcGrExceptionCount[r.id] >= 1),
     },
     // Rest >= shift-length (ACGME 6.17.a.2) is now ALWAYS enforced — no more appSettings.enforceRest
     // gate (memory acgme-em-work-hours: "rest >= shift length between shifts, always"). The old
@@ -5480,11 +5543,13 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       reason: 'circadianBlocked', restFallbackEmpty: true,
       keep: (r, shift, ds) => cachedCircadianViolations(r, ds, shift.id).every(v => v.level !== 'error'),
     },
-    // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest).
+    // Block-wide night cap (Trauma Night counts too — it's type:'night' like the rest). Every pool but one uses
+    // the 6-night TARGET; the final 'late' as-needed sweep (lateAsNeededSweep, MIN slots still unfilled
+    // after fill + repair) relaxes it to the hard max of 12.
     {
       reason: 'nightCapped', restFallbackEmpty: true,
       applies: shift => SHIFT_MAP[shift.id]?.type === 'night',
-      keep: r => nightOnly[r.id] || nightCount[r.id] < NIGHT_RULES.maxPerBlock,
+      keep: r => nightOnly[r.id] || nightCount[r.id] < (asNeededMode === 'late' ? NIGHT_RULES.maxPerBlock : NIGHT_RULES.targetPerBlock),
     },
     // Hard cap on separate night-run segments (chief-directed, 1.7): nights should land in ONE
     // run per block; a 2nd separate stint is tolerated (score()'s nightCluster discourages it,
@@ -5535,7 +5600,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // every call (CLAUDE.md: the fill decision path must never go through a cache) by walking
   // CANDIDATE_POOL_STAGES in order, narrowing `pool` exactly as the old sequential filters did.
   function candidatePool(shift, ds, asNeeded = false) {
-    asNeededMode = asNeeded;
+    asNeededMode = asNeeded === true ? 'cells' : asNeeded; // true = inline as-needed gate cells; 'late' = post-repair sweep
     try {
       return candidatePoolImpl(shift, ds);
     } finally {
@@ -6255,7 +6320,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       if (slot.shift.type === 'night') nightCount[best.id]++;
       if (slot.shift.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(slot.shift.area)) nightAreaCount[best.id][slot.shift.area]++;
       if (slot.shift.area) areaCount[best.id][slot.shift.area]++;
-      if (best.category === 'EM_BAMC' && slot.shift.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[best.id]++;
+      if (isBamcGrExceptionCell(best.category, slot.shift.id, parseDate(ds).getDay())) bamcGrExceptionCount[best.id]++;
       if (slot.shift.id === 'TRAUMA-N') traumaNightYearly[best.id] = (traumaNightYearly[best.id] || 0) + 1;
       if (isHolidayDay(ds)) holidayYearly[best.id] = (holidayYearly[best.id] || 0) + 1;
       if (best.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(slot.shift.id)) jcCount[best.id]++;
@@ -6303,7 +6368,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]--;
     if (sh?.area) areaCount[rid][sh.area]--;
     const r = residentById.get(rid);
-    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]--;
+    if (sh && isBamcGrExceptionCell(r?.category, sh.id, parseDate(ds).getDay())) bamcGrExceptionCount[rid]--;
     if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) - 1;
     if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) - 1;
     if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]--;
@@ -6322,10 +6387,38 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (sh?.type === 'night' && NIGHT_DIVERSITY_AREAS.includes(sh.area)) nightAreaCount[rid][sh.area]++;
     if (sh?.area) areaCount[rid][sh.area]++;
     const r = residentById.get(rid);
-    if (r?.category === 'EM_BAMC' && sh?.type === 'night' && parseDate(ds).getDay() === 3) bamcWedNightCount[rid]++;
+    if (sh && isBamcGrExceptionCell(r?.category, sh.id, parseDate(ds).getDay())) bamcGrExceptionCount[rid]++;
     if (sid === 'TRAUMA-N') traumaNightYearly[rid] = (traumaNightYearly[rid] || 0) + 1;
     if (isHolidayDay(ds)) holidayYearly[rid] = (holidayYearly[rid] || 0) + 1;
     if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
+  }
+  // Count-based as-needed rules (chief + program director 2026-10-30): nights 7..12 (6 is the goal) and the BAMC
+  // Thursday-day / Wednesday-night shifts (at most one in total) are used only AS NEEDED to fill a coverage
+  // minimum. They run ONCE, LAST (after fill + repair), over the min slots still unfilled: deferring means
+  // every ordinary fill and every repair swap had first call on the slot, so these are a true last resort and
+  // never an early shortcut that steals capacity from the strict passes (measured on realScale/standard:
+  // inline use regressed unfilled/quality). Candidates come from the normal pool in asNeededMode 'late' (only
+  // the 'nightCapped' cap and the as-needed-cell stage differ; every other stage binds in full, incl. the BAMC
+  // combined cap). The pick is the resident with the FEWEST nights (then lowest assigned/target) — deterministic,
+  // rng-free. Hand-kept cells are never touched (allWorking).
+  function lateAsNeededSweep() {
+    for (const u of [...report.unfilled]) {
+      const shift = SHIFT_MAP[u.shiftId];
+      if (!shift) continue;
+      if (filledCount(u.shiftId, u.dateStr) >= minFor(u.shiftId, u.dateStr)) continue;
+      streakCache = {};
+      const { candidates } = candidatePool(shift, u.dateStr, 'late');
+      const pool = narrowForSeniority(candidates, shift, u.dateStr);
+      if (!pool.length) continue;
+      let best = null;
+      for (const r of pool) {
+        if (!best || nightCount[r.id] < nightCount[best.id]
+          || (nightCount[r.id] === nightCount[best.id] && assigned[r.id] / Math.max(target[r.id] || 1, 1) < assigned[best.id] / Math.max(target[best.id] || 1, 1))) best = r;
+      }
+      assignCell(best.id, shift.id, u.dateStr);
+      report.filled++;
+    }
+    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
   }
   // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
   // resets it first, since repair jumps between arbitrary dates, not one day at a time.
@@ -6421,6 +6514,32 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
   }
 
+  // Shared by repairPass and lateAsNeededSweep (hoisted out of repairPass, bodies unchanged).
+  function filledCount(sid, ds) {
+    let n = 0;
+    for (const r of allResidents) if (schedule[r.id][ds] === sid) n++;
+    return n;
+  }
+  function minFor(sid, ds) {
+    const dow = parseDate(ds).getDay();
+    return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
+  }
+  // Narrows a clean candidate pool by the same hard seniority-composition requirement
+  // fillDayPass enforces for BOTH FLEX and POD (AY26/27 chief-directed, both hard now — see
+  // SENIOR_COMPOSITION) — candidatePool() itself doesn't know about this narrowing (that's
+  // fillDayPass's own extra layer), so without this, repair could place a wrong-PGY resident
+  // into a FLEX/POD slot with no qualifying primary PGY present, introducing a NEW hard
+  // validateAll error (confirmed empirically for POD: a Move A/B run without this narrowing did
+  // exactly that). If the shift/date has no qualifying resident already and the pool has none
+  // either, this candidate can't fill it — no junior/off-PGY fallback for either area any more.
+  function narrowForSeniority(pool, shift, ds) {
+    if (seniorCompositionExempt(shift, ds)) return pool; // Grand Rounds Wednesday — see seniorCompositionExempt
+    const comp = SENIOR_COMPOSITION[shift.area];
+    if (!comp) return pool;
+    const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings, ayConf);
+    if (allResidents.some(r => schedule[r.id][ds] === shift.id && satisfies(r))) return pool;
+    return pool.filter(satisfies);
+  }
   // Bounded post-fill repair pass (only runs when `repair:true` is passed — generateScheduleBest
   // calls this once, on the winning seed, after best-of-N selection). Every move goes through the
   // SAME candidatePool the fill passes used (zero parallel rule implementation, zero rule drift)
@@ -6430,31 +6549,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
   // never-overwrite invariant.
   function repairPass() {
-    function filledCount(sid, ds) {
-      let n = 0;
-      for (const r of allResidents) if (schedule[r.id][ds] === sid) n++;
-      return n;
-    }
-    function minFor(sid, ds) {
-      const dow = parseDate(ds).getDay();
-      return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
-    }
-    // Narrows a clean candidate pool by the same hard seniority-composition requirement
-    // fillDayPass enforces for BOTH FLEX and POD (AY26/27 chief-directed, both hard now — see
-    // SENIOR_COMPOSITION) — candidatePool() itself doesn't know about this narrowing (that's
-    // fillDayPass's own extra layer), so without this, repair could place a wrong-PGY resident
-    // into a FLEX/POD slot with no qualifying primary PGY present, introducing a NEW hard
-    // validateAll error (confirmed empirically for POD: a Move A/B run without this narrowing did
-    // exactly that). If the shift/date has no qualifying resident already and the pool has none
-    // either, this candidate can't fill it — no junior/off-PGY fallback for either area any more.
-    function narrowForSeniority(pool, shift, ds) {
-      if (seniorCompositionExempt(shift, ds)) return pool; // Grand Rounds Wednesday — see seniorCompositionExempt
-      const comp = SENIOR_COMPOSITION[shift.area];
-      if (!comp) return pool;
-      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings, ayConf);
-      if (allResidents.some(r => schedule[r.id][ds] === shift.id && satisfies(r))) return pool;
-      return pool.filter(satisfies);
-    }
     // The donor-side twin of narrowForSeniority, generalized to BOTH hard composition areas
     // (POD's PGY-3, FLEX's PGY-2): vacating a cell can look like numeric surplus (headcount above
     // min) while the resident being removed was the shift's ONLY qualifying primary PGY —
@@ -7010,6 +7104,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
   if (repair === true && !diagnosticsOnly) repairPass();
   else if (truePrimaryOnlyMode) preferTruePrimaryPass();
+  if (repair === true && !diagnosticsOnly) lateAsNeededSweep(); // after repair only: attempts stay exception-free, the winner gets the last resort
 
   // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
   // repair, like report.underTarget right below) rather than logging live inside fillDayPass —
@@ -7038,6 +7133,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // never in an as-needed Map (disjoint by construction).
   report.asNeededPlacements = [];
   for (const r of allResidents) {
+    if (!nightOnly[r.id]) {
+      for (const e of nightExcessPlacements(r, schedule[r.id], dates)) if (!keptCells.has(`${r.id}|${e.dateStr}`)) report.asNeededPlacements.push(e);
+    }
     const byDate = asNeededByResident[r.id];
     if (!byDate) continue;
     for (const ds of dates) {
@@ -7541,12 +7639,17 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       isIntern: isEmIntern(r),
       nightExempt: isNightOnlyResident(r, eligOverrides),
       caps: {
-        nights: NIGHT_RULES.maxPerBlock,
+        // `nights` keeps its legacy meaning to OLD solvers (a hard cap) at the new SOFT target (6) -> stricter-or-equal
+        // for a solver that ignores `nightsMax`; a new solver treats it as the soft target (excess priced at
+        // asNeededUse.perUnit) and enforces `nightsMax` (12) as the hard cap.
+        nights: NIGHT_RULES.targetPerBlock,
+        nightsMax: NIGHT_RULES.maxPerBlock,
         trauma: traumaCapSubject ? traumaCap : null,
         jcRemaining: r.category === 'EM_HOME'
           ? JC_MAX_PER_AY - countPublishedJC(r.id, block.academicYear, blocksHistory, block.id, ayConf)
           : null,
-        bamcWedNights: r.category === 'EM_BAMC' ? 1 : null,
+        bamcWedNights: r.category === 'EM_BAMC' ? 1 : null, // legacy (Wed nights only): old solvers read this — stricter-or-equal
+        bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Thu-day + Wed-night combined (2026-10-30)
         pedsMixMax: pedsMix ? PEDS_EM_MIX.max : null,
         pedsMixMin: pedsMix ? PEDS_EM_MIX.min : null,
         fm1PedsMax: isFm1 ? getFm1PedsCap(target) : null,
@@ -7953,7 +8056,8 @@ function countSoftRuleIssues(issues, softId) {
 // Count of as-needed exceptions (validateAll rule 'asNeededException') — feeds the quality vector's
 // last slot via computeQualityMetrics({asNeededCount}) at FAIRNESS_AXIS_WEIGHTS.asNeededUse.
 export function countAsNeededExceptions(issues) {
-  return issues.filter(i => i.rule === 'asNeededException').length;
+  // `units` > 1 = a count-based exception (nights above the 6 target): one exception per unit above it.
+  return issues.filter(i => i.rule === 'asNeededException').reduce((n, i) => n + (i.units ?? 1), 0);
 }
 
 // Scores one generateSchedule() result the same way for every attempt in generateScheduleBest —
@@ -9082,7 +9186,7 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.sixDayRunRestBlocked) pushRec('sixDayRunRestBlocked', `All eligible residents had just finished a maxed ${MAX_CONSECUTIVE_WORK_DAYS}-day work run and needed ${NIGHT_RULES.postNightDayRestH}h off before ${label} — rearrange days off nearby, or Generate again.`);
     if (reasonCounts.halfTargetMet) pushRec('halfTargetMet', `Trauma/Peds rotators had already completed their ${TRAUMA_PEDS_SPLIT.trauma}-trauma/${TRAUMA_PEDS_SPLIT.peds}-peds half targets — remaining ${label} slots need another eligible resident, assigned manually.`);
     if (reasonCounts.circadianBlocked) pushRec('circadianBlocked', `All eligible residents were blocked by a hard circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
-    if (reasonCounts.nightCapped) pushRec('nightCapped', `Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block cap — spread nights across more residents, or cover ${label} manually.`);
+    if (reasonCounts.nightCapped) pushRec('nightCapped', `Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block hard cap (or the ${NIGHT_RULES.targetPerBlock}-night target, which is exceeded only as needed) — spread nights across more residents, or cover ${label} manually.`);
     if (reasonCounts.nightStintCapped) pushRec('nightStintCapped', `Eligible residents already have 2 separate night stints this block — a 3rd would fragment nights further (hard error). Extend an existing run, cover ${label} with a different resident, or assign manually.`);
     if (reasonCounts.jcCapped) pushRec('jcCapped', `Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts Published blocks) — cover ${label} with a resident under the cap.`);
     if (reasonCounts.restProtected) pushRec('restProtected', `Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
@@ -16159,11 +16263,11 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     }
   }
 
-  // 12. BAMC: at most one Wednesday-night shift per block (program tier — always hard).
-  if (resident.category === 'EM_BAMC' && shift?.type === 'night' && dow === 3) {
-    const wedNightCount = Object.entries(hypRow).filter(([d, s]) => s && SHIFT_MAP[s]?.type === 'night' && parseDate(d).getDay() === 3).length;
-    if (wedNightCount > 1)
-      vs.push({ message: `${wedNightCount} Wednesday-night shifts — BAMC allows at most one per block (runs into Thursday GR)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: wedNightCount });
+  // 12. BAMC: at most ONE Thursday-day / Wednesday-night (as-needed) shift in total per block (program tier — always hard).
+  if (shift && isBamcGrExceptionCell(resident.category, shift.id, dow)) {
+    const grExceptionCount = countBamcGrExceptions(hypRow);
+    if (grExceptionCount > 1)
+      vs.push({ message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: grExceptionCount });
   }
 
   // 13. Trauma/Peds split sub-caps (program tier — always hard).

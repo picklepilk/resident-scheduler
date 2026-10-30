@@ -39,15 +39,22 @@ describe('cellViolations — R2 additions', () => {
     expect(rolling.level).toBe('error');
   });
 
-  it('nights total per block: 6 existing nights + a 7th flags nightsTotalBlock as a warn (override tier)', () => {
+  it('nights total per block: 6 existing nights + a 7th is an as-needed exception warn (target 6, hard max 12); a 13th flags nightsTotalBlock', () => {
     const r1 = res({ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM' });
     const row = {};
     for (let i = 0; i < 6; i++) row[`2026-07-${String(6 + i).padStart(2, '0')}`] = 'PED-N';
     const b = { ...block, schedule: { r1: row } };
     const vs = cellViolations(r1, '2026-07-20', 'PED-N', b, {}, {}, {}, {});
-    const v = vs.find(x => x.rule === 'nightsTotalBlock');
+    const v = vs.find(x => x.rule === 'asNeededException' && /Night above 6/.test(x.message));
     expect(v).toBeTruthy();
     expect(v.level).toBe('warn');
+    expect(vs.find(x => x.rule === 'nightsTotalBlock')).toBeUndefined();
+    // 12 existing nights (two runs of 6, a gap between) + a 13th is over the hard max
+    const row12 = {};
+    for (let i = 0; i < 6; i++) row12[`2026-07-${String(6 + i).padStart(2, '0')}`] = 'PED-N';
+    for (let i = 0; i < 6; i++) row12[`2026-07-${String(14 + i).padStart(2, '0')}`] = 'PED-N';
+    const vs13 = cellViolations(r1, '2026-07-24', 'PED-N', { ...block, schedule: { r1: row12 } }, {}, {}, {}, {});
+    expect(vs13.find(x => x.rule === 'nightsTotalBlock')).toBeTruthy();
   });
 
   it('night stint count: 2 existing separate stints + a 3rd flags nightStintCount as a warn', () => {

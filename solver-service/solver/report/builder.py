@@ -395,6 +395,8 @@ def _resident_to_raw(r: Resident) -> dict:
         "nightExempt": r.night_exempt,
         "caps": {
             "nights": r.caps.nights,
+            "nightsMax": r.caps.nights_max,
+            "bamcGrExceptions": r.caps.bamc_gr_exceptions,
             "trauma": r.caps.trauma,
             "jcRemaining": r.caps.jc_remaining,
             "bamcWedNights": r.caps.bamc_wed_nights,
