@@ -23,5 +23,8 @@
   "podPgy2Fallback": { "perUnit": 250 },
   "flexPgy3Fallback": { "perUnit": 250 },
   "seniorTruePrimary": { "perUnit": 600 },
-  "dowPreference": { "scale": 1 }
+  "dowPreference": { "scale": 1 },
+  "areaSpread": { "perUnit": 0 },
+  "shortNightStint": { "perUnit": 0 },
+  "hintStickiness": { "perChange": 0 }
 }
