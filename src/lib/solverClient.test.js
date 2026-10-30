@@ -160,7 +160,7 @@ describe('solverClient — checkLocalSolverHealth', () => {
 
     const result = await checkLocalSolverHealth();
 
-    expect(result).toEqual({ ortools: '9.15.6755', cpus: 16 });
+    expect(result).toEqual({ ortools: '9.15.6755', cpus: 16, runner: null });
     expect(fetchMock.mock.calls[0][0]).toBe(`${LOCAL_SOLVER_URL}/health`);
   });
 
