@@ -909,7 +909,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total. Sat/Sun/Mon (no Monday night) preferred; other days only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception).' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
