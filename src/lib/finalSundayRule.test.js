@@ -94,86 +94,35 @@ describe('nextBlockRotationFor', () => {
   });
 });
 
-describe('getEligibleShifts — final-Sunday night-shift strip', () => {
-  it('continuing-EM resident KEEPS night eligibility on the final Sunday', () => {
+// 2026-10-30 (chief + PD): the final-Sunday overnight RULE was REMOVED. EM Home residents may start
+// a night shift on the block's final Sunday regardless of where they rotate next block. The
+// finalSundayOf/nextBlockRotationFor helpers above stay as inert, still-tested utilities.
+describe('final-Sunday night start is ALLOWED (rule removed 2026-10-30)', () => {
+  it.each([
+    ['continuing EM', [nextSnapshot('EM')]],
+    ['moving to a non-schedulable rotation', [nextSnapshot('METRO')]],
+    ['absent from next block', [nextSnapshot(null)]],
+    ['next block unknown', []],
+  ])('getEligibleShifts keeps night eligibility on the final Sunday (%s)', (_label, history) => {
     const { fixture, papa } = papaFixture();
-    const nextRotation = nextBlockRotationFor(papa, fixture.block, [nextSnapshot('EM')]);
+    const nextRotation = nextBlockRotationFor(papa, fixture.block, history);
     const elig = getEligibleShifts(papa, FINAL_SUNDAY, {}, {}, {}, {}, {
       blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY, nextRotation,
     });
     expect(elig).toContain('TRAUMA-N');
   });
 
-  it('non-continuing resident LOSES night eligibility on the final Sunday', () => {
+  it.each([
+    ['moving off EM', [nextSnapshot('METRO')]],
+    ['next block not imported', []],
+  ])('validateAll raises no final-Sunday issue for an overnight on the final Sunday (%s)', (_label, history) => {
     const { fixture, papa } = papaFixture();
-    const nextRotation = nextBlockRotationFor(papa, fixture.block, [nextSnapshot('METRO')]);
-    const elig = getEligibleShifts(papa, FINAL_SUNDAY, {}, {}, {}, {}, {
-      blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY, nextRotation,
-    });
-    expect(elig).not.toContain('TRAUMA-N');
-    expect(elig.every(s => s !== 'TRAUMA-N')).toBe(true);
-  });
-
-  it('unknown next block does NOT strip night eligibility (generation stays warn-only)', () => {
-    const { fixture, papa } = papaFixture();
-    const nextRotation = nextBlockRotationFor(papa, fixture.block, []); // known:false
-    const elig = getEligibleShifts(papa, FINAL_SUNDAY, {}, {}, {}, {}, {
-      blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY, nextRotation,
-    });
-    expect(elig).toContain('TRAUMA-N');
-  });
-
-  it('non-final Sundays are unaffected even for a non-continuing resident', () => {
-    const { fixture, papa } = papaFixture();
-    const nextRotation = nextBlockRotationFor(papa, fixture.block, [nextSnapshot('METRO')]);
-    const elig = getEligibleShifts(papa, NON_FINAL_SUNDAY, {}, {}, {}, {}, {
-      blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY, nextRotation,
-    });
-    expect(elig).toContain('TRAUMA-N');
-  });
-});
-
-describe('validateAll — final-Sunday overnight transition', () => {
-  function runValidate(fixture, papa, rs, blocksHistory) {
-    const schedule = { [papa.id]: rs };
+    const schedule = { [papa.id]: { [FINAL_SUNDAY]: 'TRAUMA-N' } };
     const issues = validateAll(
       fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
-      fixture.appSettings, fixture.dayRules, fixture.coverage, blocksHistory, fixture.ayConf
+      fixture.appSettings, fixture.dayRules, fixture.coverage, history, fixture.ayConf
     );
-    return issues.filter(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY);
-  }
-
-  // 2026-09-26 policy: final-Sunday overnight leaving the ED is chief-overridable-by-hand
-  // ('finalSundayOvernight', rulePolicy.js tier 'override') — the generator still never places one
-  // (getEligibleShifts strips night eligibility here — see the eligibility tests above), so a
-  // hand-built/hand-edited schedule gets a flagged warn, not a hard error.
-  it('flags (does not hard-error) when the resident is known to NOT continue on a schedulable EM rotation', () => {
-    const { fixture, papa } = papaFixture();
-    const issues = runValidate(fixture, papa, { [FINAL_SUNDAY]: 'TRAUMA-N' }, [nextSnapshot('METRO')]);
-    expect(issues.some(i => i.level === 'warn' && i.rule === 'finalSundayOvernight' && /Final-Sunday overnight/.test(i.message))).toBe(true);
-    expect(issues.some(i => i.level === 'error' && /Final-Sunday overnight/.test(i.message))).toBe(false);
-  });
-
-  it('does NOT error when the resident continues on a schedulable EM rotation next block', () => {
-    const { fixture, papa } = papaFixture();
-    const issues = runValidate(fixture, papa, { [FINAL_SUNDAY]: 'TRAUMA-N' }, [nextSnapshot('EM')]);
-    expect(issues.some(i => /Final-Sunday overnight/.test(i.message))).toBe(false);
-  });
-
-  it('warns (not errors) when the next block has not been saved/imported yet', () => {
-    const { fixture, papa } = papaFixture();
-    const issues = runValidate(fixture, papa, { [FINAL_SUNDAY]: 'TRAUMA-N' }, []);
-    expect(issues.some(i => i.level === 'warn' && /next block not imported/.test(i.message))).toBe(true);
-    expect(issues.some(i => i.level === 'error' && /Final-Sunday overnight/.test(i.message))).toBe(false);
-  });
-
-  it('non-final Sundays raise no final-Sunday issue regardless of next-block continuation', () => {
-    const { fixture, papa } = papaFixture();
-    const schedule = { [papa.id]: { [NON_FINAL_SUNDAY]: 'TRAUMA-N' } };
-    const issues = validateAll(
-      fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
-      fixture.appSettings, fixture.dayRules, fixture.coverage, [nextSnapshot('METRO')], fixture.ayConf
-    );
-    expect(issues.some(i => i.residentId === papa.id && /Final-Sunday overnight|next block not imported/.test(i.message))).toBe(false);
+    expect(issues.some(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY
+      && (i.rule === 'finalSundayOvernight' || /Final-Sunday overnight|next block not imported/.test(i.message)))).toBe(false);
   });
 });

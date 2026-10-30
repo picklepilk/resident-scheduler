@@ -74,7 +74,7 @@ def _anti_fill_sum(weights: dict) -> int:
     slot (shape/fairness/dow preference/batch-2 trauma-run placement) --
     the thing coverageMin's slack weight must dominate.
 
-    Batch 2 (2026-08-22) additions: traumaSecondInRun/traumaMidRun/
+    Batch 2 (2026-08-22) additions: traumaSecondInRun/
     nightDurationAlternation/secondRestDay are all "this assignment isn't
     the PREFERRED one" penalties, not "leave it empty" ones, but the same
     domination property matters for them -- generous, not exact, per-single-
@@ -85,7 +85,7 @@ def _anti_fill_sum(weights: dict) -> int:
     it pushes TOWARD assigning a shift, never away from one.
 
     Round 2b additions: podEmComposition/flexEmComposition (one shortfall
-    var per (POD|FLEX shift, date), same ×1 stacking as traumaMidRun -- a
+    var per (POD|FLEX shift, date), same ×1 stacking as traumaSecondInRun -- a
     single (shift,date) pair only ever contributes one shortfall var) and
     podPgy2Fallback/flexPgy3Fallback (a flat per-assignment cost, same ×1
     stacking as weekendOff/internPair -- one assignment can only ever be
@@ -98,7 +98,6 @@ def _anti_fill_sum(weights: dict) -> int:
     intern_pair = weights["internPair"]["perExcess"]
     dow = weights["dowPreference"]["scale"] * 20
     trauma_second = weights["traumaSecondInRun"]["perUnit"] * 5
-    trauma_mid = weights["traumaMidRun"]["perUnit"]
     night_alt = weights["nightDurationAlternation"]["perUnit"] * 2
     second_rest = weights["secondRestDay"]["perUnit"]
     pod_em_comp = weights["podEmComposition"]["perUnit"]
@@ -110,7 +109,7 @@ def _anti_fill_sum(weights: dict) -> int:
     senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
     return (
         isolated_night + night_fragment + work + fairness + weekend_off + intern_pair + dow
-        + trauma_second + trauma_mid + night_alt + second_rest
+        + trauma_second + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
         + senior_true_primary
     )
@@ -139,7 +138,6 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["dowPreference"]["scale"] * 20 * GENEROUS_COVERAGE_SLOTS
         # batch 2 (2026-08-22)
         + weights["traumaSecondInRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
-        + weights["traumaMidRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["nightDurationAlternation"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES * 2
         + weights["secondRestDay"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["pedsInternNightDeficit"]["perUnit"] * GENEROUS_RESIDENTS
@@ -182,7 +180,7 @@ def test_overstaff_coverage_dominates_ordinary_soft_rules():
         max(weights["fairness"].values()),
         weights["weekendOff"]["perMissing"],
         weights["internPair"]["perExcess"],
-        weights["traumaSecondInRun"]["perUnit"], weights["traumaMidRun"]["perUnit"],
+        weights["traumaSecondInRun"]["perUnit"],
         weights["nightDurationAlternation"]["perUnit"], weights["secondRestDay"]["perUnit"],
         weights["pedsMixMin"]["perUnit"], weights["fm1Peds"]["perUnit"],
         weights["podEmComposition"]["perUnit"], weights["flexEmComposition"]["perUnit"],

@@ -313,8 +313,9 @@ describe('buildSolverPayload', () => {
     const payload = buildSolverPayload(fixture);
     expect(payload.emPgy2ResidentIds).toContain('syn_golf'); // EM_HOME PGY-2
     expect(payload.emPgy2ResidentIds).not.toContain('syn_mike'); // PGY-3
-    expect(payload.emPgy3ResidentIds).toContain('syn_mike'); // EM_HOME PGY-3
-    expect(payload.emPgy3ResidentIds).not.toContain('syn_golf'); // PGY-2
+    // 2026-10-30: FLEX no longer gates PGY-3 (a PGY-3 satisfies FLEX's senior requirement outright),
+    // so flexPgy3Fallback is retired: the id list is always empty.
+    expect(payload.emPgy3ResidentIds).toEqual([]);
     // EM_BAMC is never in either list, regardless of pgy — SENIOR_COMPOSITION/isSeniorFor/
     // narrowForPgyGate only ever gate EM_HOME.
     expect(payload.emPgy2ResidentIds).not.toContain('syn_sierra');
@@ -363,6 +364,37 @@ describe('buildSolverPayload', () => {
     }
   });
 
+  it('FLEX seniorPrimary lists EM Home PGY-3s as well as PGY-2s (2026-10-30), while POD stays PGY-3 only', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    const pgyOf = Object.fromEntries(fixture.allResidents.map(r => [r.id, `${r.category}:${r.pgy}`]));
+    const flexIds = new Set(Object.values(payload.seniorPrimary['FLEX-E']).flat().map(id => pgyOf[id]));
+    expect(flexIds.has('EM_HOME:2')).toBe(true);
+    expect(flexIds.has('EM_HOME:3')).toBe(true);
+    const podIds = new Set(Object.values(payload.seniorPrimary['POD-E']).flat().map(id => pgyOf[id]));
+    expect(podIds.has('EM_HOME:3')).toBe(true);
+    expect(podIds.has('EM_HOME:2')).toBe(true); // only on Wellness-Wednesday / conference substitute days
+    // ...but on an ordinary day POD-E lists no PGY-2.
+    const ordinary = payload.seniorPrimary['POD-E']['2026-07-09'].map(id => pgyOf[id]);
+    expect(ordinary).not.toContain('EM_HOME:2');
+    // FLEX on that same ordinary day lists both PGY-2 and PGY-3.
+    const flexOrdinary = payload.seniorPrimary['FLEX-E']['2026-07-09'].map(id => pgyOf[id]);
+    expect(flexOrdinary).toContain('EM_HOME:3');
+    expect(flexOrdinary).toContain('EM_HOME:2');
+  });
+
+  it('POD D/E/N coverage max is 3 on every non-Wednesday-day date (min unchanged)', () => {
+    const fixture = makeFixture('standard');
+    const payload = buildSolverPayload(fixture);
+    for (const sid of ['POD-D', 'POD-E', 'POD-N']) {
+      for (const [ds, c] of Object.entries(payload.coverage[sid] || {})) {
+        if (sid === 'POD-D' && new Date(ds + 'T00:00:00').getDay() === 3) continue;
+        expect(c.max).toBe(3);
+        expect(c.min).toBe(2);
+      }
+    }
+  });
+
   it('alternationExemptDates is empty with no 12h windows configured (no-op guarantee)', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
@@ -403,48 +435,16 @@ describe('buildSolverPayload', () => {
     });
   });
 
-  // engineHeadToHead.test.js (2026-09-26) found the solver placing an overnight on the block's
-  // final Sunday far more often than the JS engine when the next block hasn't been imported — see
-  // FINAL_SUNDAY_UNCONFIRMED_DEPRIORITIZE's own header comment for why the JS engine's own
-  // near-avoidance is emergent (nightCluster) rather than an explicit score() term, and why the
-  // fix is a solver-only preference nudge in buildSolverPayload instead.
-  describe('finalSundayUnconfirmed preference', () => {
-    it('emits a negative-bonus preference for every night shift a resident is eligible for on the block\'s final Sunday when the next block is unimported', () => {
+  // The final-Sunday overnight rule (and its solver-only finalSundayUnconfirmed nudge) was REMOVED
+  // 2026-10-30 (chief + PD): no such preference is ever emitted, and night shifts stay eligible.
+  describe('finalSundayUnconfirmed preference (removed)', () => {
+    it('is never emitted, and residents keep night eligibility on the final Sunday', () => {
       const fixture = makeFixture('standard'); // block ends 2026-08-02, a Sunday; empty blocksHistory
       const payload = buildSolverPayload(fixture);
-      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
-      expect(finalSundayPrefs.length).toBeGreaterThan(0);
-      for (const p of finalSundayPrefs) {
-        expect(p.date).toBe('2026-08-02');
-        expect(p.bonus).toBeLessThan(0);
-        expect(payload.eligible[p.residentId]?.[p.date] || []).toContain(p.shiftId);
-      }
-      // Never emitted for a day shift, even for a resident who does get a night-shift entry.
-      expect(finalSundayPrefs.some(p => p.shiftId.endsWith('-D') || p.shiftId.endsWith('-D12'))).toBe(false);
-    });
-
-    it('is never emitted when the block does not end on a Sunday (no finalSunday at all)', () => {
-      const fixture = makeFixture('standard');
-      // Shift the block by one day so it no longer ends on a Sunday.
-      const block = { ...fixture.block, startDate: '2026-07-07', endDate: '2026-08-03' };
-      const payload = buildSolverPayload({ ...fixture, block });
       expect(payload.preferences.some(p => p.tag === 'finalSundayUnconfirmed')).toBe(false);
-    });
-
-    it('is not emitted for a resident whose next-block rotation is already known (continuing or not)', () => {
-      const fixture = makeFixture('standard');
-      const [firstId] = fixture.allResidents.map(r => r.id);
-      // A next-block snapshot naming firstId as continuing on a schedulable EM rotation.
-      const nextBlockSnap = {
-        id: 'next-block',
-        data: {
-          startDate: '2026-08-03', endDate: '2026-08-30',
-          emBlockAssignments: { [firstId]: { blockType: 'EM' } },
-        },
-      };
-      const payload = buildSolverPayload({ ...fixture, blocksHistory: [nextBlockSnap] });
-      const finalSundayPrefs = payload.preferences.filter(p => p.tag === 'finalSundayUnconfirmed');
-      expect(finalSundayPrefs.some(p => p.residentId === firstId)).toBe(false);
+      const anyNight = Object.values(payload.eligible).some(byDate =>
+        (byDate['2026-08-02'] || []).some(sid => payload.shifts[sid]?.type === 'night'));
+      expect(anyNight).toBe(true);
     });
   });
 });

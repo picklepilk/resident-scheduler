@@ -74,7 +74,6 @@ export const RULE_POLICY = {
   wellnessWednesday: { tier: 'override', label: 'Wellness Wednesday day/evening shift' },
   academicChiefTueEveNight: { tier: 'override', label: 'Academic chief scheduled Tuesday evening/night' },
   approvedDayOff: { tier: 'override', label: 'Shift scheduled on an approved day off' },
-  finalSundayOvernight: { tier: 'override', label: 'Final-Sunday overnight leaving the ED for a non-continuing rotation' },
   pedNightSwingOwnerGuard: { tier: 'override', label: "Peds night/swing shift given to a non-owner category" },
 
   // ─── Tier: info ───────────────────────────────────────────────────────────

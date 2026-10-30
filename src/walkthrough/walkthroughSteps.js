@@ -74,7 +74,7 @@ export const WALKTHROUGH_STEPS = [
     title: 'Scheduling Rules — coverage targets',
     headline: 'Set how many residents each shift needs before you generate.',
     bullets: [
-      'e.g. POD Day needs 2 on weekdays, 3 on Mon/Tue.',
+      'e.g. POD Day needs at least 2, up to 3 any day.',
       'Day-of-week rules like Grand Rounds Wednesday live here too.',
     ],
     target: 'tab-rules',

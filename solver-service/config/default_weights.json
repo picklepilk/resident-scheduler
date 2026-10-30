@@ -12,7 +12,6 @@
   "nightFragment": { "avoidableCost": 300, "forcedCost": 100 },
   "workShape": { "isolatedCost": 100, "fragmentCost": 100 },
   "traumaSecondInRun": { "perUnit": 400 },
-  "traumaMidRun": { "perUnit": 400 },
   "nightDurationAlternation": { "perUnit": 300 },
   "weekendOff": { "perMissing": 500 },
   "pedsMixMin": { "perUnit": 300 },
