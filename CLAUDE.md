@@ -9,6 +9,7 @@ EM residency shift scheduler (UH Emergency Medicine). Builds/validates resident 
 npm test          # vitest, ~950 tests. 2 skips = SOLVER_PARITY-gated files (need Python)
 npx vitest run src/lib/qgenda.test.js        # single file
 ```
+- Slow host (Raspberry Pi): `TEST_TIME_SCALE=3 npm test` multiplies `vitest.config.js` test/hook timeouts and the harness perf CPU cap (8000 ms) by 3. Default 1; junk/<1 ignored.
 - No ESLint. `ResidentScheduler.jsx` UI/tabs untested — verify via `npm run dev` + generate/export a sample. Generator core tested via named exports (`generateSchedule`, `generateScheduleBest`, `validateAll`, `getEligibleShifts`, `buildQualityInput`, `useMonthPager`).
 - Quality baselines: `UPDATE_QUALITY_BASELINE=1 npm test` regenerates `qualityBaseline.<variant>.json` (refuses worse unless `FORCE_QUALITY_BASELINE=1`). One file per variant — **don't recombine** (shared file clobbers under parallel update). Run baseline files ONE AT A TIME when investigating timing. Heavy multi-seed tests must be `async` and `await new Promise(r => setImmediate(r))` per seed (`Timeout calling "onTaskUpdate"` = worker >60s without a macrotask, NOT CPU contention). `vitest.config.js` sets 120s timeouts (work in `beforeAll`). (ref: Test and quality baselines)
 - Solver parity: `SOLVER_PARITY=1 npx vitest run src/lib/solverParity.test.js` (bash) or `$env:SOLVER_PARITY=1; ...` (PowerShell). No npm script — no `cross-env`, `VAR=1` scripts no-op under Windows cmd.

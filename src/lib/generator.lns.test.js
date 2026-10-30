@@ -59,9 +59,9 @@ describe('generateScheduleBest — true-primary fix under Clear & Regenerate', (
   it('clearFirst:true yields the same schedule as the fill-from-empty run (fix not wiped)', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
-    const fresh = generateScheduleBest({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 7 });
+    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 7 });
     expect(fresh.report.truePrimaryFixApplied).toBe(true); // seed chosen because the fix fires
-    const cleared = generateScheduleBest({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 7 });
+    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 7 });
     expect(cleared.report.truePrimaryFixApplied).toBe(true);
     expect(cleared.schedule).toEqual(fresh.schedule);
   }, 120000);
@@ -72,8 +72,8 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
     const opts = { attempts: 20, baseSeed: 7 };
-    const pre = generateScheduleBest({ ...fx }, { ...opts, lnsIters: 0 });
-    const post = generateScheduleBest({ ...fx }, { ...opts, lnsIters: 60 });
+    const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
+    const post = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 60 });
     expect(post.report.lnsAccepted).toBeGreaterThan(0);
     if (!hasFallbackComposition(pre.schedule, fx.allResidents, fx.block, fx.appSettings, fx.ayConf)) {
       expect(hasFallbackComposition(post.schedule, fx.allResidents, fx.block, fx.appSettings, fx.ayConf)).toBe(false);

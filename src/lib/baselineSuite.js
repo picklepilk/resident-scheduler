@@ -19,7 +19,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateScheduleBest, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
+import { generateScheduleBestAsync, validateAll, buildQualityInput, normalizeRulePriority } from '../ResidentScheduler.jsx';
 import { getBlockDates } from './dates.js';
 import { computeQualityMetrics, computeQualityVector, fairnessAxes, FAIRNESS_AXIS_WEIGHTS } from './scheduleQuality.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
@@ -110,14 +110,14 @@ function fixtureFor(variant) {
   return variant === 'realScale' ? makeRealScaleFixture() : makeFixture(variant);
 }
 
-function captureOnce(variant, baseSeed) {
+async function captureOnce(variant, baseSeed) {
   const fixture = fixtureFor(variant);
   // `attempts` pinned ON PURPOSE here, unlike the perf smoke test in generator.harness.test.js,
   // which deliberately tracks whatever default production uses. The committed baselines are a
   // frozen measurement config: if generateScheduleBest's default ever moves, the recorded numbers
   // must not silently shift underneath the non-regression assertion. Re-measure deliberately
   // (UPDATE_QUALITY_BASELINE=1) instead.
-  const { schedule, report } = generateScheduleBest({ ...fixture }, { attempts: 20, baseSeed, lnsIters: BASELINE_LNS_ITERS });
+  const { schedule, report } = await generateScheduleBestAsync({ ...fixture }, { attempts: 20, baseSeed, lnsIters: BASELINE_LNS_ITERS });
   const issues = validateAll(
     fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
     fixture.appSettings, fixture.dayRules, fixture.coverage, fixture.blocksHistory, fixture.ayConf
@@ -158,7 +158,7 @@ export async function captureFor(variant) {
   const seeds = seedsFor(variant);
   const runs = [];
   for (const s of seeds) {
-    runs.push(captureOnce(variant, s));
+    runs.push(await captureOnce(variant, s));
     await new Promise(resolve => setImmediate(resolve));
   }
   const n = runs.length;

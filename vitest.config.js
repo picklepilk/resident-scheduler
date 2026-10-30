@@ -1,5 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
+// TEST_TIME_SCALE: multiplies test/hook timeouts (and the harness perf CPU cap) for slow hosts
+// (e.g. Raspberry Pi: `TEST_TIME_SCALE=3 npm test`). Junk or <1 is ignored; default 1.
+const parsedScale = Number(process.env.TEST_TIME_SCALE);
+const TEST_TIME_SCALE = Number.isFinite(parsedScale) && parsedScale >= 1 ? parsedScale : 1;
+
 export default defineConfig({
   test: {
     environment: 'node',
@@ -9,8 +14,8 @@ export default defineConfig({
     // defaults (5s test / 10s hook) are both far too short for that, and the hook limit in
     // particular fails as a confusing "1 skipped" rather than a timeout on the test itself.
     // Set here rather than passed as CLI flags so a plain `npm test` behaves correctly.
-    testTimeout: 120000,
-    hookTimeout: 120000,
+    testTimeout: 120000 * TEST_TIME_SCALE,
+    hookTimeout: 120000 * TEST_TIME_SCALE,
     // Pinned, not left to vitest's default: the perf smoke test in generator.harness.test.js
     // gates on process.cpuUsage(), which is PROCESS-wide. Under `forks` each test file gets its
     // own child process, so the delta measures only that generation. Under `threads` the three
