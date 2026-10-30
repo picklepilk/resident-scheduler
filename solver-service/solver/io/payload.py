@@ -273,6 +273,16 @@ class Payload:
     # full TIER_ERRORS weight, never downgraded) -- never LESS strict than before.
     block_touches_conference: bool = False
 
+    # ---- as-needed cells (program decision 2026-10-30) ----
+    # {(residentId, date, shiftId)} -- cells a day-rule gate flagged `asNeeded` withholds from `eligible`
+    # (JS getAsNeededShifts; e.g. US/EM interns outside Sat/Sun/Mon). `parse_payload` MERGES them into
+    # `eligible` so every constraint family treats them like any other cell (rest/circadian/hours/caps all
+    # still bind); what makes them special is only (a) the `asNeededUse` objective penalty
+    # (objective.py), (b) the coverage link in coverage.py (an as-needed cell may only fill a coverage
+    # MINIMUM, never top up), and (c) their exclusion from the core-deficit count. OPTIONAL: absent = empty
+    # = byte-identical to a pre-feature payload, and an older solver build simply ignores the field.
+    as_needed: frozenset = field(default_factory=frozenset)
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
@@ -362,6 +372,10 @@ def _parse_eligible(raw: dict) -> dict:
     return {rid: {d: set(shifts) for d, shifts in by_date.items()} for rid, by_date in raw.items()}
 
 
+def _parse_as_needed(raw: list) -> frozenset:
+    return frozenset((e["residentId"], e["date"], e["shiftId"]) for e in raw)
+
+
 def _parse_obligations(raw: dict) -> dict:
     return {rid: set(dates) for rid, dates in raw.items()}
 
@@ -419,6 +433,10 @@ def parse_payload(raw: dict) -> Payload:
             enforce_weekend_off=bool(settings_raw.get("enforceWeekendOff", True)),
         )
         residents = _parse_residents(raw.get("residents", []))
+        as_needed = _parse_as_needed(raw.get("asNeeded", []) or [])
+        eligible = _parse_eligible(raw.get("eligible", {}))
+        for rid, date_str, shift_id in as_needed:
+            eligible.setdefault(rid, {}).setdefault(date_str, set()).add(shift_id)
         payload = Payload(
             version=int(raw.get("version", 1)),
             config=config,
@@ -426,7 +444,8 @@ def parse_payload(raw: dict) -> Payload:
             shifts=_parse_shifts(raw.get("shifts", {})),
             residents=residents,
             residents_by_id={r.id: r for r in residents},
-            eligible=_parse_eligible(raw.get("eligible", {})),
+            eligible=eligible,
+            as_needed=as_needed,
             obligations=_parse_obligations(raw.get("obligations", {})),
             locked=_parse_locked(raw.get("locked", [])),
             hint=_parse_locked(raw.get("hint", [])),

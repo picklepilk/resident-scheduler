@@ -88,6 +88,20 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
             else:
                 model.add(sum(assigned) <= entry.max)
 
+            # As-needed link (program decision 2026-10-30): an as-needed cell (payload.as_needed) may be
+            # used ONLY to fill a coverage MINIMUM -- never to top a shift up past it. If any such cell is
+            # taken, the day's whole headcount (it included) must fit inside `min`, i.e. it displaces
+            # nobody who could have staffed the slot normally beyond the minimum and never rides along
+            # into optional headroom. A locked/hand-kept as-needed cell is a fixed fact, not a decision,
+            # so it is exempt (it must not make the model infeasible when the kept headcount already
+            # exceeds min). Hard, in pass 1 and pass 2 alike (this function builds both).
+            if payload.as_needed:
+                locked = {(lc.resident_id, lc.shift_id, lc.date) for lc in payload.locked}
+                for rid, var in store.by_shift_date.get((shift_id, date_str), []):
+                    key = (rid, shift_id, date_str)
+                    if key in payload.as_needed and key not in locked:
+                        model.add(sum(assigned) <= max(entry.min, 0)).only_enforce_if(var)
+
             if entry.min <= 0:
                 continue
 

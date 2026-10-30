@@ -94,6 +94,12 @@ export const RULE_POLICY = {
   // no export-blocking count or generator scoring. See CLAUDE.md's fix-plan note on this pair.
   seniorEmCountComposition: { tier: 'info', label: 'POD/FLEX shift short of its chief-directed EM headcount' },
   seniorPgyGating: { tier: 'info', label: 'Junior PGY covered a slot a senior PGY already filled (chief-directed gating)' },
+  // Program decision 2026-10-30: a day-rule gate flagged `asNeeded` ("the goal, but break as needed to
+  // fill the schedule") was broken to staff a coverage MINIMUM (getAsNeededShifts, validateAll). 'info'
+  // for the same reason as the pair above: always a plain, visible 'warn', never in EXPORT_BLOCKING_RULE_IDS
+  // or countBlockingWarns; best-of-N ranking prices it through the quality vector's last slot instead
+  // (scheduleQuality.js FAIRNESS_AXIS_WEIGHTS.asNeededUse), never a new slot.
+  asNeededException: { tier: 'info', label: 'Rule broken as needed to fill a coverage minimum' },
 };
 
 // 2026-10-18 chief decision: every 'program' rule plus rotationEligibility (tiered 'acgme' for

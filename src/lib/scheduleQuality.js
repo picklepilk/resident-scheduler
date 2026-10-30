@@ -158,6 +158,9 @@ export function computeQualityMetrics({
   weekendPairs,
   seniorGapCount,
   restCompromiseCount,
+  // Count of validateAll `asNeededException` warns (see FAIRNESS_AXIS_WEIGHTS.asNeededUse). Caller-
+  // computed from the issue list, like restCompromiseCount; default 0 so older callers are unchanged.
+  asNeededCount = 0,
   // Supplied by buildQualityInput rather than imported: this module must never import from
   // ResidentScheduler.jsx (that file imports lib/* the other direction — circular). Defaulted so
   // an older/among-tests caller that omits it still produces a finite workShapePenalty.
@@ -517,6 +520,7 @@ export function computeQualityMetrics({
     areaSpread,
     traumaRunPenalty,
     secondRestDayPenalty,
+    asNeededUse: asNeededCount,
   };
 }
 
@@ -542,6 +546,15 @@ export const FAIRNESS_AXIS_WEIGHTS = {
   areaSpread: 2,
   traumaRunPenalty: 2,
   secondRestDayPenalty: 1,
+  // Program decision 2026-10-30 (as-needed rules): one count per validateAll `asNeededException` warn
+  // (a goal-but-breakable gate, e.g. US/EM outside Sat/Sun/Mon, used to fill a coverage minimum).
+  // Coefficient 40 is deliberately LARGE: one as-needed use outweighs a typical shape/fairness
+  // difference (e.g. 0.5/workShape unit, 10/deficitSpread, 2/underTarget shift), so best-of-N prefers
+  // the attempt that needed fewer exceptions when everything higher is equal — but it lives in this
+  // EXISTING last slot (never a 5th slot: SCORE_WEIGHTS/vector is a ratchet), so it can never outrank
+  // coverage (slot 0), rest, or seniority. The exception only exists to fill a coverage minimum, which
+  // slot 0 rewards far more than 40.
+  asNeededUse: 40,
 };
 export function fairnessAxes(metrics) {
   const out = {};

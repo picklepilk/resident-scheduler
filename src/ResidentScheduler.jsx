@@ -227,7 +227,10 @@ const BASE_ELIGIBILITY = {
 //   dayTypeRestrictions: [{days:number[], mode:'onlyDay'|'noNight'|'onlyNight'|'noDay'}]
 //   shiftGates: [{id, shiftIds:string[]|'ALL', blockTypeFilter:{mode:'only'|'except', ids?:string[], ref?:'TRAUMA_BLOCKS'}|null,
 //                 allowedDays?:number[], nightExcludedDays?:number[], outsideAction:'stripShiftIds'|'blockEntireDay', overrideImmune:boolean,
-//                 scope?:'generator'}]  — scope:'generator' hides the gate from the manual picker (auto-fill only), same idiom as dayTypeRestrictions[].scope
+//                 scope?:'generator', asNeeded?:boolean, asNeededLabel?:string}]  — scope:'generator' hides the gate from the manual picker (auto-fill only), same idiom as dayTypeRestrictions[].scope.
+//                 asNeeded:true = "the goal, but break as needed to fill a coverage MINIMUM" (program decision 2026-10-30):
+//                 getEligibleShifts still strips as always; getAsNeededShifts() returns what ONLY asNeeded gates withheld.
+//                 See the AS-NEEDED RULES block above eligibilityBlockReasons.
 //   specialDayRules: [{listKey:'codeBlueDays'|'procDays'|'anesDays', offset:'sameDay'|'dayBefore'|'sameDayAndDayBefore'}]
 //   (advocacyDays removed AY26/27 — Peds originally used fullBlockDays:[3] instead, now further
 //   narrowed to PEDS_2 only (noDay Wednesday) since PGY-3 works Wednesdays with no restriction;
@@ -256,8 +259,12 @@ export const DEFAULT_DAY_RULES = {
       // trauma_n_window's allowedDays matching SHIFT_DOW['TRAUMA-N'].
       { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null,
         allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      // AS NEEDED (program decision 2026-10-30): Sat/Sun/Mon (no Monday night) is the preferred US/EM
+      // window; any other weekday may be used ONLY to fill a coverage minimum nothing else can fill
+      // (see getAsNeededShifts). The 5-shift total is unchanged.
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] },
-        allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+        allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true,
+        asNeeded: true, asNeededLabel: 'US/EM outside Sat/Sun/Mon' },
       // Avoid scheduling interns on Midtrack evenings/nights Mon/Tue (chief feedback) — generator
       // only, so the manual picker can still place one when needed.
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null,
@@ -508,6 +515,15 @@ const LEGACY_DAY_RULE_DEFAULTS = {
       { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
       { id: 'ped_n_em_window', shiftIds: ['PED-N','PED-N12'], blockTypeFilter: null, allowedDays: [0,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
+    ] },
+    // Pre-as-needed shape (us_em_window a plain hard gate, no `asNeeded` flag) — the live default
+    // immediately before the 2026-10-30 program decision made US/EM Sat/Sun/Mon "preferred, other days
+    // as needed". An override equal to this would mask the as-needed correction forever.
+    { dayTypeRestrictions: [{ days: [3], mode: 'noDay' }], computedDayRules: [{ type: 'wellnessWednesday', ordinal: 1 }], shiftGates: [
+      { id: 'trauma_strip_non_trauma_block', shiftIds: ['TRAUMA-D','TRAUMA-N'], blockTypeFilter: { mode: 'except', ref: 'TRAUMA_BLOCKS' }, outsideAction: 'stripShiftIds', overrideImmune: false },
+      { id: 'trauma_day_gate', shiftIds: ['TRAUMA-D'], blockTypeFilter: null, allowedDays: [2,4,6,0], outsideAction: 'stripShiftIds', overrideImmune: true },
+      { id: 'us_em_window', shiftIds: 'ALL', blockTypeFilter: { mode: 'only', ids: ['US_EM'] }, allowedDays: [0,1,6], nightExcludedDays: [1], outsideAction: 'blockEntireDay', overrideImmune: true },
+      { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
     ] },
   ],
   EM_HOME_2: [
@@ -839,7 +855,7 @@ const RULE_NOTES = {
   EM_HOME_1: {
     blockTypeNotes: [
       { ids: ['PEDS_TRAUMA','TRAUMA_PEDS'], note: 'First/last 14 days split (enforced): trauma half = 8 Trauma Day shifts (Tue/Thu/Sat/Sun only, generated last), no other shifts on that half; peds half = 11 PED Day/Eve shifts, plus PED-N (now all 7 nights) when the chief enables "Allow Peds/Trauma interns to work Peds Night" (Rules tab, on by default).' },
-      { ids: ['US_EM'], note: '5 EM shifts total, Sat/Sun/Mon only (no Monday night). Enforced.' },
+      { ids: ['US_EM'], note: '5 EM shifts total. Sat/Sun/Mon (no Monday night) preferred; other days only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception).' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
     specialNotes: ['Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
@@ -1014,7 +1030,7 @@ function describeShiftGates(dr) {
     let effText = '';
     if (g.activeWhen?.blockStartBefore) effText = ` (blocks starting before ${g.activeWhen.blockStartBefore})`;
     else if (g.activeWhen?.blockStartOnOrAfter) effText = ` (blocks starting ${g.activeWhen.blockStartOnOrAfter} or later)`;
-    out.push({ ids: ids.length ? ids : ['ALL'], note: `${shiftLabel}${scope ? ' ' + scope : ''}${dayText}${effText}.${g.overrideImmune ? ' (applies even over a rotation-specific matrix override)' : ''}${g.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}` });
+    out.push({ ids: ids.length ? ids : ['ALL'], note: `${shiftLabel}${scope ? ' ' + scope : ''}${dayText}${effText}.${g.overrideImmune ? ' (applies even over a rotation-specific matrix override)' : ''}${g.scope === 'generator' ? ' (generator only — manual picker still allows it)' : ''}${g.asNeeded ? ' (AS NEEDED — preferred window; broken only to fill a coverage minimum, flagged as an exception)' : ''}` });
   }
   return out;
 }
@@ -3836,6 +3852,10 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
     if (!gateActiveForBlock(g.activeWhen, ctx.blockStart)) continue;
     if (!blockTypeFilterPasses(g.blockTypeFilter, bt, traumaBlocks)) continue;
     if (!g.overrideImmune && rotationSpecific) continue; // chief's explicit matrix override wins
+    // As-needed gate (program decision 2026-10-30): when the caller asked for the relaxed view
+    // (getAsNeededShifts does), skip the gate and hand it to the sink so the label can be resolved.
+    // Without ctx.relaxAsNeeded this branch never fires, so every other caller sees today's strict set.
+    if (g.asNeeded && ctx.relaxAsNeeded) { ctx.asNeededSink?.push(g); continue; }
     const gateShiftIds = g.shiftIds === 'ALL' ? null : g.shiftIds;
     if (g.allowedDays) {
       if (!g.allowedDays.includes(dow)) {
@@ -3927,6 +3947,78 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   }
 
   return eligible;
+}
+
+// ─── AS-NEEDED RULES (program decision 2026-10-30) ────────────────────────────────────────────
+// Some scheduling rules are "the goal, but break as needed to fill the schedule". A day-rule shiftGate
+// marks itself with `asNeeded: true` (+ optional human `asNeededLabel`). getEligibleShifts is UNCHANGED
+// for every caller (the gate still strips as before); getAsNeededShifts returns the EXTRA shifts that
+// ONLY asNeeded gates removed and that still pass every other check getEligibleShifts applies
+// (vacation, work restrictions, jeopardy 'block', PGY/rotation eligibility, shiftActiveOnDow, 12h
+// windows, ...) — computed by re-running getEligibleShifts with asNeeded gates skipped and diffing
+// against the strict result, so the long check chain is never duplicated. ACGME rules (rest/hours/
+// streak/circadian) are not part of getEligibleShifts at all; the generator's CANDIDATE_POOL_STAGES and
+// the solver's constraints keep enforcing them for as-needed cells exactly as for any other cell.
+// Consumers: generateSchedule's 'asNeededFallback' stage (min pass only), validateAll/cellViolations
+// ('asNeededException' warn instead of the rotationEligibility error), buildSolverPayload (`asNeeded`).
+// Does shiftGate `g` strip `shiftId` on weekday `dow`? Mirrors the strip logic in getEligibleShifts's
+// gate loop (used only to LABEL an as-needed shift with the gate that withheld it).
+function gateStripsShift(g, dow, shiftId) {
+  const matches = g.shiftIds === 'ALL' || (g.shiftIds || []).includes(shiftId);
+  if (g.allowedDays) {
+    if (!g.allowedDays.includes(dow)) return g.outsideAction === 'blockEntireDay' || matches;
+    if (g.nightExcludedDays?.includes(dow)) return matches && SHIFT_MAP[shiftId]?.type === 'night';
+    return false;
+  }
+  return matches;
+}
+// Cheap pre-check: does this resident's effective day-rule set carry ANY asNeeded gate whose block-type
+// filter lets them through? Callers use it to skip the double getEligibleShifts evaluation entirely.
+export function residentHasAsNeededGate(resident, dayRules = {}) {
+  const dr = getEffectiveDayRules(`${resident.category}_${resident.pgy}`, dayRules);
+  const traumaBlocks = dayRules.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS;
+  const bt = resident.blockType || 'EM';
+  return (dr.shiftGates || []).some(g => g.asNeeded && blockTypeFilterPasses(g.blockTypeFilter, bt, traumaBlocks));
+}
+// Same signature as getEligibleShifts. Returns Map<shiftId, label> of shifts withheld ONLY by asNeeded
+// gates (disjoint from the strict eligible set). Empty Map when the resident has no asNeeded gate.
+export function getAsNeededShifts(resident, dateStr, specialDays = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, ctx = {}) {
+  const out = new Map();
+  if (!residentHasAsNeededGate(resident, dayRules)) return out;
+  const sink = [];
+  const relaxed = getEligibleShifts(resident, dateStr, specialDays, eligOverrides, appSettings, dayRules,
+    { ...ctx, relaxAsNeeded: true, asNeededSink: sink });
+  if (!sink.length) return out;
+  const strict = new Set(getEligibleShifts(resident, dateStr, specialDays, eligOverrides, appSettings, dayRules, ctx));
+  const dow = parseDate(dateStr).getDay();
+  for (const s of relaxed) {
+    if (strict.has(s)) continue;
+    const g = sink.find(x => gateStripsShift(x, dow, s));
+    out.set(s, g?.asNeededLabel || 'As-needed rule');
+  }
+  return out;
+}
+// As-needed placements of a FINISHED schedule: every non-empty cell whose shift is not strictly eligible
+// but IS in the resident's as-needed set. `skipCell(rid, ds)` excludes cells the generator did not place
+// (kept/manual entries). Shared by generateSchedule/generateScheduleBest (report.asNeededPlacements) and
+// mapSolverResult so both engines report identically. Entries: {residentId, name, dateStr, shiftId, label}.
+export function collectAsNeededPlacements({ allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, ayConf = {}, blocksHistory = [], forGenerator = true, skipCell = null }) {
+  const out = [];
+  const sd = block.specialDays || {};
+  const finalSunday = finalSundayOf(block);
+  const nextBlockSnap = findNextBlockSnapshot(block, blocksHistory);
+  for (const r of allResidents) {
+    if (!residentHasAsNeededGate(r, dayRules)) continue;
+    const rs = schedule[r.id] || {};
+    const nextRotation = nextRotationFromSnapshot(r, nextBlockSnap);
+    for (const [ds, sid] of Object.entries(rs)) {
+      if (!sid || (skipCell && skipCell(r.id, ds))) continue;
+      const m = getAsNeededShifts(r, ds, sd, eligOverrides, appSettings, dayRules,
+        { blockStart: block.startDate, forGenerator, ayConf, twelveHourState: twelveHourStateFor(ds, ayConf || {}), finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
+      if (m.has(sid)) out.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: sid, label: m.get(sid) });
+    }
+  }
+  return out;
 }
 
 // Explains WHY getEligibleShifts excludes `shiftId` for `resident` on `dateStr`, tagged with a
@@ -4110,8 +4202,16 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
             level: severityFor('jeopardyWindow', 'validator') });
         }
       }
-      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule });
-      if (!elig.includes(sid)) {
+      const vCtx = { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule };
+      const elig = getEligibleShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, vCtx);
+      // As-needed exception (program decision 2026-10-30): a shift withheld ONLY by an asNeeded gate is
+      // not a rotationEligibility error — it is a visible, non-export-blocking warn that the generator/
+      // solver (or the chief) used the goal-but-breakable rule to fill coverage. See getAsNeededShifts.
+      const asNeededLabel = !elig.includes(sid) ? getAsNeededShifts(resident, ds, sd, eligOverrides, appSettings, dayRules, vCtx).get(sid) : undefined;
+      if (asNeededLabel) {
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'asNeededException',
+          message: `${asNeededLabel} — used to fill coverage (as needed)`, level: severityFor('asNeededException', 'validator') });
+      } else if (!elig.includes(sid)) {
         // eligibilityBlockReasons re-derives WHY elig excluded sid (same predicates, re-sequenced —
         // see its own comment) and is now the SINGLE source for both the message (via
         // eligibilityReasonMessage) and the severity (via severityFor) — a hand-restriction that
@@ -4830,9 +4930,21 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
   for (const r of allResidents) nextRotation[r.id] = nextRotationFromSnapshot(r, nextBlockSnap);
 
   const eligCache = {};
+  // As-needed shifts (getAsNeededShifts): rid -> ds -> Map<shiftId,label>, only for residents carrying an
+  // asNeeded gate and only for dates where something was actually withheld. Same ctx as eligCache so the
+  // strict set and the as-needed set are exactly disjoint. Read-only after this function returns.
+  const asNeededByResident = {};
   for (const r of allResidents) {
     eligCache[r.id] = {};
-    for (const ds of dates) eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, { blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds), finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule }));
+    const hasAsNeeded = residentHasAsNeededGate(r, dayRules);
+    for (const ds of dates) {
+      const ectx = { blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds), finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule };
+      eligCache[r.id][ds] = new Set(getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, ectx));
+      if (hasAsNeeded) {
+        const m = getAsNeededShifts(r, ds, sd, eligOverrides, appSettings, dayRules, ectx);
+        if (m.size) (asNeededByResident[r.id] ||= {})[ds] = m;
+      }
+    }
   }
 
   // target[] only, not the whole assigned/typeCount/... counter seed (that block also depends on
@@ -4860,7 +4972,7 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
   return {
     jcDateSet, isJcDay, ayHolidayDates, holidayBlockDates, isHolidayDay, conf12Cache, conf12For,
     conferenceBoundaryDates, dateNeighbors, residentById, prevTail, streakWalkBounds, finalSunday,
-    nextRotation, eligCache, target, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
+    nextRotation, eligCache, asNeededByResident, target, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
   };
 }
 
@@ -4904,7 +5016,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const {
     jcDateSet, isJcDay, ayHolidayDates, holidayBlockDates, isHolidayDay, conf12Cache, conf12For,
     conferenceBoundaryDates, dateNeighbors, residentById, prevTail, streakWalkBounds, finalSunday,
-    nextRotation, eligCache, target: staticTarget, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
+    nextRotation, eligCache, asNeededByResident, target: staticTarget, qualifiersByAreaDate, scarceDatesByResident, scarceReserveCount,
   } = genCtx;
 
   const schedule = {};
@@ -5189,6 +5301,11 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // move who ends up on the shift after fillDayPass first places someone. Always present (even
     // empty), same convention as overstaffed/pgyFallbacks above.
     podSubstitutes: [],
+    // As-needed placements (program decision 2026-10-30): cells where an `asNeeded` gate (e.g. US/EM
+    // outside Sat/Sun/Mon) was broken to fill a coverage MINIMUM. {residentId, name, dateStr, shiftId,
+    // label}. Rebuilt from the FINAL schedule after repair (like podSubstitutes), kept/manual cells
+    // excluded; generateScheduleBest re-derives it once more after LNS/night-merge. Always present.
+    asNeededPlacements: [],
   };
 
   // streakBefore only looks at days strictly before ds, so its result can't change no matter
@@ -5246,8 +5363,17 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // already pure in `r`, never in "who else is in the pool", so this is behavior-identical to
   // candidatePool's own narrowing). Reusing one list is what keeps the two from drifting — a new
   // hard rule only ever needs one new stage object, read by both functions.
+  // As-needed fallback mode (program decision 2026-10-30). candidatePool(shift, ds, true) flips this for the
+  // duration of ONE pool build: stage 'noEligible' is skipped and stage 'asNeededFallback' takes its place,
+  // so the pool is the residents whose shift is withheld ONLY by an asNeeded gate — every other stage
+  // (rest, hours, streak, circadian, at-target, jeopardy, caps, ...) still applies to them in full.
+  // fillDayPass uses it for MIN slots whose strict pool came back empty and nowhere else; the optional
+  // (top-up) pass, repair and firstBlockingReason never set it.
+  let asNeededMode = false;
+  const asNeededFor = (r, ds) => asNeededByResident[r.id]?.[ds];
   const CANDIDATE_POOL_STAGES = [
-    { reason: 'noEligible', keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
+    { reason: 'noEligible', applies: () => !asNeededMode, keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
+    { reason: 'asNeededFallback', applies: () => asNeededMode, keep: (r, shift, ds) => !!asNeededFor(r, ds)?.has(shift.id) },
     { reason: 'allWorking', keep: (r, shift, ds) => !schedule[r.id][ds] },
     // A jeopardy call may never land on a date the resident already works clinically (see
     // CLAUDE.md) — under any policy except 'off' this is now a hard exclusion, not a score()
@@ -5408,7 +5534,15 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // Candidate pool; the filter that empties it names the unfilled reason. Recomputed fresh on
   // every call (CLAUDE.md: the fill decision path must never go through a cache) by walking
   // CANDIDATE_POOL_STAGES in order, narrowing `pool` exactly as the old sequential filters did.
-  function candidatePool(shift, ds) {
+  function candidatePool(shift, ds, asNeeded = false) {
+    asNeededMode = asNeeded;
+    try {
+      return candidatePoolImpl(shift, ds);
+    } finally {
+      asNeededMode = false;
+    }
+  }
+  function candidatePoolImpl(shift, ds) {
     let pool = allResidents;
     for (const stage of CANDIDATE_POOL_STAGES) {
       if (stage.applies && !stage.applies(shift, ds)) continue;
@@ -5986,15 +6120,26 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       // If the clean pool is empty but a rest-violating pool exists, use it only when the chief
       // has ranked postNightRest below coverageMin (break the less important rule). Optional-
       // phase headroom is never worth a rest violation — restFallback only applies to 'min'.
+      let unfilledReason = reason;
       if (!candidates.length && phase === 'min' && restFallback?.length) {
         if (restRank > covRank) { candidates = restFallback; restCompromise = true; }
-        else {
-          report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: 'restProtected' });
-          continue;
+        else unfilledReason = 'restProtected'; // pushed below — only once the as-needed fallback also found nobody
+      }
+      // As-needed fallback (program decision 2026-10-30): a MINIMUM slot nobody strictly eligible can fill
+      // (after the rest compromise above) may be staffed by a resident for whom the shift is withheld
+      // ONLY by an `asNeeded` gate (e.g. a US/EM intern outside Sat/Sun/Mon). MIN phase only — optional
+      // top-up never breaks a rule. Fresh pool per slot, never cached; every other stage still applies.
+      if (!candidates.length && phase === 'min') {
+        const an = candidatePool(slot.shift, ds, true);
+        if (an.candidates.length) {
+          candidates = an.candidates;
+          restFallback = [];
+          circadianByResident = an.circadianByResident;
+          reseedPool(slot.shift.id, candidates);
         }
       }
       if (!candidates.length) {
-        if (phase === 'min') report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason });
+        if (phase === 'min') report.unfilled.push({ dateStr: ds, shiftId: slot.shift.id, slotIndex: slot.slotIndex, reason: unfilledReason });
         continue;
       }
       // FLEX/POD seniority composition — BOTH are hard requirements now (AY26/27 chief-directed):
@@ -6887,6 +7032,22 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
   }
 
+  // As-needed placements (program decision 2026-10-30), rebuilt from the FINAL schedule for the same
+  // reason as podSubstitutes above (repair can move cells). A kept cell is the chief's own call, never
+  // reported as a generator decision. Only asNeeded shifts can appear here: a strictly eligible shift is
+  // never in an as-needed Map (disjoint by construction).
+  report.asNeededPlacements = [];
+  for (const r of allResidents) {
+    const byDate = asNeededByResident[r.id];
+    if (!byDate) continue;
+    for (const ds of dates) {
+      const m = byDate[ds];
+      const sid = m && schedule[r.id][ds];
+      if (!sid || !m.has(sid) || keptCells.has(`${r.id}|${ds}`)) continue;
+      report.asNeededPlacements.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, dateStr: ds, shiftId: sid, label: m.get(sid) });
+    }
+  }
+
   report.underTarget = allResidents
     .filter(r => target[r.id] != null && isSchedulable(r) && assigned[r.id] < target[r.id])
     .map(r => ({
@@ -7217,14 +7378,23 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // (src/lib/solverParity.test.js) before this fix.
   const schedulableResidents = allResidents.filter(isSchedulable);
   const eligible = {};
+  // As-needed cells (program decision 2026-10-30): shifts withheld ONLY by an `asNeeded` gate (e.g. US/EM
+  // outside Sat/Sun/Mon). They stay OUT of `eligible` (an older solver build that ignores the field then
+  // never uses them); the solver merges them in at parse time, penalizes each use, and only allows one to
+  // fill a coverage minimum — see PAYLOAD_SCHEMA.md "asNeeded cells". Same ctx + the same jeopardy
+  // filters as `eligible` so the two lists can't disagree about any non-gate rule.
+  const asNeededCells = [];
   for (const r of schedulableResidents) {
     const byDate = {};
+    const hasAsNeeded = residentHasAsNeededGate(r, dayRules);
     for (const ds of dates) {
       if (jeoPolicy !== 'off' && isJeopardyDate(r, ds, block.jeopardySchedule)) continue;
-      let list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, {
+      const ectx = {
         blockStart: block.startDate, forGenerator: true, ayConf, twelveHourState: conf12For(ds),
         finalSunday, nextRotation: nextRotation[r.id], jeopardySchedule: block.jeopardySchedule,
-      });
+      };
+      let list = getEligibleShifts(r, ds, sd, eligOverrides, appSettings, dayRules, ectx);
+      let asNeededList = hasAsNeeded ? [...getAsNeededShifts(r, ds, sd, eligOverrides, appSettings, dayRules, ectx).keys()] : [];
       // Jeopardy WINDOW (2026-09-26 policy) — payload gotcha (CLAUDE.md): candidatePool's own
       // jeopardyWindowConflict exclusion must be mirrored here too. Per-SHIFT, not per-date, unlike
       // the same-day skip above: an overnight starting `ds` that runs past 07:00 into TOMORROW's
@@ -7233,9 +7403,11 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
         const nextDs = toDateStr(addDays(parseDate(ds), 1));
         if (isJeopardyDate(r, nextDs, block.jeopardySchedule)) {
           list = list.filter(sidCandidate => !shiftOverlapsJeopardyWindow(sidCandidate, ds, nextDs));
+          asNeededList = asNeededList.filter(sidCandidate => !shiftOverlapsJeopardyWindow(sidCandidate, ds, nextDs));
         }
       }
       if (list.length) byDate[ds] = list;
+      for (const sid of asNeededList) asNeededCells.push({ residentId: r.id, date: ds, shiftId: sid });
     }
     eligible[r.id] = byDate;
   }
@@ -7528,6 +7700,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     shifts,
     residents,
     eligible,
+    ...(asNeededCells.length ? { asNeeded: asNeededCells } : {}),
     obligations,
     obligationsExemptAfterNight,
     locked,
@@ -7580,7 +7753,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // through the same updateBlockTracked call. Only receives `{ block }` (not the full args
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
-export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {} } = {}) {
+export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {}, dayRules = {}, eligOverrides = {}, blocksHistory = [] } = {}) {
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -7615,6 +7788,16 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
       }
     }
   }
+
+  // As-needed placements (program decision 2026-10-30): the solver ships `asNeeded` cells (buildSolverPayload)
+  // as extra allowed assignments at a penalty; whichever it used are re-derived here from the FINAL merged
+  // schedule so the report reads exactly like the local engine's (same helper, kept/manual cells excluded).
+  const asNeededPlacements = Array.isArray(allResidents)
+    ? collectAsNeededPlacements({
+        allResidents, schedule, block, eligOverrides, appSettings, dayRules, ayConf, blocksHistory, forGenerator: true,
+        skipCell: (rid, ds) => !!block?.schedule?.[rid]?.[ds],
+      })
+    : [];
 
   // Response `unfilled` entries carry a `shortBy` count (may be >1 for a shift/date short several
   // bodies); this app's own report shape is one entry per SLOT (dateStr/shiftId/slotIndex/reason —
@@ -7672,6 +7855,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
       seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
       podSubstitutes,
+      asNeededPlacements,
       // Defensive filter, mirroring buildSolverPayload's own `target: null` fix (see that map's
       // comment): a resident who isn't schedulable this block (isSchedulable false — e.g. an
       // EM_HOME/EM_BAMC resident on an atUH:false blockType) already gets `target: null` in the
@@ -7766,6 +7950,11 @@ function countSoftRuleIssues(issues, softId) {
   const ids = RANKED_SOFT_RULE_ISSUES[softId];
   return issues.filter(i => ids.includes(i.rule)).length;
 }
+// Count of as-needed exceptions (validateAll rule 'asNeededException') — feeds the quality vector's
+// last slot via computeQualityMetrics({asNeededCount}) at FAIRNESS_AXIS_WEIGHTS.asNeededUse.
+export function countAsNeededExceptions(issues) {
+  return issues.filter(i => i.rule === 'asNeededException').length;
+}
 
 // Scores one generateSchedule() result the same way for every attempt in generateScheduleBest —
 // (validateAll error count, export-blocking warning count, quality vector), the exact tuple
@@ -7810,6 +7999,7 @@ function scoreGenerationResult(res, args, rulePriority) {
     coverage: args.coverage,
     seniorGapCount: countSoftRuleIssues(issues, 'seniorComposition'),
     restCompromiseCount,
+    asNeededCount: countAsNeededExceptions(issues),
   });
   return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
 }
@@ -8349,6 +8539,20 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     delete best.result.report.computeUnfilledDiagnostics;
   }
 
+  // As-needed placements (program decision 2026-10-30): the winner's report was built by whichever
+  // generateSchedule call produced its attempt, but repair/LNS/night-merge can have moved cells since —
+  // re-derive from the FINAL schedule against the caller's original kept cells (same rule as the report's
+  // podSubstitutes). Only costs anything when the roster carries an asNeeded gate.
+  {
+    const trueKept = originalKeptCells(args);
+    best.result.report.asNeededPlacements = collectAsNeededPlacements({
+      allResidents: args.allResidents, schedule: best.result.schedule, block: args.block,
+      eligOverrides: args.eligOverrides, appSettings: args.appSettings, dayRules: args.dayRules,
+      ayConf: args.ayConf, blocksHistory: args.blocksHistory, forGenerator: true,
+      skipCell: (rid, ds) => trueKept.has(`${rid}|${ds}`),
+    });
+  }
+
   best.result.report.attempts = attemptsRun || attempts;
   best.result.report.baseSeed = resolvedBaseSeed;
   best.result.report.seed = best.seed;
@@ -8630,6 +8834,7 @@ export async function runOptimizationSweep(args, {
     coverage,
     seniorGapCount: countSoftRuleIssues(baselineIssues, 'seniorComposition'),
     restCompromiseCount: countSoftRuleIssues(baselineIssues, 'postNightRest'),
+    asNeededCount: countAsNeededExceptions(baselineIssues),
   });
   const baseline = {
     errorCount: baselineErrorCount,
@@ -15312,6 +15517,12 @@ function DayRulesEditor({ rowKey, dr, update }) {
                     onChange={e=>updGate(i,{overrideImmune: e.target.checked})}/>
                   Always apply, even over a rotation-specific Shift Matrix override
                 </label>
+
+                <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+                  <input type="checkbox" checked={!!g.asNeeded} className="rounded"
+                    onChange={e=>updGate(i,{asNeeded: e.target.checked || undefined})}/>
+                  As needed: preferred rule — the generator/optimizer may break it only to fill a coverage minimum (flagged as an exception)
+                </label>
               </div>
             );
           })}
@@ -15820,10 +16031,15 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
   const eligCtx = { blockStart: block.startDate, ayConf, finalSunday, nextRotation, jeopardySchedule: block.jeopardySchedule, appSettings, dayRules, specialDays: sd, eligOverrides };
   const eligible = getEligibleShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, eligCtx);
   const vs = [];
+  // As-needed exception (mirrors validateAll): a shift withheld ONLY by an asNeeded gate is a warn, not
+  // the rotationEligibility error. Still flows through the rest of the checks below.
+  const asNeededLabel = !eligible.includes(sid) ? getAsNeededShifts(resident, dateStr, sd, eligOverrides, appSettings, dayRules, eligCtx).get(sid) : undefined;
   // 1. Eligibility check — eligibilityBlockReasons re-derives WHY (same predicates getEligibleShifts
   // itself calls, re-sequenced) so this can grade severity by rule tier instead of hard-blocking
   // every ineligible placement (see rulePolicy.js and validateAll's identical use of this helper).
-  if (!eligible.includes(sid)) {
+  if (asNeededLabel) {
+    vs.push({ message: `${asNeededLabel} — used to fill coverage (as needed)`, level: severityFor('asNeededException', 'validator'), rule: 'asNeededException' });
+  } else if (!eligible.includes(sid)) {
     // reason is now the SINGLE source for both message (eligibilityReasonMessage) and severity
     // (severityFor) — see validateAll's identical fix and eligibilityReasonMessage's own comment.
     // A hand-restriction that actually bars the shift always wins over a WW/academic-chief/
@@ -16720,7 +16936,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       showToast(`Long solve finished with no usable result (status "${json?.status || 'unknown'}").`, 'red');
       return;
     }
-    const solverRes = mapSolverResult(json, { block: longSolveJob.genBlock, allResidents, appSettings, ayConf });
+    const solverRes = mapSolverResult(json, { block: longSolveJob.genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory });
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const { result, winner } = pickEngineResult(solverRes, longSolveJob.localRes, { ...baseArgs, block: longSolveJob.genBlock });
     if (winner !== 'cpsat') {
@@ -17603,7 +17819,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         }
         setGenStageLabel('Validating…');
         setGenProgress({ phase: 'validate' });
-        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf });
+        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory });
         // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
         // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
         // polisher, not a blind trust.

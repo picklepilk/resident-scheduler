@@ -285,10 +285,16 @@ def _cohorts(payload: Payload) -> dict:
     return {k: v for k, v in groups.items() if len(v) >= 2}
 
 
-def _assigned_expr(payload: Payload, store: VarStore, resident_id: str):
+def _assigned_expr(payload: Payload, store: VarStore, resident_id: str, exclude_as_needed: bool = False):
     terms = []
     for date_str in payload.block.dates:
-        terms.extend(store.x_sum_for_resident_date(resident_id, date_str))
+        if exclude_as_needed and payload.as_needed:
+            terms.extend(
+                v for sid, v in store.by_resident_date.get((resident_id, date_str), [])
+                if (resident_id, date_str, sid) not in payload.as_needed
+            )
+        else:
+            terms.extend(store.x_sum_for_resident_date(resident_id, date_str))
     return sum(terms)
 
 
@@ -308,6 +314,28 @@ def _add_coverage_term(payload: Payload, group: TermGroup, coverage_result: Cove
     coef = int(weights["coverageMin"]["perSlack"])
     for (shift_id, date_str), slack in coverage_result.slacks.items():
         group.add(coef, slack)
+
+
+# ---- asNeededUse: a goal-but-breakable gate used to fill a coverage minimum ----
+#
+# Program decision 2026-10-30. One unit per as-needed cell taken (payload.as_needed). Lives in TIER_RANK,
+# the stage right after errors/blocking and BEFORE rest/quality, with `perUnit` 20000:
+#   * far BELOW coverageMin.perSlack (1,000,000): filling a minimum slot with an as-needed cell is always
+#     worth it -- the whole point -- and no realistic number of uses (each fills a distinct slot) reaches 1e6;
+#   * ABOVE every TIER_QUALITY/TIER_REST preference and above both targetDeficit weights (5000 non-core,
+#     10000 core): using an as-needed cell never pays for itself by bringing a resident up to target or by
+#     smoothing fairness/shape, so the solver reaches for one only when coverage needs it. (coverage.py
+#     additionally forbids using one to exceed `min`, and the deficit count excludes them.)
+# JS mirror: validateAll's `asNeededException` warn, priced in the quality vector's last slot at
+# FAIRNESS_AXIS_WEIGHTS.asNeededUse (40) -- never a 5th slot.
+def _add_as_needed_term(payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    if not payload.as_needed:
+        return
+    coef = int(weights["asNeededUse"]["perUnit"])
+    for rid, date_str, shift_id in sorted(payload.as_needed):
+        var = store.get_x(rid, shift_id, date_str)
+        if var is not None:
+            group.add(coef, var)
 
 
 # ---- overstaffCoverage: last-resort +1-over-max, mirrors the JS repair
@@ -360,7 +388,12 @@ def _add_target_deficit_terms(
     for resident in payload.residents:
         if resident.target is None:
             continue
-        assigned_expr = _assigned_expr(payload, store, resident.id)
+        # As-needed cells (payload.as_needed) are NOT counted toward the deficit: an as-needed shift may only
+        # fill a coverage minimum, so it must never be recruited just to bring a resident up to target
+        # (the errors-tier core-deficit stage runs BEFORE coverage and would otherwise pull them in for
+        # "fairness"). The resident's REAL count still includes them (count caps, fairness, validation);
+        # this only keeps the modeled deficit from rewarding them.
+        assigned_expr = _assigned_expr(payload, store, resident.id, exclude_as_needed=True)
         deficit = model.new_int_var(0, resident.target, f"deficit[{resident.id}]")
         model.add_max_equality(deficit, [resident.target - assigned_expr, 0])
         result[resident.id] = (resident.target, deficit)
@@ -878,6 +911,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     tier_rest = TermGroup(TIER_REST)
 
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
+    _add_as_needed_term(payload, store, tier_rank, weights)
     rest_first = rest_outranks_coverage(payload.rule_priority)
     rest_weights = weights
     if rest_first:
