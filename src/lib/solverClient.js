@@ -99,7 +99,7 @@ export async function checkLocalSolverHealth({ timeoutMs = 1500 } = {}) {
     const res = await fetch(`${LOCAL_SOLVER_URL}/health`, { signal: controller.signal });
     if (!res.ok) return null;
     const json = await res.json();
-    return { ortools: json?.ortools ?? null, cpus: json?.cpus ?? null };
+    return { ortools: json?.ortools ?? null, cpus: json?.cpus ?? null, runner: json?.runner ?? null };
   } catch {
     return null;
   } finally {
@@ -115,81 +115,28 @@ export async function checkLocalSolverHealth({ timeoutMs = 1500 } = {}) {
 // VITE_SOLVER_URL — is unit-testable without mocking fetch or React. `url: ''` means neither
 // target is available; callers already treat that the same as the pre-existing
 // !SOLVER_ENABLED case (skip the solver, keep the already-computed local JS result).
-export function resolveSolverTarget({ preference, localHealthy, extraTargets }) {
+export function resolveSolverTarget({ preference, localHealthy }) {
   // 'builtin' = never touch a solver: no URL, no probe. Callers skip the whole solver path.
   if (preference === 'builtin') return { url: null, usingLocal: false };
   if (preference === 'local' && localHealthy) return { url: LOCAL_SOLVER_URL, usingLocal: true };
-  // Named remote PC (VITE_EXTRA_SOLVER_TARGETS): its own URL, session JWT like the cloud target,
-  // NO fallback to the cloud URL (a selected-but-unreachable PC keeps the local built-in result).
-  const remote = findExtraSolverTarget(preference, extraTargets);
-  if (remote) return { url: remote.url, usingLocal: false, remote };
   return { url: getSolverUrl(), usingLocal: false };
 }
 
-// Untrusted-shape guard for the device-local res_solver_target value: 'builtin' | 'cloud' | 'local'
-// | a configured remote id ('pc:<slug>', only while `allowRemote`); anything else (missing, legacy,
-// hand-edited, remote id no longer configured, non-admin viewer) reads as 'cloud', the default.
-export function normalizeSolverTarget(v, { allowRemote = false, extraTargets } = {}) {
-  if (v === 'builtin' || v === 'local') return v;
-  if (allowRemote && findExtraSolverTarget(v, extraTargets)) return v;
-  return 'cloud';
-}
-
-// ─── Named remote solver PCs (owner's tailnet) ─────────────────────────────────────────────────
-// Build env VITE_EXTRA_SOLVER_TARGETS (index.html -> window.__EXTRA_SOLVER_TARGETS__): either a JSON
-// array [{"name":"PicklePower","url":"https://host.tailnet.ts.net:8765"}] or "name=url,name=url".
-// Absent / unresolved token / garbage = no targets = feature invisible. No email addresses live
-// here or anywhere in the bundle; the server-side allowlist is the real boundary.
-export const REMOTE_TARGET_PREFIX = 'pc:';
-
-const slugify = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-export function parseExtraSolverTargets(raw) {
-  if (typeof raw !== 'string' || !raw.trim() || isUnresolvedToken(raw.trim())) return [];
-  let entries = [];
-  const text = raw.trim();
-  if (text.startsWith('[')) {
-    try {
-      const arr = JSON.parse(text);
-      if (Array.isArray(arr)) entries = arr.map(e => [e?.name, e?.url]);
-    } catch { return []; }
-  } else {
-    entries = text.split(',').map(part => {
-      const i = part.indexOf('=');
-      return i < 0 ? [null, null] : [part.slice(0, i), part.slice(i + 1)];
-    });
+// Untrusted-shape guard for the device-local res_solver_target value: 'builtin' | 'cloud' (Auto) | 'local' | 'pool:<name>';
+// anything else (missing, legacy, hand-edited) reads as 'cloud', the long-standing default.
+// Legacy 'remote:<slug>' / 'pc:<slug>' (the removed PR #5 remote-target picker ids) map to
+// 'pool:<Name>' when a `pool` entry's name slugifies to that slug, else 'cloud'.
+export const slugifySolverName = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+export function normalizeSolverTarget(v, { pool = [] } = {}) {
+  if (typeof v === 'string' && v.startsWith('pool:') && v.slice(5).trim()) return v; // manual pool machine
+  if (typeof v === 'string') {
+    const m = /^(?:remote|pc):(.+)$/.exec(v);
+    if (m && Array.isArray(pool)) {
+      const hit = pool.find(e => e && typeof e.name === 'string' && slugifySolverName(e.name) === m[1]);
+      if (hit) return `pool:${hit.name}`;
+    }
   }
-  const out = [];
-  const seen = new Set();
-  for (const [n, u] of entries) {
-    const name = typeof n === 'string' ? n.trim() : '';
-    const url = typeof u === 'string' ? u.trim().replace(/\/+$/, '') : '';
-    const slug = slugify(name);
-    // https only: the page is https, and these are tailnet `serve` endpoints with real certs.
-    if (!name || !slug || !/^https:\/\/[^\s/?#]+$/i.test(url)) continue;
-    const id = REMOTE_TARGET_PREFIX + slug;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, name, url });
-  }
-  return out;
-}
-
-export function getExtraSolverTargets() {
-  return parseExtraSolverTargets(readGlobal('__EXTRA_SOLVER_TARGETS__'));
-}
-
-export function findExtraSolverTarget(id, extraTargets = getExtraSolverTargets()) {
-  if (typeof id !== 'string' || !id.startsWith(REMOTE_TARGET_PREFIX)) return null;
-  return extraTargets.find(t => t.id === id) || null;
-}
-
-export const isRemoteSolverTarget = (id, extraTargets) => Boolean(findExtraSolverTarget(id, extraTargets));
-
-// Picker visibility: admin viewer AND (its /health answered OR it is the currently selected target,
-// so a chosen-but-down PC stays visible with a red dot instead of silently vanishing).
-export function remoteTargetVisible({ isAdmin, healthy, selected = false }) {
-  return Boolean(isAdmin) && (Boolean(healthy) || Boolean(selected));
+  return v === 'builtin' || v === 'local' ? v : 'cloud';
 }
 
 // Which job backend the cloud solver runs: 'durable' (Modal — POST /solve disabled, every solve is a
@@ -197,9 +144,13 @@ export function remoteTargetVisible({ isAdmin, healthy, selected = false }) {
 // session (module scope); ANY failure reads as 'memory' so behavior stays exactly the legacy
 // solveRemote path. Failures are not cached, so a transient blip retries next Generate.
 const healthCache = new Map(); // url -> { mode, host, preferJobs, defaultBudgetSeconds }
+// Solver's self-reported host (health.runner) per URL, from the same probe; lets the UI verify where a
+// synchronous (non-job) solve runs, since that path never produces progress ticks.
+const runnerCache = new Map();
+export const getCachedRunner = url => runnerCache.get(url) ?? null;
 // Full /health read: { mode: 'durable'|'memory', host: string|null, preferJobs: bool,
 // defaultBudgetSeconds: number|null } or null when unreachable. `host`/`preferJobs`/
-// `defaultBudgetSeconds` are optional server hints (the Pi sets SOLVER_HOST_KIND=pi); absent = Fly/Modal.
+// `defaultBudgetSeconds` are optional server hints (SOLVER_HOST_KIND=pi|pc); absent = Fly/Modal.
 // `fresh: true` skips the cache read (reachability checks must ask "reachable right now").
 export async function probeSolverHealth(url, { timeoutMs = 20000, fresh = false } = {}) {
   if (!url) return null;
@@ -218,6 +169,7 @@ export async function probeSolverHealth(url, { timeoutMs = 20000, fresh = false 
       defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
     };
     healthCache.set(url, info);
+    if (json?.runner) runnerCache.set(url, json.runner);
     return info;
   } catch {
     return null;

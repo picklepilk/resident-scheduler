@@ -78,18 +78,18 @@ describe('qualityVectorLabels', () => {
   });
 });
 
-describe('remote PC target (budget + label)', () => {
-  it('remote: 300 s default even without a host hint, host hint honored, deep never below 300', () => {
-    expect(solverBudgetSeconds({ remote: true })).toBe(300);
-    expect(solverBudgetSeconds({ remote: true, hostBudgetSeconds: 600 })).toBe(600);
-    expect(solverBudgetSeconds({ remote: true, deep: true })).toBe(300);
+describe('host hints (budget + label)', () => {
+  it('host hint honored on a remote target, deep never below 300, default stays 120', () => {
+    expect(solverBudgetSeconds({ hostBudgetSeconds: 300 })).toBe(300);
+    expect(solverBudgetSeconds({ hostBudgetSeconds: 600 })).toBe(600);
+    expect(solverBudgetSeconds({ hostBudgetSeconds: 600, usingLocal: true })).toBe(300);
+    expect(solverBudgetSeconds({ hostBudgetSeconds: 100, deep: true })).toBe(300);
     expect(solverBudgetSeconds({})).toBe(120);
   });
-  it('backendFor/backendLabel: remote name carried through the persisted backend id', () => {
-    expect(backendFor({ usingLocal: false, jobsMode: 'memory', host: 'pc', remoteName: 'PicklePower' })).toBe('pc:PicklePower');
-    expect(backendLabel('pc:PicklePower')).toBe('PicklePower');
+  it('backendFor/backendLabel: host kinds', () => {
     expect(backendFor({ usingLocal: false, jobsMode: 'memory', host: 'pc' })).toBe('pc');
     expect(backendLabel('pc')).toBe('Remote PC');
-    expect(backendFor({ usingLocal: true, jobsMode: 'memory', remoteName: 'X' })).toBe('local');
+    expect(backendFor({ usingLocal: false, jobsMode: 'memory', host: 'pi' })).toBe('pi');
+    expect(backendFor({ usingLocal: true, jobsMode: 'memory', host: 'pc' })).toBe('local');
   });
 });

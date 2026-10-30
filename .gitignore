@@ -36,7 +36,6 @@ CC-Session-Logs/
 solver-service/CC-Session-Logs/
 .env.*
 !.env.example
-!.env.remote.example
 coverage-heatmap.png
 .claude/.session-end-stamp.json
 .remember/

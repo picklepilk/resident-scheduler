@@ -1421,6 +1421,10 @@ K=4 (2 workers per run) is far worse than K=1 (8 workers on one run) at equal wa
 own multi-worker portfolio beats K independent thin runs here. Client default stays 1 (off). Re-run
 on a real backup before revisiting.
 
+## `GET /health`: `busy` (solver pool)
+
+`busy: bool` is true while a solve (`/solve` or an in-memory job) holds the one-at-a-time slot (`api/concurrency.py` `solve_slot`). The app's solver pool skips busy machines. Always `false` on the Modal backend (it scales out; no slot). `runner` is unchanged.
+
 ## 2026-10-28: night consolidation (chief explicitly wants as few night runs as possible)
 
 `_add_night_fragment_term` (rule 36b) now counts EVERY night run: `extra = max(total_runs - 1, 0)`,

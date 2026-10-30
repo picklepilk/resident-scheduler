@@ -12,12 +12,10 @@ export const DEEP_SOLVE_MAX_TIME_SECONDS = 300;
 // jobsMode: 'durable' (Modal) | 'memory' (Fly) | anything else reads as memory.
 // hostBudgetSeconds: the server's /health `defaultBudgetSeconds` (Pi = 300); honored on the cloud
 // target only, and Deep Solve never drops below DEEP.
-export function solverBudgetSeconds({ usingLocal = false, jobsMode = 'memory', deep = false, hostBudgetSeconds = null, remote = false } = {}) {
+export function solverBudgetSeconds({ usingLocal = false, jobsMode = 'memory', deep = false, hostBudgetSeconds = null } = {}) {
   const host = !usingLocal && Number.isFinite(hostBudgetSeconds) && hostBudgetSeconds > 0 ? hostBudgetSeconds : null;
   if (deep) return Math.max(DEEP_SOLVE_MAX_TIME_SECONDS, host ?? 0);
   if (usingLocal || jobsMode === 'durable') return DEEP_SOLVE_MAX_TIME_SECONDS;
-  // Named remote PC (owner's own machine): long budget even if an older server sends no hint.
-  if (remote) return host ?? DEEP_SOLVE_MAX_TIME_SECONDS;
   return host ?? DEFAULT_SOLVE_MAX_TIME_SECONDS;
 }
 
@@ -26,18 +24,14 @@ export function solverTimeoutMs(budgetSeconds) {
   return budgetSeconds * 1000 + 60000;
 }
 
-// remoteName: display name of a configured remote PC target; the backend id carries it
-// ('pc:PicklePower') because engineComparison.backend is persisted and labelled later.
-export function backendFor({ usingLocal, jobsMode, host = null, remoteName = null }) {
+export function backendFor({ usingLocal, jobsMode, host = null }) {
   if (usingLocal) return 'local';
-  if (remoteName) return `pc:${remoteName}`;
   if (host === 'pc') return 'pc';
   if (host === 'pi') return 'pi';
   if (jobsMode === 'durable') return 'modal';
   return jobsMode === 'memory' ? 'fly' : 'cloud'; // unknown (probe failed) stays plain cloud
 }
 export function backendLabel(backend) {
-  if (typeof backend === 'string' && backend.startsWith('pc:')) return backend.slice(3) || 'Remote PC';
   if (backend === 'pc') return 'Remote PC';
   if (backend === 'local') return 'This computer';
   if (backend === 'modal') return 'Cloud (Modal)';
@@ -60,7 +54,7 @@ const plainScore = s => s
 // Builds report.engineComparison from pickEngineResult's `engineComparison` ({winner, solver, local},
 // winner 'cpsat'|'local') plus run context. Plain JSON only (numbers/strings/arrays) - the report is
 // persisted. 'tie' = solver result existed, did not strictly win, and scored identically.
-export function buildEngineComparison({ pick, target, backend, budgetSeconds, wallSeconds, solverStatus }) {
+export function buildEngineComparison({ pick, target, backend, budgetSeconds, wallSeconds, solverStatus, machine = null }) {
   const local = plainScore(pick?.local);
   const solver = plainScore(pick?.solver);
   let winner = 'local';
@@ -75,6 +69,7 @@ export function buildEngineComparison({ pick, target, backend, budgetSeconds, wa
     local,
     solver,
     winner,
+    ...(machine ? { machine: String(machine) } : {}),
   };
 }
 

@@ -160,7 +160,7 @@ describe('solverClient — checkLocalSolverHealth', () => {
 
     const result = await checkLocalSolverHealth();
 
-    expect(result).toEqual({ ortools: '9.15.6755', cpus: 16 });
+    expect(result).toEqual({ ortools: '9.15.6755', cpus: 16, runner: null });
     expect(fetchMock.mock.calls[0][0]).toBe(`${LOCAL_SOLVER_URL}/health`);
   });
 
@@ -209,6 +209,9 @@ describe('solverClient — resolveSolverTarget (pure fallback decision)', () => 
     expect(normalizeSolverTarget('builtin')).toBe('builtin');
     expect(normalizeSolverTarget('cloud')).toBe('cloud');
     expect(normalizeSolverTarget('local')).toBe('local');
+    expect(normalizeSolverTarget('pool:PicklePower')).toBe('pool:PicklePower');
+    expect(normalizeSolverTarget('pool:')).toBe('cloud');
+    expect(normalizeSolverTarget('pool:  ')).toBe('cloud');
     for (const bad of [undefined, null, '', 'LOCAL', 'true', 7, {}, []]) expect(normalizeSolverTarget(bad)).toBe('cloud');
   });
 
@@ -318,56 +321,24 @@ describe('shouldPolishLocal', () => {
   });
 });
 
-describe('solverClient — named remote PC targets', () => {
-  afterEach(() => { globalThis.__SOLVER_URL__ = ORIGINAL_URL; delete globalThis.__EXTRA_SOLVER_TARGETS__; });
-  const TWO = [
-    { id: 'pc:picklepower', name: 'PicklePower', url: 'https://picklepower.x.ts.net:8765' },
-    { id: 'pc:picklebook', name: 'PickleBook', url: 'https://picklebook.x.ts.net:8765' },
-  ];
-
-  it('parses name=url list and JSON array to the same targets', async () => {
-    const { parseExtraSolverTargets } = await freshModule();
-    expect(parseExtraSolverTargets('PicklePower=https://picklepower.x.ts.net:8765/, PickleBook = https://picklebook.x.ts.net:8765')).toEqual(TWO);
-    expect(parseExtraSolverTargets(JSON.stringify(TWO.map(({ name, url }) => ({ name, url }))))).toEqual(TWO);
-  });
-
-  it('absent, unresolved token, garbage, non-https, duplicates: no/skipped targets', async () => {
-    const { parseExtraSolverTargets } = await freshModule();
-    for (const bad of [undefined, null, '', '   ', '%VITE_EXTRA_SOLVER_TARGETS%', '[not json', 'nourl', '{}', 7]) expect(parseExtraSolverTargets(bad)).toEqual([]);
-    expect(parseExtraSolverTargets('A=http://a.x:1,B=https://b.x:1/path,C=https://c.x:1,C=https://d.x:1,=https://e.x:1')).toEqual([{ id: 'pc:c', name: 'C', url: 'https://c.x:1' }]);
-  });
-
-  it('getExtraSolverTargets reads window global through the unresolved-token guard', async () => {
-    globalThis.__EXTRA_SOLVER_TARGETS__ = '%VITE_EXTRA_SOLVER_TARGETS%';
-    let m = await freshModule();
-    expect(m.getExtraSolverTargets()).toEqual([]);
-    globalThis.__EXTRA_SOLVER_TARGETS__ = 'PicklePower=https://picklepower.x.ts.net:8765';
-    m = await freshModule();
-    expect(m.getExtraSolverTargets()).toEqual([TWO[0]]);
-  });
-
-  it('resolveSolverTarget: remote id -> its url, no local/cloud fallback; unknown id -> cloud url', async () => {
-    globalThis.__SOLVER_URL__ = 'https://solver.example.com';
-    const { resolveSolverTarget } = await freshModule();
-    expect(resolveSolverTarget({ preference: 'pc:picklebook', localHealthy: true, extraTargets: TWO }))
-      .toEqual({ url: TWO[1].url, usingLocal: false, remote: TWO[1] });
-    expect(resolveSolverTarget({ preference: 'pc:gone', localHealthy: false, extraTargets: TWO }))
-      .toEqual({ url: 'https://solver.example.com', usingLocal: false });
-  });
-
-  it('normalizeSolverTarget: remote id only for admin + configured', async () => {
+describe('normalizeSolverTarget — legacy remote ids', () => {
+  const POOL = [{ name: 'PicklePower', url: 'https://picklepower.x.ts.net:10000' }, { name: 'Pickle Book', url: 'https://picklebook.x.ts.net:10000' }];
+  it('maps remote:<slug> / pc:<slug> to pool:<Name> when a pool entry slugifies to it', async () => {
     const { normalizeSolverTarget } = await freshModule();
-    expect(normalizeSolverTarget('pc:picklepower', { allowRemote: true, extraTargets: TWO })).toBe('pc:picklepower');
-    expect(normalizeSolverTarget('pc:picklepower', { allowRemote: false, extraTargets: TWO })).toBe('cloud');
-    expect(normalizeSolverTarget('pc:picklepower', { allowRemote: true, extraTargets: [] })).toBe('cloud');
-    expect(normalizeSolverTarget('local', { extraTargets: TWO })).toBe('local');
+    expect(normalizeSolverTarget('remote:picklepower', { pool: POOL })).toBe('pool:PicklePower');
+    expect(normalizeSolverTarget('pc:pickle-book', { pool: POOL })).toBe('pool:Pickle Book');
   });
-
-  it('remoteTargetVisible: admin AND (healthy OR selected)', async () => {
-    const { remoteTargetVisible } = await freshModule();
-    expect(remoteTargetVisible({ isAdmin: true, healthy: true })).toBe(true);
-    expect(remoteTargetVisible({ isAdmin: true, healthy: false })).toBe(false);
-    expect(remoteTargetVisible({ isAdmin: true, healthy: false, selected: true })).toBe(true);
-    expect(remoteTargetVisible({ isAdmin: false, healthy: true, selected: true })).toBe(false);
+  it('falls back to cloud when no pool entry matches or no pool is configured', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('remote:gone', { pool: POOL })).toBe('cloud');
+    expect(normalizeSolverTarget('remote:picklepower')).toBe('cloud');
+    expect(normalizeSolverTarget('remote:picklepower', { pool: 'junk' })).toBe('cloud');
+  });
+  it('leaves current values alone', async () => {
+    const { normalizeSolverTarget } = await freshModule();
+    expect(normalizeSolverTarget('pool:X', { pool: POOL })).toBe('pool:X');
+    expect(normalizeSolverTarget('local', { pool: POOL })).toBe('local');
+    expect(normalizeSolverTarget('builtin')).toBe('builtin');
+    expect(normalizeSolverTarget(undefined)).toBe('cloud');
   });
 });

@@ -64,6 +64,11 @@
 #   - Optional CP-SAT solver posts to `${VITE_SOLVER_URL}/solve`; connect-src names the live host
 #     (resident-scheduler-solver.fly.dev, confirmed from the deployed page 2026-10-15). Supabase is
 #     pinned to this project's own host too. A new solver/Supabase host must be added here.
+#     The solver pool (VITE_SOLVER_POOL) machines are the picklepower/picklebook/picklehub Tailscale
+#     Funnel URLs on :10000, named as exact origins (no wildcard, so a typo'd or other tailnet host
+#     stays blocked). Every pool machine URL must appear in connect-src; adding/renaming a machine =
+#     edit this line AND the Netlify env value together. A CSP entry grants reachability only: the
+#     server enforces Supabase auth + its email allowlist.
 #   - "Run the optimizer on this computer" (2026-10-16, see solver-service/run-local.ps1|sh and
 #     docs/security-headers.md): Settings → Optimizer → "This computer" targets a solver running
 #     on the admin's own machine at a fixed loopback address. connect-src allows both
@@ -73,13 +78,6 @@
 #     Chrome's Private Network Access check (a public https origin fetching a loopback address)
 #     is a separate, CORS-preflight-level gate the LOCAL SERVER answers (api/pna.py), not something
 #     this CSP line controls.
-#   - Owner's tailnet PCs (VITE_EXTRA_SOLVER_TARGETS, solver-service/DEPLOY-PC.md): connect-src
-#     names the two exact origins https://picklepower.tail424ec7.ts.net:8765 and
-#     https://picklebook.tail424ec7.ts.net:8765 (same explicit-origin style as the Pi funnel
-#     host above; no wildcard, so a typo'd or other tailnet host stays blocked). The tailnet name
-#     is already public via the Pi URL. A CSP entry grants reachability only: the hosts resolve
-#     solely on the owner's tailnet and the server enforces Supabase auth + email allowlist.
-#     Adding/renaming a PC = edit this line AND the Netlify env value together.
 #   - ENFORCING since 2026-10-15, after a local run of the built app under this exact policy.
 #     font-src needs data: — Vite inlines the small woff/woff2 files as data: URLs; the first
 #     enforcing test blocked every font.
@@ -89,7 +87,7 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://wjyygoansjfbzzfvtsjq.supabase.co wss://wjyygoansjfbzzfvtsjq.supabase.co https://resident-scheduler-solver.fly.dev https://picklehub.tail424ec7.ts.net:10000 https://picklepower.tail424ec7.ts.net:8765 https://picklebook.tail424ec7.ts.net:8765 http://127.0.0.1:8765 http://localhost:8765; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://wjyygoansjfbzzfvtsjq.supabase.co wss://wjyygoansjfbzzfvtsjq.supabase.co https://resident-scheduler-solver.fly.dev https://picklepower.tail424ec7.ts.net:10000 https://picklebook.tail424ec7.ts.net:10000 https://picklehub.tail424ec7.ts.net:10000 http://127.0.0.1:8765 http://localhost:8765; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
