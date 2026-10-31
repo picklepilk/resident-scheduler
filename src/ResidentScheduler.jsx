@@ -5106,7 +5106,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cell from Phase 3b's own swap — the override lets the caller supply the schedule's TRUE
   // kept-cell set (computed from the ORIGINAL block.schedule, before that prior generation ran)
   // instead.
-  const truePrimaryOnlyMode = repair === 'truePrimaryOnly';
+  // 'truePrimaryLift' (2026-10-31) is the same skip-the-fill-passes replay mode, but runs Phase 5
+  // (underTargetLiftPass) instead of Phase 3b: generateScheduleBest applies it on top of a
+  // truePrimaryOnly winner, which otherwise never gets an under-target lift (no repairPass).
+  const truePrimaryOnlyMode = repair === 'truePrimaryOnly' || repair === 'truePrimaryLift';
   const dates = getBlockDates(block.startDate, block.endDate);
   if (!dates.length) return null;
 
@@ -6598,6 +6601,22 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (allResidents.some(r => schedule[r.id][ds] === shift.id && satisfies(r))) return pool;
     return pool.filter(satisfies);
   }
+  // Hoisted out of repairPass so underTargetLiftPass (Phase 5) can run standalone.
+  // The donor-side twin of narrowForSeniority, generalized to BOTH hard composition areas
+  // (POD's PGY-3, FLEX's PGY-2): vacating a cell can look like numeric surplus (headcount above
+  // min) while the resident being removed was the shift's ONLY qualifying primary PGY —
+  // confirmed empirically for POD: a Move A/B run without this check freed a POD-D slot whose
+  // sole PGY-3 was the one being moved, leaving POD-D senior-less even though its headcount
+  // stayed at min. Read against CURRENT schedule state (call after the tentative unassign, same
+  // as the headcount check it accompanies) — true (a no-op) for every shift outside FLEX/POD.
+  function compositionStillSatisfied(shiftId, ds) {
+    const shift = SHIFT_MAP[shiftId];
+    const comp = shift && SENIOR_COMPOSITION[shift.area];
+    if (!comp) return true;
+    if (seniorCompositionExempt(shift, ds)) return true; // Grand Rounds Wednesday — see seniorCompositionExempt
+    const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings, ayConf);
+    return allResidents.some(r => schedule[r.id][ds] === shiftId && satisfies(r));
+  }
   // Bounded post-fill repair pass (only runs when `repair:true` is passed — generateScheduleBest
   // calls this once, on the winning seed, after best-of-N selection). Every move goes through the
   // SAME candidatePool the fill passes used (zero parallel rule implementation, zero rule drift)
@@ -6607,22 +6626,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // cells, both arrive via block.schedule) are never touched, matching the fill passes' own
   // never-overwrite invariant.
   function repairPass() {
-    // The donor-side twin of narrowForSeniority, generalized to BOTH hard composition areas
-    // (POD's PGY-3, FLEX's PGY-2): vacating a cell can look like numeric surplus (headcount above
-    // min) while the resident being removed was the shift's ONLY qualifying primary PGY —
-    // confirmed empirically for POD: a Move A/B run without this check freed a POD-D slot whose
-    // sole PGY-3 was the one being moved, leaving POD-D senior-less even though its headcount
-    // stayed at min. Read against CURRENT schedule state (call after the tentative unassign, same
-    // as the headcount check it accompanies) — true (a no-op) for every shift outside FLEX/POD.
-    function compositionStillSatisfied(shiftId, ds) {
-      const shift = SHIFT_MAP[shiftId];
-      const comp = shift && SENIOR_COMPOSITION[shift.area];
-      if (!comp) return true;
-      if (seniorCompositionExempt(shift, ds)) return true; // Grand Rounds Wednesday — see seniorCompositionExempt
-      const satisfies = r => compositionSatisfies(shift.area, r, ds, block.startDate, appSettings, ayConf);
-      return allResidents.some(r => schedule[r.id][ds] === shiftId && satisfies(r));
-    }
-
     // Phase 1 — unfilled min slots. Move A: same-day reassignment (someone already working a
     // different shift today switches to the unfilled shift). Move B: cross-day swap (someone
     // eligible but blocked today — at target, hours-capped — gets freed by vacating a genuinely
@@ -6926,6 +6929,12 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // must drop here too, so never trust the array itself after mutation.
     report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
 
+    underTargetLiftPass();
+  }
+
+  // Phase 5 body, a standalone function so generateScheduleBest's truePrimaryOnly winners (which skip
+  // repairPass entirely) can run it too — see truePrimaryOnlyMode below.
+  function underTargetLiftPass() {
     // Phase 5 — under-target lift (A2, fix/under-target-lift). Phases 1-4 only ever repair
     // COVERAGE (min-slot) gaps; a resident sitting under their own shift-count TARGET with every
     // coverage min already met was never addressed, and chiefs regularly see it. This phase closes
@@ -7161,7 +7170,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   }
   if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
   if (repair === true && !diagnosticsOnly) repairPass();
-  else if (truePrimaryOnlyMode) preferTruePrimaryPass();
+  else if (repair === 'truePrimaryOnly') preferTruePrimaryPass();
+  else if (repair === 'truePrimaryLift') underTargetLiftPass();
   if (repair === true && !diagnosticsOnly) lateAsNeededSweep(); // after repair only: attempts stay exception-free, the winner gets the last resort
 
   // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
@@ -8212,6 +8222,7 @@ function mergeLnsReport(prevRep, newRep, clearedDates) {
     optionalFilled: prevRep.optionalFilled,
     repairs: prevRep.repairs || [],
     truePrimaryFixApplied: prevRep.truePrimaryFixApplied,
+    truePrimaryLiftApplied: prevRep.truePrimaryLiftApplied,
     restCompromises: [...keepOutside(prevRep.restCompromises, 'dateStr'), ...(newRep.restCompromises || [])],
     pgyFallbacks: [...keepOutside(prevRep.pgyFallbacks, 'dateStr'), ...(newRep.pgyFallbacks || [])],
     overstaffed: [...keepOutside(prevRep.overstaffed, 'date'), ...(newRep.overstaffed || [])],
@@ -8416,6 +8427,8 @@ export function replayNightMerge(args, result) {
 //     repair: 'truePrimaryOnly', clearFirst: false, block: { ...args.block, schedule: base.schedule },
 //     keptCellsOverride: <every (residentId, dateStr) with a non-empty cell in the ORIGINAL
 //     args.block.schedule> }).
+// When `report.replay.truePrimaryLift` is also true, a THIRD step follows: the same call again with
+// `repair: 'truePrimaryLift'`, `block.schedule` = the step-2 schedule (Phase 5 under-target lift only).
 // Night-merge (2026-10-28): when `repair` is on, `nightMergePass` runs on the winner after the steps
 // above and BEFORE LNS, and once more after LNS (only if LNS ran). Both are deterministic, so replay
 // = `replayNightMerge(args, result)` at each of those points (LNS replay below starts from the
@@ -8623,6 +8636,40 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       // backstop rather than relying on that alone.
       if (fixedScore.errorCount <= best.score.errorCount) {
         best = { seed: best.seed, result: fixedResult, score: fixedScore, repaired: best.repaired };
+        // Under-target lift on a truePrimaryOnly winner (2026-10-31): such a winner skipped repairPass,
+        // so Phase 5 never ran and under-target residents kept legal-but-unused slots. Run it as its
+        // own replayable step (repair:'truePrimaryLift', same seed/keptCells recipe) and adopt only on
+        // strict betterQuality (lexicographic, same rule as the repair adoption above), so a lift that
+        // costs a higher-priority slot is discarded. Strict eligibility only: as-needed exceptions
+        // live in lateAsNeededSweep, which this mode never runs.
+        const liftAttempt = generateSchedule({
+          ...deferredArgs,
+          block: { ...args.block, schedule: best.result.schedule },
+          rng: mulberry32(best.seed),
+          repair: 'truePrimaryLift',
+          clearFirst: false,
+          keptCellsOverride: trueKeptCells,
+        });
+        if (liftAttempt.report.repairs.length) {
+          const liftedResult = {
+            schedule: liftAttempt.schedule,
+            report: {
+              ...best.result.report,
+              podSubstitutes: liftAttempt.report.podSubstitutes,
+              underTarget: liftAttempt.report.underTarget,
+              computeUnderTargetDiagnostics: liftAttempt.report.computeUnderTargetDiagnostics,
+              unfilled: liftAttempt.report.unfilled,
+              computeUnfilledDiagnostics: liftAttempt.report.computeUnfilledDiagnostics,
+              overstaffed: [...(best.result.report.overstaffed || []), ...(liftAttempt.report.overstaffed || [])],
+              repairs: [...best.result.report.repairs, ...liftAttempt.report.repairs],
+              truePrimaryLiftApplied: true,
+            },
+          };
+          const liftedScore = scoreGenerationResult(liftedResult, args, rulePriority);
+          if (betterQuality(liftedScore, best.score)) {
+            best = { seed: best.seed, result: liftedResult, score: liftedScore, repaired: best.repaired };
+          }
+        }
       }
     }
   }
@@ -8698,7 +8745,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // required to reproduce this exact schedule.
   // `repair` is true only when the repaired run was adopted: an unrepaired winner replays with
   // repair:false (a repair:true replay would mutate it into a different schedule).
-  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null };
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, truePrimaryLift: !!best.result.report.truePrimaryLiftApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null };
   if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeAccepted = nightMergeInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeEvals = nightMergeInfo.evals;
