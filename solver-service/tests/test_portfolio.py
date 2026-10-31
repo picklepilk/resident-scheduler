@@ -54,7 +54,7 @@ def test_portfolio_3_returns_valid_best_with_report():
     assert len(p["perRun"]) == 3
     assert [r["seed"] for r in p["perRun"]] == [42, 43, 44]
     for r in p["perRun"]:
-        assert set(r) == {"seed", "status", "tiers", "wallSeconds"}
+        assert set(r) == {"seed", "params", "status", "tiers", "wallSeconds"}
     # winner = lexicographic best of perRun, ties to the lowest index
     keys = [tuple(r["tiers"][n] for n in solve_module._STAGE_NAMES) for r in p["perRun"]]
     assert p["winnerIndex"] == keys.index(min(keys))

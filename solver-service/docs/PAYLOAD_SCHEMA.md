@@ -1507,3 +1507,20 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
 - **Validation:** `validate.py` checks the night hard cap against `nightsMax` when present and the combined BAMC cap.
 - **JS side:** `NIGHT_RULES.targetPerBlock` 6 / `maxPerBlock` 12; generator uses the 6-night target in every pool and spends nights 7..12 plus the BAMC cells only in `lateAsNeededSweep` (after fill + repair, MIN slots still unfilled).
 - **Tests:** `tests/test_count_as_needed.py`; JS `src/lib/countAsNeeded.test.js`.
+
+## Diversified portfolio runs + full stage warm start (2026-10-31)
+
+- **Diversification**: portfolio run `i` now also gets its own CP-SAT params, not just `randomSeed + i`. Built-in table
+  (`solver/io/sat_params.py` `DEFAULT_PORTFOLIO_PARAMS`, run `i` uses entry `i % 4`): `{}` (default),
+  `{linearization_level:2, search_branching:PORTFOLIO_WITH_QUICK_RESTART_SEARCH, randomize_search:true}`,
+  `{optimize_with_core:true, linearization_level:0}`, `{use_lns_only:true}`. Workers are still split `W // concurrent`
+  per run (bounded by cpus). Deterministic per (payload, config). Applied to every stage solver of that run.
+- **`config.portfolioParams`** (optional list of objects, `SatParameters` field -> value; enums by name, e.g.
+  `"PORTFOLIO_SEARCH"`): replaces the built-in table; run `i` uses `portfolioParams[i % len]`. Validated at parse time:
+  unknown fields or bad enum names -> 400; `num_workers`, `max_time_in_seconds`, `random_seed`, `repair_hint`,
+  `fix_variables_to_their_hinted_value`, `stop_after_first_solution` are rejected (service-owned). Applies only when K > 1.
+- `report.portfolio.perRun[i]` gains `params` (the dict that run used).
+- **Warm start between stages**: `_carry_hint` previously hinted only `x` vars (partial hint). It now hints EVERY model
+  variable from the finished stage's solution (`solver.response_proto.solution`), so the next stage starts exactly at the
+  previous optimum. The pinned bound (`expr <= round(value)`) was already correct and is added before the hint, so the hint
+  satisfies it. `fix_variables_to_their_hinted_value` stays off; `repair_hint` stays off for stages (native-crash note above).

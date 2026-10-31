@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from solver.io.sat_params import validate_params
 from solver.model.timing import ShiftTiming, add_days
 
 # Depth of the prior-block tail window every sliding-window constraint (night
@@ -84,6 +85,11 @@ class Config:
     # payload with seeds random_seed+i, best kept. 1 = today's single solve, unchanged.
     # None = absent: solve.py auto-picks K (`resolve_portfolio_k`). An explicit value (even 1) always wins.
     portfolio: Optional[int] = None
+    # Per-run CP-SAT param overrides for portfolio runs (list of {SatParameters field: value};
+    # run i uses entry i % len). None -> built-in diversified variants (io/sat_params.py).
+    portfolio_params: Optional[list] = None
+    # Internal: params applied to every solver of THIS (sub)payload. Set by _solve_portfolio, never parsed.
+    solver_params: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -432,6 +438,7 @@ def parse_payload(raw: dict) -> Payload:
             stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
             portfolio=(max(1, min(8, int(config_raw["portfolio"] or 1))) if config_raw.get("portfolio") is not None else None),
+            portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
         )
         settings_raw = raw.get("settings", {}) or {}

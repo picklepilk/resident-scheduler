@@ -68,6 +68,7 @@ def _register_active_solver(solver: cp_model.CpSolver) -> None:
 from solver.build import BuildResult, build_model
 from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
+from solver.io.sat_params import apply_params, params_for_run
 from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for
 from solver.model.objective import (
     TIER_BLOCKING,
@@ -245,6 +246,8 @@ def _configure_solver(payload: Payload, allow_repair_hint: bool = True) -> cp_mo
     solver.parameters.random_seed = payload.config.random_seed
     if payload.config.symmetry_level is not None:
         solver.parameters.symmetry_level = payload.config.symmetry_level
+    if payload.config.solver_params:
+        apply_params(solver.parameters, payload.config.solver_params)
     if payload.hint and allow_repair_hint:
         # repair_hint lets CP-SAT accept a hint that's PARTIALLY illegal
         # under this model's hard constraints (a stale/locked-conflicting
@@ -317,8 +320,11 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
     x is the only variable family staged-solve hints, same as `apply_hint`.
     """
     model.clear_hints()
-    for var in store.x.values():
-        model.add_hint(var, solver.value(var))
+    # EVERY model variable (x plus aux/indicator vars), not only x: a partial hint leaves CP-SAT to
+    # complete the rest itself, which can land on a worse point than the one the bound was pinned to.
+    hint = model.proto.solution_hint
+    hint.vars.extend(range(len(model.proto.variables)))
+    hint.values.extend(solver.response_proto.solution)
 
 
 # Tiebreak multiplier for the staged solve (see `_solve_staged`'s own
@@ -748,6 +754,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None,
         sub = dataclasses.replace(
             payload,
             config=dataclasses.replace(cfg, portfolio=1, random_seed=cfg.random_seed + i, num_workers=per_run_workers,
+                                       solver_params=params_for_run(cfg.portfolio_params, i),
                                        max_time_seconds=per_run_seconds),
         )
         my_list = begin_stoppable_run(on_progress if i == 0 else None)
@@ -789,6 +796,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None,
         res, _err, wall = o
         per_run.append({
             "seed": cfg.random_seed + i,
+            "params": params_for_run(cfg.portfolio_params, i),
             "status": res.status if res is not None else "ERROR",
             "tiers": res.tiers if res is not None else None,
             "wallSeconds": round(wall, 1),
