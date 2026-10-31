@@ -31,6 +31,7 @@ const VARIANTS = ['standard', 'understaffed', 'vacationHeavy', 'conferenceBlock'
 const KNOWN_LEGAL_UNUSED = new Set([
   'conferenceBlock:1234:syn_kilo',
   'conferenceBlock:42:syn_lima', 'conferenceBlock:7:syn_lima', 'conferenceBlock:1234:syn_lima',
+  'conferenceBlock:99:syn_lima', // 2026-10-31: same truePrimaryOnly winner (repair:false, no Phase 5) after merge of A+B
 ]);
 
 describe('generateScheduleBest — under-target lift completeness (A4)', () => {
