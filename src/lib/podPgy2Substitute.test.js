@@ -288,13 +288,24 @@ describe('R5 gap fix: true-primary preference survives generateScheduleBest\'s k
         }
         // ...step 2 replays Phase 3b alone on top of it, exactly as generateScheduleBest's own
         // gap-fix block does.
-        replaySchedule = replayNightMerge(fx, generateSchedule({
+        let step = generateSchedule({
           ...fx,
           block: { ...fx.block, schedule: base.schedule },
           rng: mulberry32(res.report.replay.seed),
           repair: 'truePrimaryOnly',
           keptCellsOverride: trueKeptCells,
-        })).schedule;
+        });
+        // ...step 3 (only when the under-target lift was adopted) replays Phase 5 on top of that.
+        if (res.report.replay.truePrimaryLift) {
+          step = generateSchedule({
+            ...fx,
+            block: { ...fx.block, schedule: step.schedule },
+            rng: mulberry32(res.report.replay.seed),
+            repair: 'truePrimaryLift',
+            keptCellsOverride: trueKeptCells,
+          });
+        }
+        replaySchedule = replayNightMerge(fx, step).schedule;
       }
       expect(replaySchedule, `seed ${baseSeed}`).toEqual(res.schedule);
     }
