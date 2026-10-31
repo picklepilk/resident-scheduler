@@ -726,8 +726,8 @@ def _add_work_shape_term(model, payload: Payload, store: VarStore, group: TermGr
 # coefficient 2; scale derivation (x50, same as isolatedNight 300 = JS singleton 6, nightFragment
 # 300 = JS 6): 2 * 50 = 100 -> `areaSpread.perUnit`.
 #
-# Linearization: worked = sum of the resident's x vars; ceil_floor = ceil(worked * 50 / 100) via
-# add_division_equality(worked*50 + 99, 100) (exact floor division of a non-negative);
+# Linearization: worked = sum of the resident's x vars; ceil_floor = ceil(worked * 50 / 100) pinned by two linear
+# bounds (100*c >= 50*worked, 100*c <= 50*worked + 99; no division constraint);
 # excess >= count_a - ceil_floor for each area a and excess >= 0, minimized (positive weight), which
 # equals max(0, max_a count_a - ceil_floor).
 # Deviation from JS: residents with fewer than 2 distinct areas among their candidate x vars are
@@ -754,10 +754,12 @@ def _add_area_spread_term(model, payload: Payload, store: VarStore, group: TermG
             continue
         worked = model.new_int_var(0, D, f"areaSpread_worked[{resident.id}]")
         model.add(worked == sum(all_vars))
+        # ceil(worked * PCT / 100) WITHOUT add_division_equality (poor propagation): `worked` is an
+        # exact integer, so pin ceil_floor with two linear bounds,
+        #   100*c >= PCT*worked   and   100*c <= PCT*worked + 99   (=> c = ceil(PCT*worked/100)).
         ceil_floor = model.new_int_var(0, D, f"areaSpread_ceil[{resident.id}]")
-        model.add_division_equality(
-            ceil_floor, worked * AREA_CONCENTRATION_FLOOR_PCT + 99, model.new_constant(100)
-        )
+        model.add(100 * ceil_floor >= AREA_CONCENTRATION_FLOOR_PCT * worked)
+        model.add(100 * ceil_floor <= AREA_CONCENTRATION_FLOOR_PCT * worked + 99)
         excess = model.new_int_var(0, D, f"areaSpread_excess[{resident.id}]")
         for vs in by_area.values():
             model.add(excess >= sum(vs) - ceil_floor)
