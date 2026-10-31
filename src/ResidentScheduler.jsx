@@ -7463,7 +7463,7 @@ const LONG_SOLVE_POLL_MS = 15000;
 // lowest tier, so it can never trade away coverage, hard rules, targets or rest.
 export const HINT_STICKINESS_WEIGHT = 100;
 
-export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null }) {
+export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null, alternateHints = null }) {
   // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
   // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
   // sends the generate path to its existing "optimizer unavailable -> keep the built-in result"
@@ -7756,6 +7756,20 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     }
   }
 
+  // ── alternateHints[] (optional) — extra warm starts for the solver's seed portfolio, built by the
+  // SAME loop as `hint` (so any filtering of hint cells applies identically). Empty schedules dropped.
+  const alternateHintCells = [];
+  for (const alt of Array.isArray(alternateHints) ? alternateHints : []) {
+    if (!alt) continue;
+    const cells = [];
+    for (const r of allResidents) {
+      for (const [ds, sid] of Object.entries(alt[r.id] || {})) {
+        if (sid) cells.push({ residentId: r.id, date: ds, shiftId: sid });
+      }
+    }
+    if (cells.length) alternateHintCells.push(cells);
+  }
+
   // ── preferences — rule 42, the two tuple kinds this version ships (see the schema's own "Kept
   // terms" note): traumaNightDow and pedNPgy1. Magnitudes are score()'s own SCORE_WEIGHTS entries,
   // so a chief-facing weight tweak in this file automatically reaches the solver too.
@@ -7849,6 +7863,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     obligationsExemptAfterNight,
     locked,
     ...(hintCells.length ? { hint: hintCells } : {}),
+    ...(hintCells.length && alternateHintCells.length ? { alternateHints: alternateHintCells } : {}),
     coverage: coverageOut,
     seniorPrimary,
     truePrimary,
@@ -8492,7 +8507,7 @@ function originalKeptCells(args) {
 
 // Step generator behind generateScheduleBest/Async. Yields progress objects
 // ({phase:'attempt',done,total} | {phase:'repair',done,total} | {phase:'finalize'}) and returns the result.
-function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3, timeBudgetMs = 0, lnsIters = 0, lnsTimeMs = 0 } = {}) {
+function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3, timeBudgetMs = 0, lnsIters = 0, lnsTimeMs = 0, alternates = 3 } = {}) {
   const startedAt = Date.now();
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
@@ -8548,6 +8563,9 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     yield { phase: 'attempt', done: i + 1, total };
   }
   best = top[0];
+  // Runner-up pool for `result.alternates` (CP-SAT portfolio multi-hint): the finalists as they stood
+  // after repair (or the raw top list when repair is off).
+  let finalists = top;
 
   if (repair) {
     // Selection is pre-repair, so the best unrepaired seed isn't necessarily the best repaired one:
@@ -8556,12 +8574,14 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     // earlier-ranked.
     const total = top.length;
     let winner = null;
+    finalists = [];
     for (let k = 0; k < total; k++) {
       yield { phase: 'repair', done: k + 1, total };
       let cand = top[k];
       const repaired = generateSchedule({ ...deferredArgs, rng: mulberry32(cand.seed), repair: true });
       const repairedScore = scoreGenerationResult(repaired, args, rulePriority);
       if (betterQuality(repairedScore, cand.score)) cand = { seed: cand.seed, result: repaired, score: repairedScore, repaired: true };
+      finalists.push(cand);
       if (!winner || betterQuality(cand.score, winner.score)) winner = cand;
     }
     best = winner;
@@ -8749,7 +8769,39 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeAccepted = nightMergeInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeEvals = nightMergeInfo.evals;
+  // Alternate starting points for the solver portfolio (see pickDistinctAlternates). Non-enumerable so
+  // `{...res}` spreads and JSON persistence of the result never carry whole extra schedules.
+  const alts = pickDistinctAlternates(best, finalists, alternates - 1);
+  Object.defineProperty(best.result, 'alternates', { value: alts, enumerable: false, writable: true, configurable: true });
   return best.result;
+}
+
+// Canonical string of a schedule's cell map ({residentId: {date: shiftId}}), order-independent.
+function scheduleCellKey(schedule) {
+  const rows = [];
+  for (const rid of Object.keys(schedule || {}).sort()) {
+    const cells = Object.entries(schedule[rid] || {}).filter(([, sid]) => sid).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (cells.length) rows.push(rid + ':' + cells.map(([d, sid]) => d + '=' + sid).join(','));
+  }
+  return rows.join('|');
+}
+
+// Up to `max` runner-up schedules (best first) distinct from the winner and each other, and only those
+// in the winner's own tier (same errorCount and blockingWarnCount — a worse tier is a poor warm start).
+export function pickDistinctAlternates(winner, finalists, max) {
+  const out = [];
+  if (!(max > 0)) return out;
+  const seen = new Set([scheduleCellKey(winner.result.schedule)]);
+  const ranked = [...finalists].sort((a, b) => (betterQuality(a.score, b.score) ? -1 : betterQuality(b.score, a.score) ? 1 : 0));
+  for (const c of ranked) {
+    if (out.length >= max) break;
+    if (c.score.errorCount !== winner.score.errorCount || c.score.blockingWarnCount !== winner.score.blockingWarnCount) continue;
+    const key = scheduleCellKey(c.result.schedule);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c.result.schedule);
+  }
+  return out;
 }
 
 // Engine arbitration between the optional CP-SAT solver and the built-in local engine (prior art:
@@ -17071,7 +17123,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       await yieldToPaint();
       const localRes = generateScheduleBest({ ...baseArgs, block: genBlock, clearFirst: false });
       if (!localRes) { showToast('Set block dates first', 'red'); return; }
-      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
+      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule, alternateHints: localRes.alternates,
         config: { maxTimeSeconds: minutes * 60 } });
       // Never sent to the local target — see generateViaSolverOrLocal's identical comment: it runs
       // with SOLVER_AUTH_MODE=off (loopback-only) and there's no reason to hand it a real session
@@ -17957,7 +18009,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         solveStartedAt = Date.now();
         genSolverStartRef.current = solveStartedAt;
         setGenProgress({ phase: 'solver', budgetSec: solveBudgetSec, claim: usingLocal ? 'this-computer' : 'cloud', jobsMode, runner: usingLocal ? null : (pickStatus?.runner ?? getCachedRunner(solverTargetUrl)) });
-        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule,
+        const payload = buildSolverPayload({ ...baseArgs, block: genBlock, hint: localRes.schedule, alternateHints: localRes.alternates,
           config: { maxTimeSeconds: solveBudgetSec } });
         // Session JWT for the solver's optional auth gate. A token failure isn't fatal here — the
         // service 401s and the catch below keeps the already-computed local result. Never sent to

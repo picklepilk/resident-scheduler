@@ -1547,3 +1547,17 @@ malformed -> defaults/disabled). Staged objective mode only; ignored for `object
   `best` = current quality-tier incumbent). Cancel via the job `cancel_event` ends the loop.
 - Seeded: neighborhood choice from `randomSeed`, sub-solve seeds `randomSeed + iteration`; with `numWorkers: 1`
   reproducible up to wall-clock limits. In a portfolio each run does its own LNS inside its share of the budget.
+
+## 2026-10-31: `alternateHints` (multi-hint seed portfolio)
+
+- `alternateHints: [[{residentId, date, shiftId}, ...], ...]` — OPTIONAL, backward compatible; `hint` stays the
+  primary. Each entry has the same shape as `hint` (soft `AddHint`, never a pin). Parsing is lenient: non-list
+  entries, empty lists and malformed cells are dropped, at most 4 are kept (`MAX_ALTERNATE_HINTS`), and the whole
+  field is ignored when there is no primary `hint`. Omitted by the client when empty.
+- Portfolio run `i` (seed = base + i) starts from `([hint] + alternateHints)[i % len]`, so run 0 is always the
+  primary; K=1 uses the primary only. Hint pinning / stickiness / carry-hint between stages all operate on that
+  run's own hint. `report.portfolio.perRun[i].hintSource` = `"primary"` | `"alternate:<n>"` | `"none"`.
+- Client: `generateScheduleBest(...).alternates` (non-enumerable, never persisted) = up to `alternates - 1`
+  (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
+  `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
+  (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
