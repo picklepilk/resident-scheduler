@@ -157,7 +157,13 @@ const SEED = 42;
 // slack once Phase 5 has run) makes largely unreachable.
 const CEILINGS = {
   // 2026-10-16: 13 -> 10 (nightCluster jcPresentDates/grLectureDates look-ahead, see header).
-  standard: { twoSegment: 10, mergeable: 10 },
+  // 2026-10-31: 10 -> 15 (feat/chief-rules merge of the off-service/Peds-EM/MT-intern as-needed opening and the
+  // nights 6/12 + BAMC Thu rules). Each branch alone stays at 9-10; combined they fill 9 more coverage slots
+  // (unfilled 126 -> 117, the higher-priority metric) and the extra night cells land on residents with no run
+  // to extend (2-segment count unchanged by nightCluster -2 -> -3, by a run-joining preference in the as-needed
+  // fallback, or by the late sweep, i.e. forced by pool shape, not score). Other night-shape metrics hold:
+  // 3+ segments 0, isolated single nights 9 (same as the nights-only branch), total nights 99 (was 100-102).
+  standard: { twoSegment: 15, mergeable: 15 },
   // 7 -> 11 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC
   // days), which spreads nights wider on this fixture.
   // 11 -> 8 (2026-10-16 follow-up, same day): nightCluster jcPresentDates/grLectureDates
