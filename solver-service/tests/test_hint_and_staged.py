@@ -350,7 +350,9 @@ def test_budget_rollover_grows_a_later_stage_when_an_earlier_one_finishes_early(
     stage's leftover time should roll forward, making the LAST stage's actual
     `max_time_in_seconds` far bigger than its naive proportional share
     (`_stage_time_budgets`' own, pre-rollover numbers)."""
-    payload = parse_payload(load_fixture("small_feasible.json"))
+    raw = load_fixture("small_feasible.json")
+    raw.setdefault("config", {})["outerLns"] = {"enabled": False}  # outer LNS is default-on; this test is about the staged split
+    payload = parse_payload(raw)
     object.__setattr__(payload.config, "max_time_seconds", 10.0)
     proportional_budgets = _stage_time_budgets(payload)
 

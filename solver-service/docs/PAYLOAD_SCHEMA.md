@@ -1527,7 +1527,7 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
 
 ## Outer LNS after the staged solve (2026-10-31, `solver/lns_outer.py`)
 
-Optional, off by default. `config.outerLns = {enabled: bool=false, fraction: float=0.3, subSolveSeconds: float=8}`
+On by default (2026-10-31; PicklePower bench: ~5% better score at equal time). `config.outerLns = {enabled: bool=true, fraction: float=0.5, subSolveSeconds: float=5}`; send `{enabled: false}` to turn off
 (lenient parse: only literal `true` enables; `fraction` clamped to [0.05, 0.9], `subSolveSeconds` to [0.5, 120];
 malformed -> defaults/disabled). Staged objective mode only; ignored for `objectiveMode: 'weighted'` and pass 2.
 

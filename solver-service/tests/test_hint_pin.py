@@ -168,6 +168,7 @@ def test_staged_stage1_unknown_with_feasible_hint_falls_back_to_hint_not_pass2(m
     """
     raw = load_fixture("small_feasible.json")
     raw["hint"] = _full_coverage_hint()
+    raw.setdefault("config", {})["outerLns"] = {"enabled": False}  # staged-only behavior under test
     payload = parse_payload(raw)
 
     original_cpsolver_solve = cp_model.CpSolver.solve

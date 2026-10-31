@@ -35,13 +35,13 @@ from ortools.sat.python import cp_model
 
 NEIGHBORHOODS = ("window", "residents", "shiftWindow", "worstTerms")
 
-DEFAULT_FRACTION = 0.3
-DEFAULT_SUB_SOLVE_SECONDS = 8.0
+DEFAULT_FRACTION = 0.5
+DEFAULT_SUB_SOLVE_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
 class OuterLnsConfig:
-    enabled: bool = False
+    enabled: bool = True
     fraction: float = DEFAULT_FRACTION
     sub_solve_seconds: float = DEFAULT_SUB_SOLVE_SECONDS
 
@@ -50,7 +50,7 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
     """Lenient parse of `config.outerLns` (untrusted shape): anything malformed degrades to defaults /
     disabled rather than failing the request. fraction clamps to [0.05, 0.9], subSolveSeconds to [0.5, 120]."""
     if not isinstance(raw, dict):
-        return OuterLnsConfig()
+        return OuterLnsConfig()  # absent / malformed => default on (2026-10-31 bench: ~5% better score at equal time)
 
     def _num(key, default, lo, hi):
         try:
@@ -62,7 +62,7 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         return max(lo, min(hi, v))
 
     return OuterLnsConfig(
-        enabled=raw.get("enabled") is True,
+        enabled=raw.get("enabled") is not False,
         fraction=_num("fraction", DEFAULT_FRACTION, 0.05, 0.9),
         sub_solve_seconds=_num("subSolveSeconds", DEFAULT_SUB_SOLVE_SECONDS, 0.5, 120.0),
     )

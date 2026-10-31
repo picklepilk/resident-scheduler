@@ -22,10 +22,12 @@ def _raw(**cfg):
 
 def test_parse_defaults_and_clamps():
     assert parse_outer_lns(None) == OuterLnsConfig()
-    assert not parse_outer_lns({}).enabled
-    assert not parse_outer_lns({"enabled": "yes"}).enabled  # only literal true enables
+    assert parse_outer_lns({}).enabled  # default ON since 2026-10-31
+    assert parse_outer_lns({"enabled": "yes"}).enabled  # only literal false disables
+    assert not parse_outer_lns({"enabled": False}).enabled
+    assert OuterLnsConfig().fraction == 0.5 and OuterLnsConfig().sub_solve_seconds == 5.0
     c = parse_outer_lns({"enabled": True, "fraction": 5, "subSolveSeconds": "x"})
-    assert c.enabled and c.fraction == 0.9 and c.sub_solve_seconds == 8.0
+    assert c.enabled and c.fraction == 0.9 and c.sub_solve_seconds == 5.0
     assert parse_outer_lns({"enabled": True, "fraction": 0.01}).fraction == 0.05
     assert parse_outer_lns([1]) == OuterLnsConfig()
 
@@ -33,11 +35,11 @@ def test_parse_defaults_and_clamps():
 def test_payload_carries_config():
     p = parse_payload(_raw(outerLns={"enabled": True, "fraction": 0.4, "subSolveSeconds": 3}))
     assert p.config.outer_lns == OuterLnsConfig(True, 0.4, 3.0)
-    assert not parse_payload(_raw()).config.outer_lns.enabled
+    assert parse_payload(_raw()).config.outer_lns.enabled  # default on
 
 
 def test_disabled_has_no_outer_report_and_same_tiers():
-    base = solve(parse_payload(_raw()))
+    base = solve(parse_payload(_raw(outerLns={"enabled": False})))
     off = solve(parse_payload(_raw(outerLns={"enabled": False})))
     assert "outerLns" not in base.report and "outerLns" not in off.report
     assert base.tiers == off.tiers and base.schedule == off.schedule  # numWorkers=1 -> deterministic
