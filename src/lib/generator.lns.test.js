@@ -73,7 +73,9 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
   it('accepts improvements on realScale and never reintroduces a fallback-PGY composition', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
-    const opts = { attempts: 20, baseSeed: 7 };
+    // seed 8 (was 7): since the late as-needed sweep may use at-target residents, seed 7 reaches 0 unfilled on
+    // realScale before LNS, leaving LNS nothing to improve (lnsAccepted 0 at 60 and 200 iters); seed 8 still has holes.
+    const opts = { attempts: 20, baseSeed: 8 };
     const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
     const post = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 60 });
     expect(post.report.lnsAccepted).toBeGreaterThan(0);

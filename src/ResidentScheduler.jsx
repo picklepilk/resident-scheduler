@@ -6460,10 +6460,21 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const { candidates } = candidatePool(shift, u.dateStr, 'late');
       const pool = narrowForSeniority(candidates, shift, u.dateStr);
       if (!pool.length) continue;
-      let best = null;
+      // Night slots: prefer a resident whose existing night run this EXTENDS (2 = bridges two runs, 1 = extends
+      // one, 0 = new segment), so the last-resort fill does not fragment runs; then below-target before
+      // at-target (at-target is allowed only because a min slot outranks the target), then fewest nights.
+      const isNight = shift.type === 'night';
+      const keyOf = r => {
+        const row = schedule[r.id] || {};
+        const ext = isNight ? (nightRun(row, u.dateStr, -1) > 0 ? 1 : 0) + (nightRun(row, u.dateStr, 1) > 0 ? 1 : 0) : 0;
+        return [-ext, assigned[r.id] >= target[r.id] ? 1 : 0, nightCount[r.id], assigned[r.id] / Math.max(target[r.id] || 1, 1)];
+      };
+      let best = null, bestKey = null;
       for (const r of pool) {
-        if (!best || nightCount[r.id] < nightCount[best.id]
-          || (nightCount[r.id] === nightCount[best.id] && assigned[r.id] / Math.max(target[r.id] || 1, 1) < assigned[best.id] / Math.max(target[best.id] || 1, 1))) best = r;
+        const k = keyOf(r);
+        let better = !best;
+        if (best) for (let i = 0; i < k.length; i++) { if (k[i] !== bestKey[i]) { better = k[i] < bestKey[i]; break; } }
+        if (better) { best = r; bestKey = k; }
       }
       assignCell(best.id, shift.id, u.dateStr);
       report.filled++;
