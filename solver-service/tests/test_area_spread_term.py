@@ -93,3 +93,25 @@ def test_single_area_resident_skipped_and_zero_weight_adds_nothing():
     dates, payload, model, store = _build()
     _, group = _cost(model, store, payload, weights={"areaSpread": {"perUnit": 0}})
     assert group.terms == []
+
+
+def test_ceil_floor_linear_encoding_exact_for_every_worked_count():
+    """Division-free ceil(worked/2): fixed worked = w with one area has top = w -> cost 100*(w - ceil(w/2))."""
+    for w in range(0, 7):
+        dates, payload, model, store = _build(n_dates=8)
+        _force(model, store, dates, {i: "POD-D" for i in range(w)})
+        assert _cost(model, store, payload)[0] == 100 * (w - (w + 1) // 2), w
+
+
+def test_cost_monotone_in_concentration_and_same_optimum():
+    """Shifting one shift from the minority area to the majority never lowers cost; optimum over 5 worked is 100."""
+    costs = []
+    for n_pod in range(0, 6):  # 5 shifts: n_pod POD, rest PED
+        dates, payload, model, store = _build(n_dates=8)
+        _force(model, store, dates, {i: ("POD-D" if i < n_pod else "PED-D") for i in range(5)})
+        costs.append(_cost(model, store, payload)[0])
+    # ceil(5/2)=3; top = max(n, 5-n) -> 5,4,3,3,4,5 -> excess 2,1,0,0,1,2
+    assert costs == [200, 100, 0, 0, 100, 200]
+    dates, payload, model, store = _build(n_dates=8)
+    model.add(sum(store.x.values()) == 5)
+    assert _cost(model, store, payload)[0] == 0

@@ -20,7 +20,7 @@ def _dates(n):
     return [f"2026-01-{5 + i:02d}" for i in range(n)]
 
 
-def _build(dates, eligible_dates, forced=(), exempt=False):
+def _build(dates, eligible_dates, forced=(), exempt=False, circadian=True):
     raw = make_payload(
         residents=[make_resident("r1", caps={"nights": 10}, nightExempt=exempt)],
         shifts=SHIFT, dates=dates,
@@ -30,7 +30,8 @@ def _build(dates, eligible_dates, forced=(), exempt=False):
     payload = parse_payload(raw)
     model = cp_model.CpModel()
     store = build_variables(model, payload)
-    add_circadian_constraints(model, payload, store)
+    if circadian:
+        add_circadian_constraints(model, payload, store)
     for d in forced:
         model.add(store.get_x("r1", "N", d) == 1)
     return payload, model, store
@@ -103,3 +104,44 @@ def test_night_exempt_and_zero_weight_add_nothing():
     payload, model, store = _build(dates, nights, forced=nights)
     _, group = _cost(model, store, payload, weights={"shortNightStint": {"perUnit": 0}})
     assert group.terms == []
+
+
+# ---- 2026-10-31: ladder re-encoding is cost-identical to the per-(start,len) bool_or form ----
+
+def _expected_cost(pattern, coef=60):
+    D, total, d = len(pattern), 0, 0
+    while d < D:
+        if pattern[d]:
+            e = d
+            while e + 1 < D and pattern[e + 1]:
+                e += 1
+            L = e - d + 1
+            if d >= 1 and e <= D - 2 and 2 <= L <= 4:
+                total += coef * (5 - L)
+            d = e + 1
+        else:
+            d += 1
+    return total
+
+
+def _cost_for_pattern(pattern):
+    dates = _dates(len(pattern))
+    payload, model, store = _build(dates, dates, circadian=False)
+    model.add(sum(store.x.values()) >= 0)
+    for d, v in zip(dates, pattern):
+        model.add(store.night[("r1", d)] == v)
+    return _cost(model, store, payload)[0]
+
+
+def test_ladder_matches_reference_on_all_patterns_len8():
+    import itertools
+    for pattern in itertools.product((0, 1), repeat=8):
+        assert _cost_for_pattern(pattern) == _expected_cost(pattern), pattern
+
+
+def test_ladder_matches_reference_random_len14():
+    import random
+    rng = random.Random(7)
+    for _ in range(60):
+        pattern = tuple(1 if rng.random() < 0.55 else 0 for _ in range(14))
+        assert _cost_for_pattern(pattern) == _expected_cost(pattern), pattern

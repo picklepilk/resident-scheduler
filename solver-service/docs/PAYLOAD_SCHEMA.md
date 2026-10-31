@@ -1442,8 +1442,8 @@ worse (96 -> 118; no solver term existed) and left 31 "Isolated night stint of N
 
 **`areaSpread.perUnit` = 100** (`_add_area_spread_term`). Mirrors `scheduleQuality.js` `areaSpread`:
 per resident, `max(0, topAreaCount - ceil(worked * 0.5))` (`AREA_CONCENTRATION_FLOOR` = 0.5).
-`worked` = sum of the resident's x vars; `ceil_floor = (worked*50 + 99) // 100` via
-`add_division_equality`; `excess >= count_area - ceil_floor` per area, minimized. Scale: JS
+`worked` = sum of the resident's x vars; `ceil_floor = ceil(worked*50/100)` pinned by two linear
+bounds (`100*c >= 50*worked`, `100*c <= 50*worked + 99`; no `add_division_equality`, 2026-10-31, same values); `excess >= count_area - ceil_floor` per area, minimized. Scale: JS
 coefficient 2 (`FAIRNESS_AXIS_WEIGHTS.areaSpread`) x 50 (the same x50 mapping as `isolatedNight` 300 =
 JS singleton 6) = 100. Deviation: a resident with fewer than 2 distinct areas among their candidate
 x vars is skipped (with one area the JS charge depends only on `worked` and would become a
