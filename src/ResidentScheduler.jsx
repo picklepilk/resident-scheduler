@@ -5511,7 +5511,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       keep: (r, shift, ds) => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule),
     },
     { reason: 'selfCoverOnly', keep: r => target[r.id] != null },
-    { reason: 'allAtTarget', keep: r => assigned[r.id] < target[r.id] },
+    // 'late' sweep: a MIN slot nobody else could fill outranks the shift-count target. The optional pass tops
+    // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
+    // by top-ups could never take the night 7..12 / BAMC as-needed placement the sweep exists to make.
+    { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < target[r.id] },
     // ACGME 80-hour rolling 4-week average — the EXACT rolling-window computation validateAll's
     // weeklyHourStats uses (item 3), via the shared maxRollingWindowHoursFor core, not the old flat
     // block-length approximation (80/7 * block days). That approximation could pass a resident who
