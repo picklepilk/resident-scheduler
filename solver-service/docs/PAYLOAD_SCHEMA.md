@@ -1524,3 +1524,26 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
   variable from the finished stage's solution (`solver.response_proto.solution`), so the next stage starts exactly at the
   previous optimum. The pinned bound (`expr <= round(value)`) was already correct and is added before the hint, so the hint
   satisfies it. `fix_variables_to_their_hinted_value` stays off; `repair_hint` stays off for stages (native-crash note above).
+
+## Outer LNS after the staged solve (2026-10-31, `solver/lns_outer.py`)
+
+Optional, off by default. `config.outerLns = {enabled: bool=false, fraction: float=0.3, subSolveSeconds: float=8}`
+(lenient parse: only literal `true` enables; `fraction` clamped to [0.05, 0.9], `subSolveSeconds` to [0.5, 120];
+malformed -> defaults/disabled). Staged objective mode only; ignored for `objectiveMode: 'weighted'` and pass 2.
+
+- When enabled the staged ladder gets `maxTimeSeconds * (1 - fraction)`; the rest (plus any time the ladder
+  returned early) goes to the LNS, which ends at `start + maxTimeSeconds`.
+- Loop: pick a neighborhood, fix every x variable outside it to the incumbent value (domain reduction on a
+  private model clone, whole-solution hint), keep every earlier tier (errors, blocking, rank, rest) as a hard
+  `<=` bound at the incumbent's value, minimize the quality tier for `min(subSolveSeconds, time left)`, accept only a
+  strict lexicographic improvement of (tiers..., quality). Tiers can therefore never get worse.
+- Neighborhoods (`window` 7-day all residents, `residents` 4-6 residents same-cohort-preferring whole block,
+  `shiftWindow` one area or shift type over 10 days, `worstTerms` residents with target-deficit / post-night-rest
+  penalties in the incumbent). Each is tried once, then sampled by smoothed success rate; sizes adapt (x1.25 after a
+  proven-no-gain OPTIMAL sub-solve, x0.8 after a sub-solve that found nothing).
+- Skipped (report `skipped`) when the last staged stage was proven OPTIMAL or the quality tier is empty.
+- `report.outerLns = {iterations, accepted, byNeighborhood:{name:{tried,accepted}}, startObjective, endObjective, seconds[, skipped]}`
+  (objectives = quality-tier value). Progress gets one extra stage (`stages` 6, `stage` 6, `stageName: "outerLns"`,
+  `best` = current quality-tier incumbent). Cancel via the job `cancel_event` ends the loop.
+- Seeded: neighborhood choice from `randomSeed`, sub-solve seeds `randomSeed + iteration`; with `numWorkers: 1`
+  reproducible up to wall-clock limits. In a portfolio each run does its own LNS inside its share of the budget.

@@ -69,6 +69,7 @@ from solver.build import BuildResult, build_model
 from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
 from solver.io.sat_params import apply_params, params_for_run
+from solver.lns_outer import run_outer_lns
 from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for
 from solver.model.objective import (
     TIER_BLOCKING,
@@ -141,6 +142,7 @@ class ProgressReporter:
         self.budget = float(budget)
         self.stages = stages
         self.stage = 0
+        self.label = None
         self.best = None
         self._t0 = time.time()
         self._last_emit = 0.0
@@ -155,14 +157,22 @@ class ProgressReporter:
                 "budget": self.budget,
                 "best": self.best,
                 "runner": runner_info(),
+                **({"stageName": self.label} if self.label else {}),
             })
         except Exception:
             pass
 
-    def begin_stage(self, stage: int) -> None:
+    def begin_stage(self, stage: int, label: str = None) -> None:
         self.stage = max(self.stage, stage)
+        self.label = label
         self.best = None
         self.emit()
+
+    def set_best(self, value) -> None:
+        """Outer-LNS incumbent (quality tier); emits at most once per PROGRESS_MIN_INTERVAL_SECONDS."""
+        self.best = value
+        if time.time() - self._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+            self.emit()
 
     def finish(self) -> None:
         self.stage = self.stages
@@ -564,8 +574,10 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
     progress = None
     if on_progress is not None:
         stages = len(_STAGE_NAMES) if payload.config.objective_mode == "staged" else 1
+        if stages > 1 and payload.config.outer_lns.enabled:
+            stages += 1  # the extra 'outerLns' stage
         progress = ProgressReporter(on_progress, payload.config.max_time_seconds, stages)
-    result = _solve_pass1(payload, progress)
+    result = _solve_pass1(payload, progress, cancel_event)
     if progress is not None:
         progress.finish()
     if result.status != "INFEASIBLE":
@@ -601,7 +613,8 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
     return {"applied": True, "hintFeasible": True, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
 
 
-def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
+def _solve_pass1(payload: Payload, progress=None, cancel_event=None) -> SolveResult:
+    t_pass1 = time.time()
     build_result = build_model(payload)
     store = build_result.store
     objective = build_result.objective
@@ -613,8 +626,38 @@ def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
     # for comparison/rollback. build_model() already called
     # `model.minimize(objective.total_expr)` as its own default, so the
     # weighted branch needs no further setup beyond solving as before.
+    outer = payload.config.outer_lns
+    outer_report = None
     if payload.config.objective_mode == "staged":
-        status_name, solver, solve_time_ms = _solve_staged(payload, build_result, hint_eval, progress)
+        staged_payload = payload
+        if outer.enabled:
+            # Staged ladder gets (1 - fraction) of the budget; the outer LNS spends the rest (and any
+            # time the ladder returns early via OPTIMAL rollover) until t_pass1 + maxTimeSeconds.
+            staged_payload = dataclasses.replace(
+                payload,
+                config=dataclasses.replace(
+                    payload.config, max_time_seconds=max(0.1, payload.config.max_time_seconds * (1.0 - outer.fraction))
+                ),
+            )
+        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress)
+        if outer.enabled and status_name in SOLVABLE_STATUSES:
+            if progress is not None:
+                progress.begin_stage(len(_STAGE_NAMES) + 1, "outerLns")
+            t_lns = time.time()
+            solver, outer_report = run_outer_lns(
+                payload, build_result, solver, _STAGE_NAMES, TIER_QUALITY,
+                lambda: _configure_solver(payload, allow_repair_hint=False),
+                deadline=t_pass1 + payload.config.max_time_seconds,
+                sub_solve_seconds=outer.sub_solve_seconds,
+                seed=payload.config.random_seed,
+                progress=progress,
+                cancel_event=cancel_event,
+                # OPTIMAL for the QUALITY stage specifically: that stage minimizes the bare quality expr, so its
+                # objective equals the quality tier's value (an earlier stage's tiebreak composite would not).
+                proven_optimal=(status_name == "OPTIMAL"
+                                and round(solver.objective_value) == round(solver.value(objective.stage_exprs[TIER_QUALITY]))),
+            )
+            solve_time_ms += int((time.time() - t_lns) * 1000)
     else:
         solver = _configure_solver(payload)
         solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
@@ -640,6 +683,8 @@ def _solve_pass1(payload: Payload, progress=None) -> SolveResult:
 
     schedule = _extract_schedule(solver, store)
     report = _build_report(payload, solver, objective, hint_diag)
+    if outer_report is not None:
+        report["outerLns"] = outer_report
     _stick_w = stickiness_weight(payload, objective.weights)
     if _stick_w > 0 and payload.hint:
         report["hintStickiness"] = {"weight": _stick_w, "changedCells": changed_cells(payload, schedule)}

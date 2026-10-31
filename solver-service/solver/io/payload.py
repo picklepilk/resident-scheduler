@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from solver.io.sat_params import validate_params
+from solver.lns_outer import OuterLnsConfig, parse_outer_lns
 from solver.model.timing import ShiftTiming, add_days
 
 # Depth of the prior-block tail window every sliding-window constraint (night
@@ -90,6 +91,8 @@ class Config:
     portfolio_params: Optional[list] = None
     # Internal: params applied to every solver of THIS (sub)payload. Set by _solve_portfolio, never parsed.
     solver_params: Optional[dict] = None
+    # Optional outer LNS after the staged solve (solver/lns_outer.py). Parsed leniently; off by default.
+    outer_lns: OuterLnsConfig = OuterLnsConfig()
 
 
 @dataclass(frozen=True)
@@ -440,6 +443,7 @@ def parse_payload(raw: dict) -> Payload:
             portfolio=(max(1, min(8, int(config_raw["portfolio"] or 1))) if config_raw.get("portfolio") is not None else None),
             portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
+            outer_lns=parse_outer_lns(config_raw.get("outerLns")),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(

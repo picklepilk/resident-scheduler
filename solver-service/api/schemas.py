@@ -47,6 +47,8 @@ class ConfigModel(_RequestModel):
     portfolioParams: Optional[list[dict]] = None
     # Per-changed-cell penalty vs `hint` (quality tier); 0/absent = off. solver/model/hint_stickiness.py.
     hintStickiness: Optional[int] = None
+    # Optional outer LNS after the staged solve: {enabled, fraction, subSolveSeconds}; see solver/lns_outer.py.
+    outerLns: Optional[dict] = None
 
 
 class BlockModel(_RequestModel):
