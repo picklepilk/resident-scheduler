@@ -297,6 +297,9 @@ class Payload:
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
+    # Extra warm-start hints for the seed portfolio (each the same shape as `hint`; <= MAX_ALTERNATE_HINTS,
+    # invalid/empty entries dropped). Portfolio run i starts from ([hint] + alternate_hints)[i % len].
+    alternate_hints: list = field(default_factory=list)
 
     def __post_init__(self):
         if self.block.dates:
@@ -397,6 +400,27 @@ def _parse_locked(raw: list) -> list:
     return [LockedCell(resident_id=e["residentId"], date=e["date"], shift_id=e["shiftId"]) for e in raw]
 
 
+MAX_ALTERNATE_HINTS = 4
+
+
+def _parse_alternate_hints(raw) -> list:
+    """Lenient: anything not a list of lists of well-formed {residentId,date,shiftId} cells is dropped
+    (an alternate is only a warm start); capped at MAX_ALTERNATE_HINTS."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for entry in raw:
+        try:
+            cells = _parse_locked(entry) if isinstance(entry, list) else []
+        except (KeyError, TypeError):
+            continue
+        if cells:
+            out.append(cells)
+        if len(out) >= MAX_ALTERNATE_HINTS:
+            break
+    return out
+
+
 def _parse_coverage(raw: dict) -> dict:
     out = {}
     for sid, by_date in raw.items():
@@ -485,6 +509,7 @@ def parse_payload(raw: dict) -> Payload:
             true_primary=raw.get("truePrimary", {}) or {},
             obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
             block_touches_conference=bool(raw.get("blockTouchesConference", False)),
+            alternate_hints=_parse_alternate_hints(raw.get("alternateHints", [])) if raw.get("hint") else [],
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

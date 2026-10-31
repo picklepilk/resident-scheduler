@@ -724,6 +724,14 @@ def resolve_portfolio_k(config_portfolio, workers: int) -> int:
     return 2 if workers >= AUTO_PORTFOLIO_MIN_WORKERS else 1
 
 
+def _hint_source(payload: Payload, i: int) -> str:
+    """Which hint portfolio run `i` started from: "none", "primary" or "alternate:<n>" (n = 1-based)."""
+    if not payload.hint:
+        return "none"
+    idx = i % (1 + len(payload.alternate_hints))
+    return "primary" if idx == 0 else f"alternate:{idx}"
+
+
 def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None, auto: bool = False) -> SolveResult:
     """K independent full solves (seed = base + i), run concurrently in threads (OR-Tools releases
     the GIL), best by `_result_rank_key` wins, ties go to the lowest i. Workers are split
@@ -751,8 +759,12 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None,
     outcomes: list = [None] * k  # (result | None, error | None, wall_seconds)
 
     def run(i: int) -> None:
+        all_hints = [payload.hint, *payload.alternate_hints] if payload.hint else []
+        hint_idx = i % len(all_hints) if all_hints else None
         sub = dataclasses.replace(
             payload,
+            **({"hint": all_hints[hint_idx]} if all_hints else {}),
+            alternate_hints=[],
             config=dataclasses.replace(cfg, portfolio=1, random_seed=cfg.random_seed + i, num_workers=per_run_workers,
                                        solver_params=params_for_run(cfg.portfolio_params, i),
                                        max_time_seconds=per_run_seconds),
@@ -797,6 +809,7 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None,
         per_run.append({
             "seed": cfg.random_seed + i,
             "params": params_for_run(cfg.portfolio_params, i),
+            "hintSource": _hint_source(payload, i),
             "status": res.status if res is not None else "ERROR",
             "tiers": res.tiers if res is not None else None,
             "wallSeconds": round(wall, 1),

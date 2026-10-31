@@ -138,6 +138,8 @@ class SolveRequest(_RequestModel):
     # R9 (2026-09-27, CP-SAT-as-polisher): warm-start hint, SAME shape as
     # `locked` but a soft suggestion -- see solver/io/payload.py's Payload.hint.
     hint: list[LockedCellModel] = Field(default_factory=list)
+    # Extra warm starts for the seed portfolio (each same shape as `hint`); see Payload.alternate_hints.
+    alternateHints: list[list[LockedCellModel]] = Field(default_factory=list)
     coverage: dict = Field(default_factory=dict)
     seniorPrimary: dict = Field(default_factory=dict)
     jcDates: list = Field(default_factory=list)

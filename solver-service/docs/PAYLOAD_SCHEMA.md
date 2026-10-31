@@ -1524,3 +1524,17 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
   variable from the finished stage's solution (`solver.response_proto.solution`), so the next stage starts exactly at the
   previous optimum. The pinned bound (`expr <= round(value)`) was already correct and is added before the hint, so the hint
   satisfies it. `fix_variables_to_their_hinted_value` stays off; `repair_hint` stays off for stages (native-crash note above).
+
+## 2026-10-31: `alternateHints` (multi-hint seed portfolio)
+
+- `alternateHints: [[{residentId, date, shiftId}, ...], ...]` — OPTIONAL, backward compatible; `hint` stays the
+  primary. Each entry has the same shape as `hint` (soft `AddHint`, never a pin). Parsing is lenient: non-list
+  entries, empty lists and malformed cells are dropped, at most 4 are kept (`MAX_ALTERNATE_HINTS`), and the whole
+  field is ignored when there is no primary `hint`. Omitted by the client when empty.
+- Portfolio run `i` (seed = base + i) starts from `([hint] + alternateHints)[i % len]`, so run 0 is always the
+  primary; K=1 uses the primary only. Hint pinning / stickiness / carry-hint between stages all operate on that
+  run's own hint. `report.portfolio.perRun[i].hintSource` = `"primary"` | `"alternate:<n>"` | `"none"`.
+- Client: `generateScheduleBest(...).alternates` (non-enumerable, never persisted) = up to `alternates - 1`
+  (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
+  `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
+  (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
