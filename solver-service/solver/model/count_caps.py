@@ -29,6 +29,7 @@ from solver.model import timing
 from solver.model.variables import VarStore
 
 WEDNESDAY = 2  # datetime.date.weekday(): Monday=0 ... Sunday=6
+THURSDAY = 3
 
 # spec.name -> rule-registry family id, for pass 2's per-(resident, family)
 # enforcement literal (solver/model/elastic.py). `targetCeiling` keeps the
@@ -113,7 +114,33 @@ def add_count_cap_constraints(model, payload: Payload, store: VarStore, enforcem
                 if lit is not None:
                     c.only_enforce_if(lit)
 
+        _add_bamc_gr_exceptions(model, payload, store, resident, enforcement)
         _add_trauma_peds_split(model, payload, store, resident, enforcement)
+
+
+def _add_bamc_gr_exceptions(model, payload: Payload, store: VarStore, resident: Resident, enforcement=None) -> None:
+    """Count-based as-needed rule (2026-10-30): a BAMC PGY-1 may work at most `caps.bamcGrExceptions` (1) of
+    {Thursday DAY shift, Wednesday NIGHT shift} COMBINED per block (Thursday is BAMC Grand Rounds). Shares the
+    `bamcWedNight` enforcement literal with the legacy Wednesday-nights-only cap. An older payload without the
+    field is unaffected (the legacy `bamcWedNights` cap still binds, and the Thursday-day cells are not eligible
+    for an old solver at all -- they ship only in the optional `asNeeded` list)."""
+    cap = resident.caps.bamc_gr_exceptions
+    if cap is None:
+        return
+    terms = terms_for(
+        payload, store, resident.id,
+        shift_pred=lambda sid: payload.shifts[sid].is_night,
+        date_pred=lambda d: timing.parse_date(d).weekday() == WEDNESDAY,
+    ) + terms_for(
+        payload, store, resident.id,
+        shift_pred=lambda sid: payload.shifts[sid].type == "day",
+        date_pred=lambda d: timing.parse_date(d).weekday() == THURSDAY,
+    )
+    if terms:
+        lit = enforcement(resident.id, SPEC_TO_RULE["bamcWedNights"]) if enforcement else None
+        c = model.add(sum(terms) <= cap)
+        if lit is not None:
+            c.only_enforce_if(lit)
 
 
 def _add_trauma_peds_split(model, payload: Payload, store: VarStore, resident: Resident, enforcement=None) -> None:

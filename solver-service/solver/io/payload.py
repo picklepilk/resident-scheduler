@@ -95,10 +95,15 @@ class Block:
 
 @dataclass(frozen=True)
 class ResidentCaps:
+    # `nights` is the per-block night SOFT TARGET (6) once `nights_max` is present, else the legacy hard cap.
     nights: Optional[int] = None
+    # Hard cap on nights/block (12). Optional: an older JS build omits it and `nights` stays a hard cap.
+    nights_max: Optional[int] = None
     trauma: Optional[int] = None
     jc_remaining: Optional[int] = None
     bamc_wed_nights: Optional[int] = None
+    # BAMC Thursday-DAY + Wednesday-NIGHT cells combined, at most this many per block (1). Optional.
+    bamc_gr_exceptions: Optional[int] = None
     peds_mix_max: Optional[int] = None
     peds_mix_min: Optional[int] = None
     fm1_peds_max: Optional[int] = None
@@ -324,6 +329,8 @@ def _parse_residents(raw: list) -> list:
         caps_raw = r.get("caps", {}) or {}
         caps = ResidentCaps(
             nights=caps_raw.get("nights"),
+            nights_max=caps_raw.get("nightsMax"),
+            bamc_gr_exceptions=caps_raw.get("bamcGrExceptions"),
             trauma=caps_raw.get("trauma"),
             jc_remaining=caps_raw.get("jcRemaining"),
             bamc_wed_nights=caps_raw.get("bamcWedNights"),

@@ -107,13 +107,18 @@ def _add_night_run_window(model, payload: Payload, store: VarStore, enforcement=
 def _add_night_cap(model, payload: Payload, store: VarStore, enforcement=None) -> None:
     """Rule 22: total nights THIS block <= caps.nights, unless night-exempt
     (e.g. a night-only resident like FM-3, whose Mon/Tue/Wed-only day rule
-    already makes a long night run structurally impossible)."""
+    already makes a long night run structurally impossible).
+
+    Count-based as-needed rule (2026-10-30): when the payload carries `caps.nightsMax` (12), the HARD cap is
+    nightsMax and `caps.nights` (6) is only the soft target (priced per excess night in objective.py's
+    `_add_night_excess_term`). An older payload without `nightsMax` keeps `nights` as the hard cap."""
     for resident in payload.residents:
-        if resident.night_exempt or resident.caps.nights is None:
+        hard = resident.caps.nights_max if resident.caps.nights_max is not None else resident.caps.nights
+        if resident.night_exempt or hard is None:
             continue
         nights_this_block = [store.night[(resident.id, d)] for d in payload.block.dates]
         lit = enforcement(resident.id, FAMILY_NIGHT_CAP) if enforcement else None
-        c = model.add(sum(nights_this_block) <= resident.caps.nights)
+        c = model.add(sum(nights_this_block) <= hard)
         if lit is not None:
             c.only_enforce_if(lit)
 
