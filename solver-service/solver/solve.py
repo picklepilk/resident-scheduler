@@ -81,6 +81,7 @@ from solver.model.objective import (
 )
 from solver.model.hint_stickiness import changed_cells, stickiness_weight
 from solver.report.builder import HARD_RELAXABLE_RULES, build_feasibility_report
+from solver.report.structural import compute_structural_floor
 from solver.validate import validate_schedule
 
 SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
@@ -1051,6 +1052,8 @@ def _build_report(payload: Payload, solver: cp_model.CpSolver, objective, hint_d
         # `mapSolverResult` (ResidentScheduler.jsx) never inspects unknown
         # report keys, so this can never break either contract.
         "hintPinning": hint_diag if hint_diag is not None else _default_hint_diag(),
+        # Lower bound on the unavoidable part of fairness+shape (solver/report/structural.py).
+        "structuralFloor": compute_structural_floor(payload),
     }
 
 
@@ -1075,6 +1078,7 @@ def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpS
                     {"dateStr": date_str, "shiftId": shift_id, "shortBy": int(entry.min - assigned), "reason": "coverageShort"}
                 )
     report["unfilled"] = unfilled
+    report["structuralFloor"] = compute_structural_floor(payload, schedule)
     return report
 
 

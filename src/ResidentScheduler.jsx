@@ -29,6 +29,7 @@ import { POD_THIRD_BODY_SHIFT_IDS, POD_CORE_CAP, getCoverageFor, shiftCoverageFo
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
 import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
+import { describeCapacityGap, splitFairnessPoints } from './lib/structuralFloor.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
 import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
@@ -7956,7 +7957,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // through the same updateBlockTracked call. Only receives `{ block }` (not the full args
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
-export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {}, dayRules = {}, eligOverrides = {}, blocksHistory = [] } = {}) {
+export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {}, dayRules = {}, eligOverrides = {}, blocksHistory = [], coverage = null } = {}) {
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -8073,7 +8074,16 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
         const schedulableIds = new Set(allResidents.filter(isSchedulable).map(r => r.id));
         return raw.filter(u => schedulableIds.has(u.residentId));
       })(),
-      capacityWarnings: [],
+      capacityWarnings: (() => {
+        // Same diagnostic generateSchedule emits; needs the coverage table, so only when threaded in.
+        if (!coverage || !Array.isArray(allResidents) || !Array.isArray(json?.report?.underTarget) || json.report.underTarget.length === 0) return [];
+        const gap = describeCapacityGap({
+          demand: computeTotalTargetDemand(allResidents, appSettings),
+          supply: computeTotalCoverageSupply(getBlockDates(block.startDate, block.endDate), coverage, ayConf),
+        });
+        return gap ? [{ reason: 'structuralSupplyDemand', text: gap, slots: [] }] : [];
+      })(),
+      structuralFloor: json?.report?.structuralFloor ?? null,
       repairs: [],
       overstaffed,
       feasibility: json?.feasibility ?? null,
@@ -16871,7 +16881,7 @@ function EnginePicker({ value, onChange, solverAllowed, compact = false, canPick
 // Compact local-vs-optimizer card for GenerationReportCard (report.engineComparison, plain data).
 // Slot labels come from the CURRENT rule priority, which is what pickEngineResult used unless the
 // chief reordered it after generating.
-function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpenSolver }) {
+function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpenSolver, structuralFloor }) {
   const normPriority = normalizeRulePriority(appSettings?.rulePriority);
   const labels = qualityVectorLabels(normPriority);
   const winnerKey = c.winner === 'cpsat' ? 'solver' : c.winner;
@@ -16901,6 +16911,15 @@ function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpe
       </div>
       {row('Built-in', c.local, winnerKey !== 'solver')}
       {row('Optimizer', c.solver, winnerKey === 'solver')}
+      {(() => {
+        const used = winnerKey === 'solver' ? c.solver : c.local;
+        const split = splitFairnessPoints(used?.qualityVector?.[3], structuralFloor);
+        return split ? (
+          <div className="opacity-80" data-testid="structural-floor-line" title="Lower bound: targets above total coverage maximum, plus residents whose eligibility is a single shift area. Already part of the Fairness+shape number, not extra.">
+            Fairness+shape {num(split.total)}: structural at least {num(split.structural)} (unavoidable) · movable {num(split.movable)}
+          </div>
+        ) : null;
+      })()}
       {canOpenSolver && (
         <button type="button" onClick={onOpenSolver}
           className="mt-1 px-2 py-1 rounded-md border border-blue-300 bg-white text-blue-700 font-semibold hover:bg-blue-100">
@@ -17231,7 +17250,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       showToast(`Long solve finished with no usable result (status "${json?.status || 'unknown'}").`, 'red');
       return;
     }
-    const solverRes = mapSolverResult(json, { block: longSolveJob.genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory });
+    const solverRes = mapSolverResult(json, { block: longSolveJob.genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
     const baseArgs = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf };
     const { result, winner } = pickEngineResult(solverRes, longSolveJob.localRes, { ...baseArgs, block: longSolveJob.genBlock });
     if (winner !== 'cpsat') {
@@ -18114,7 +18133,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         }
         setGenStageLabel('Validating…');
         setGenProgress({ phase: 'validate' });
-        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory });
+        const solverRes = mapSolverResult(json, { block: genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
         // Solver succeeded, but must still beat the ALREADY-COMPUTED local result STRICTLY to be
         // shipped (pickEngineResult keeps local on any tie) — warm-starting makes CP-SAT a
         // polisher, not a blind trust.
@@ -18128,7 +18147,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         const engineLabel = winner === 'cpsat' ? finalLabel : 'Built-in (optimizer result did not beat it)';
         return {
           ...result,
-          report: { ...result.report, engineComparison, engineLabel },
+          report: { ...result.report, engineComparison, engineLabel, structuralFloor: result.report.structuralFloor ?? solverRes.report.structuralFloor ?? null },
           engineUsed: winner === 'cpsat' ? 'cpsat' : 'local-better',
           engineLabel,
           relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
@@ -19343,7 +19362,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 // red warning-panel style as DragConfirmModal's violation list below.
 function ReadinessWarningPanel({ messages, gaps, pressure, onFix }) {
   const pressureLine = pressure && pressure.level
-    ? <p className="text-xs text-gray-600 mb-3" data-testid="pressure-line">Demand vs supply: {pressure.level} ({Math.round(pressure.ratio * 100)}%) -- targets {pressure.demand} vs {pressure.supply} slots of capacity.</p>
+    ? <p className="text-xs text-gray-600 mb-3" data-testid="pressure-line">Demand vs supply: {pressure.level} ({Math.round(pressure.ratio * 100)}%) -- targets {pressure.demand} vs {pressure.supply} slots of capacity.{pressure.excess > 0 ? ` Targets exceed available shifts by ${pressure.excess}.` : ''}</p>
     : null;
   if (gaps && gaps.length) return (<>
     <div className={`${gaps.some(g => g.severity === 'blocking') ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'} border rounded-lg p-3 mb-3`} data-testid="readiness-gaps">
@@ -20511,7 +20530,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
           Reflects the schedule at generation time — manual edits since aren't included.
         </p>
         {report.engineComparison && (
-          <EngineComparisonCard comparison={report.engineComparison} appSettings={appSettings}
+          <EngineComparisonCard comparison={report.engineComparison} appSettings={appSettings} structuralFloor={report.structuralFloor}
             canOpenSolver={!!(onOpenSolverAlt && solverAlt && solverAlt.generatedAt === report.generatedAt)} onOpenSolver={onOpenSolverAlt}/>
         )}
       </div>

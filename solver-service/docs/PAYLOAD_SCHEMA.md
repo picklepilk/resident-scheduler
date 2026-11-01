@@ -1561,3 +1561,12 @@ malformed -> defaults/disabled). Staged objective mode only; ignored for `object
   (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
   `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
   (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
+
+## `report.structuralFloor` (2026-10-31)
+
+Additive key on every solve report (`_build_report` and the relaxed path), from `solver/report/structural.py`.
+A LOWER BOUND ("at least") on the part of quality-vector slot 3 (fairness+shape) that no schedule can avoid:
+`{supply, demand, targetExcess, underTargetPoints, singleAreaResidents, areaSpreadUnits, areaSpreadPoints, totalPoints, approximate: true}`.
+`supply` = sum of coverage max; `demand` = sum of schedulable targets; `underTargetPoints` = 2 x `targetExcess`;
+single-area residents (eligibility spans one shift area) charge `target - ceil(target*0.5)` units x 2. Both terms are already
+inside slot 3 (never add it on top); the client shows `splitFairnessPoints(slot3, floor)` = structural vs movable.
