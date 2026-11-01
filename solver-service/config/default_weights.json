@@ -1,5 +1,6 @@
 {
   "coverageMin": { "perSlack": 1000000 },
+  "seniorComposition": { "perGap": 1000000 },
   "asNeededUse": { "perUnit": 20000 },
   "targetDeficitCore": { "perUnit": 10000 },
   "postNightRest": { "perViolation": 50000 },

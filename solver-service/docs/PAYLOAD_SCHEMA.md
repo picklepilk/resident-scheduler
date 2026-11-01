@@ -1586,3 +1586,12 @@ Two soft `TIER_QUALITY` terms, no new payload fields (weights only, `config/defa
 - `pedNightOverSwing.perUnit = 600` (`solver/model/ped_night_priority.py`): per date where PED-N and PED-S both have max > 0, charges PED-S bodies in excess of PED-N bodies (`excess >= s - n`), so the optional PED Night is preferred over PED Swing.
 
 Weight 0 or absent disables either. Only `pedNightOverSwing` is in `tests/test_weight_tiering.py`'s `_anti_fill_sum` (`podThirdBodyCore` charges only bodies beyond the first two, so it cannot favor leaving a minimum empty).
+
+## Senior composition pass-2 slack (2026-10-31)
+
+| Item | Behavior |
+|---|---|
+| Pass 1 | `seniorPrimary` composition (rule 16) unchanged: hard. |
+| Pass 2 (`elastic.py`) | `add_senior_composition_constraints(..., slack=True)`: `Σprimary + gap[shift,date] ≥ staffed`. Locked non-primary cells now give `RELAXED` instead of `INFEASIBLE`. |
+| Penalty | `objective.senior_gap_weight(rulePriority, weights)` per gap, using the coverage-slack (`wc`) and postNightRest (`wr`) weights actually in use: seniorComposition above both -> `10·max(wc,wr)`; between -> `isqrt(wc·wr)`; below both -> `max(1, min(wc,wr)//10)`. `config/default_weights.json` `seniorComposition.perGap` (1000000) is the fallback anchor when either weight is absent. |
+| `report.seniorGaps` | `[{dateStr, shiftId, reason: "noSeniorPrimary"}]`, filled from `ObjectiveInfo.senior_gaps` (pass 2 only; `[]` in pass 1). |

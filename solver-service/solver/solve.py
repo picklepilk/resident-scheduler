@@ -1039,11 +1039,17 @@ def _build_report(payload: Payload, solver: cp_model.CpSolver, objective, hint_d
                 {"residentId": resident_id, "assigned": int(target - deficit), "target": int(target)}
             )
 
+    senior_gaps = [
+        {"dateStr": d, "shiftId": sid, "reason": "noSeniorPrimary"}
+        for (sid, d), var in getattr(objective, "senior_gaps", {}).items()
+        if solver.value(var) >= 1
+    ]
+
     return {
         "unfilled": unfilled,
         "restCompromises": rest_compromises,
         "underTarget": under_target,
-        "seniorGaps": [],
+        "seniorGaps": senior_gaps,
         "overstaffed": overstaffed,
         # R9 follow-up ("pin to hint", solver/model/hint_pin.py): diagnostics
         # for whether the warm-start hint was feasible under this model's own
