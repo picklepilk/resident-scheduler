@@ -67,6 +67,7 @@ held to.
 from __future__ import annotations
 
 import json
+import math
 from functools import lru_cache
 from itertools import product
 from dataclasses import dataclass, field
@@ -145,6 +146,26 @@ def rest_outranks_coverage(rule_priority: list) -> bool:
     ["postNightRest"] -> rest first; ["coverageMin"], [], None -> coverage first."""
     rp = rule_priority if isinstance(rule_priority, list) else []
     return _priority_order(rp)[0] == "postNightRest"
+
+
+def senior_gap_weight(rule_priority, weights: dict) -> int:
+    """Pass-2 penalty per senior-composition gap. `wc`/`wr` are the coverage-slack and
+    postNightRest weights actually in use (post `apply_rule_priority`). seniorComposition
+    ranked above both -> 10*max(wc,wr); between them -> isqrt(wc*wr); below both ->
+    max(1, min(wc,wr)//10). Missing/unknown entries append in canonical order."""
+    canonical = ("coverageMin", "seniorComposition", "postNightRest")
+    rp = rule_priority if isinstance(rule_priority, list) else []
+    order = [r for r in rp if r in canonical]
+    order += [r for r in canonical if r not in order]
+    anchor = int((weights.get("seniorComposition") or {}).get("perGap", 1000000))  # fallback if a weight is absent
+    wc = max(1, int((weights.get("coverageMin") or {}).get("perSlack", anchor)))
+    wr = max(1, int((weights.get("postNightRest") or {}).get("perViolation", anchor)))
+    pos = order.index("seniorComposition")
+    if pos == 0:
+        return 10 * max(wc, wr)
+    if pos == 1:
+        return max(1, math.isqrt(wc * wr))
+    return max(1, min(wc, wr) // 10)
 
 
 def apply_rule_priority(weights: dict, rule_priority: list) -> dict:
@@ -258,6 +279,8 @@ class ObjectiveInfo:
     # of the 4 groups) -- the staged solve is a re-partitioning of the same
     # objective, never a different one.
     stage_exprs: dict = field(default_factory=dict)
+    # Pass 2 only (elastic.py): (shiftId, date) -> senior-composition gap BoolVar; empty in pass 1.
+    senior_gaps: dict = field(default_factory=dict)
 
 
 def _weekend_dates(payload: Payload) -> list:

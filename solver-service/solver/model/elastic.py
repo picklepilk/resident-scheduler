@@ -32,13 +32,18 @@ anywhere downstream.
 Never touches (rebuilt via the EXACT SAME functions build.py uses for pass
 1, so there is only one encoding of every never-relax rule): eligibility /
 variable existence / at-most-one / locked cells (`build_variables`),
-coverage MAX (`coverage.py`, always hard), trauma solo / senior composition
-(`senior_composition.py`, always hard), the batch-2 <=2-trauma-nights-
+coverage MAX (`coverage.py`, always hard), trauma solo, the batch-2 <=2-trauma-nights-
 per-run cap (`trauma_runs.add_trauma_run_hard_cap`, always hard -- the chief
-never wants this one negotiable, same posture as senior composition), and
+never wants this one negotiable), and
 R7's ACGME 6.17.a.3 rolling-7-day 60/72h caps (`weekly_hours.py`, always
 hard -- an accreditation requirement, stricter than the ordinary duty-hour
 families this module DOES relax).
+
+Senior composition (rule 16) is the one exception to "hard in both passes": here it
+gets a per-(shift,date) `gap` BoolVar (`add_senior_composition_constraints(slack=True)`)
+penalized at `objective.senior_gap_weight` (ranked by rulePriority between coverage and
+rest), so locked non-primary cells yield RELAXED + `report.seniorGaps`, not INFEASIBLE.
+Pass 1 is unchanged (hard).
 
 Objective: pass-2's objective = pass-1's soft objective (unchanged, built by
 `objective.build_objective` with its own fixed, moderate per-term weights --
@@ -81,7 +86,7 @@ from solver.model.count_caps import add_count_cap_constraints
 from solver.model.coverage import add_coverage_constraints
 from solver.model.hint import apply_hint
 from solver.model.hours_cap import add_hours_cap_constraints
-from solver.model.objective import ObjectiveInfo, build_objective
+from solver.model.objective import ObjectiveInfo, build_objective, senior_gap_weight
 from solver.model.rest import add_rest_constraints
 from solver.model.senior_composition import add_senior_composition_constraints
 from solver.model.trauma_runs import add_trauma_run_hard_cap
@@ -269,7 +274,9 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     add_workday_limit_constraints(model, payload, store, enforcement=duty_enforcement)
     add_hours_cap_constraints(model, payload, store, enforcement=duty_enforcement)
     add_count_cap_constraints(model, payload, store, enforcement=cap_enforcement)
-    add_senior_composition_constraints(model, payload, store)  # always hard, unchanged
+    # Pass 2 only: senior composition gets a penalized per-(shift,date) gap (pass 1 stays hard), so
+    # locked non-primary cells yield RELAXED + report.seniorGaps instead of INFEASIBLE.
+    senior_gaps = add_senior_composition_constraints(model, payload, store, slack=True)
     add_trauma_run_hard_cap(model, payload, store)  # always hard, unchanged -- batch 2
     add_weekly_hours_cap_constraints(model, payload, store)  # always hard, unchanged -- R7
 
@@ -281,6 +288,7 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     # wins; only the objective *expression* is replaced.
     objective = build_objective(model, payload, store, coverage_result)
 
+    objective.senior_gaps = senior_gaps
     relaxation_scales = dict(RELAXATION_WEIGHTS)
 
     penalty_terms = []
@@ -294,6 +302,8 @@ def build_elastic_model(payload: Payload) -> ElasticBuildResult:
     total_expr = objective.total_expr
     if penalty_terms:
         total_expr = total_expr + sum(penalty_terms)
+    if senior_gaps:
+        total_expr = total_expr + senior_gap_weight(payload.rule_priority, objective.weights) * sum(senior_gaps.values())
     model.minimize(total_expr)
 
     all_ok_lits = [*duty_pool.lits.values(), *coverage_pool.lits.values(), *cap_pool.lits.values()]

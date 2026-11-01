@@ -1561,3 +1561,12 @@ malformed -> defaults/disabled). Staged objective mode only; ignored for `object
   (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
   `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
   (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
+
+## Senior composition pass-2 slack (2026-10-31)
+
+| Item | Behavior |
+|---|---|
+| Pass 1 | `seniorPrimary` composition (rule 16) unchanged: hard. |
+| Pass 2 (`elastic.py`) | `add_senior_composition_constraints(..., slack=True)`: `Σprimary + gap[shift,date] ≥ staffed`. Locked non-primary cells now give `RELAXED` instead of `INFEASIBLE`. |
+| Penalty | `objective.senior_gap_weight(rulePriority, weights)` per gap, using the coverage-slack (`wc`) and postNightRest (`wr`) weights actually in use: seniorComposition above both -> `10·max(wc,wr)`; between -> `isqrt(wc·wr)`; below both -> `max(1, min(wc,wr)//10)`. `config/default_weights.json` `seniorComposition.perGap` (1000000) is the fallback anchor when either weight is absent. |
+| `report.seniorGaps` | `[{dateStr, shiftId, reason: "noSeniorPrimary"}]`, filled from `ObjectiveInfo.senior_gaps` (pass 2 only; `[]` in pass 1). |

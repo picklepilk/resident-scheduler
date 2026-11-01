@@ -323,3 +323,24 @@ def test_build_objective_applied_weights_are_positive_ints():
 def test_build_objective_sets_a_minimize_objective():
     info = _build_objective_for(make_payload())
     assert info.total_expr is not None
+
+
+# ---------------------------------------------------------------------------
+# senior composition gap weight (pass 2)
+# ---------------------------------------------------------------------------
+
+def test_senior_gap_weight_three_rank_cases():
+    import math
+    from solver.model.objective import senior_gap_weight
+    weights = apply_rule_priority(merged_weights(parse_payload(make_payload())), ["coverageMin", "seniorComposition", "postNightRest"])
+    wc, wr = weights["coverageMin"]["perSlack"], weights["postNightRest"]["perViolation"]
+    assert senior_gap_weight(["seniorComposition", "coverageMin", "postNightRest"], weights) == 10 * max(wc, wr)
+    assert senior_gap_weight(["coverageMin", "seniorComposition", "postNightRest"], weights) == math.isqrt(wc * wr)
+    assert senior_gap_weight(["coverageMin", "postNightRest", "seniorComposition"], weights) == max(1, min(wc, wr) // 10)
+
+
+def test_senior_gap_weight_worst_case_stays_under_int64():
+    from solver.model.objective import senior_gap_weight
+    weights = merged_weights(parse_payload(make_payload()))
+    w = senior_gap_weight(["seniorComposition", "coverageMin", "postNightRest"], weights)
+    assert w * GENEROUS_COVERAGE_SLOTS + _generous_soft_objective_max(weights) < 10 ** 16
