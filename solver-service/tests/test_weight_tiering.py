@@ -92,7 +92,12 @@ def _anti_fill_sum(weights: dict) -> int:
     charged once)."""
     isolated_night = weights["isolatedNight"]["perUnit"]
     night_fragment = max(weights["nightFragment"]["avoidableCost"], weights["nightFragment"]["forcedCost"])
-    work = max(weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"])
+    ws = weights["workShape"]
+    # one assignment sits in up to 2 churn pairs and 2 pair-run windows, plus one off-adjacency charge
+    work = (
+        max(ws["isolatedCost"], ws["fragmentCost"])
+        + 2 * ws.get("areaChurnCost", 0) + 2 * ws.get("pairRunCost", 0) + ws.get("offAdjacencyCost", 0)
+    )
     fairness = sum(weights["fairness"].values())
     weekend_off = weights["weekendOff"]["perMissing"]
     intern_pair = weights["internPair"]["perExcess"]
@@ -130,6 +135,9 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + (weights["nightFragment"]["avoidableCost"] + weights["nightFragment"]["forcedCost"])
         * GENEROUS_RESIDENTS * GENEROUS_DATES
         + (weights["workShape"]["isolatedCost"] + weights["workShape"]["fragmentCost"])
+        * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + (weights["workShape"].get("areaChurnCost", 0) + weights["workShape"].get("pairRunCost", 0)
+           + weights["workShape"].get("offAdjacencyCost", 0))
         * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["weekendOff"]["perMissing"] * GENEROUS_RESIDENTS
         + weights["pedsMixMin"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES

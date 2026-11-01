@@ -107,6 +107,13 @@ only solves.**
   an eve-type shift the day before, 2h (GR_START_H-10:00) after a night-type shift ending that
   morning, 4h (GR_START_H-GR_END_H) otherwise. This module is unaffected by the change — it only ever
   reads the already-resolved per-date hour number, never recomputes the window itself.
+- `residents[].offDates: [date]` (**NEW**) -- vacation + approved days off within the block +-1 day (the JS
+  `workShape` off-adjacency input). Consumed only by `workShape.offAdjacencyCost`. Optional, defaults to `[]`.
+- `weights.workShape.areaChurnCost` / `pairRunCost` / `offAdjacencyCost` (**NEW**, default 25 each = JS unit 1 x 0.5
+  coefficient x 50 scale; absent = 0): interior-run area change between consecutive worked days, interior 2-day
+  runs, and a worked day adjacent to an off date. Mirror `scheduleQuality.js` `workShapePenalty`. Prior-tail
+  days are ignored for these three (as in JS). `fairness.*` spread is now an L1 deviation from the cohort mean
+  (coef = max(1, round(weight / max(1, n/4)))), not max-min.
 - `residents[].grDates`/`grEndH` **REMOVED 2026-10-15** (chief decision — "the only shifts that count
   towards time off before/after a shift ... are the actual clinical shifts"): rest is now always
   measured from a shift's own end, never Grand Rounds', so `rest.py`'s old GR-end adjustment

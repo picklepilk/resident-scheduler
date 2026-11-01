@@ -10,7 +10,7 @@
   "fairness": { "deficit": 100, "holiday": 80, "night": 60, "weekend": 40 },
   "isolatedNight": { "perUnit": 300 },
   "nightFragment": { "avoidableCost": 300, "forcedCost": 100 },
-  "workShape": { "isolatedCost": 100, "fragmentCost": 100 },
+  "workShape": { "isolatedCost": 100, "fragmentCost": 100, "areaChurnCost": 25, "pairRunCost": 25, "offAdjacencyCost": 25 },
   "traumaSecondInRun": { "perUnit": 400 },
   "nightDurationAlternation": { "perUnit": 300 },
   "weekendOff": { "perMissing": 500 },

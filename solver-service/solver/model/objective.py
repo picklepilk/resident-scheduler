@@ -67,6 +67,7 @@ held to.
 from __future__ import annotations
 
 import json
+from datetime import date as _date, timedelta as _timedelta
 from functools import lru_cache
 from itertools import product
 from dataclasses import dataclass, field
@@ -298,13 +299,26 @@ def _assigned_expr(payload: Payload, store: VarStore, resident_id: str, exclude_
 
 
 def _add_spread(model, group: TermGroup, prefix: str, weight: int, values: list, value_ub: int) -> None:
+    """L1 fairness: T = ceil(sum_i |v_i - mean| ) with n*dev_i = |n*v_i - S|; charged coef*T where
+    coef = max(1, round(weight / max(1, n/4))) (a 2-member cohort ~= range * weight; larger cohorts
+    charge every member's deviation, not only the extremes)."""
     if weight == 0 or len(values) < 2:
         return
-    mx = model.new_int_var(0, value_ub, f"{prefix}_max")
-    mn = model.new_int_var(0, value_ub, f"{prefix}_min")
-    model.add_max_equality(mx, values)
-    model.add_min_equality(mn, values)
-    group.add(weight, mx - mn)
+    n = len(values)
+    total = sum(values)
+    devs = []
+    for i, v in enumerate(values):
+        dev = model.new_int_var(0, n * value_ub, f"{prefix}_dev{i}")
+        diff = model.new_int_var(-n * value_ub, n * value_ub, f"{prefix}_diff{i}")
+        model.add(diff == n * v - total)
+        model.add_abs_equality(dev, diff)
+        devs.append(dev)
+    t = model.new_int_var(0, n * value_ub, f"{prefix}_l1")
+    sd = sum(devs)
+    model.add(n * t >= sd)
+    model.add(n * t <= sd + n - 1)
+    coef = max(1, round(weight / max(1, n / 4)))
+    group.add(coef, t)
 
 
 # ---- rule 24: coverageMin slack ----
@@ -716,6 +730,89 @@ def _add_work_shape_term(model, payload: Payload, store: VarStore, group: TermGr
         excess = model.new_int_var(0, D, f"work_excess_runs[{resident.id}]")
         model.add_max_equality(excess, [num_runs - ceil_runs, 0])
         group.add(fragment_cost, excess)
+
+    _add_work_shape_extras(model, payload, store, group, w)
+
+
+# ---- rule 37a: workShape area churn / interior pairs / off-adjacency (mirrors scheduleQuality.js) ----
+#
+# JS loop per resident (runs = maximal consecutive worked days; "interior" = run.start > 0 and run.end < last):
+#   * area churn: +1 per consecutive worked pair (k,k+1) INSIDE an interior run whose two known areas differ;
+#   * interior run of length 2: +1;
+#   * +1 per worked day with a vacation/approved-off date the day before or after (offDates).
+# Weights are JS unit x 0.5 coefficient x 50 scale = 25 each. Prior-tail days are ignored (JS ignores them).
+# Edge exemption of a pair (k,k+1): its run touches day 0 iff days 0..k are all worked (L[k]), and touches the
+# last day iff days k+1..D-1 are all worked (R[k+1]); both reach literals are defined with equality.
+def _add_work_shape_extras(model, payload: Payload, store: VarStore, group: TermGroup, w: dict) -> None:
+    churn_cost = int(w.get("areaChurnCost", 0))
+    pair_cost = int(w.get("pairRunCost", 0))
+    off_cost = int(w.get("offAdjacencyCost", 0))
+    if not (churn_cost or pair_cost or off_cost):
+        return
+    dates = payload.block.dates
+    D = len(dates)
+    for resident in payload.residents:
+        rid = resident.id
+        works = [store.work[(rid, d)] for d in dates]
+
+        if off_cost and resident.off_dates:
+            for i, d in enumerate(dates):
+                prev_d = _shift_date(d, -1)
+                next_d = _shift_date(d, 1)
+                if prev_d in resident.off_dates or next_d in resident.off_dates:
+                    group.add(off_cost, works[i])
+
+        if pair_cost and D >= 4:
+            for i in range(1, D - 2):
+                p = model.new_bool_var(f"workPair[{rid},{i}]")
+                model.add_bool_or([works[i - 1], works[i + 2], works[i].negated(), works[i + 1].negated(), p])
+                group.add(pair_cost, p)
+
+        if churn_cost and D >= 2:
+            by_area: dict = {}
+            for i, d in enumerate(dates):
+                for sid, var in store.by_resident_date.get((rid, d), []):
+                    area = payload.shifts[sid].area if sid in payload.shifts else None
+                    if area:
+                        by_area.setdefault(area, {}).setdefault(i, []).append(var)
+            if len(by_area) < 2:
+                continue
+            A = {}
+            for area, per_day in by_area.items():
+                for i in range(D):
+                    vs = per_day.get(i)
+                    if vs:
+                        A[(i, area)] = sum(vs)
+            known = [sum(A[(i, a)] for a in by_area if (i, a) in A) if any((i, a) in A for a in by_area) else 0
+                     for i in range(D)]
+            # reach literals
+            L = [None] * D
+            R = [None] * D
+            for i in range(D):
+                L[i] = model.new_bool_var(f"workReachL[{rid},{i}]")
+                prev = [works[i]] + ([L[i - 1]] if i > 0 else [])
+                model.add_bool_and(prev).only_enforce_if(L[i])
+                model.add_bool_or([x.negated() for x in prev]).only_enforce_if(L[i].negated())
+            for i in range(D - 1, -1, -1):
+                R[i] = model.new_bool_var(f"workReachR[{rid},{i}]")
+                nxt = [works[i]] + ([R[i + 1]] if i < D - 1 else [])
+                model.add_bool_and(nxt).only_enforce_if(R[i])
+                model.add_bool_or([x.negated() for x in nxt]).only_enforce_if(R[i].negated())
+            for i in range(D - 1):
+                same = []
+                for area in by_area:
+                    if (i, area) in A and (i + 1, area) in A:
+                        s_var = model.new_bool_var(f"workSameArea[{rid},{i},{area}]")
+                        model.add(s_var <= A[(i, area)])
+                        model.add(s_var <= A[(i + 1, area)])
+                        same.append(s_var)
+                c = model.new_bool_var(f"workChurn[{rid},{i}]")
+                model.add(c >= known[i] + known[i + 1] - 1 - sum(same) - L[i] - R[i + 1])
+                group.add(churn_cost, c)
+
+
+def _shift_date(date_str: str, delta: int) -> str:
+    return (_date.fromisoformat(date_str) + _timedelta(days=delta)).isoformat()
 
 
 # ---- rule 37b: areaSpread (2026-10-30) ----
