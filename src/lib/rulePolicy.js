@@ -98,6 +98,8 @@ export const RULE_POLICY = {
   // for the same reason as the pair above: always a plain, visible 'warn', never in EXPORT_BLOCKING_RULE_IDS
   // or countBlockingWarns; best-of-N ranking prices it through the quality vector's last slot instead
   // (scheduleQuality.js FAIRNESS_AXIS_WEIGHTS.asNeededUse), never a new slot.
+  // Chief rule 2026-10-31: a 3rd core EM body on POD D/E/N is the last resort (off-service preferred). Plain info warn.
+  podThirdBody: { tier: 'info', label: 'POD shift has 3 core EM residents (off-service preferred for the 3rd body)' },
   asNeededException: { tier: 'info', label: 'Rule broken as needed to fill a coverage minimum' },
 };
 
