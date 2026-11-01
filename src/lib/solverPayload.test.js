@@ -186,6 +186,22 @@ describe('buildSolverPayload', () => {
     }
   });
 
+  it('offDates = vacation + approved days off within the block +-1 day only', () => {
+    const fixture = makeFixture('standard');
+    const first = fixture.block.startDate;
+    const dayBefore = new Date(first + 'T00:00:00'); dayBefore.setDate(dayBefore.getDate() - 1);
+    const pad = n => String(n).padStart(2, '0');
+    const before = `${dayBefore.getFullYear()}-${pad(dayBefore.getMonth() + 1)}-${pad(dayBefore.getDate())}`;
+    const far = '2000-01-01';
+    const target = fixture.allResidents[0];
+    target.vacationDates = [before, far];
+    target.approvedDatesOff = [first];
+    const payload = buildSolverPayload(fixture);
+    const pr = payload.residents.find(r => r.id === target.id);
+    expect(new Set(pr.offDates)).toEqual(new Set([before, first]));
+    for (const r of payload.residents) expect(Array.isArray(r.offDates)).toBe(true);
+  });
+
   it('accepts config overrides and fills in sane defaults for the rest', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload({ ...fixture, config: { maxTimeSeconds: 5 } });

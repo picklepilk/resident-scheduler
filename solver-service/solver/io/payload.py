@@ -165,6 +165,8 @@ class Resident:
     # count zero obligation hours and rest.py's GR-end adjustment a no-op, matching pre-R7 behavior.
     obligation_hours: dict = field(default_factory=dict)      # date -> hours (int)
     gr_dates: frozenset = field(default_factory=frozenset)
+    # Vacation + approved-day-off dates within the block +-1 day (JS workShape off-adjacency input). Optional.
+    off_dates: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -382,6 +384,7 @@ def _parse_residents(raw: list) -> list:
                 ay_prior=ay,
                 obligation_hours={d: int(h) for d, h in (r.get("obligationHours", {}) or {}).items()},
                 gr_dates=frozenset(r.get("grDates", ()) or ()),
+                off_dates=frozenset(r.get("offDates", ()) or ()),
             )
         )
     return out

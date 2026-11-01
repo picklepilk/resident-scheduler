@@ -7627,6 +7627,11 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   const tailWindowStart = toDateStr(addDays(parseDate(block.startDate), -14));
   const ayPriorAll = computeAyPriorTotals(ay, blocksHistory, block.id, holidayDateSet(ayConf));
 
+  const offNearBlock = new Set(dates);
+  if (dates.length) {
+    offNearBlock.add(toDateStr(addDays(parseDate(dates[0]), -1)));
+    offNearBlock.add(toDateStr(addDays(parseDate(dates[dates.length - 1]), 1)));
+  }
   const residents = allResidents.map(r => {
     // A non-schedulable resident (an EM_HOME/EM_BAMC resident on an atUH:false blockType — MICU,
     // PICU, BAPTIST, ORTHO_VAC, ANES_VAC, METRO — see isSchedulable/BLOCK_TYPE_MAP) correctly gets
@@ -7718,6 +7723,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       priorTail: rPrevTail,
       priorTailHours,
       obligationHours,
+      // workShape off-adjacency input (vacation + approved days off within the block +-1 day).
+      offDates: [...new Set([...(r.vacationDates || []), ...(r.approvedDatesOff || [])])].filter(ds => offNearBlock.has(ds)),
       ayPrior: { nights: ayPrior.nights || 0, weekends: ayPrior.weekendDates || 0, holidays: ayPrior.holidays || 0 },
     };
   });
