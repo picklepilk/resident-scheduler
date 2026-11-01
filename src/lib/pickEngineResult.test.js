@@ -9,7 +9,7 @@
 // errors) rather than hand-rolling a fake report shape that would drift from what the real
 // scorer actually reads.
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generateScheduleBest, pickEngineResult } from '../ResidentScheduler.jsx';
+import { generateScheduleBest, pickEngineResult, countRelaxedCapBreaches, SOLVER_RELAXED_NONBLOCKING_FAMILIES } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 import { getBlockDates } from './dates.js';
 
@@ -81,5 +81,22 @@ describe('pickEngineResult', () => {
       if (v && typeof v === 'object') for (const k of Object.keys(v)) walk(v[k]);
     };
     walk(engineComparison);
+  });
+
+  it('relaxed solver result breaching traumaCap cannot win over an equal local result', () => {
+    const solverClone = { schedule: JSON.parse(JSON.stringify(good.schedule)), report: { ...JSON.parse(JSON.stringify(good.report)), feasibility: { mode: 'relaxed', violations: [{ rule: 'traumaCap', residentIds: ['x'] }] } } };
+    expect(countRelaxedCapBreaches(solverClone)).toBe(1);
+    const { winner, engineComparison } = pickEngineResult(solverClone, good, args);
+    expect(winner).toBe('local');
+    expect(engineComparison.solver.blockingWarnCount).toBe(engineComparison.local.blockingWarnCount + 1);
+    expect(engineComparison.solver.solverMode).toBe('relaxed');
+  });
+
+  it('breach families only count in relaxed mode; nightCap is not double-counted here', () => {
+    const mk = (mode, rule) => ({ report: { feasibility: { mode, violations: [{ rule }] } } });
+    expect(countRelaxedCapBreaches(mk('strict', 'traumaCap'))).toBe(0);
+    expect(countRelaxedCapBreaches(mk('relaxed', 'nightCap'))).toBe(0);
+    for (const f of SOLVER_RELAXED_NONBLOCKING_FAMILIES) expect(countRelaxedCapBreaches(mk('relaxed', f))).toBe(1);
+    expect(countRelaxedCapBreaches(null)).toBe(0);
   });
 });

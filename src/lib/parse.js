@@ -29,7 +29,7 @@ export const CAT_MAP = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
 // Recognized free-text spellings for each category, beyond its own id/label/shortLabel.
 export const CATEGORY_SYNONYMS = {
   EM_HOME: ['em', 'emhome', 'emergencymedicine'],
-  EM_BAMC: ['bamc', 'embamc'],
+  EM_BAMC: ['bamc', 'embamc', 'sammc', 'emsammc'],
   PEDS:    ['peds', 'pediatrics', 'ped'],
   FM:      ['fm', 'familymedicine'],
   IM:      ['im', 'internalmedicine', 'intmed'],
