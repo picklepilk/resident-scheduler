@@ -1577,3 +1577,12 @@ A LOWER BOUND ("at least") on the part of quality-vector slot 3 (fairness+shape)
 `supply` = sum of coverage max; `demand` = sum of schedulable targets; `underTargetPoints` = 2 x `targetExcess`;
 single-area residents (eligibility spans one shift area) charge `target - ceil(target*0.5)` units x 2. Both terms are already
 inside slot 3 (never add it on top); the client shows `splitFairnessPoints(slot3, floor)` = structural vs movable.
+
+### podThirdBodyCore / pedNightOverSwing (2026-10-31)
+
+Two soft `TIER_QUALITY` terms, no new payload fields (weights only, `config/default_weights.json`):
+
+- `podThirdBodyCore.perUnit = 6000` (`solver/model/pod_third_body.py`): for each POD-D/E/N date with coverage max >= 3, charges each EM-core resident (`residents[].isEmCore`) beyond the first two. Prefers an off-service third body. Soft by design: "core only if no other option" is not expressible, but a core coverage/target deficit already sits in a higher tier, so core is still used when needed.
+- `pedNightOverSwing.perUnit = 600` (`solver/model/ped_night_priority.py`): per date where PED-N and PED-S both have max > 0, charges PED-S bodies in excess of PED-N bodies (`excess >= s - n`), so the optional PED Night is preferred over PED Swing.
+
+Weight 0 or absent disables either. Only `pedNightOverSwing` is in `tests/test_weight_tiering.py`'s `_anti_fill_sum` (`podThirdBodyCore` charges only bodies beyond the first two, so it cannot favor leaving a minimum empty).

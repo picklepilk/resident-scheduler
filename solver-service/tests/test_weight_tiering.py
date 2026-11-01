@@ -112,11 +112,14 @@ def _anti_fill_sum(weights: dict) -> int:
     # R7 (2026-09-27, gap 3): seniorTruePrimary -- one penalty var per (shift,date), same x1 stacking
     # as podPgy2Fallback/flexPgy3Fallback (a single (shift,date) pair is only ever charged once).
     senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
+    # podThirdBodyCore only charges a core body BEYOND the first two POD bodies (an optional top-up,
+    # never a coverage minimum), so it cannot prefer leaving a minimum slot empty: excluded here.
+    ped_night_swing = weights["pedNightOverSwing"]["perUnit"]
     return (
         isolated_night + night_fragment + work + fairness + weekend_off + intern_pair + dow
         + trauma_second + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
-        + senior_true_primary
+        + senior_true_primary + ped_night_swing
     )
 
 
