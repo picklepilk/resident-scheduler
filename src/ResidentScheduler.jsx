@@ -95,6 +95,7 @@ import { offServiceStraddle } from './lib/offServiceWindow.js';
 import { buildAyLedger, flagLedgerRows, DEFAULT_BEHIND_TARGET_THRESHOLD } from './lib/ayLedger.js';
 import { snapshotsEqual } from './lib/snapshotCompare.js';
 import { rankedBelowCoverage, RANKED_SOFT_RULE_ISSUES } from './lib/rulePriorityRanking.js';
+import { optionalSweepPredicates } from './lib/optionalPriority.js';
 import { buildFeedbackRow, myFeedbackPath, FEEDBACK_MESSAGE_MAX } from './lib/feedback.js';
 import WalkthroughRoot from './walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from './walkthrough/Walkthrough';
@@ -7152,7 +7153,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
 
   // Three passes over the whole block: everything else at minimum coverage first, then Trauma
   // Day at minimum last ("filling in PGY-1 trauma day shifts should be the final step of the
-  // schedule"), then every shift's optional headroom up to its maximum. Minimums across the
+  // schedule"), then every shift's optional headroom up to its maximum (two sweeps: PED-S deferred
+  // until all other headroom is spent, so PED Night wins over PED Swing). Minimums across the
   // whole block are satisfied before any optional slot can consume a resident's target headroom.
   // The first two passes partition SHIFTS disjointly, so report.totalSlots sums correctly.
   // truePrimaryOnlyMode skips all three fill passes entirely — `schedule` already arrived fully
@@ -7166,7 +7168,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   if (!truePrimaryOnlyMode && !diagnosticsOnly) {
     for (const ds of dates) fillDayPass(ds, s => s.id !== 'TRAUMA-D', 'min');
     for (const ds of dates) fillDayPass(ds, s => s.id === 'TRAUMA-D', 'min');
-    for (const ds of dates) fillDayPass(ds, () => true, 'optional');
+    // Optional top-up in two sweeps: PED Night before PED Swing (chief 2026-10-31), see lib/optionalPriority.js.
+    for (const include of optionalSweepPredicates()) {
+      for (const ds of dates) fillDayPass(ds, include, 'optional');
+    }
   }
   if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
   if (repair === true && !diagnosticsOnly) repairPass();
