@@ -1561,3 +1561,12 @@ malformed -> defaults/disabled). Staged objective mode only; ignored for `object
   (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
   `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
   (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
+
+### podThirdBodyCore / pedNightOverSwing (2026-10-31)
+
+Two soft `TIER_QUALITY` terms, no new payload fields (weights only, `config/default_weights.json`):
+
+- `podThirdBodyCore.perUnit = 6000` (`solver/model/pod_third_body.py`): for each POD-D/E/N date with coverage max >= 3, charges each EM-core resident (`residents[].isEmCore`) beyond the first two. Prefers an off-service third body. Soft by design: "core only if no other option" is not expressible, but a core coverage/target deficit already sits in a higher tier, so core is still used when needed.
+- `pedNightOverSwing.perUnit = 600` (`solver/model/ped_night_priority.py`): per date where PED-N and PED-S both have max > 0, charges PED-S bodies in excess of PED-N bodies (`excess >= s - n`), so the optional PED Night is preferred over PED Swing.
+
+Weight 0 or absent disables either. Both are included in `tests/test_weight_tiering.py`'s `_anti_fill_sum`.

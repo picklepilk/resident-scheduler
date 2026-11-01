@@ -26,5 +26,7 @@
   "dowPreference": { "scale": 1 },
   "areaSpread": { "perUnit": 100 },
   "shortNightStint": { "perUnit": 60 },
+  "podThirdBodyCore": { "perUnit": 6000 },
+  "pedNightOverSwing": { "perUnit": 600 },
   "hintStickiness": { "perChange": 0 }
 }

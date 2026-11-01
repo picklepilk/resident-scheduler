@@ -77,6 +77,8 @@ from solver.model import timing
 from solver.model.circadian import NIGHT_RUN_MAX
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
+from solver.model.pod_third_body import add_pod_third_body_terms
+from solver.model.ped_night_priority import add_ped_night_priority_terms
 from solver.model.hint_stickiness import add_hint_stickiness_term
 from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
 from solver.model.senior_composition import add_true_primary_preference_terms
@@ -915,6 +917,14 @@ def _add_dow_preference_term(payload: Payload, store: VarStore, group: TermGroup
         group.add(-scale * p.bonus, var)
 
 
+def _add_pod_third_body_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_pod_third_body_terms(model, payload, store, group, weights)
+
+
+def _add_ped_night_priority_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_ped_night_priority_terms(model, payload, store, group, weights)
+
+
 def build_objective(model, payload: Payload, store: VarStore, coverage_result: CoverageResult) -> ObjectiveInfo:
     weights = apply_rule_priority(merged_weights(payload), payload.rule_priority)
 
@@ -965,6 +975,8 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)
     _add_true_primary_preference_term(model, payload, store, tier_quality, weights)
     _add_dow_preference_term(payload, store, tier_quality, weights)
+    _add_pod_third_body_term(model, payload, store, tier_quality, weights)
+    _add_ped_night_priority_term(model, payload, store, tier_quality, weights)
     add_hint_stickiness_term(model, payload, store, tier_quality, weights)
 
     groups = {TIER_ERRORS: tier_errors, TIER_BLOCKING: tier_blocking, TIER_RANK: tier_rank, TIER_REST: tier_rest, TIER_QUALITY: tier_quality}
