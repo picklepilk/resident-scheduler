@@ -5540,9 +5540,14 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         const dow = parseDate(ds).getDay();
         const conf12 = conf12For(ds);
         for (const z of SHIFTS) {
-          if (z.id === shift.id || !shiftActiveOnDow(z.id, dow) || !eligCache[r.id][ds].has(z.id)) continue;
+          // Other POD D/E/N shifts are never "another option" (also keeps firstBlockingReason below
+          // from re-entering this stage).
+          if (POD_THIRD_BODY_SHIFT_IDS.includes(z.id) || !shiftActiveOnDow(z.id, dow) || !eligCache[r.id][ds].has(z.id)) continue;
           const n = cachedWholeSchedule(`bodies|${z.id}|${ds}`, () => allResidents.filter(x => schedule[x.id][ds] === z.id).length);
-          if (n < getCoverageFor(z.id, coverage, dow, conf12).max) return false;
+          if (n >= getCoverageFor(z.id, coverage, dow, conf12).max) continue;
+          // Only a REAL option counts: the resident must clear every hard stage for z (rest, hours,
+          // streak, ...). Eligibility + headroom alone admitted phantom options and cost targets.
+          if (firstBlockingReason(r, z, ds) === null) return false;
         }
         return true;
       },
