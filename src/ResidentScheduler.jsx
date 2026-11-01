@@ -25,7 +25,7 @@ import { supabase, AUTH_ENABLED, ROLE, isUnresolvedToken, getAccessToken, resolv
 import { parseDate, addDays, toDateStr, getBlockDates, getBlockWeekends, getAcademicYearFor, getAcademicYear, formatAY, ayWindowFor, qgendaDate } from './lib/dates.js';
 import { dayIsUngenerated, dayOpenSlots, summarizeBlockCoverage, shiftChipLabel } from './lib/coverageDaySummary.js';
 import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnDow, SHIFT_TYPES, SHIFT_AREAS, shiftOverlapsJC, JC_WINDOW_START_H, JC_WINDOW_END_H, isNightShiftId, shiftStartMs, shiftEndMs, overlappingAssignments, shiftGapsFor, formatGapH, gapIsShort, isLongShiftId } from './lib/shifts.js';
-import { getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
+import { POD_THIRD_BODY_SHIFT_IDS, POD_CORE_CAP, getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
 import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
@@ -888,7 +888,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); aim for 6 night shifts/block; 7-12 are allowed ONLY AS NEEDED to fill a coverage minimum (the generator uses them last, Validation flags each night above 6 as an as-needed exception), and more than 12 is an error (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
-const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation.';
+const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
@@ -4768,6 +4768,15 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
             message: `${shift.label} (${formatDisplayDate(ds)}) staffed by an EM PGY-2 in place of an unavailable PGY-3${reason ? ` (${reason})` : ''}`, level: severityFor('podPgy2Substitute', 'validator') });
         }
 
+        // Chief rule 2026-10-31 (info only): >POD_CORE_CAP core EM bodies on a POD D/E/N shift.
+        if (area === 'POD' && POD_THIRD_BODY_SHIFT_IDS.includes(shift.id)) {
+          const coreBodies = assignedHere.filter(isEmResident).length;
+          if (coreBodies > POD_CORE_CAP) {
+            issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'podThirdBody',
+              message: `${shift.label} (${formatDisplayDate(ds)}) has ${coreBodies} core EM residents - the 3rd POD body is preferably off-service`, level: severityFor('podThirdBody', 'validator') });
+          }
+        }
+
         // 2b-1 EM-count composition (SOFT, chief-directed): distinct from the hard PGY-CLASS check
         // just above — this looks at the OVERALL EM (EM_HOME/EM_BAMC) vs. off-service split once
         // headcount reaches 2/3 (POD) or 1+ (FLEX), and fires REGARDLESS of whether the hard check
@@ -5518,6 +5527,26 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
     // by top-ups could never take the night 7..12 / BAMC as-needed placement the sweep exists to make.
     { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < target[r.id] },
+    // Chief rule 2026-10-31: POD's 3rd body is preferably off-service. A core EM resident is admitted to a
+    // POD D/E/N shift already holding POD_CORE_CAP core bodies only if they have no other option that day.
+    // Reads eligCache/cachedWholeSchedule only - never candidatePool/firstBlockingReason (recursion).
+    {
+      reason: 'podThirdBodyCore', applies: shift => POD_THIRD_BODY_SHIFT_IDS.includes(shift.id),
+      keep: (r, shift, ds) => {
+        if (!isEmResident(r)) return true;
+        const coreN = cachedWholeSchedule(`podcore|${shift.id}|${ds}`, () =>
+          allResidents.filter(x => isEmResident(x) && schedule[x.id][ds] === shift.id).length);
+        if (coreN < POD_CORE_CAP) return true;
+        const dow = parseDate(ds).getDay();
+        const conf12 = conf12For(ds);
+        for (const z of SHIFTS) {
+          if (z.id === shift.id || !shiftActiveOnDow(z.id, dow) || !eligCache[r.id][ds].has(z.id)) continue;
+          const n = cachedWholeSchedule(`bodies|${z.id}|${ds}`, () => allResidents.filter(x => schedule[x.id][ds] === z.id).length);
+          if (n < getCoverageFor(z.id, coverage, dow, conf12).max) return false;
+        }
+        return true;
+      },
+    },
     // ACGME 80-hour rolling 4-week average — the EXACT rolling-window computation validateAll's
     // weeklyHourStats uses (item 3), via the shared maxRollingWindowHoursFor core, not the old flat
     // block-length approximation (80/7 * block days). That approximation could pass a resident who
@@ -9207,6 +9236,7 @@ const UNDER_TARGET_BLOCK_LABELS = {
   jeopardyConflict:     'jeopardy call that day',
   allWorking:           'already working that day',
   allAtTarget:          'everyone else already at target',
+  podThirdBodyCore:     'POD 3rd body reserved for off-service',
   ruleBlocked:          'a scheduling rule',
   // Added for computeUnfilledDiagnostics/firstBlockingReason (per-slot blockers/nearMiss) — same
   // sparse/fallback-to-raw-id contract as every entry above.
@@ -9232,7 +9262,7 @@ const KNOWN_UNFILLED_REASONS = new Set([
   'pedsMixCapped', 'streakBlocked', 'sixDayRunRestBlocked', 'halfTargetMet', 'circadianBlocked',
   'nightCapped', 'nightStintCapped', 'jcCapped', 'restProtected', 'seniorProtected',
   'pgy3Required', 'pgy2Required', 'hoursCapped', 'bamcWedNightCapped', 'jeopardyConflict',
-  'traumaRunCapped', 'edHoursCapped', 'totalHoursCapped',
+  'traumaRunCapped', 'edHoursCapped', 'totalHoursCapped', 'podThirdBodyCore',
 ]);
 export function summarizeGenerationReport(report, appSettings = {}, blockStart = null) {
   const byShift = {};

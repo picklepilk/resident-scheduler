@@ -56,6 +56,11 @@ export const DEFAULT_COVERAGE = Object.fromEntries(
 // equal to the superseded default) is still raised to 3 here, because the override is raise-only.
 // Keyed by shiftId → {dow: max}. Consulted only by getCoverageFor's optional dow param.
 const ALL_DOWS_MAX3 = { 0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 };
+// Chief rule (2026-10-31): POD's 3rd body should preferably be off-service. Core EM residents
+// (EM_HOME/EM_BAMC) fill at most POD_CORE_CAP of a POD D/E/N shift's bodies unless they have no
+// other option (generator stage `podThirdBodyCore`; validator info rule `podThirdBody`).
+export const POD_THIRD_BODY_SHIFT_IDS = ['POD-D', 'POD-E', 'POD-N'];
+export const POD_CORE_CAP = 2;
 export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': ALL_DOWS_MAX3, 'POD-E': ALL_DOWS_MAX3, 'POD-N': ALL_DOWS_MAX3 };
 
 // Chief's rule: Wednesday is Grand Rounds day — every EM Home/BAMC PGY carries a Wednesday-day
