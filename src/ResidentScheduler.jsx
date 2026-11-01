@@ -72,6 +72,7 @@ import { buildOffServiceAlignment } from './lib/offServiceAlignment.js';
 import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } from './lib/offServiceLanes.js';
 import { netNewIssues, capRows } from './lib/moveImpact.js';
 import { clearScheduleFields } from './lib/clearSchedule.js';
+import { summarizeAsNeeded } from './lib/asNeededSummary.js';
 import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
@@ -1029,6 +1030,9 @@ const DAY_MARKERS = {
   // (block.handOverrides, src/lib/handOverrides.js). Amber "!" corner badge; the cell-specific
   // tooltip (rules + note + who/when) is built by overrideTooltip, `title` is the legend text.
   OVERRIDE: { label: '!', chip: 'bg-amber-100 text-amber-800', onShift: 'bg-white text-amber-700 ring-1 ring-amber-500', dark: 'bg-white/15 text-amber-300', title: 'Hand override - shift placed despite a program rule (confirmed by the chief)' },
+  // As-needed exception (2026-10-30): the cell is an as-needed rule broken to fill a coverage minimum
+  // (`asNeededException` warn). Rose corner badge, bottom-right; derived live from cell issues.
+  AS_NEEDED: { label: 'AN', chip: 'bg-rose-100 text-rose-700', onShift: 'bg-white text-rose-700 ring-1 ring-rose-500', dark: 'bg-white/15 text-rose-300', title: 'As-needed exception - a goal rule broken to fill a coverage minimum' },
 };
 
 // RequestsTab.jsx's ApprovalQueue.decide() stamps the resident/admin explanation for an approved
@@ -18492,6 +18496,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               {shift && cornerLabel && <span className={`absolute bottom-0.5 left-0.5 w-2 h-2 rounded-full ring-1 ring-white z-10 ${cornerDotColor}`} title={dayMarkerText}/>}
               {isJeopardy&&!isJeoBlocked && <span className={`absolute top-0 right-0 text-[10px] leading-none font-bold rounded-bl px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.J.onShift}`} title={DAY_MARKERS.J.title}>J</span>}
               {isPendingRequest && <span className={`absolute top-0 left-0 text-[10px] leading-none font-bold rounded-br px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.R.onShift}`} title={DAY_MARKERS.R.title}>R</span>}
+              {cellIssuesHere.some(v => v.rule === 'asNeededException') && <span data-as-needed className={`absolute bottom-0 right-0 text-[10px] leading-none font-bold rounded-tl px-0.5 py-px z-10 shadow-sm ${DAY_MARKERS.AS_NEEDED.onShift}`} title={DAY_MARKERS.AS_NEEDED.title}>{DAY_MARKERS.AS_NEEDED.label}</span>}
               {handOv && <span data-hand-override className={`absolute bottom-0 left-1/2 -translate-x-1/2 text-[10px] leading-none font-bold rounded-t px-1 py-px z-10 shadow-sm ${DAY_MARKERS.OVERRIDE.onShift}`} title={overrideTooltip(handOv)}>{DAY_MARKERS.OVERRIDE.label}</span>}
               {/* P2: soft warns (postNightRest etc.) get a small dot instead of the red ring so hard
                   vs soft reads at a glance — see the in-grid legend below. Centered at the top edge
@@ -18890,6 +18895,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         <span>= Grand Rounds day · JC presenting · wellness Wednesday · approved off · vacation · jeopardy call</span>
         <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.OVERRIDE.chip}`} title={DAY_MARKERS.OVERRIDE.title}>{DAY_MARKERS.OVERRIDE.label}</span>
         <span>= hand override</span>
+        <span className={`px-1.5 py-0.5 rounded font-bold ${DAY_MARKERS.AS_NEEDED.chip}`} title={DAY_MARKERS.AS_NEEDED.title}>{DAY_MARKERS.AS_NEEDED.label}</span>
+        <span>= as-needed exception</span>
         <span className="px-1.5 py-0.5 rounded border border-red-300 text-red-500 font-medium">red ring</span>
         <span>= rule violation (error)</span>
         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"/><span className="text-amber-600 font-medium">dot</span></span>
@@ -20422,6 +20429,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
     for (const r of (allResidents || [])) m[r.id] = `${r.firstName} ${r.lastName}`;
     return m;
   }, [allResidents]);
+  const asNeededSummary = useMemo(()=>summarizeAsNeeded(report.asNeededPlacements, nameById),[report.asNeededPlacements,nameById]);
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
@@ -20608,6 +20616,25 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
             </p>
           );
         })()}
+
+        {asNeededSummary.total > 0 && (
+          <ReportSubsection compact={compact} title="Exceptions taken (as needed)" count={asNeededSummary.total}>
+          <div className="border border-rose-200 bg-rose-50/60 rounded-lg p-3">
+            <span className="text-xs font-semibold text-rose-700">Exceptions taken (as needed) — {asNeededSummary.total}</span>
+            <p className="text-[11px] text-gray-500 mt-0.5">Goal rules broken only to fill a coverage minimum.</p>
+            <ul className="mt-1 space-y-0.5">
+              {asNeededSummary.byLabel.map(l=>(<li key={l.label} className="text-xs text-gray-600">{l.label} — {l.count}</li>))}
+            </ul>
+            <ul className="mt-2 space-y-0.5 border-t border-rose-200 pt-1.5">
+              {asNeededSummary.byResident.map(r=>(
+                <li key={r.residentId} className="text-xs text-gray-600">
+                  {r.name} — {r.count} <span className="text-gray-400">({Object.entries(r.labels).map(([k,n])=>`${k}${n>1?` x${n}`:''}`).join(', ')})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          </ReportSubsection>
+        )}
 
         {report.underTarget.length > 0 && (
           <ReportSubsection compact={compact} title="Residents left under target" count={report.underTarget.length}>
@@ -23535,6 +23562,7 @@ function UserGuideTab({ onNavigate }) {
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.VAC.chip}`}>VAC</span> vacation</span>
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.J.chip}`}>J</span> jeopardy call</span>
           <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.OVERRIDE.chip}`}>{DAY_MARKERS.OVERRIDE.label}</span> hand override (program rule broken by hand, confirmed)</span>
+          <span className="flex items-center gap-1.5"><span className={`px-2 py-0.5 rounded font-bold ${DAY_MARKERS.AS_NEEDED.chip}`}>{DAY_MARKERS.AS_NEEDED.label}</span> as-needed exception (goal rule broken to fill a coverage minimum)</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
         </div>
