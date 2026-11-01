@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RULE_POLICY } from './rulePolicy.js';
+import { SOLVER_RELAXED_NONBLOCKING_FAMILIES } from '../ResidentScheduler.jsx';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ELASTIC_PY = path.resolve(__dirname, '../../solver-service/solver/model/elastic.py');
@@ -67,5 +68,10 @@ describe('elastic.py relaxable families agree with rulePolicy.js tiers', () => {
       expect(RULE_POLICY[ruleId], `${fam} -> ${ruleId} not in RULE_POLICY`).toBeTruthy();
       expect(RULE_POLICY[ruleId].tier, `${fam} -> ${ruleId} is relaxable in pass 2`).toBe('override');
     }
+  });
+
+  it('every null-mapped relaxable policy cap family is in SOLVER_RELAXED_NONBLOCKING_FAMILIES (pickEngineResult guard)', () => {
+    const nullMapped = readTuple(src, 'RELAXABLE_POLICY_CAP_FAMILIES').filter(f => FAMILY_TO_RULE[f] === null);
+    expect([...SOLVER_RELAXED_NONBLOCKING_FAMILIES].sort()).toEqual(nullMapped.sort());
   });
 });

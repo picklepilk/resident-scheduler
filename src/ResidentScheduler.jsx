@@ -3915,6 +3915,7 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   // Midtrack Day on a Wednesday is BAMC-only (program decision 2026-10-30; hard, override-immune): EM Home is
   // at Grand Rounds, every other category is stripped. MT-D Wednesday coverage is min 0 / max 1 (coverage.js
   // DOW_COVERAGE_OVERRIDE), so it is only ever filled by the optional top-up.
+  // BAMC = SAMMC = the `EM_BAMC` category (SAMMC rosters import as EM_BAMC).
   if (dow === 3 && category !== 'EM_BAMC') eligible = eligible.filter(s => s !== 'MT-D');
 
   // Academic Chief hard rule (resident-specific, not a DEFAULT_DAY_RULES entry — chiefRole is a
@@ -8011,7 +8012,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
       totalSlots, keptManual, filled, optionalFilled: 0,
       unfilled,
       restCompromises: Array.isArray(json?.report?.restCompromises) ? json.report.restCompromises : [],
-      seniorGaps: [], // always [] — rule 16 (senior composition) is hard under the solver; kept for shape compat
+      seniorGaps: [], // always [] — rule 16 (senior composition): hard in solver pass 1, slack in pass 2; kept for shape compat
       pgyFallbacks: [], // always [] — 2b-2 PGY gating pool-restrict is JS-generator-only (the solver gets soft cost weights instead, see docs/PAYLOAD_SCHEMA.md); kept for shape compat
       podSubstitutes,
       asNeededPlacements,
@@ -8815,13 +8816,31 @@ export function pickDistinctAlternates(winner, finalists, max) {
 // seed — a solver result must win STRICTLY to be worth the extra latency and the lost replay.
 // `engineComparison` is plain JSON (no functions) because it rides the persisted generation
 // report; callers must not add anything but numbers/strings/arrays to it.
+// Solver pass-2 (relaxed) families whose JS rule has no RULE_POLICY entry, so validateAll sees a
+// breach only as a rule-less warn and never counts it as blocking. Mirrors the null-mapped members of
+// elastic.py RELAXABLE_POLICY_CAP_FAMILIES (solverTierParity.test.js guards the drift). nightCap /
+// nightSegments are NOT here: they map to override-tier rules validateAll already catches.
+export const SOLVER_RELAXED_NONBLOCKING_FAMILIES = ['traumaCap', 'pedsMixMax', 'targetCeiling'];
+
+// Count of relaxed-mode cap breaches the solver reports in `report.feasibility.violations`
+// ({mode:'relaxed', violations:[{rule, residentIds, ...}]}) for the families above. 0 unless relaxed.
+export function countRelaxedCapBreaches(solverRes) {
+  const f = solverRes?.report?.feasibility;
+  if (!f || f.mode !== 'relaxed' || !Array.isArray(f.violations)) return 0;
+  return f.violations.filter(v => v && SOLVER_RELAXED_NONBLOCKING_FAMILIES.includes(v.rule)).length;
+}
+
 export function pickEngineResult(solverRes, localRes, args) {
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   const solverScore = solverRes ? scoreGenerationResult(solverRes, args, rulePriority) : null;
+  if (solverScore) {
+    solverScore.blockingWarnCount += countRelaxedCapBreaches(solverRes);
+    solverScore.solverMode = solverRes?.report?.feasibility?.mode === 'relaxed' ? 'relaxed' : 'strict';
+  }
   const localScore = localRes ? scoreGenerationResult(localRes, args, rulePriority) : null;
 
   const toComparison = score => score
-    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector }
+    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector, ...(score.solverMode ? { solverMode: score.solverMode } : {}) }
     : null;
 
   if (!solverScore && !localScore) return { result: null, winner: null, engineComparison: null };

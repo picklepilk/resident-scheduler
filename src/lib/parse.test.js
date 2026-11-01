@@ -11,6 +11,7 @@ describe('normalizeToken / matchCategory', () => {
 
   it('matches by id, label, or shortLabel', () => {
     expect(matchCategory('EM_HOME')).toBe('EM_HOME');
+    expect(matchCategory('SAMMC')).toBe('EM_BAMC');
     expect(matchCategory('Family Medicine')).toBe('FM');
     expect(matchCategory('BAMC')).toBe('EM_BAMC');
   });

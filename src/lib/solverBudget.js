@@ -48,7 +48,7 @@ const sameScore = (a, b) => a && b
   && a.qualityVector.every((x, i) => x === b.qualityVector[i]);
 
 const plainScore = s => s
-  ? { errorCount: s.errorCount, blockingWarnCount: s.blockingWarnCount, qualityVector: Array.isArray(s.qualityVector) ? [...s.qualityVector] : [] }
+  ? { errorCount: s.errorCount, blockingWarnCount: s.blockingWarnCount, qualityVector: Array.isArray(s.qualityVector) ? [...s.qualityVector] : [], ...(s.solverMode ? { solverMode: s.solverMode } : {}) }
   : null;
 
 // Builds report.engineComparison from pickEngineResult's `engineComparison` ({winner, solver, local},
