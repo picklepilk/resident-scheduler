@@ -60,10 +60,11 @@ describe('generateScheduleBest — true-primary fix under Clear & Regenerate', (
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
     // seed chosen because the fix fires (re-picked 2026-10-31 after the chief-rules merge + late sweep:
-    // seeds 3/7/8/11/12 fire it, seed 1 no longer does).
-    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 3 });
+    // seeds 3/7/8/11/12 fire it, seed 1 no longer does; re-picked again after the POD-3rd-body stage + PED-N-first
+    // optional sweep: seeds 1/6/8/10/11/12 fire it, 3 and 7 no longer do).
+    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 6 });
     expect(fresh.report.truePrimaryFixApplied).toBe(true);
-    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 3 });
+    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 6 });
     expect(cleared.report.truePrimaryFixApplied).toBe(true);
     expect(cleared.schedule).toEqual(fresh.schedule);
   }, 120000);
