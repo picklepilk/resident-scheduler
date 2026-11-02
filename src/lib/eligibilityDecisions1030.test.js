@@ -43,11 +43,12 @@ const gen = (residents, coverage, extra = {}) => generateSchedule({
 
 describe('decision 1: off-service weekday limits are as-needed', () => {
   it('flags are on the intended keys; date-specific rules stay hard', () => {
-    for (const k of ['FM_1', 'FM_3', 'NEURO_1', 'POD_1']) {
+    for (const k of ['FM_1', 'FM_3', 'NEURO_1']) {
       expect(DEFAULT_DAY_RULES[k].fullBlockAsNeeded, k).toBe(true);
       expect(DEFAULT_DAY_RULES[k].fullBlockLabel, k).toBeTruthy();
     }
-    for (const k of ['FM_1', 'IM_2', 'ANES_1', 'PSYCH_1', 'POD_1']) {
+    // POD_1 weekend became HARD 2026-11-01 (see podiatryWeekend.test.js); only its Mon/Wed entries stay as-needed.
+    for (const k of ['FM_1', 'IM_2', 'ANES_1', 'PSYCH_1']) {
       expect(DEFAULT_DAY_RULES[k].dayTypeRestrictions.every(r => r.asNeeded && r.asNeededLabel), k).toBe(true);
     }
     expect(DEFAULT_DAY_RULES.IM_2.residentFlagOverrides[0].asNeeded).toBeUndefined(); // CCU nights stay hard
