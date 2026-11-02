@@ -924,10 +924,15 @@ def _add_short_night_stint_term(model, payload: Payload, store: VarStore, group:
 
 # ---- rules 38-41: band8 ----
 
+# Chief decision 2026-11-01: one full weekend off per block is the GOAL, broken only to fill a coverage minimum
+# (an as-needed rule). Priced at asNeededUse.perUnit in TIER_RANK (same tier as as-needed cells / nights 7..12),
+# far below coverageMin.perSlack and above every TIER_QUALITY preference and target-deficit weight, so the
+# solver gives up a weekend only to fill a minimum. JS mirror: validateAll's `asNeededException`
+# ('No full weekend off this block', units 1). `weekendOff.perMissing` is now unused by the model.
 def _add_weekend_off_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
     if not payload.settings.enforce_weekend_off:
         return
-    coef = int(weights["weekendOff"]["perMissing"])
+    coef = int(weights["asNeededUse"]["perUnit"])
     pairs = _weekend_pairs(payload)
     if not pairs:
         return
@@ -988,7 +993,6 @@ def _add_intern_pair_term(model, payload: Payload, store: VarStore, group: TermG
 
 
 def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    _add_weekend_off_term(model, payload, store, group, weights)
     _add_peds_mix_and_fm1_terms(model, payload, store, group, weights)
     _add_intern_pair_term(model, payload, store, group, weights)
 
@@ -1064,6 +1068,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
     _add_as_needed_term(payload, store, tier_rank, weights)
     _add_night_excess_term(model, payload, store, tier_rank, weights)
+    _add_weekend_off_term(model, payload, store, tier_rank, weights)
     rest_first = rest_outranks_coverage(payload.rule_priority)
     rest_weights = weights
     if rest_first:
