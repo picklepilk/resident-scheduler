@@ -929,7 +929,7 @@ const RULE_NOTES = {
   },
   EM_HOME_2: {
     blockTypeNotes: [
-      { ids: ['PEDS_EM'], note: '19 total; 10–12 Peds Day/Eve shifts (generator biases toward 10, hard-caps at 12), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
+      { ids: ['PEDS_EM'], note: '19 total; 10–12 peds shifts incl. Peds Night (generator biases toward 10, hard-caps at 12), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
       { ids: ['EM_VAC'], note: '12 shifts total. Enforced.' },
       { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
@@ -2580,7 +2580,8 @@ function hasPriorPedsTrauma(resident, blocksHistory, block, traumaBlocks = TRAUM
 }
 
 // ─── Peds/EM mix (PGY-2 PEDS_EM rotation) ──────────────────────────────────
-// Target 19 total shifts; aim for 10 peds shifts (min), up to 12 max, rest elsewhere.
+// Target 19 total shifts; aim for 10 peds shifts (min), up to 12 max, rest elsewhere. "Peds shift" = any shift whose
+// area is PED (Day, Eve, Swing AND Night; chief 2026-11-01) — every counter (validator, generator, solver) keys off area.
 function isPedsEmMix(resident) { return resident.category === 'EM_HOME' && resident.pgy === 2 && resident.blockType === 'PEDS_EM'; }
 const PEDS_EM_MIX = { min: 10, max: 12 };
 
