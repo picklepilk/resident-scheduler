@@ -379,10 +379,13 @@ export const DEFAULT_DAY_RULES = {
       { days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Psych on a Wed eve/night' },
     ],
   },
+  // Chief 2026-11-01: Podiatry may work any time Friday and otherwise Saturday mornings, nothing else on
+  // weekends. Sunday = HARD fullBlockDays (no fullBlockAsNeeded); Saturday = HARD onlyDay (day type only, so
+  // no Sat eve/night; a Fri night starts Friday and is allowed). Mon/Wed stay as needed.
   POD_1: {
-    fullBlockDays: [6,0], fullBlockAsNeeded: true, fullBlockLabel: 'Podiatry on a weekend',
+    fullBlockDays: [0],
     dayTypeRestrictions: [
-      { days: [5], mode: 'noNight', asNeeded: true, asNeededLabel: 'Podiatry on a Fri night' },
+      { days: [6], mode: 'onlyDay' },
       { days: [1], mode: 'noDay', asNeeded: true, asNeededLabel: 'Podiatry on a Mon day' },
       { days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Podiatry on a Wed eve/night' },
     ],
@@ -500,6 +503,14 @@ export const LEGACY_DAY_RULE_DEFAULTS = {
   POD_1: [{
     fullBlockDays: [6,0],
     dayTypeRestrictions: [{ days: [5], mode: 'noNight' }, { days: [1], mode: 'noDay' }, { days: [3], mode: 'onlyDay' }],
+  }, {
+    // Pre-2026-11-01 shape (weekend as-needed)
+    fullBlockDays: [6,0], fullBlockAsNeeded: true, fullBlockLabel: 'Podiatry on a weekend',
+    dayTypeRestrictions: [
+      { days: [5], mode: 'noNight', asNeeded: true, asNeededLabel: 'Podiatry on a Fri night' },
+      { days: [1], mode: 'noDay', asNeeded: true, asNeededLabel: 'Podiatry on a Mon day' },
+      { days: [3], mode: 'onlyDay', asNeeded: true, asNeededLabel: 'Podiatry on a Wed eve/night' },
+    ],
   }],
   EM_BAMC_1: [
     { dayTypeRestrictions: [{ days: [3], mode: 'onlyDay' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }] },
@@ -988,7 +999,7 @@ const RULE_NOTES = {
     specialNotes: ['Monday: no night shifts. Tuesday: no day shifts (evening/night OK). Wednesday: day-only. All three are AS NEEDED: broken only to fill a coverage minimum (flagged).'],
   },
   POD_1: {
-    specialNotes: ['Weekend / Mon-day / Wed / Fri-night limits are AS NEEDED: broken only to fill a coverage minimum (flagged).', 'Podiatry typically only rotates with EM ~December–February and covers a low number of shifts — no built-in seasonality; confine a podiatry resident to those months via their Availability setting (Date ranges) on the resident profile / Off-Service tab.'],
+    specialNotes: ['Weekend (chief 2026-11-01, HARD): any shift Friday, Saturday DAY only (no Sat eve/night), nothing Sunday. Mon-day / Wed eve-night limits are AS NEEDED: broken only to fill a coverage minimum (flagged).', 'Podiatry typically only rotates with EM ~December–February and covers a low number of shifts — no built-in seasonality; confine a podiatry resident to those months via their Availability setting (Date ranges) on the resident profile / Off-Service tab.'],
   },
 };
 
