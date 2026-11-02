@@ -5516,6 +5516,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // (rest, hours, streak, circadian, at-target, jeopardy, caps, ...) still applies to them in full.
   // fillDayPass uses it for MIN slots whose strict pool came back empty and nowhere else; the optional
   // (top-up) pass, repair and firstBlockingReason never set it.
+  let fillPhase = null; // 'min' | 'optional' during fillDayPass, null elsewhere; gates weekendOffProtected so the fill's coverage-MINIMUM passes are never blocked by the weekend goal
   let asNeededMode = false; // false | 'cells' (inline as-needed gate cells) | 'late' (post-repair sweep: nights 7..12 + BAMC Thu-day/Wed-night)
   const asNeededFor = (r, ds) => asNeededByResident[r.id]?.[ds];
   const CANDIDATE_POOL_STAGES = [
@@ -5546,9 +5547,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       keep: (r, shift, ds) => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule),
     },
     // One full weekend off (chief decision 2026-11-01): a goal broken ONLY to fill a coverage minimum. Normal filling
-    // (min + optional passes, repair, the inline as-needed cells) never takes a resident's last free Sat+Sun pair;
-    // the final 'late' sweep (lateAsNeededSweep, min slots nobody else could fill) is the only path that may.
-    { reason: 'weekendOffProtected', applies: () => enforceWeekendOff && asNeededMode !== 'late', keep: (r, shift, ds) => !isLastFreeWeekend(r, ds) },
+    // (the optional top-up pass) never takes a resident's last free Sat+Sun pair;
+    // only the OPTIONAL top-up pass is blocked (fillPhase), so the min passes, repair and the final 'late' sweep may still break a weekend to fill a minimum.
+    { reason: 'weekendOffProtected', applies: () => enforceWeekendOff && fillPhase === 'optional' && asNeededMode !== 'late', keep: (r, shift, ds) => !isLastFreeWeekend(r, ds) },
     { reason: 'selfCoverOnly', keep: r => target[r.id] != null },
     // 'late' sweep: a MIN slot nobody else could fill outranks the shift-count target. The optional pass tops
     // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
@@ -6178,6 +6179,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // on how many CAN be assigned, not a requirement that they must be, so it's neither an
   // unfilled slot nor counted in totalSlots.
   function fillDayPass(ds, includeShift, phase) {
+    fillPhase = phase;
     streakCache = {};
     const slots = [];
     const dsDow = parseDate(ds).getDay();
@@ -7232,6 +7234,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     for (const include of optionalSweepPredicates()) {
       for (const ds of dates) fillDayPass(ds, include, 'optional');
     }
+    fillPhase = null;
   }
   if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
   if (repair === true && !diagnosticsOnly) repairPass();
