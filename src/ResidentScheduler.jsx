@@ -1620,6 +1620,9 @@ function weeklyHourStats(rs) {
 // `maxPerBlock` is a hard `nightsTotalBlock` error. maxRun (6 per contiguous run) is unchanged.
 export const NIGHT_RULES = { minRun: 5, idealRun: 6, maxRun: 6, postNightDayRestH: 24, targetPerBlock: 6, maxPerBlock: 12 };
 export const NIGHT_ABOVE_TARGET_LABEL = 'Night above 6 this block';
+// One full weekend off per block (chief decision 2026-11-01): the GOAL (Settings toggle enforceWeekendOff), broken only to
+// fill a coverage minimum. A resident ending the block with none = one asNeededException unit with this label.
+export const WEEKEND_OFF_LABEL = 'No full weekend off this block';
 
 // ─── NIGHT-AREA DIVERSITY (item 5, ported idea from sibling em-scheduler) ──────────────────
 // A small score() nudge toward spreading a resident's night shifts across POD/FLEX/PED/MT rather
@@ -3146,7 +3149,7 @@ const DEFAULT_APP_SETTINGS = {
   targetOverrides: {},        // { [CATEGORY_PGY]: number, CHIEF: number } — overrides SHIFT_TARGETS/BLOCK_TARGETS
   rulePriority: DEFAULT_RULE_PRIORITY, // ranked soft-rule order the generator breaks lowest-first — see SOFT_RULES
   generalPedsMonthlyTarget: 2, // soft nudge: PGY-2/3 not on a dedicated peds rotation aim for this many peds shifts/block
-  enforceWeekendOff: true,    // soft nudge: try to leave every schedulable resident one full weekend (Sat+Sun) off
+  enforceWeekendOff: true,    // goal (as-needed rule 2026-11-01): every schedulable resident keeps one full weekend (Sat+Sun) off unless broken to fill a coverage minimum
   wellnessWednesdaysEnabled: true, // program-wide toggle for EM Home's Wellness Wednesdays (see wellnessWednesdayDatesFor) — false disables the feature entirely; normalized as `=== false`, so an old backup with no such key still behaves as enabled
   // Jeopardy/sick-call incident log — one record per real-world sick-call/activation event, see
   // src/lib/jeopardyLedger.js. Deliberately NOT its own res_* localStorage key: every cloud save
@@ -4128,6 +4131,18 @@ function nightExcessPlacements(resident, rs, dates) {
   }
   return out;
 }
+// Weekend-off as-needed placement (chief decision 2026-11-01). A schedulable resident with NO free Sat+Sun pair (setting on)
+// is reported once, on a cell of the weekend that came closest (fewest worked days; first worked day of it).
+// Same predicate as validateAll's rule, so both engines + generator report identically.
+function weekendOffPlacements(resident, rs, dates, appSettings) {
+  if (appSettings?.enforceWeekendOff === false || !isSchedulable(resident)) return [];
+  const weekends = getBlockWeekends(dates);
+  if (!weekends.length || weekends.some(([sat, sun]) => !rs[sat] && !rs[sun])) return [];
+  let best = null;
+  for (const w of weekends) { const n = (rs[w[0]] ? 1 : 0) + (rs[w[1]] ? 1 : 0); if (!best || n < best.n) best = { w, n }; }
+  const ds = rs[best.w[0]] ? best.w[0] : best.w[1];
+  return [{ residentId: resident.id, name: `${resident.firstName} ${resident.lastName}`, dateStr: ds, shiftId: rs[ds], label: WEEKEND_OFF_LABEL }];
+}
 // As-needed placements of a FINISHED schedule: every non-empty cell whose shift is not strictly eligible
 // but IS in the resident's as-needed set. `skipCell(rid, ds)` excludes cells the generator did not place
 // (kept/manual entries). Shared by generateSchedule/generateScheduleBest (report.asNeededPlacements) and
@@ -4141,6 +4156,7 @@ export function collectAsNeededPlacements({ allResidents, schedule, block, eligO
     if (!isNightOnlyResident(r, eligOverrides)) {
       for (const e of nightExcessPlacements(r, schedule[r.id] || {}, getBlockDates(block.startDate, block.endDate))) if (!(skipCell && skipCell(r.id, e.dateStr))) out.push(e);
     }
+    for (const e of weekendOffPlacements(r, schedule[r.id] || {}, getBlockDates(block.startDate, block.endDate), appSettings)) if (!(skipCell && skipCell(r.id, e.dateStr))) out.push(e);
     if (!residentHasAsNeededGate(r, dayRules)) continue;
     const rs = schedule[r.id] || {};
     const nextRotation = nextRotationFromSnapshot(r, nextBlockSnap);
@@ -4431,12 +4447,12 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
     }
 
-    // One full weekend off (soft, Settings-toggleable): a schedulable resident should have at
-    // least one Sat+Sun pair with no shifts either day.
+    // One full weekend off (goal, Settings-toggleable; as-needed rule 2026-11-01): a schedulable resident should have at
+    // least one Sat+Sun pair with no shifts either day; none = one asNeededException unit (info tier, never export-blocking).
     if (appSettings.enforceWeekendOff !== false && isSchedulable(resident)) {
       if (blockWeekends.length && !blockWeekends.some(([sat, sun]) => !rs[sat] && !rs[sun]))
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: 'No full weekend (Sat+Sun) off this block', level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'asNeededException', units: 1,
+          message: `${WEEKEND_OFF_LABEL} (Sat+Sun) — used to fill coverage (as needed)`, level: severityFor('asNeededException', 'validator') });
     }
 
     // Peds/EM mix (PGY-2 on PEDS_EM): aim for 10–12 peds shifts of the 19 total
@@ -5529,6 +5545,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       applies: () => jeoPolicy !== 'off',
       keep: (r, shift, ds) => !jeopardyWindowConflict(r, ds, shift.id, block.jeopardySchedule),
     },
+    // One full weekend off (chief decision 2026-11-01): a goal broken ONLY to fill a coverage minimum. Normal filling
+    // (min + optional passes, repair, the inline as-needed cells) never takes a resident's last free Sat+Sun pair;
+    // the final 'late' sweep (lateAsNeededSweep, min slots nobody else could fill) is the only path that may.
+    { reason: 'weekendOffProtected', applies: () => enforceWeekendOff && asNeededMode !== 'late', keep: (r, shift, ds) => !isLastFreeWeekend(r, ds) },
     { reason: 'selfCoverOnly', keep: r => target[r.id] != null },
     // 'late' sweep: a MIN slot nobody else could fill outranks the shift-count target. The optional pass tops
     // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
@@ -6508,7 +6528,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       const keyOf = r => {
         const row = schedule[r.id] || {};
         const ext = isNight ? (nightRun(row, u.dateStr, -1) > 0 ? 1 : 0) + (nightRun(row, u.dateStr, 1) > 0 ? 1 : 0) : 0;
-        return [-ext, assigned[r.id] >= target[r.id] ? 1 : 0, nightCount[r.id], assigned[r.id] / Math.max(target[r.id] || 1, 1)];
+        return [enforceWeekendOff && isLastFreeWeekend(r, u.dateStr) ? 1 : 0, -ext, assigned[r.id] >= target[r.id] ? 1 : 0, nightCount[r.id], assigned[r.id] / Math.max(target[r.id] || 1, 1)];
       };
       let best = null, bestKey = null;
       for (const r of pool) {
@@ -7249,6 +7269,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (!nightOnly[r.id]) {
       for (const e of nightExcessPlacements(r, schedule[r.id], dates)) if (!keptCells.has(`${r.id}|${e.dateStr}`)) report.asNeededPlacements.push(e);
     }
+    for (const e of weekendOffPlacements(r, schedule[r.id], dates, appSettings)) if (!keptCells.has(`${r.id}|${e.dateStr}`)) report.asNeededPlacements.push(e);
     const byDate = asNeededByResident[r.id];
     if (!byDate) continue;
     for (const ds of dates) {
@@ -23088,7 +23109,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
               onChange={e=>updS('enforceWeekendOff', e.target.checked)} className="rounded mt-0.5"/>
             <span>
               <span className="block text-xs font-semibold text-gray-700">Try to give every resident one full weekend off</span>
-              <span className="block text-xs text-gray-400">Soft nudge: the generator avoids consuming a resident's last remaining free Saturday+Sunday when another candidate is available. Validation warns if a schedulable resident ends the block with none.</span>
+              <span className="block text-xs text-gray-400">A goal, broken only as needed to fill a coverage minimum: the generator never takes a resident's last remaining free Saturday+Sunday except as a last resort for a minimum slot nobody else can fill. Each resident left with none is flagged as an as-needed exception (not export-blocking).</span>
             </span>
           </label>
         </div>
