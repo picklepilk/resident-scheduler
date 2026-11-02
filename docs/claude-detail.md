@@ -1,6 +1,6 @@
 # CLAUDE.md moved detail
 
-Verbatim sections moved out of `CLAUDE.md` to shrink it (trimmed 2026-10-30; original in `CLAUDE.md.bak` until reviewed). Read the matching section before editing that area.
+Verbatim sections moved out of `CLAUDE.md` to shrink it (trimmed 2026-11-01; history in git). Read the matching section before editing that area.
 
 ## Persistence: race-safe saves, dbReady, version history, playgrounds
 - **Every save path race-safe**: `sbSaveStateVersioned` PATCHes `?version=eq.N`; 0 rows = lost race, `openConflict` shows `cloudConflict` modal. Full-replace actions (first seed, Import Backup, playground start-fresh, Version History Restore) use `sbSaveStateExplicit` (loads real current version, never trust a stale local flag; seeds via `sbSeedState` with `ignore-duplicates`, never `merge-duplicates`). `null` = lost race: root callers `openConflict`; Import/Restore (SettingsTab) abort with "reload and try again" toast.
