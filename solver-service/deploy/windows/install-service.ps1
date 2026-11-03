@@ -43,10 +43,17 @@ if (-not (Test-Path $envFile)) {
 $ps = (Get-Process -Id $PID).Path   # powershell.exe or pwsh.exe, whichever runs this
 $startScript = Join-Path $here 'start-solver.ps1'
 $arg = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startScript`""
-$me = "$env:USERDOMAIN\$env:USERNAME"
+# Account from the process token, not $env:USERDOMAIN: over SSH that reads "WORKGROUP" and
+# Register-ScheduledTask fails with "No mapping between account names and security IDs".
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute $ps -Argument $arg -WorkingDirectory $serviceDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $me
-$settings = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable `
+# Logon starts it; the 5-min repeat restarts it if it was killed (RestartCount only covers launch
+# failures, not a Ctrl-C/logoff kill). IgnoreNew makes the repeat a no-op while it is running.
+$trigger = @(
+  (New-ScheduledTaskTrigger -AtLogOn -User $me),
+  (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5))
+)
+$settings = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable -MultipleInstances IgnoreNew `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
