@@ -16,6 +16,7 @@ from solver.model.count_caps import add_count_cap_constraints
 from solver.model.coverage import add_coverage_constraints
 from solver.model.hint import apply_hint
 from solver.model.hours_cap import add_hours_cap_constraints
+from solver.model.implied import add_implied_cliques
 from solver.model.objective import ObjectiveInfo, build_objective
 from solver.model.rest import add_rest_constraints
 from solver.model.senior_composition import add_senior_composition_constraints
@@ -30,6 +31,7 @@ class BuildResult:
     model: cp_model.CpModel
     store: VarStore
     objective: ObjectiveInfo
+    implied_cliques: int = 0  # constraints added by solver/model/implied.py (0 when off)
 
 
 def build_model(payload: Payload) -> BuildResult:
@@ -47,6 +49,10 @@ def build_model(payload: Payload) -> BuildResult:
     add_trauma_run_hard_cap(model, payload, store)  # batch 2: never relaxable, like senior composition
     add_weekly_hours_cap_constraints(model, payload, store)  # R7: ACGME 6.17.a.3, never relaxable
 
+    implied_count = 0
+    if payload.config.implied_cliques:
+        implied_count = add_implied_cliques(model, payload, store)
+
     objective = build_objective(model, payload, store, coverage_result)
 
-    return BuildResult(model=model, store=store, objective=objective)
+    return BuildResult(model=model, store=store, objective=objective, implied_cliques=implied_count)

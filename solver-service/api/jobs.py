@@ -67,6 +67,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import AuthResult, require_auth
 from api.concurrency import solve_slot
+from api.runlog import log_run
 from api.ratelimit import _client_ip, enforce_poll_ip_limit, enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import SolveRequest
 from solver.io.payload import PayloadError, parse_payload
@@ -129,7 +130,10 @@ def solve_raw(raw: dict, on_progress=None) -> dict:
     `solve_fn` (modal_app.py) -- same parse -> solve -> build_response as /solve."""
     payload = parse_payload(raw)
     kwargs = {"on_progress": on_progress} if on_progress is not None else {}
-    return build_response(payload.version, solve(payload, **kwargs))
+    t0 = time.monotonic()
+    result = solve(payload, **kwargs)
+    log_run(payload, result, time.monotonic() - t0, "modal")
+    return build_response(payload.version, result)
 
 
 class InMemoryJobs:
@@ -177,8 +181,11 @@ class InMemoryJobs:
             job.solvers = solvers
             job.status = "running"
             job.started_at = time.time()
+        t0 = time.monotonic()
         try:
             result = solve(payload, cancel_event=job.cancel_event)
+            if not job.cancel_event.is_set():
+                log_run(payload, result, time.monotonic() - t0, "job")
             with self._lock:
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
