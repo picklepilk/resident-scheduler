@@ -10,6 +10,7 @@ HTTP status codes per docs/PAYLOAD_SCHEMA.md's "Errors" note (400 schema,
 from __future__ import annotations
 
 import os
+import time
 
 from importlib.metadata import version as _pkg_version
 
@@ -24,6 +25,7 @@ from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from solver.runner import runner_info
 from api.pna import PrivateNetworkAccessMiddleware
+from api.runlog import log_run
 from api.ratelimit import enforce_preauth_ip_limit, enforce_rate_limit
 from api.schemas import HealthResponse, SolveRequest, SolveResponse
 from solver.io.payload import PayloadError, parse_payload
@@ -128,6 +130,7 @@ def solve_endpoint(
     # One solve at a time per process, shared with POST /jobs (api/concurrency.py).
     if not solve_slot.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="a solve is already running on this server")
+    t0 = time.monotonic()
     try:
         result = solve(payload)
     except RuntimeError as exc:
@@ -138,6 +141,7 @@ def solve_endpoint(
     finally:
         solve_slot.release()
 
+    log_run(payload, result, time.monotonic() - t0, "solve")
     return build_response(payload.version, result)
 
 
