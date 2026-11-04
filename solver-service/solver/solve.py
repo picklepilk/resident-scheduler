@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 
 from ortools.sat.python import cp_model
 
+from solver.callbacks import MultiCallback
+from solver.deadline import Deadline
 from solver.runner import runner_info
 
 # ─── Cancellable background solves (jobs API, api/jobs.py) ─────────────────
@@ -190,12 +192,26 @@ class ProgressReporter:
 
         return _Cb()
 
+    def on_solution(self, cb) -> None:
+        """`solver/callbacks.py` handler form of `solution_callback()`."""
+        self.best = cb.objective_value
+        if time.time() - self._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+            self.emit()
 
-def _solve_with_progress(solver: cp_model.CpSolver, model, progress):
-    """`solver.solve(model)`, plus the solution callback when a reporter is set."""
-    if progress is None:
+
+def _solve_with_progress(solver: cp_model.CpSolver, model, progress, handlers=()):
+    """`solver.solve(model)`, fanning every incumbent out to the progress reporter (when set) and
+    any extra `handlers` (solver/callbacks.py). No callback at all when there is nothing to call."""
+    all_handlers = [h for h in (progress, *handlers) if h is not None]
+    if not all_handlers:
         return solver.solve(model)
-    return solver.solve(model, progress.solution_callback())
+    return solver.solve(model, MultiCallback(all_handlers))
+
+
+def _pass1_handlers(payload: Payload, build_result) -> list:
+    """Solution handlers that watch EVERY pass-1 stage solve (e.g. report.shortlist capture).
+    Wave-0 hook (2026-11-04): returns [] until a feature registers one here."""
+    return []
 
 
 def _num_workers(payload: Payload) -> int:
@@ -354,7 +370,7 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None):
     """Runs the (up to 5-stage) lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -479,7 +495,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         if progress is not None:
             progress.begin_stage(i + 1)
         t0 = time.time()
-        status = _solve_with_progress(solver, model, progress)
+        status = _solve_with_progress(solver, model, progress, handlers)
         elapsed_seconds = time.time() - t0
         total_time_ms += int(elapsed_seconds * 1000)
         status_name = solver.status_name(status)
@@ -570,6 +586,9 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
     no-op there -- "INFEASIBLE from a genuine pass-1 search" still always
     falls through to pass 2 as before.
     """
+    if payload.config.mode == "score":
+        from solver.score import solve_score  # Wave-1 module (score mode); never searches
+        return solve_score(payload)
     if on_progress is None:
         on_progress = getattr(_tls, "on_progress", None)
     progress = None
@@ -614,8 +633,10 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
     return {"applied": True, "hintFeasible": True, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
 
 
-def _solve_pass1(payload: Payload, progress=None, cancel_event=None) -> SolveResult:
+def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: Deadline = None) -> SolveResult:
     t_pass1 = time.time()
+    if deadline is None:
+        deadline = Deadline.for_config(payload.config, t_pass1)
     build_result = build_model(payload)
     store = build_result.store
     objective = build_result.objective
@@ -640,7 +661,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None) -> SolveRes
                     payload.config, max_time_seconds=max(0.1, payload.config.max_time_seconds * (1.0 - outer.fraction))
                 ),
             )
-        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress)
+        handlers = _pass1_handlers(payload, build_result)
+        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline)
         if outer.enabled and status_name in SOLVABLE_STATUSES:
             if progress is not None:
                 progress.begin_stage(len(_STAGE_NAMES) + 1, "outerLns")
