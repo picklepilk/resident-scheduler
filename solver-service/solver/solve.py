@@ -210,8 +210,13 @@ def _solve_with_progress(solver: cp_model.CpSolver, model, progress, handlers=()
 
 def _pass1_handlers(payload: Payload, build_result) -> list:
     """Solution handlers that watch EVERY pass-1 stage solve (e.g. report.shortlist capture).
-    Wave-0 hook (2026-11-04): returns [] until a feature registers one here."""
-    return []
+    Wave-0 hook (2026-11-04)."""
+    handlers = []
+    if payload.config.shortlist_size > 0 and payload.config.objective_mode == "staged":
+        from solver.shortlist import ShortlistCapture
+        handlers.append(ShortlistCapture(build_result.store, build_result.objective.stage_exprs, _STAGE_NAMES,
+                                         payload.config.shortlist_size))
+    return handlers
 
 
 def _num_workers(payload: Payload) -> int:
@@ -650,6 +655,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     # weighted branch needs no further setup beyond solving as before.
     outer = payload.config.outer_lns
     outer_report = None
+    handlers = []
     if payload.config.objective_mode == "staged":
         staged_payload = payload
         if outer.enabled:
@@ -708,6 +714,9 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     report = _build_report(payload, solver, objective, hint_diag)
     if outer_report is not None:
         report["outerLns"] = outer_report
+    for _h in handlers:
+        if hasattr(_h, "result"):
+            report["shortlist"] = _h.result(schedule)
     _stick_w = stickiness_weight(payload, objective.weights)
     if _stick_w > 0 and payload.hint:
         report["hintStickiness"] = {"weight": _stick_w, "changedCells": changed_cells(payload, schedule)}
