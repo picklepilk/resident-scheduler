@@ -7544,6 +7544,9 @@ const LONG_SOLVE_POLL_MS = 15000;
 // lowest tier, so it can never trade away coverage, hard rules, targets or rest.
 export const HINT_STICKINESS_WEIGHT = 100;
 
+// em-scheduler port (2026-11-04): ask the solver to keep its N best distinct strict schedules in
+// `report.shortlist`; pickEngineResult re-ranks them with betterQuality. 0 = off. Caller config wins.
+export const SOLVER_SHORTLIST_SIZE = 5;
 export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null, alternateHints = null }) {
   // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
   // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
@@ -7933,6 +7936,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     coverageMinMode: 'elastic_always',
     maxVerificationResolves: 2,
     weights: {},
+    shortlistSize: SOLVER_SHORTLIST_SIZE,
     // "Keep optimizer changes small" (appSettings.solverStickToHint): penalize every cell that
     // differs from the hint. Only meaningful with a hint; an explicit caller config wins (below).
     ...(appSettings.solverStickToHint === true && hintCells.length ? { hintStickiness: HINT_STICKINESS_WEIGHT } : {}),
@@ -8088,7 +8092,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
   // generation report already satisfies: totalSlots === keptManual + filled + unfilled.length.
   const totalSlots = keptManual + filled + unfilled.length;
 
-  return {
+  const mapped = {
     schedule,
     report: {
       generatedAt: new Date().toISOString(),
@@ -8133,6 +8137,22 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
       qualityVector: null,
     },
   };
+
+  // Shortlist (em-scheduler port): each entry goes through THIS function (same merge/report path) and
+  // rides on the result as `shortlist` (top level, NOT under report). pickEngineResult consumes and
+  // strips it, so it is never persisted. Candidates carry no per-slot lists of their own (the solver
+  // ships those for the winner only), so unfilled/underTarget/overstaffed are empty for them.
+  const rawShortlist = json?.report?.shortlist;
+  if (Array.isArray(rawShortlist) && rawShortlist.length) {
+    mapped.shortlist = rawShortlist
+      .filter(e => e && e.schedule && typeof e.schedule === 'object')
+      .map(e => {
+        const { shortlist: _drop, unfilled: _u, underTarget: _t, overstaffed: _o, ...restReport } = json.report;
+        const m = mapSolverResult({ ...json, schedule: e.schedule, report: restReport }, { block, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
+        return { schedule: m.schedule, report: m.report, tiers: e.tiers ?? null };
+      });
+  }
+  return mapped;
 }
 
 // Builds the input shape src/lib/scheduleQuality.js's computeQualityMetrics expects, from
@@ -8928,31 +8948,53 @@ export function countRelaxedCapBreaches(solverRes) {
 
 export function pickEngineResult(solverRes, localRes, args) {
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
-  const solverScore = solverRes ? scoreGenerationResult(solverRes, args, rulePriority) : null;
+  // Solver candidates: the winner first, then shortlist entries (index 0..n-1). The raw shortlist is
+  // stripped from anything returned, so it never reaches the persisted generation report.
+  const shortlist = Array.isArray(solverRes?.shortlist) ? solverRes.shortlist : [];
+  const stripShortlist = res => {
+    if (!res || !('shortlist' in res)) return res;
+    const { shortlist: _drop, ...rest } = res;
+    return rest;
+  };
+  const decorate = (res, score) => {
+    score.blockingWarnCount += countRelaxedCapBreaches(solverRes);
+    score.solverMode = solverRes?.report?.feasibility?.mode === 'relaxed' ? 'relaxed' : 'strict';
+    return score;
+  };
+  let solverScore = solverRes ? decorate(solverRes, scoreGenerationResult(solverRes, args, rulePriority)) : null;
+  let solverPick = solverRes ? stripShortlist(solverRes) : null;
+  let shortlistIndex = null;
   if (solverScore) {
-    solverScore.blockingWarnCount += countRelaxedCapBreaches(solverRes);
-    solverScore.solverMode = solverRes?.report?.feasibility?.mode === 'relaxed' ? 'relaxed' : 'strict';
+    shortlist.forEach((cand, idx) => {
+      const cs = decorate(cand, scoreGenerationResult(cand, args, rulePriority));
+      if (betterQuality(cs, solverScore)) { // strictly: the winner keeps ties
+        solverScore = cs;
+        solverPick = { schedule: cand.schedule, report: { ...cand.report, shortlistIndex: idx } };
+        shortlistIndex = idx;
+      }
+    });
   }
   const localScore = localRes ? scoreGenerationResult(localRes, args, rulePriority) : null;
 
   const toComparison = score => score
     ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector, ...(score.solverMode ? { solverMode: score.solverMode } : {}) }
     : null;
+  const shortlistInfo = shortlist.length ? { shortlistSize: shortlist.length, shortlistIndex } : {};
 
   if (!solverScore && !localScore) return { result: null, winner: null, engineComparison: null };
   if (!solverScore) {
     return { result: localRes, winner: 'local', engineComparison: { winner: 'local', solver: null, local: toComparison(localScore) } };
   }
   if (!localScore) {
-    return { result: solverRes, winner: 'cpsat', engineComparison: { winner: 'cpsat', solver: toComparison(solverScore), local: null } };
+    return { result: solverPick, winner: 'cpsat', engineComparison: { winner: 'cpsat', solver: toComparison(solverScore), local: null, ...shortlistInfo } };
   }
 
   const solverStrictlyBetter = betterQuality(solverScore, localScore);
   const winner = solverStrictlyBetter ? 'cpsat' : 'local';
   return {
-    result: solverStrictlyBetter ? solverRes : localRes,
+    result: solverStrictlyBetter ? solverPick : localRes,
     winner,
-    engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore) },
+    engineComparison: { winner, solver: toComparison(solverScore), local: toComparison(localScore), ...shortlistInfo },
   };
 }
 
@@ -18186,12 +18228,15 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           pick, target: solverRunTarget, backend, machine: machineName, budgetSeconds: solveBudgetSec,
           wallSeconds: (Date.now() - solveStartedAt) / 1000, solverStatus: json.status,
         });
+        // Shortlist telemetry (plain numbers; the raw shortlist itself was stripped by pickEngineResult).
+        if (pick?.shortlistSize) { engineComparison.shortlistSize = pick.shortlistSize; engineComparison.shortlistIndex = pick.shortlistIndex; }
         if (winner === 'cpsat') attachSolverDiagnostics(result, scoreArgs);
         const engineLabel = winner === 'cpsat' ? finalLabel : 'Built-in (optimizer result did not beat it)';
         return {
           ...result,
           report: { ...result.report, engineComparison, engineLabel, structuralFloor: result.report.structuralFloor ?? solverRes.report.structuralFloor ?? null },
           engineUsed: winner === 'cpsat' ? 'cpsat' : 'local-better',
+          ...(winner === 'cpsat' && pick?.shortlistIndex != null ? { solverShortlistIndex: pick.shortlistIndex } : {}),
           engineLabel,
           relaxed: winner === 'cpsat' ? json.mode === 'relaxed' : false,
           // Component-state only (never persisted): the solver schedule that lost, so the report
