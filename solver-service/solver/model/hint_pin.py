@@ -145,11 +145,13 @@ class HintEvaluation:
     solve_time_ms: int = 0
 
 
-def evaluate_hint(payload: Payload, build_result) -> HintEvaluation:
+def evaluate_hint(payload: Payload, build_result, time_cap: float = None) -> HintEvaluation:
     """Never mutates `build_result.model` -- always clones first. Returns
     `feasible=False` (no components) when `payload.hint` is empty, when the
     model has no x vars at all, or when fixing every x var to the hint's
     value makes the model infeasible under this payload's hard constraints.
+    `time_cap` (seconds, optional): upper bound on the clone solve's limit (solve.py passes
+    `Deadline.cap(...)` so the whole solve respects `config.deadlineSeconds`).
     """
     store = build_result.store
     if not payload.hint or not store.x:
@@ -178,7 +180,8 @@ def evaluate_hint(payload: Payload, build_result) -> HintEvaluation:
     # Generous but bounded: this solve should finish in well under a second on
     # any realistic payload (see comment above) -- the cap is a safety net,
     # not a real budget.
-    solver.parameters.max_time_in_seconds = min(30.0, max(5.0, payload.config.max_time_seconds))
+    limit = min(30.0, max(5.0, payload.config.max_time_seconds))
+    solver.parameters.max_time_in_seconds = limit if time_cap is None else max(0.1, min(limit, time_cap))
     t0 = time.time()
     status = solver.solve(clone)
     solve_time_ms = int((time.time() - t0) * 1000)

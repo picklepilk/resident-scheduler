@@ -245,11 +245,11 @@ def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch)
     original_cpsolver_solve = cp_model.CpSolver.solve
     call_count = {"n": 0}
 
-    def fake_solve(self, model):
+    def fake_solve(self, model, *args, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return cp_model.INFEASIBLE
-        return original_cpsolver_solve(self, model)
+        return original_cpsolver_solve(self, model, *args, **kwargs)
 
     monkeypatch.setattr(cp_model.CpSolver, "solve", fake_solve)
 
@@ -359,9 +359,9 @@ def test_budget_rollover_grows_a_later_stage_when_an_earlier_one_finishes_early(
     seen_budgets = []
     original_cpsolver_solve = cp_model.CpSolver.solve
 
-    def recording_solve(self, model):
+    def recording_solve(self, model, *args, **kwargs):
         seen_budgets.append(self.parameters.max_time_in_seconds)
-        return original_cpsolver_solve(self, model)
+        return original_cpsolver_solve(self, model, *args, **kwargs)
 
     monkeypatch.setattr(cp_model.CpSolver, "solve", recording_solve)
 
