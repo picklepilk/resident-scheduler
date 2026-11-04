@@ -19,6 +19,7 @@ from ortools.sat.python import cp_model
 from solver.callbacks import MultiCallback
 from solver.deadline import Deadline
 from solver.runner import runner_info
+from solver.stall import STALL_RECOVERY_MIN_SECONDS, STALL_RESEED_STEP, StallStop, stall_threshold
 
 # ─── Cancellable background solves (jobs API, api/jobs.py) ─────────────────
 # `solve()` itself knows nothing about jobs/threads -- this is a thin,
@@ -88,6 +89,8 @@ from solver.validate import validate_schedule
 
 SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 PROBE_TIME_SECONDS = 5.0
+PASS2_HARD_FLOOR_SECONDS = 2.0  # pass 2 always gets this much, even after pass 1 spent the deadline
+_STALL_STAGES = (TIER_RANK, TIER_REST, TIER_QUALITY)  # stages the stall stop applies to
 
 # R9 (2026-09-27, CP-SAT-as-polisher): the staged solve runs the JS engine's
 # betterQuality ladder (errorCount, blockingWarnCount, qualityVector) as a
@@ -370,7 +373,7 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None, stall_log=None):
     """Runs the (up to 5-stage) lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -446,7 +449,24 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
     already-solved clone as this ladder's result instead -- see that
     dataclass's own docstring for why evaluating the ORIGINAL model's
     vars/exprs against that clone's solver is valid.
+
+    DEADLINE (2026-11-04): every stage limit is `deadline.cap(budget)`, so the ladder never outruns
+    `config.deadlineSeconds` however the rollover stacks budgets.
+
+    STALL STOP (2026-11-04, `solver/stall.py`): RANK/REST/QUALITY stages are stopped once they have an
+    incumbent and no strictly better one for `stall_threshold(...)` seconds (`config.stallSeconds`, 0 =
+    off). The unused part of the budget rolls forward exactly like an OPTIMAL rollover (for QUALITY it
+    is simply left to outer LNS, which runs until the deadline). A stalled QUALITY stage with >= 20 s
+    of budget left is re-solved ONCE from its incumbent with seed `random_seed + 7919`; the result is
+    kept only if the stage expression strictly improves. Each stall appends
+    `{stage, stoppedAfterSeconds, budgetSeconds, reseeded}` to `stall_log` (-> `report["stall"]`).
+
+    LEX_STRICT (`config.lexStrict`): non-final stages minimize their OWN expr only (no tiebreak sum);
+    the pin is `expr == value` when the stage proved OPTIMAL, else `expr <= value`.
     """
+    if deadline is None:
+        deadline = Deadline.for_config(payload.config)
+    lex_strict = payload.config.lex_strict
     model = build_result.model
     store = build_result.store
     objective = build_result.objective
@@ -483,7 +503,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         # one is added at a heavily discounted weight purely to break ties
         # among solutions that are equally good for THIS stage.
         later_sum = sum((e for _n, e in stage_defs[i + 1:]), start=0)
-        minimize_expr = expr if is_last or _is_empty_stage(later_sum) else _TIEBREAK_MULTIPLIER * expr + later_sum
+        minimize_expr = expr if is_last or lex_strict or _is_empty_stage(later_sum) else _TIEBREAK_MULTIPLIER * expr + later_sum
         model.minimize(minimize_expr)
         # A FRESH CpSolver per stage (cheap -- parameters are trivial to
         # reapply), with repair_hint never set -- see `_configure_solver`'s
@@ -491,11 +511,13 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         # covers repair_hint specifically; num_workers/seed/symmetry are
         # still reapplied every stage.
         solver = _configure_solver(payload, allow_repair_hint=False)
-        solver.parameters.max_time_in_seconds = budget
+        solver.parameters.max_time_in_seconds = deadline.cap(budget)
         if progress is not None:
             progress.begin_stage(i + 1)
+        threshold = stall_threshold(payload.config.stall_seconds, budget) if name in _STALL_STAGES else 0.0
         t0 = time.time()
-        status = _solve_with_progress(solver, model, progress, handlers)
+        with StallStop(solver, threshold) as stall:
+            status = _solve_with_progress(solver, model, progress, [*handlers, *([stall] if threshold > 0 else [])])
         elapsed_seconds = time.time() - t0
         total_time_ms += int(elapsed_seconds * 1000)
         status_name = solver.status_name(status)
@@ -516,8 +538,34 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         have_solution = True
         last_status_name = status_name
         last_good_solver = solver
+        stalled = stall.fired
+        reseeded = False
+        if stalled and is_last and budget - elapsed_seconds >= STALL_RECOVERY_MIN_SECONDS and not deadline.expired():
+            # One re-seeded retry from the incumbent; keep it only on strict improvement of this stage.
+            reseeded = True
+            _carry_hint(model, store, solver)
+            retry = _configure_solver(payload, allow_repair_hint=False)
+            retry.parameters.random_seed = payload.config.random_seed + STALL_RESEED_STEP
+            retry.parameters.max_time_in_seconds = deadline.cap(budget - elapsed_seconds)
+            t1 = time.time()
+            with StallStop(retry, threshold) as stall2:
+                retry_status = _solve_with_progress(retry, model, progress, [*handlers, *([stall2] if threshold > 0 else [])])
+            total_time_ms += int((time.time() - t1) * 1000)
+            if retry.status_name(retry_status) in SOLVABLE_STATUSES and retry.value(expr) < solver.value(expr):
+                solver = last_good_solver = retry
+                status_name = retry.status_name(retry_status)
+                last_status_name = status_name
+        if stalled and stall_log is not None:
+            stall_log.append({
+                "stage": name,
+                "stoppedAfterSeconds": round(elapsed_seconds, 2),
+                "budgetSeconds": round(budget, 2),
+                "reseeded": reseeded,
+            })
         if not is_last:
-            model.add(expr <= round(solver.value(expr)))
+            # lexStrict pins an OPTIMAL stage exactly (an `==` the next stage cannot trade against).
+            value = round(solver.value(expr))
+            model.add(expr == value if lex_strict and status_name == "OPTIMAL" else expr <= value)
             _carry_hint(model, store, solver)
             # BUDGET ROLLOVER: only when CP-SAT PROVED this stage's
             # (tiebreak-weighted) objective optimal -- "FEASIBLE" means it
@@ -525,7 +573,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
             # exactly `budget`, so there is no real surplus to hand onward in
             # that case (and in fact MORE of this stage's own time might
             # still have helped it).
-            if status_name == "OPTIMAL":
+            if status_name == "OPTIMAL" or stalled:
                 rollover_seconds = max(0.0, budget - elapsed_seconds)
 
     if last_status_name is None:
@@ -537,7 +585,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         # reporting a bogus INFEASIBLE for what may be a perfectly feasible
         # (just unscored) schedule.
         solver = solver or _configure_solver(payload, allow_repair_hint=False)
-        solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
+        solver.parameters.max_time_in_seconds = deadline.cap(payload.config.max_time_seconds)
         t0 = time.time()
         status = solver.solve(model)
         total_time_ms += int((time.time() - t0) * 1000)
@@ -597,17 +645,23 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
         if stages > 1 and payload.config.outer_lns.enabled:
             stages += 1  # the extra 'outerLns' stage
         progress = ProgressReporter(on_progress, payload.config.max_time_seconds, stages)
-    result = _solve_pass1(payload, progress, cancel_event)
+    deadline = Deadline.for_config(payload.config)
+    result = _solve_pass1(payload, progress, cancel_event, deadline)
     if progress is not None:
         progress.finish()
-    if result.status != "INFEASIBLE":
-        return result
-    if cancel_event is not None and cancel_event.is_set():
-        return result
-    return run_pass2(payload)
+    if result.status == "INFEASIBLE" and not (cancel_event is not None and cancel_event.is_set()):
+        result = run_pass2(payload, deadline)
+    result.report["deadline"] = _deadline_report(deadline)
+    return result
 
 
-def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
+def _deadline_report(deadline: Deadline) -> dict:
+    """`report["deadline"]`: configured seconds, whether the run finished at/after it, and the overrun."""
+    over = max(0.0, time.time() - deadline.at)
+    return {"seconds": round(deadline.at - deadline.start, 2), "hit": over > 0, "overrunSeconds": round(over, 2)}
+
+
+def _apply_hint_pinning(payload: Payload, build_result: BuildResult, deadline: Deadline = None):
     """R9 follow-up ("pin to hint", see solver/model/hint_pin.py): only in
     staged mode, and only when a hint was actually supplied -- weighted mode
     is the deliberate pre-R9 rollback path and gets none of this. Mutates
@@ -625,7 +679,7 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult):
     if payload.config.objective_mode != "staged" or not payload.hint:
         return {"applied": False, "hintFeasible": None, "pinned": {}}, None
 
-    hint_eval = evaluate_hint(payload, build_result)
+    hint_eval = evaluate_hint(payload, build_result, None if deadline is None else deadline.cap(30.0))
     if not hint_eval.feasible:
         return {"applied": False, "hintFeasible": False, "pinned": {}}, hint_eval
 
@@ -641,7 +695,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     store = build_result.store
     objective = build_result.objective
 
-    hint_diag, hint_eval = _apply_hint_pinning(payload, build_result)
+    hint_diag, hint_eval = _apply_hint_pinning(payload, build_result, deadline)
 
     # R9: staged is the new default (payload.py's Config.objective_mode) --
     # `"weighted"` keeps the pre-R9 single-shot solve on `objective.total_expr`
@@ -650,6 +704,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     # weighted branch needs no further setup beyond solving as before.
     outer = payload.config.outer_lns
     outer_report = None
+    stall_log: list = []
     if payload.config.objective_mode == "staged":
         staged_payload = payload
         if outer.enabled:
@@ -662,7 +717,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 ),
             )
         handlers = _pass1_handlers(payload, build_result)
-        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline)
+        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline, stall_log)
         if outer.enabled and status_name in SOLVABLE_STATUSES:
             if progress is not None:
                 progress.begin_stage(len(_STAGE_NAMES) + 1, "outerLns")
@@ -670,7 +725,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
             solver, outer_report = run_outer_lns(
                 payload, build_result, solver, _STAGE_NAMES, TIER_QUALITY,
                 lambda: _configure_solver(payload, allow_repair_hint=False),
-                deadline=t_pass1 + payload.config.max_time_seconds,
+                deadline=min(t_pass1 + payload.config.max_time_seconds, deadline.at),
                 sub_solve_seconds=outer.sub_solve_seconds,
                 seed=payload.config.random_seed,
                 progress=progress,
@@ -683,7 +738,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
             solve_time_ms += int((time.time() - t_lns) * 1000)
     else:
         solver = _configure_solver(payload)
-        solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
+        solver.parameters.max_time_in_seconds = deadline.cap(payload.config.max_time_seconds)
         if progress is not None:
             progress.begin_stage(1)
         t0 = time.time()
@@ -708,6 +763,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     report = _build_report(payload, solver, objective, hint_diag)
     if outer_report is not None:
         report["outerLns"] = outer_report
+    if payload.config.objective_mode == "staged":
+        report["stall"] = stall_log
     _stick_w = stickiness_weight(payload, objective.weights)
     if _stick_w > 0 and payload.hint:
         report["hintStickiness"] = {"weight": _stick_w, "changedCells": changed_cells(payload, schedule)}
@@ -889,18 +946,23 @@ def _solve_portfolio(payload: Payload, cancel_event, on_progress, k: int = None,
     return winner
 
 
-def run_pass2(payload: Payload) -> SolveResult:
+def run_pass2(payload: Payload, deadline: Deadline = None) -> SolveResult:
     """Pass 2: rebuild the model from scratch with relaxable families
     elastic (solver/model/elastic.py), probe for a minimal conflicting set
     of assumptions (best-effort, for `feasibility.conflicts`), then run the
     real optimizing solve WITHOUT assumptions -- penalties, not assumptions,
     decide what actually breaks.
+
+    `deadline` (shared with pass 1): probe and real solve are capped by it, but the real solve always
+    gets at least `PASS2_HARD_FLOOR_SECONDS` so it can return something after pass 1 spent the clock.
     """
+    if deadline is None:
+        deadline = Deadline.for_config(payload.config)
     elastic = build_elastic_model(payload)
     model = elastic.model
     store = elastic.store
 
-    conflicts = _run_conflict_probe(payload, elastic)
+    conflicts = _run_conflict_probe(payload, elastic, deadline)
 
     # R9 gap (documented, out of scope here -- see docs/PAYLOAD_SCHEMA.md):
     # pass 2 keeps the single-shot WEIGHTED objective regardless of
@@ -911,7 +973,7 @@ def run_pass2(payload: Payload) -> SolveResult:
     # ladders in one solve is real design work left for a future round; the
     # warm-start hint (`_configure_solver`/`apply_hint`) still applies here.
     solver = _configure_solver(payload)
-    solver.parameters.max_time_in_seconds = payload.config.max_time_seconds
+    solver.parameters.max_time_in_seconds = max(PASS2_HARD_FLOOR_SECONDS, deadline.cap(payload.config.max_time_seconds))
 
     t0 = time.time()
     status = solver.solve(model)
@@ -956,7 +1018,7 @@ def run_pass2(payload: Payload) -> SolveResult:
     )
 
 
-def _run_conflict_probe(payload: Payload, elastic) -> list:
+def _run_conflict_probe(payload: Payload, elastic, deadline: Deadline = None) -> list:
     """Best-effort: solve the elastic model with EVERY `ok[...]` literal
     assumed true (equivalent to the strict model for every relaxable
     family), and on INFEASIBLE, ask CP-SAT for a minimal conflicting subset.
@@ -970,7 +1032,11 @@ def _run_conflict_probe(payload: Payload, elastic) -> list:
     model.add_assumptions(elastic.all_ok_lits)
 
     probe_solver = cp_model.CpSolver()
-    probe_solver.parameters.max_time_in_seconds = min(PROBE_TIME_SECONDS, payload.config.max_time_seconds)
+    probe_limit = min(PROBE_TIME_SECONDS, payload.config.max_time_seconds)
+    if deadline is not None:
+        # Leave the real solve its floor: the probe is diagnostics only.
+        probe_limit = max(0.1, min(probe_limit, deadline.remaining() - PASS2_HARD_FLOOR_SECONDS))
+    probe_solver.parameters.max_time_in_seconds = probe_limit
     probe_solver.parameters.num_workers = _num_workers(payload)
     probe_solver.parameters.random_seed = payload.config.random_seed
 
