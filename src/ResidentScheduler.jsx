@@ -8140,15 +8140,16 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
 
   // Shortlist (em-scheduler port): each entry goes through THIS function (same merge/report path) and
   // rides on the result as `shortlist` (top level, NOT under report). pickEngineResult consumes and
-  // strips it, so it is never persisted. Candidates carry no per-slot lists of their own (the solver
-  // ships those for the winner only), so unfilled/underTarget/overstaffed are empty for them.
+  // strips it, so it is never persisted. Each entry carries its own unfilled/underTarget (computed from
+  // its cells); overstaffed is the winner's only, so it is dropped for candidates.
   const rawShortlist = json?.report?.shortlist;
   if (Array.isArray(rawShortlist) && rawShortlist.length) {
     mapped.shortlist = rawShortlist
       .filter(e => e && e.schedule && typeof e.schedule === 'object')
       .map(e => {
         const { shortlist: _drop, unfilled: _u, underTarget: _t, overstaffed: _o, ...restReport } = json.report;
-        const m = mapSolverResult({ ...json, schedule: e.schedule, report: restReport }, { block, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
+        const candReport = { ...restReport, unfilled: Array.isArray(e.unfilled) ? e.unfilled : [], underTarget: Array.isArray(e.underTarget) ? e.underTarget : [] };
+        const m = mapSolverResult({ ...json, schedule: e.schedule, report: candReport }, { block, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
         return { schedule: m.schedule, report: m.report, tiers: e.tiers ?? null };
       });
   }

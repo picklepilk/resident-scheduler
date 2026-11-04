@@ -774,7 +774,9 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
         report["outerLns"] = outer_report
     for _h in handlers:
         if hasattr(_h, "result"):
-            report["shortlist"] = _h.result(schedule)
+            report["shortlist"] = [
+                {**e, **_schedule_slot_lists(payload, e["schedule"], objective)} for e in _h.result(schedule)
+            ]
     if payload.config.objective_mode == "staged":
         report["stall"] = stall_log
     if payload.config.implied_cliques:
@@ -1165,14 +1167,7 @@ def _build_report(payload: Payload, solver: cp_model.CpSolver, objective, hint_d
     }
 
 
-def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpSolver, objective) -> dict:
-    """Same shape as `_build_report`, but `unfilled` is recomputed directly
-    from the concrete schedule vs. `payload.coverage` rather than from
-    `objective.coverage_slacks` -- that dict is EMPTY in "hard_then_elastic"
-    mode (coverage.py never builds the slack branch there), so relying on it
-    would silently under-report coverage shortfalls in that mode.
-    """
-    report = _build_report(payload, solver, objective)
+def _unfilled_from_schedule(payload: Payload, schedule: dict) -> list:
     counts: dict = {}
     for _rid, by_date in schedule.items():
         for d, sid in by_date.items():
@@ -1185,7 +1180,30 @@ def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpS
                 unfilled.append(
                     {"dateStr": date_str, "shiftId": shift_id, "shortBy": int(entry.min - assigned), "reason": "coverageShort"}
                 )
-    report["unfilled"] = unfilled
+    return unfilled
+
+
+def _schedule_slot_lists(payload: Payload, schedule: dict, objective) -> dict:
+    """`unfilled`/`underTarget` for a schedule that is NOT the solver's current solution (a shortlist
+    entry), computed from the cells alone. underTarget mirrors the modeled deficit: as-needed cells
+    don't count toward target."""
+    under = []
+    for rid, (target, _var) in objective.target_deficit_vars.items():
+        n = sum(1 for d, sid in schedule.get(rid, {}).items() if (rid, d, sid) not in payload.as_needed)
+        if n < target:
+            under.append({"residentId": rid, "assigned": int(n), "target": int(target)})
+    return {"unfilled": _unfilled_from_schedule(payload, schedule), "underTarget": under}
+
+
+def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpSolver, objective) -> dict:
+    """Same shape as `_build_report`, but `unfilled` is recomputed directly
+    from the concrete schedule vs. `payload.coverage` rather than from
+    `objective.coverage_slacks` -- that dict is EMPTY in "hard_then_elastic"
+    mode (coverage.py never builds the slack branch there), so relying on it
+    would silently under-report coverage shortfalls in that mode.
+    """
+    report = _build_report(payload, solver, objective)
+    report["unfilled"] = _unfilled_from_schedule(payload, schedule)
     report["structuralFloor"] = compute_structural_floor(payload, schedule)
     return report
 

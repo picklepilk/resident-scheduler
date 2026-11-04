@@ -31,7 +31,8 @@ def test_shortlist_shape_validity_and_ordering():
     seen = {_cells(result.schedule)}
     keys = []
     for entry in sl:
-        assert set(entry) == {"schedule", "tiers"}
+        assert set(entry) == {"schedule", "tiers", "unfilled", "underTarget"}
+        assert isinstance(entry["unfilled"], list) and isinstance(entry["underTarget"], list)
         c = _cells(entry["schedule"])
         assert c not in seen  # distinct and excludes the winner
         seen.add(c)
