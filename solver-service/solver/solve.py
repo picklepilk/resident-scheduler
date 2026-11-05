@@ -1017,7 +1017,7 @@ def run_pass2(payload: Payload, deadline: Deadline = None) -> SolveResult:
 
     failures = validate_schedule(payload, schedule)
     feasibility = build_feasibility_report(
-        payload, schedule, elastic, solver, failures, conflicts, payload.config.max_verification_resolves
+        payload, schedule, elastic, solver, failures, conflicts, payload.config.max_verification_resolves, deadline
     )
     _assert_relaxed_matches_validation(failures, feasibility["violations"])
 

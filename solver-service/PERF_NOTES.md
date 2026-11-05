@@ -329,4 +329,4 @@ Decisions:
 - `impliedCliques` stays off: it added 1825 constraints and won 0/3.
 - Stall stays on by default: it is neutral. It fired once in 15 runs (D, seed 44). The real block rarely plateaus long enough at 300 s.
 - Shortlist stays on (client sends 5): it never beat the winner here (`shortlistIndex` null), and the re-rank can't make the result worse.
-- Known gap: a cold solve (no hint) of the parity `standard` fixture at 30 s overran the deadline by about 13 s (pass 2 elastic build + conflict probe), and under full-suite CPU load the SOLVER_PARITY real-solve test once returned INFEASIBLE (pass 2 squeezed). It passes in isolation. The client timeout is budget + 60 s, so nothing falls back yet.
+- Fixed the same day: a cold solve (no hint) of the parity `standard` fixture at 30 s used to overrun its 40 s deadline by about 13 s. The cause was the pass-2 recommendation verify re-solves (up to 2 × 10 s, each with its own fresh deadline plus grace). They now fit inside the run deadline (`report/builder.py` `_verify_single_edit`, skipped below 1 s left), and the overrun is down to 0.5 s.

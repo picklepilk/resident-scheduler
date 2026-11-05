@@ -33,6 +33,8 @@ from solver.model.elastic import (
 from solver.report import templates
 
 MAX_VERIFY_TIME_SECONDS = 10.0
+# A verification re-solve with less than this left on the run deadline is skipped (`verified: False`).
+MIN_VERIFY_TIME_SECONDS = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +132,7 @@ def _coverage_violations(payload: Payload, schedule: dict) -> list:
 # recommendations
 # ---------------------------------------------------------------------------
 
-def build_recommendations(payload: Payload, schedule: dict, violations: list, max_resolves: int) -> list:
+def build_recommendations(payload: Payload, schedule: dict, violations: list, max_resolves: int, deadline=None) -> list:
     candidates = []
     for v in violations:
         rule = v["rule"]
@@ -151,7 +153,7 @@ def build_recommendations(payload: Payload, schedule: dict, violations: list, ma
         edit = cand.pop("edit", None)
         if edit is not None and resolves_used < max_resolves:
             resolves_used += 1
-            cand["verified"] = _verify_single_edit(payload, edit)
+            cand["verified"] = _verify_single_edit(payload, edit, deadline)
         else:
             cand["verified"] = False
         out.append(cand)
@@ -284,7 +286,10 @@ def _generic_recommendation(v: dict):
 # verification re-solves
 # ---------------------------------------------------------------------------
 
-def _verify_single_edit(payload: Payload, edit_fn) -> bool:
+def _verify_single_edit(payload: Payload, edit_fn, deadline=None) -> bool:
+    """`deadline` (the run's `solver.deadline.Deadline`, optional): the re-solve fits inside what is
+    left of it, total (its own deadline = its budget, no grace), or is skipped below
+    MIN_VERIFY_TIME_SECONDS. Without this, two verifies ran ~13 s past a 40 s run deadline."""
     raw = payload_to_raw(payload)
     edited_raw = edit_fn(raw)
     try:
@@ -293,7 +298,11 @@ def _verify_single_edit(payload: Payload, edit_fn) -> bool:
         return False
 
     capped = min(MAX_VERIFY_TIME_SECONDS, payload.config.max_time_seconds)
-    edited_payload.config = dataclasses.replace(edited_payload.config, max_time_seconds=capped)
+    if deadline is not None:
+        capped = min(capped, deadline.remaining())
+        if capped < MIN_VERIFY_TIME_SECONDS:
+            return False
+    edited_payload.config = dataclasses.replace(edited_payload.config, max_time_seconds=capped, deadline_seconds=capped)
 
     from solver import solve as solve_module  # deferred: solve.py imports this module for pass-2 reporting
 
@@ -329,9 +338,9 @@ def _apply_target_edit(raw: dict, resident_id: str, new_target: int) -> dict:
 # top-level report + raw round-trip
 # ---------------------------------------------------------------------------
 
-def build_feasibility_report(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list, conflicts: list, max_resolves: int) -> dict:
+def build_feasibility_report(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list, conflicts: list, max_resolves: int, deadline=None) -> dict:
     violations = build_violations(payload, schedule, elastic, solver, failures)
-    recommendations = build_recommendations(payload, schedule, violations, max_resolves)
+    recommendations = build_recommendations(payload, schedule, violations, max_resolves, deadline)
     return {"mode": "relaxed", "violations": violations, "conflicts": conflicts, "recommendations": recommendations}
 
 
