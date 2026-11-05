@@ -1,4 +1,4 @@
-"""config.lexStrict: stages minimize their own expr only; default (false) is unchanged."""
+"""config.lexStrict: stages minimize their own expr only; default ON (2026-11-05 bench); false = old tiebreak ladder."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ def _raw(**cfg):
     return raw
 
 
-def test_default_false():
-    assert parse_payload(_raw()).config.lex_strict is False
-    assert parse_payload(_raw(lexStrict=True)).config.lex_strict is True
+def test_default_true():
+    assert parse_payload(_raw()).config.lex_strict is True
+    assert parse_payload(_raw(lexStrict=False)).config.lex_strict is False
 
 
 def test_lex_strict_valid_and_no_worse_in_earliest_tier():
-    base = solve(parse_payload(_raw()))
+    base = solve(parse_payload(_raw(lexStrict=False)))
     strict = solve(parse_payload(_raw(lexStrict=True)))
     assert strict.status in ("OPTIMAL", "FEASIBLE") and strict.validation["passed"]
     b = tuple(base.tiers[n] for n in _STAGE_NAMES)

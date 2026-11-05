@@ -226,6 +226,9 @@ def test_staged_mid_ladder_failure_returns_last_good_stage_solution(monkeypatch)
     solution with a solvable status, never a crash or a bogus schedule.
     """
     raw = load_fixture("small_feasible.json")
+    # Outer LNS runs after the ladder and may legitimately improve the returned schedule (it does
+    # under the default lexStrict); this test is about the ladder's own fallback, so keep it off.
+    raw["config"]["outerLns"] = {"enabled": False}
     payload = parse_payload(raw)
 
     # `_carry_hint` runs exactly once per non-final stage that just

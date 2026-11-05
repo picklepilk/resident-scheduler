@@ -309,3 +309,24 @@ cd solver-service
 # build_small.py / build_mid.py / build_tiny.py, param_sweep.py) -- not
 # committed, per "solver-service scope only" / "don't commit".
 ```
+
+## em-scheduler ports A/B (2026-11-05, PicklePower)
+
+PicklePower (8 cores, Windows, OR-Tools 9.15), EMSolver idle (`busy:false`, CPU 8%). `scripts/bench-engines.mjs --fixture realScale --budgets 300 --seeds 3 --variants <file>` (58 synthetic residents), warm-started from the local best-of-20 (`errors 6, blockWarn 4, [14,0,0,1971.4]`). Columns are the JS `betterQuality` inputs, scored by `validateAll` on the returned schedule. Every variant has stall on except A.
+
+| Variant | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| A base (stall off) | 5 / 5 / [5,0,0,1953.8] | 5 / 4 / [6,0,0,1680.3] | 4 / 6 / [6,0,0,1886.3] |
+| B stall | 5 / 5 / [7,0,0,1814.0] | 5 / 4 / [5,0,0,1825.4] | 4 / 5 / [4,0,0,1924.9] |
+| C stall + impliedCliques (1825) | 5 / 5 / [7,0,0,1775.2] | 5 / 4 / [6,0,0,1622.0] | 5 / 5 / [9,0,0,1418.1] |
+| **D stall + lexStrict** | **3 / 3 / [0,0,0,1293.1]** | **3 / 3 / [0,0,0,1317.2]** | **3 / 3 / [0,0,0,1416.1]** |
+| E stall + shortlist 5 | 5 / 5 / [6,0,0,1544.5] | 5 / 4 / [6,0,0,1512.5] | 5 / 4 / [9,0,0,1301.4] |
+
+Format: errors / blocking warns / quality `[miss, senior, rest, fair]`. Wall time was 300.5–301.6 s on every run, so the deadline held (`deadlineHit` false). CP-SAT beat local on all 15 runs.
+
+Decisions:
+- **`lexStrict` default ON.** It won 3/3 seeds on every ladder slot: errors 3 vs 4–5, blocking warns 3 vs 4–6, coverage miss 0 vs 4–9. The tiebreak sum (`1e6 × stage + later`) made each stage chase later tiers at the cost of its own proof; with pure stage objectives, LNS also accepted more moves (38–44 of 58–61, against 9–27 of 43–48 for base). `lexStrict: false` restores the old ladder.
+- `impliedCliques` stays off: it added 1825 constraints and won 0/3.
+- Stall stays on by default: it is neutral. It fired once in 15 runs (D, seed 44). The real block rarely plateaus long enough at 300 s.
+- Shortlist stays on (client sends 5): it never beat the winner here (`shortlistIndex` null), and the re-rank can't make the result worse.
+- Known gap: a cold solve (no hint) of the parity `standard` fixture at 30 s overran the deadline by about 13 s (pass 2 elastic build + conflict probe), and under full-suite CPU load the SOLVER_PARITY real-solve test once returned INFEASIBLE (pass 2 squeezed). It passes in isolation. The client timeout is budget + 60 s, so nothing falls back yet.

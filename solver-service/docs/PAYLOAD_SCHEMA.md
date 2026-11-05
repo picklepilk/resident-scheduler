@@ -1598,7 +1598,7 @@ Weight 0 or absent disables either. Only `pedNightOverSwing` is in `tests/test_w
 
 ## em-scheduler ports (2026-11-04)
 
-Techniques ported from `../em-scheduler/solver/app/` (`lexico.py`, `solve.py`, `rules/implied.py`; see its `docs/DEVICE-SOLVER.md`). All new `config` keys are optional; defaults keep the earlier behavior, except `deadlineSeconds`, which only bounds an overrun.
+Techniques ported from `../em-scheduler/solver/app/` (`lexico.py`, `solve.py`, `rules/implied.py`; see its `docs/DEVICE-SOLVER.md`). All new `config` keys are optional; defaults keep the earlier behavior, except `deadlineSeconds` (only bounds an overrun) and `lexStrict` (default ON since the 2026-11-05 bench, `solver-service/PERF_NOTES.md`).
 
 | `config` key | Default | Meaning |
 |---|---|---|
@@ -1607,7 +1607,7 @@ Techniques ported from `../em-scheduler/solver/app/` (`lexico.py`, `solve.py`, `
 | `shortlistSize` | `0` (off) | Keep up to N distinct best strict schedules seen during pass 1 in `report.shortlist`; the client re-ranks them with `betterQuality`. Max 20. |
 | `mode` | `"solve"` | `"score"`: fix every x to `hint` and solve once to price that exact schedule (no search). Parity oracle for JS vs Python quality. |
 | `impliedCliques` | `false` | Add `sum(x) <= 1` over same-resident, same/adjacent-date shift cliques already pairwise forbidden (`solver/model/implied.py`). |
-| `lexStrict` | `false` | Stages minimize their own expression only (no `1e6 × stage + later` tiebreak); the pin is `==` when the stage proved OPTIMAL, else `<=`. |
+| `lexStrict` | `true` | Stages minimize their own expression only (no `1e6 × stage + later` tiebreak); the pin is `==` when the stage proved OPTIMAL, else `<=`. |
 
 Response additions (all additive, `report` is a plain dict):
 - `report.deadline = {seconds, hit: bool, overrunSeconds}`

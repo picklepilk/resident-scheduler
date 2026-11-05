@@ -106,8 +106,9 @@ class Config:
     mode: str = "solve"
     # Implied same-date clique constraints (solver/model/implied.py).
     implied_cliques: bool = False
-    # Strict lexicographic stages: pure stage objective, `==` pin when OPTIMAL.
-    lex_strict: bool = False
+    # Strict lexicographic stages: pure stage objective, `==` pin when OPTIMAL. Default ON since the
+    # 2026-11-05 PicklePower bench (PERF_NOTES.md); `lexStrict: false` restores the tiebreak ladder.
+    lex_strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -491,7 +492,7 @@ def parse_payload(raw: dict) -> Payload:
             shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
             mode="score" if config_raw.get("mode") == "score" else "solve",
             implied_cliques=bool(config_raw.get("impliedCliques", False)),
-            lex_strict=bool(config_raw.get("lexStrict", False)),
+            lex_strict=bool(config_raw.get("lexStrict", True)),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
