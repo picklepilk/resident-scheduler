@@ -28,6 +28,7 @@ import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnD
 import { POD_THIRD_BODY_SHIFT_IDS, POD_CORE_CAP, getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
+import { computeTraumaSplitCapacity } from './lib/traumaSplitCapacity.js';
 import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
 import { describeCapacityGap, splitFairnessPoints } from './lib/structuralFloor.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -2684,13 +2685,12 @@ function getBlockProgress(startStr, endStr) {
 // `appSettings.wellnessWednesdaysEnabled === false` disables Wellness Wednesdays program-wide (see
 // wellnessWednesdayDatesFor) — when it's off there IS no Wellness Wednesday for PGY-3s to be
 // off on, so the substitution must be refused too, or a disabled feature would silently keep
-// waiving POD's hard composition rule on an ordinary working day. Deliberately still ignores
-// resident.wellnessOverride/the day-rule ordinal override the same way it always has (see
-// wellnessWednesdayDatesFor's own comment) — only the program-wide toggle, the one control
-// that means "there is no Wellness Wednesday at all", changes this function's answer.
+// waiving POD's hard composition rule on an ordinary working day. Since 2026-11-06 a PGY-3's CUSTOM
+// wellness date (resident.wellnessOverride) also counts, via ayConf.customSeniorWellness.POD attached
+// by withCustomSeniorWellness at the roster-aware entry points.
 function podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) {
   if (appSettings?.wellnessWednesdaysEnabled === false) return false;
-  return isLoggedDate('wellnessWednesday', ayConf, ds, 3);
+  return isLoggedDate('wellnessWednesday', ayConf, ds, 3) || !!ayConf?.customSeniorWellness?.POD?.includes(ds);
 }
 // FLEX's mirror of the above (SENIOR_COMPOSITION.FLEX is now hard too — see the block header
 // comment): the block's own PGY-2 Wellness Wednesday (2nd Wednesday on/after the block's start
@@ -3056,6 +3056,10 @@ export function buildSetupReadiness({ allResidents, block, dayRules, ayConf = {}
     ayLabel: block.academicYear ? `AY ${block.academicYear}` : '',
     conferenceDatesAbsent: !AY_CONF_DATE_FIELDS.some(f => ayConf?.[f]) && resolveTwelveHourWindows(ayConf || {}).length === 0,
     residentIssues, pendingResidentCount, offServiceNoRanges, supplyDemand,
+    traumaSplitShortfalls: computeTraumaSplitCapacity({
+      residents: allResidents.filter(r => isSchedulable(r)), startDate: block.startDate, endDate: block.endDate,
+      traumaBlocks: dayRules?.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS, perResident: TRAUMA_PEDS_SPLIT.trauma,
+    }).shortfalls,
   });
 }
 
@@ -3890,6 +3894,19 @@ function wellnessWednesdayDatesFor(resident, dayRules, appSettings = {}, ayConf)
   // Chief-LOGGED per-PGY list (lib/ruleDates.js); the ordinal now only drives the suggester.
   return loggedDates('wellnessWednesday', ayConf, resident.pgy);
 }
+// POD's PGY-2 substitute day also covers a PGY-3's CUSTOM Wellness date (resident.wellnessOverride =
+// 'YYYY-MM-DD'; 'optOut' has none) -- the class-logged list alone missed a PGY-3 off on a personal
+// date. Returns ayConf UNCHANGED when no PGY-3 has one; else a shallow copy carrying
+// customSeniorWellness.POD, read ONLY by podWellnessSubstituteAllowed (loggedDates ignores it, so no
+// eligibility strip changes). Called once at each entry point that has the roster.
+function withCustomSeniorWellness(ayConf, allResidents, appSettings) {
+  if (!Array.isArray(allResidents) || appSettings?.wellnessWednesdaysEnabled === false) return ayConf;
+  const dates = allResidents
+    .filter(r => r && r.category === 'EM_HOME' && r.pgy === 3 && typeof r.wellnessOverride === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.wellnessOverride))
+    .map(r => r.wellnessOverride);
+  if (!dates.length) return ayConf;
+  return { ...(ayConf || {}), customSeniorWellness: { POD: Array.from(new Set([...(ayConf?.customSeniorWellness?.POD || []), ...dates])) } };
+}
 function isWellnessWednesdayFor(resident, dateStr, dayRules, appSettings, ayConf) {
   return wellnessWednesdayDatesFor(resident, dayRules, appSettings, ayConf).includes(dateStr);
 }
@@ -4296,6 +4313,7 @@ function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, 
 }
 
 export function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = [], ayConf = {}) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
@@ -5146,6 +5164,7 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
 export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null, diagnosticsOnly = false, seedUnfilled = null }) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   // repair: 'truePrimaryOnly' (R5, 2026-09-27 chief decision) is a fourth mode besides
   // true/false/undefined — see the fill-pass call site and the `preferTruePrimaryPass` definition
   // below for what it actually does and why it exists (generateScheduleBest's own post-selection
@@ -7553,6 +7572,7 @@ export const HINT_STICKINESS_WEIGHT = 100;
 // `report.shortlist`; pickEngineResult re-ranks them with betterQuality. 0 = off. Caller config wins.
 export const SOLVER_SHORTLIST_SIZE = 5;
 export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null, alternateHints = null }) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
   // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
   // sends the generate path to its existing "optimizer unavailable -> keep the built-in result"
@@ -8010,6 +8030,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
 export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {}, dayRules = {}, eligOverrides = {}, blocksHistory = [], coverage = null } = {}) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -16423,6 +16444,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // supply them yet, matching this file's usual "untrusted/partial shape" posture. Every caller that
 // CAN reach them (ShiftPickerModal, ScheduleGrid's handleDrop/inspectorData) does.
 export function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}, allResidents = [], blocksHistory = []) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   if (!sid) return [];
   const sd = block.specialDays || {};
   const nextRotation = nextRotationMap[resident.id] || null;
@@ -24331,7 +24353,7 @@ function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverr
     pedGuardOwnerLabels,
     composition: SENIOR_COMPOSITION,
     isCompositionExempt: (shift, ds) => seniorCompositionExempt(shift, ds),
-    substituteStatus: (area, ds) => substituteReasonFor(area, ds, block.startDate, appSettings, ayConf),
+    substituteStatus: (area, ds) => substituteReasonFor(area, ds, block.startDate, appSettings, withCustomSeniorWellness(ayConf, allResidents, appSettings)),
   };
 }
 
