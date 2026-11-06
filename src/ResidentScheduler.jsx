@@ -909,7 +909,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); aim for 6 night shifts/block; 7-12 are allowed ONLY AS NEEDED to fill a coverage minimum (the generator uses them last, Validation flags each night above 6 as an as-needed exception), and more than 12 is an error (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
 const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
-const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
+const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting earlier saved blocks in the same academic year (published or not) plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
 // CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
@@ -946,7 +946,7 @@ const RULE_NOTES = {
   },
   EM_HOME_2: {
     blockTypeNotes: [
-      { ids: ['PEDS_EM'], note: '19 total; 10–12 peds shifts incl. Peds Night (generator biases toward 10, hard-caps at 12), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
+      { ids: ['PEDS_EM'], note: '19 total; 10–12 peds shifts incl. Peds Night (generator biases toward 10, hard-caps at 12; going over 12 needs chief acknowledgement before export), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
       { ids: ['EM_VAC'], note: '12 shifts total. Enforced.' },
       { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
@@ -2861,13 +2861,14 @@ const JC_MAX_PER_AY = 3;
 // isFirstTuesday/getFirstTuesdaysInRange now live in lib/journalClub.js (they had to move: a lib
 // module may never import this file, and the resolvers need them). shiftOverlapsJC lives in
 // lib/shifts.js; ayWindowFor in lib/dates.js — all imported above.
-// Counts JC-worked occurrences for a resident across PUBLISHED saved blocks in the given
+// Counts JC-worked occurrences for a resident across SAVED blocks (published or not — chief decision
+// 2026-11-06: a saved-but-unpublished earlier block is still a plan that will be worked) in the given
 // academic year, excluding excludeBlockId (the live/current block, counted separately since it
 // isn't itself a saved snapshot). Defensive against untrusted/partial snapshot shapes.
-function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null, ayConf = {}) {
+export function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null, ayConf = {}) {
   let count = 0;
   for (const snap of blocksHistory) {
-    if (!snap?.published || snap.id === excludeBlockId) continue;
+    if (!snap || snap.id === excludeBlockId) continue;
     if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
     const rs = snap.data?.schedule?.[residentId];
     if (!rs) continue;
@@ -3263,6 +3264,17 @@ export function getShiftTarget(resident, appSettings = {}) {
   // non-participant, exactly like an existing self-cover resident — and every downstream consumer
   // (candidatePool, scoreGenerationResult, scheduleQuality) already handles null.
   return t > 0 ? t : null;
+}
+
+// Payback allowance (chief decision 2026-11-06): a per-block, per-resident count N of extra shifts a
+// resident may be scheduled ABOVE target (e.g. owed after a sick call). Unlike a positive targetDelta it
+// does not raise the target (no fairness/under-target demand) — it only lifts the over-target ceiling to
+// target + N. Denormalized onto the resident as `paybackAllowance` (composeAllResidents). Null target stays null.
+export function getShiftCeiling(resident, appSettings = {}) {
+  const t = getShiftTarget(resident, appSettings);
+  if (t == null) return null;
+  const n = Math.floor(Number(resident?.paybackAllowance));
+  return t + (Number.isFinite(n) && n > 0 ? n : 0);
 }
 
 // An off-service resident's real obligation belongs to their OWN rotation WINDOW
@@ -3696,7 +3708,8 @@ function makeDefaultBlock() {
   return {
     id: `blk_${Date.now()}`, name: '', academicYear: getAcademicYear(),
     startDate: '', endDate: '',
-    emBlockAssignments: {},   // { [residentId]: { blockType, isChief, targetDelta, targetNote, targetIsBuyDown } }
+    emBlockAssignments: {},   // { [residentId]: { blockType, isChief, targetDelta, targetNote, targetIsBuyDown, paybackAllowance } }
+                               // paybackAllowance (2026-11-06): extra shifts allowed ABOVE target (ceiling = target + N); never raises the target
                                // targetDelta/targetNote/targetIsBuyDown: a chief-entered ONE-BLOCK
                                // shift-target adjustment ("buy-down"/"buy-up"), expressed as a delta
                                // + reason note rather than an absolute number so it survives a
@@ -4414,7 +4427,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // so this is scoped to the new check, not a behavior change for over-target.
     if (target != null && isSchedulable(resident)) {
       const count = Object.values(rs).filter(Boolean).length;
-      if (count > target) {
+      if (count > getShiftCeiling(resident, appSettings)) {
         // Name the chief's own targetDelta override when it's the reason the number looks
         // unusual — otherwise "Over target: 17/17" reads as a mystery when it's really the
         // chief's own buy-down doing its job (target = base +/- delta).
@@ -4495,9 +4508,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const pedsCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       const totalCount = Object.values(rs).filter(Boolean).length;
       const target = getShiftTarget(resident, appSettings);
+      // Above max = acknowledge-before-export (override tier, chief decision 2026-11-06); below min stays a plain warning.
       if (pedsCount > PEDS_EM_MIX.max)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'pedsMixMax',
+          message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: severityFor('pedsMixMax', 'validator'), measured: pedsCount });
       else if (pedsCount < PEDS_EM_MIX.min && target != null && totalCount >= target)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: 'warn' });
@@ -4525,13 +4539,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), measured: pedsHalfCount });
     }
 
-    // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
+    // Journal Club (EM Home only): cap of 3 worked/year (earlier saved blocks, published or not, + this one), presenter
     // day-of protections, and sanity checks on jcPresentDates entries.
     if (resident.category === 'EM_HOME') {
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts earlier saved blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -5364,6 +5378,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // comment: it's read-only for the whole generation, identical every attempt, and safe to share
   // by reference.
   const target = staticTarget;
+  // Over-target ceiling (target + payback allowance) — equals target for residents without an allowance.
+  const targetCeil = {};
+  for (const r of allResidents) targetCeil[r.id] = getShiftCeiling(r, appSettings);
   const assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
   // PED-N-specific count (subset of pedsCount, which also includes PED-D/PED-E) — read by score()'s
   // pedsInternNightDeficit term, which trends a TRAUMA_PEDS/PEDS_TRAUMA split resident toward ~5-6
@@ -5590,7 +5607,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'late' sweep: a MIN slot nobody else could fill outranks the shift-count target. The optional pass tops
     // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
     // by top-ups could never take the night 7..12 / BAMC as-needed placement the sweep exists to make.
-    { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < target[r.id] },
+    { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < targetCeil[r.id] },
     // Chief rule 2026-10-31: POD's 3rd body is preferably off-service. A core EM resident is admitted to a
     // POD D/E/N shift already holding POD_CORE_CAP core bodies only if they have no other option that day.
     // Reads eligCache/cachedWholeSchedule only - never candidatePool/firstBlockingReason (recursion).
@@ -7821,6 +7838,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
         bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Wed-night only since 2026-11-06 (Thu day is a hard strip); same value as bamcWedNights
         pedsMixMax: pedsMix ? PEDS_EM_MIX.max : null,
         pedsMixMin: pedsMix ? PEDS_EM_MIX.min : null,
+        // Payback allowance (2026-11-06): ceiling above `target`; omitted (null) = ceiling is target.
+        targetCeiling: target != null && getShiftCeiling(r, appSettings) > target ? getShiftCeiling(r, appSettings) : null,
         fm1PedsMax: isFm1 ? getFm1PedsCap(target) : null,
       },
       traumaPedsSplit: splitResident ? {
@@ -9503,7 +9522,7 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.circadianBlocked) pushRec('circadianBlocked', `All eligible residents were blocked by a hard circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
     if (reasonCounts.nightCapped) pushRec('nightCapped', `Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block hard cap (or the ${NIGHT_RULES.targetPerBlock}-night target, which is exceeded only as needed) — spread nights across more residents, or cover ${label} manually.`);
     if (reasonCounts.nightStintCapped) pushRec('nightStintCapped', `Eligible residents already have 2 separate night stints this block — a 3rd would fragment nights further (hard error). Extend an existing run, cover ${label} with a different resident, or assign manually.`);
-    if (reasonCounts.jcCapped) pushRec('jcCapped', `Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts Published blocks) — cover ${label} with a resident under the cap.`);
+    if (reasonCounts.jcCapped) pushRec('jcCapped', `Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts earlier saved blocks) — cover ${label} with a resident under the cap.`);
     if (reasonCounts.restProtected) pushRec('restProtected', `Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
     if (reasonCounts.seniorProtected) pushRec('seniorProtected', `Left unfilled to protect FLEX/POD senior composition — no senior PGY was eligible for ${label}. Reorder Soft Rule Priority on the Rules tab to staff a junior instead, or assign manually.`);
     if (reasonCounts.pgy3Required) pushRec('pgy3Required', `No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, or during a conference that takes PGY-3s away (ACEP), PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
@@ -15076,6 +15095,11 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
                         onChange={e => setTargetDelta(res.id, e.target.value)}
                         placeholder="0"
                         className="w-14 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
+                      <label className="text-xs text-gray-500 shrink-0" title="Payback shifts: how many shifts ABOVE target this resident may be scheduled this block (e.g. owed after a sick call). Lifts the over-target ceiling to target + N without raising the target.">Payback:</label>
+                      <input type="number" min="0" step="1" value={ba.paybackAllowance ?? ''}
+                        onChange={e => setBA(res.id, 'paybackAllowance', e.target.value === '' ? undefined : Math.max(0, Math.floor(Number(e.target.value)) || 0))}
+                        placeholder="0"
+                        className="w-12 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
                       {hasDelta && (
                         <>
                           <input type="text" value={ba.targetNote ?? ''} onChange={e => setBA(res.id, 'targetNote', e.target.value)}
@@ -16607,7 +16631,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
     const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
     if (jcTotal > JC_MAX_PER_AY)
-      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts earlier saved blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
   }
 
   // Hand overrides: if this exact cell already holds a confirmed override for `sid`, its covered
@@ -25735,6 +25759,8 @@ function composeAllResidents(emRoster, block, blocksHistory) {
       targetDelta: block.emBlockAssignments?.[r.id]?.targetDelta,
       targetNote: block.emBlockAssignments?.[r.id]?.targetNote,
       targetIsBuyDown: !!(block.emBlockAssignments?.[r.id]?.targetIsBuyDown),
+      // Payback allowance (2026-11-06): lifts the over-target ceiling only, see getShiftCeiling.
+      paybackAllowance: block.emBlockAssignments?.[r.id]?.paybackAllowance,
     }));
     // Off-service rotation-window delta (1.11): composed HERE, once, so generator/validateAll/
     // every UI surface that reads allResidents can't disagree on an off-service resident's
