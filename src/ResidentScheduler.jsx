@@ -995,7 +995,7 @@ const RULE_NOTES = {
   },
   NEURO_1: {
     specialNotes: ['No Wednesday/Friday shifts is AS NEEDED: broken only to fill a coverage minimum (flagged).'],
-    softPrefs: ['Avoid Tuesday/Thursday night shifts when possible.'],
+    softPrefs: ['Avoid Tuesday/Thursday night shifts when possible (soft preference; applied by the solver polish, generator weight currently 0; never blocks a coverage minimum).'],
     tbdItems: ['Confirm eligible shift list with rotation director'],
   },
   ANES_1: {
@@ -1162,6 +1162,11 @@ const WEEK_BAND_H = 21;
 
 function uuid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function eligKey(r) { return `${r.category}_${r.pgy}`; }
+
+// Soft "avoid these weekdays (JS getDay, 0=Sun) on NIGHT shifts" preference per eligKey (chief 2026-11-06).
+// Applied by score() (`neuroTueThuNight`) and mirrored in the solver (`solver/model/avoid_night_dow.py`,
+// cohort keys == eligKey). Never a hard strip, never as-needed gating. Change both together.
+export const AVOID_NIGHT_DOW = { NEURO_1: [2, 4] };
 
 // Shared Import History entry-shape factory for the four importers (matrix/roster/vacation/
 // lectures) — id/at/kind were hand-inlined identically at each call site; the rest of the shape
@@ -1843,6 +1848,14 @@ const SCORE_WEIGHTS = {
   // Chief 2026-11-06: Wednesday POD-D prefers that one body be a BAMC resident. Fires only while the shift has
   // no BAMC body yet, so it asks for ONE, not all. `pod` group.
   wedPodBamcBody: 8,
+  // Chief 2026-11-06: Neurology PGY-1 avoids Tuesday/Thursday NIGHT shifts (soft; AVOID_NIGHT_DOW). Pure ordering
+  // preference in score(): never gates, so coverage minimums still fill. Wired and tested, but SHIPS AT 0 (inert):
+  // measured on the realScale baseline, ANY nonzero weight (1, 3, 8, 40) perturbs the greedy fill enough to fail
+  // the committed quality baseline (fairness axes worse), the same trap as the FLEX PGY-2 preference. Weight 40
+  // does work (Tue/Thu share of NEURO_1 nights ~43% -> ~28% in neuroNightPref.test.js; 8 and 20 do nothing).
+  // The solver term (`avoid_night_dow.py`, 150) carries the preference in production polishing. Raise only with a
+  // deliberate baseline regeneration. `pod` group.
+  neuroTueThuNight: 0,
 
   // ── PREFERENCE (always-on) ── Phase 1 work-shape steering. Unlike every preference above,
   // these can fire on ANY shift, so they stack with whichever shift-specific group applies and
@@ -1921,7 +1934,7 @@ const PREFERENCE_GROUPS = {
   // Phase 2.1/2.2 add wedPodLadder and podPgy2Deprioritize here — both POD-only, so they belong in
   // this group like every other POD-specific term (see PREFERENCE_BAND_CEILING.pod for the
   // resulting conscious ceiling increase). 2b-1 adds podEmComposition here too — same reasoning.
-  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition', 'wedPodBamcBody'],
+  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition', 'wedPodBamcBody', 'neuroTueThuNight'],
   // New group (2b-1): FLEX-specific terms had none before this. flexEmComposition/
   // flexPgy2ThirdSlot only ever fire on FLEX-area slots, mutually exclusive with every other
   // group's terms for a single scored candidate — same reasoning as `pod`. See
@@ -2020,6 +2033,7 @@ const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.val
 // addition, or any shrink of flexPgy2ThirdSlot/flexEmComposition, must re-check this margin by
 // hand — it is now the binding constraint, tighter than traumaNight/peds/pod's much larger bands.
 // CONSCIOUS DECISION (chief 2026-11-06): `pod` 43 -> 51 (wedPodBamcBody, 8): Wednesday POD-D wants a BAMC body.
+// `pod` band unchanged by neuroTueThuNight (ships at 0); raising it to 40 means pod: 91: Neuro PGY-1 avoids Tue/Thu nights.
 // (FLEX's PGY-2-over-PGY-3 preference is deliberately NOT a score() term: see SENIOR_COMPOSITION.preferred /
 // preferTruePrimaryPass - measured, any nonzero score term worsened the best-of-N baselines.)
 const PREFERENCE_BAND_CEILING = { traumaNight: 27, peds: 46, pod: 51, always: 19, flex: 21 };
@@ -6074,6 +6088,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Chief 2026-11-06: Wednesday POD-D wants one BAMC body (soft, only while none is on the shift yet).
     const wedPodBamcBody = shift.id === 'POD-D' && dow === 3 && r.category === 'EM_BAMC'
       && !assignedHere.some(x => x.category === 'EM_BAMC') ? 1 : 0;
+    // Chief 2026-11-06: eligKey in AVOID_NIGHT_DOW (Neuro PGY-1) avoids Tue/Thu night shifts (soft ordering only).
+    const neuroTueThuNight = shift.type === 'night' && (AVOID_NIGHT_DOW[eligKey(r)] || []).includes(dow) ? 1 : 0;
     // EM-count composition (2b-1, chief-directed, SOFT — see isEmResident/emCompositionRequired
     // and their own SCORE_WEIGHTS comments): distinct from SENIOR_COMPOSITION's hard PGY-CLASS
     // requirement on the shift's FIRST body, this discourages placing a NON-EM candidate on a
@@ -6227,7 +6243,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       + W.pedsInternNightDeficit * pedsInternNightDeficit
       - W.podEmComposition * podEmComposition - W.flexEmComposition * flexEmComposition
       + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot
-      + W.wedPodBamcBody * wedPodBamcBody + rng();
+      + W.wedPodBamcBody * wedPodBamcBody
+      - W.neuroTueThuNight * neuroTueThuNight + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
