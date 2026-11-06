@@ -28,6 +28,7 @@ import { AREA_COLORS, SHIFTS, SHIFT_MAP, SHIFT_TIMING, SHIFT_DOW, shiftActiveOnD
 import { POD_THIRD_BODY_SHIFT_IDS, POD_CORE_CAP, getCoverageFor, shiftCoverageForDate, DEFAULT_COVERAGE, TWELVE_HOUR_IDS, TWELVE_HOUR_AREAS, twelveHourStateFor, twelveHourAllows, resolveTwelveHourWindows } from './lib/coverage.js';
 import { resolveJcDates, jcDatesInRange, isJcDate, isJcDateAnyAy } from './lib/journalClub.js';
 import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggestFirstFridays, suggestFirstTuesdays, suggestWellnessWednesdays, ayInclusiveRange, materializeLegacyRuleDates, missingRuleDates } from './lib/ruleDates.js';
+import { computeTraumaSplitCapacity } from './lib/traumaSplitCapacity.js';
 import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
 import { describeCapacityGap, splitFairnessPoints } from './lib/structuralFloor.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
@@ -321,16 +322,15 @@ export const DEFAULT_DAY_RULES = {
     ],
   },
   EM_BAMC_1: {
-    // Thursday = BAMC's own Grand Rounds (chief + program director, 2026-10-30). Thursday EVENING and NIGHT
-    // shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are
-    // AS NEEDED: the generator uses one only to fill an otherwise-empty coverage minimum, and AT MOST ONE of
-    // the two in total per block (hard, validateAll rule 'bamcWedNight'). `shiftTypes` narrows a gate to
-    // shifts of those types (see gateCoversShift).
+    // Thursday = BAMC's own Grand Rounds 10a-3p (chief decision 2026-11-06, supersedes 2026-10-30). Thursday
+    // DAY shifts are NEVER allowed (hard strip, no asNeeded). Thursday EVENING and NIGHT shifts are ordinary.
+    // Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED: the generator uses one only to fill an
+    // otherwise-empty coverage minimum, AT MOST ONE per block (hard, validateAll rule 'bamcWedNight').
+    // `shiftTypes` narrows a gate to shifts of those types (see gateCoversShift).
     specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
     shiftGates: [
       { id: 'bamc_thu_day', shiftIds: 'ALL', shiftTypes: ['day'], blockTypeFilter: null,
-        allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
-        asNeeded: true, asNeededLabel: 'BAMC Thursday day shift' },
+        allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'bamc_wed_night', shiftIds: 'ALL', shiftTypes: ['night'], blockTypeFilter: null,
         allowedDays: [0,1,2,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
         asNeeded: true, asNeededLabel: 'BAMC Wednesday night' },
@@ -533,6 +533,12 @@ export const LEGACY_DAY_RULE_DEFAULTS = {
     // this would mask the Thu-day/Wed-night as-needed correction forever.
     { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+    // Pre-2026-11-06 shape: Thursday DAY and Wednesday NIGHT were BOTH as-needed (combined cap 1). Thursday day
+    // is now a HARD strip (BAMC's own Grand Rounds 10a-3p); only Wednesday night stays as-needed.
+    { specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
+      { id: 'bamc_thu_day', shiftIds: 'ALL', shiftTypes: ['day'], blockTypeFilter: null, allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true, asNeeded: true, asNeededLabel: 'BAMC Thursday day shift' },
+      { id: 'bamc_wed_night', shiftIds: 'ALL', shiftTypes: ['night'], blockTypeFilter: null, allowedDays: [0,1,2,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true, asNeeded: true, asNeededLabel: 'BAMC Wednesday night' },
     ] },
   ],
   // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
@@ -902,8 +908,8 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); aim for 6 night shifts/block; 7-12 are allowed ONLY AS NEEDED to fill a coverage minimum (the generator uses them last, Validation flags each night above 6 as an as-needed exception), and more than 12 is an error (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
-const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
-const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting Published saved blocks plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
+const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed); PGY-2 is the preferred senior and a PGY-3 the fallback (soft). Wednesday POD-D runs min 1 / max 3 and prefers one BAMC body (soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
+const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting earlier saved blocks in the same academic year (published or not) plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
 // CHIEF_ROLES/effectiveChiefRole. All three roles carry the same 16-shift target; only the
@@ -940,7 +946,7 @@ const RULE_NOTES = {
   },
   EM_HOME_2: {
     blockTypeNotes: [
-      { ids: ['PEDS_EM'], note: '19 total; 10–12 peds shifts incl. Peds Night (generator biases toward 10, hard-caps at 12), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
+      { ids: ['PEDS_EM'], note: '19 total; 10–12 peds shifts incl. Peds Night (generator biases toward 10, hard-caps at 12; going over 12 needs chief acknowledgement before export), rest elsewhere. Trauma (TRAUMA-N) only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception). Enforced.' },
       { ids: ['EM_VAC'], note: '12 shifts total. Enforced.' },
       { ids: ['OB_VAC'], note: 'Not scheduled by chief — resident self-arranges (rotation marked non-schedulable).' },
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
@@ -960,7 +966,7 @@ const RULE_NOTES = {
   EM_BAMC_1: {
     specialNotes: [
       'Midtrack evenings/nights Mon/Tue: interns may work them normally (old avoid-Mon/Tue gate removed 2026-10-30). Midtrack Day on a Wednesday is BAMC-only (min 0 / max 1).',
-      'Thursday is BAMC Grand Rounds (program decision 2026-10-30): Thursday evening and night shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED only — the generator uses one solely to fill an otherwise-empty coverage minimum ("BAMC Thursday day shift" / "BAMC Wednesday night" exceptions), and at most ONE of the two in total per block (hard; Validation errors on a second).',
+      'Thursday is BAMC Grand Rounds 10a-3p (chief decision 2026-11-06): Thursday DAY shifts are NEVER allowed (hard). Thursday evening and night shifts are ordinary. Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED only — the generator uses one solely to fill an otherwise-empty coverage minimum ("BAMC Wednesday night" exception), at most ONE per block (hard; Validation errors on a second).',
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
@@ -1834,6 +1840,9 @@ const SCORE_WEIGHTS = {
   // 2nd/3rd slot instead prefers an intern once the PGY-3 is present). Weight matched to
   // podPgy1SecondSlot(15) for the same directional-preference magnitude; `flex` group.
   flexPgy2ThirdSlot: 15,
+  // Chief 2026-11-06: Wednesday POD-D prefers that one body be a BAMC resident. Fires only while the shift has
+  // no BAMC body yet, so it asks for ONE, not all. `pod` group.
+  wedPodBamcBody: 8,
 
   // ── PREFERENCE (always-on) ── Phase 1 work-shape steering. Unlike every preference above,
   // these can fire on ANY shift, so they stack with whichever shift-specific group applies and
@@ -1912,7 +1921,7 @@ const PREFERENCE_GROUPS = {
   // Phase 2.1/2.2 add wedPodLadder and podPgy2Deprioritize here — both POD-only, so they belong in
   // this group like every other POD-specific term (see PREFERENCE_BAND_CEILING.pod for the
   // resulting conscious ceiling increase). 2b-1 adds podEmComposition here too — same reasoning.
-  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition'],
+  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition', 'wedPodBamcBody'],
   // New group (2b-1): FLEX-specific terms had none before this. flexEmComposition/
   // flexPgy2ThirdSlot only ever fire on FLEX-area slots, mutually exclusive with every other
   // group's terms for a single scored candidate — same reasoning as `pod`. See
@@ -2010,7 +2019,10 @@ const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.val
 // genuinely meant to be small nudges (see their own SCORE_WEIGHTS comments). Any FUTURE `always`
 // addition, or any shrink of flexPgy2ThirdSlot/flexEmComposition, must re-check this margin by
 // hand — it is now the binding constraint, tighter than traumaNight/peds/pod's much larger bands.
-const PREFERENCE_BAND_CEILING = { traumaNight: 27, peds: 46, pod: 43, always: 19, flex: 21 };
+// CONSCIOUS DECISION (chief 2026-11-06): `pod` 43 -> 51 (wedPodBamcBody, 8): Wednesday POD-D wants a BAMC body.
+// (FLEX's PGY-2-over-PGY-3 preference is deliberately NOT a score() term: see SENIOR_COMPOSITION.preferred /
+// preferTruePrimaryPass - measured, any nonzero score term worsened the best-of-N baselines.)
+const PREFERENCE_BAND_CEILING = { traumaNight: 27, peds: 46, pod: 51, always: 19, flex: 21 };
 
 export const SCORE_TIERS = {
   SCORE_WEIGHTS, PREFERENCE_GROUPS, PREFERENCE_ALWAYS, PREFERENCE_MAX_INPUT, MAX_SHIFT_TARGET,
@@ -2295,12 +2307,12 @@ export function isSchedulable(resident) {
 // grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
 // — used by GR-lecture validation, the weekly-hour-cap GR window (lib/acgmeHours.js's grHoursOn),
 // and (historically) isStreakWorkDay below.
-// BAMC Grand Rounds as-needed cells (2026-10-30): a Thursday DAY shift or a Wednesday NIGHT shift (which runs into
-// Thursday GR). At most ONE of the two per block combined (rule 'bamcWedNight', hard). `dow` = getDay().
+// BAMC Grand Rounds as-needed cell: a Wednesday NIGHT shift (runs into Thursday GR). At most ONE per block
+// (rule 'bamcWedNight', hard). Thursday DAY is no longer an exception since 2026-11-06: it is never allowed
+// (hard eligibility strip), so it never reaches this count. `dow` = getDay().
 function isBamcGrExceptionCell(category, shiftId, dow) {
   if (category !== 'EM_BAMC') return false;
-  const t = SHIFT_MAP[shiftId]?.type;
-  return (t === 'night' && dow === 3) || (t === 'day' && dow === 4);
+  return SHIFT_MAP[shiftId]?.type === 'night' && dow === 3;
 }
 function countBamcGrExceptions(rs) {
   return Object.entries(rs || {}).filter(([ds, s]) => s && isBamcGrExceptionCell('EM_BAMC', s, parseDate(ds).getDay())).length;
@@ -2601,9 +2613,9 @@ const PEDS_EM_MIX = { min: 10, max: 12 };
 
 // ─── FLEX/POD seniority composition ────────────────────────────────────────
 // FLEX and POD (AY26/27 chief-directed, both changes): every staffed shift on either area
-// REQUIRES its own primary EM-Home PGY (POD: PGY-3, FLEX: PGY-2) — hard, no fallback-to-junior
-// exception, except (a) that area's own Wellness Wednesday (see podWellnessSubstituteAllowed /
-// flexWellnessSubstituteAllowed) or (b) an AY conference date that takes the primary PGY class
+// REQUIRES its own primary EM-Home PGY (POD: PGY-3, FLEX: PGY-2 preferred / PGY-3 accepted) — hard, no fallback-to-junior
+// exception, except (a) POD's own Wellness Wednesday (see podWellnessSubstituteAllowed;
+// FLEX has none since 2026-11-06) or (b) an AY conference date that takes the primary PGY class
 // away entirely (see isConferenceAwayFor, near getConferencesInBlock/conferenceDefs — e.g. ACEP
 // takes PGY-3s away, migrating POD's requirement to PGY-2 for those dates; AAEM does the mirror
 // for FLEX/PGY-2), when the OTHER PGY substituting for the missing primary is explicitly allowed.
@@ -2628,8 +2640,12 @@ const PEDS_EM_MIX = { min: 10, max: 12 };
 // PGY-2 OR PGY-3 (`primaries: [2, 3]`), so FLEX has NO fallback PGY and no Wellness-Wednesday
 // substitute (`fallback: null` => nothing is ever "gated" or "substituted" on FLEX). `primary` is the
 // display/legacy PGY (FLEX 2). POD is unchanged: PGY-3 only, PGY-2 the Wellness/conference fallback.
-const SENIOR_COMPOSITION = { FLEX: { primary: 2, primaries: [2, 3], fallback: null }, POD: { primary: 3, primaries: [3], fallback: 2 } };
+// `preferred` (chief 2026-11-06): the PGY classes that count as the TRUE senior. Equals `primaries` for POD; FLEX accepts
+// PGY-2 or PGY-3 (hard rule) but PGY-2 is the default senior, a PGY-3 the fallback, so Phase 3b
+// (preferTruePrimaryPass, winner-only) swaps a lone FLEX PGY-3 for an under-target PGY-2 when one exists.
+const SENIOR_COMPOSITION = { FLEX: { primary: 2, primaries: [2, 3], preferred: [2], fallback: null }, POD: { primary: 3, primaries: [3], preferred: [3], fallback: 2 } };
 const isPrimaryPgyFor = (comp, resident) => resident.category === 'EM_HOME' && comp.primaries.includes(resident.pgy);
+const isPreferredPgyFor = (comp, resident) => resident.category === 'EM_HOME' && comp.preferred.includes(resident.pgy);
 const primaryPgyLabel = comp => comp.primaries.map(p => `PGY-${p}`).join(' or ');
 function isSeniorFor(area, resident) {
   const comp = SENIOR_COMPOSITION[area];
@@ -2679,24 +2695,16 @@ function getBlockProgress(startStr, endStr) {
 // `appSettings.wellnessWednesdaysEnabled === false` disables Wellness Wednesdays program-wide (see
 // wellnessWednesdayDatesFor) — when it's off there IS no Wellness Wednesday for PGY-3s to be
 // off on, so the substitution must be refused too, or a disabled feature would silently keep
-// waiving POD's hard composition rule on an ordinary working day. Deliberately still ignores
-// resident.wellnessOverride/the day-rule ordinal override the same way it always has (see
-// wellnessWednesdayDatesFor's own comment) — only the program-wide toggle, the one control
-// that means "there is no Wellness Wednesday at all", changes this function's answer.
+// waiving POD's hard composition rule on an ordinary working day. Since 2026-11-06 a PGY-3's CUSTOM
+// wellness date (resident.wellnessOverride) also counts, via ayConf.customSeniorWellness.POD attached
+// by withCustomSeniorWellness at the roster-aware entry points.
 function podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) {
   if (appSettings?.wellnessWednesdaysEnabled === false) return false;
-  return isLoggedDate('wellnessWednesday', ayConf, ds, 3);
+  return isLoggedDate('wellnessWednesday', ayConf, ds, 3) || !!ayConf?.customSeniorWellness?.POD?.includes(ds);
 }
-// FLEX's mirror of the above (SENIOR_COMPOSITION.FLEX is now hard too — see the block header
-// comment): the block's own PGY-2 Wellness Wednesday (2nd Wednesday on/after the block's start
-// date — DEFAULT_DAY_RULES.EM_HOME_2's computedDayRules), when a PGY-3 substituting for the
-// missing PGY-2 is explicitly allowed.
-// RETIRED 2026-10-30: an EM PGY-3 now satisfies FLEX outright (SENIOR_COMPOSITION.FLEX.primaries), so
-// there is no FLEX Wellness-Wednesday substitute any more. Kept as an always-false stub only so any
-// stale importer fails closed rather than throwing.
-function flexWellnessSubstituteAllowed() {
-  return false;
-}
+// FLEX has NO Wellness-Wednesday/AAEM substitute (removed 2026-11-06, chief): an EM PGY-2 OR PGY-3
+// satisfies the hard senior rule outright (SENIOR_COMPOSITION.FLEX.primaries); PGY-2 is merely the
+// PREFERRED senior (Phase 3b preferTruePrimaryPass on the winner; solver flexPgy3Fallback + seniorTruePrimary).
 // Single dispatcher so every call site (validateAll, fillDayPass, narrowForSeniority/
 // compositionStillSatisfied) asks one function "may the fallback PGY substitute for the missing
 // primary today" instead of re-deriving the POD-vs-FLEX Wellness-Wednesday branch, or the
@@ -2732,9 +2740,7 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
 // lands inside a conference window (e.g. AY26/27 Block 4's own POD Wellness Wednesday inside ACEP).
 // Returns null when neither path matched (caller has no business calling this then).
 function substituteReasonFor(area, ds, blockStart, appSettings, ayConf) {
-  const ownWellness = area === 'POD'
-    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf)
-    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) : false;
+  const ownWellness = area === 'POD' && podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf);
   if (ownWellness) return 'wellness';
   if (isConferenceAwayFor(area, ds, ayConf)) return 'conference';
   return null;
@@ -2817,11 +2823,12 @@ function seniorCompositionExempt(shift, ds) {
 // placement". Returns the fallback resident, or undefined when this shift/date has none.
 function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf) {
   const comp = SENIOR_COMPOSITION[area];
+  // A resident who satisfies the composition rule but is not a PREFERRED senior: POD's PGY-2 substitute, or FLEX's PGY-3.
   const fallback = allResidents.find(r =>
-    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && comp.fallback != null && r.pgy === comp.fallback &&
+    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && !comp.preferred.includes(r.pgy) &&
     compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
   if (!fallback) return undefined;
-  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && isPrimaryPgyFor(comp, r))) return undefined;
+  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && isPreferredPgyFor(comp, r))) return undefined;
   return fallback;
 }
 // Scans the whole block for any fallbackCompositionAt hit across both SENIOR_COMPOSITION areas
@@ -2856,13 +2863,14 @@ const JC_MAX_PER_AY = 3;
 // isFirstTuesday/getFirstTuesdaysInRange now live in lib/journalClub.js (they had to move: a lib
 // module may never import this file, and the resolvers need them). shiftOverlapsJC lives in
 // lib/shifts.js; ayWindowFor in lib/dates.js — all imported above.
-// Counts JC-worked occurrences for a resident across PUBLISHED saved blocks in the given
+// Counts JC-worked occurrences for a resident across SAVED blocks (published or not — chief decision
+// 2026-11-06: a saved-but-unpublished earlier block is still a plan that will be worked) in the given
 // academic year, excluding excludeBlockId (the live/current block, counted separately since it
 // isn't itself a saved snapshot). Defensive against untrusted/partial snapshot shapes.
-function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null, ayConf = {}) {
+export function countPublishedJC(residentId, ay, blocksHistory = [], excludeBlockId = null, ayConf = {}) {
   let count = 0;
   for (const snap of blocksHistory) {
-    if (!snap?.published || snap.id === excludeBlockId) continue;
+    if (!snap || snap.id === excludeBlockId) continue;
     if ((snap.academicYear || snap.data?.academicYear) !== ay) continue;
     const rs = snap.data?.schedule?.[residentId];
     if (!rs) continue;
@@ -3051,6 +3059,10 @@ export function buildSetupReadiness({ allResidents, block, dayRules, ayConf = {}
     ayLabel: block.academicYear ? `AY ${block.academicYear}` : '',
     conferenceDatesAbsent: !AY_CONF_DATE_FIELDS.some(f => ayConf?.[f]) && resolveTwelveHourWindows(ayConf || {}).length === 0,
     residentIssues, pendingResidentCount, offServiceNoRanges, supplyDemand,
+    traumaSplitShortfalls: computeTraumaSplitCapacity({
+      residents: allResidents.filter(r => isSchedulable(r)), startDate: block.startDate, endDate: block.endDate,
+      traumaBlocks: dayRules?.TRAUMA_BLOCKS ?? TRAUMA_BLOCKS, perResident: TRAUMA_PEDS_SPLIT.trauma,
+    }).shortfalls,
   });
 }
 
@@ -3254,6 +3266,17 @@ export function getShiftTarget(resident, appSettings = {}) {
   // non-participant, exactly like an existing self-cover resident — and every downstream consumer
   // (candidatePool, scoreGenerationResult, scheduleQuality) already handles null.
   return t > 0 ? t : null;
+}
+
+// Payback allowance (chief decision 2026-11-06): a per-block, per-resident count N of extra shifts a
+// resident may be scheduled ABOVE target (e.g. owed after a sick call). Unlike a positive targetDelta it
+// does not raise the target (no fairness/under-target demand) — it only lifts the over-target ceiling to
+// target + N. Denormalized onto the resident as `paybackAllowance` (composeAllResidents). Null target stays null.
+export function getShiftCeiling(resident, appSettings = {}) {
+  const t = getShiftTarget(resident, appSettings);
+  if (t == null) return null;
+  const n = Math.floor(Number(resident?.paybackAllowance));
+  return t + (Number.isFinite(n) && n > 0 ? n : 0);
 }
 
 // An off-service resident's real obligation belongs to their OWN rotation WINDOW
@@ -3687,7 +3710,8 @@ function makeDefaultBlock() {
   return {
     id: `blk_${Date.now()}`, name: '', academicYear: getAcademicYear(),
     startDate: '', endDate: '',
-    emBlockAssignments: {},   // { [residentId]: { blockType, isChief, targetDelta, targetNote, targetIsBuyDown } }
+    emBlockAssignments: {},   // { [residentId]: { blockType, isChief, targetDelta, targetNote, targetIsBuyDown, paybackAllowance } }
+                               // paybackAllowance (2026-11-06): extra shifts allowed ABOVE target (ceiling = target + N); never raises the target
                                // targetDelta/targetNote/targetIsBuyDown: a chief-entered ONE-BLOCK
                                // shift-target adjustment ("buy-down"/"buy-up"), expressed as a delta
                                // + reason note rather than an absolute number so it survives a
@@ -3871,7 +3895,7 @@ export function shiftBlockedByRestrictions(resident, dateStr, shiftId) {
 //     resident/block.
 // Every consumer (getEligibleShifts, validateAll, cellViolations, the grid's WW marker,
 // ResidentCardsView, the PDF/ICS exporters) goes through this so they can't drift.
-// NOT used by podWellnessSubstituteAllowed/flexWellnessSubstituteAllowed (declared below,
+// NOT used by podWellnessSubstituteAllowed (declared below,
 // hard-composition substitution days) — those stay anchored to the COMPUTED 3rd/2nd Wednesday
 // regardless of any individual resident's override; a custom wellness date is a personal
 // eligibility strip, not a change to who may substitute into POD/FLEX's senior slot.
@@ -3884,6 +3908,19 @@ function wellnessWednesdayDatesFor(resident, dayRules, appSettings = {}, ayConf)
   if (resident.wellnessOverride) return [resident.wellnessOverride];
   // Chief-LOGGED per-PGY list (lib/ruleDates.js); the ordinal now only drives the suggester.
   return loggedDates('wellnessWednesday', ayConf, resident.pgy);
+}
+// POD's PGY-2 substitute day also covers a PGY-3's CUSTOM Wellness date (resident.wellnessOverride =
+// 'YYYY-MM-DD'; 'optOut' has none) -- the class-logged list alone missed a PGY-3 off on a personal
+// date. Returns ayConf UNCHANGED when no PGY-3 has one; else a shallow copy carrying
+// customSeniorWellness.POD, read ONLY by podWellnessSubstituteAllowed (loggedDates ignores it, so no
+// eligibility strip changes). Called once at each entry point that has the roster.
+function withCustomSeniorWellness(ayConf, allResidents, appSettings) {
+  if (!Array.isArray(allResidents) || appSettings?.wellnessWednesdaysEnabled === false) return ayConf;
+  const dates = allResidents
+    .filter(r => r && r.category === 'EM_HOME' && r.pgy === 3 && typeof r.wellnessOverride === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.wellnessOverride))
+    .map(r => r.wellnessOverride);
+  if (!dates.length) return ayConf;
+  return { ...(ayConf || {}), customSeniorWellness: { POD: Array.from(new Set([...(ayConf?.customSeniorWellness?.POD || []), ...dates])) } };
 }
 function isWellnessWednesdayFor(resident, dateStr, dayRules, appSettings, ayConf) {
   return wellnessWednesdayDatesFor(resident, dayRules, appSettings, ayConf).includes(dateStr);
@@ -4291,6 +4328,7 @@ function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, 
 }
 
 export function validateAll(allResidents, schedule, block, eligOverrides = {}, appSettings = {}, dayRules = {}, coverage = {}, blocksHistory = [], ayConf = {}) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   const issues = [];
   const sd = block.specialDays || {};
   const jeopardyPolicy = appSettings.jeopardyPolicy ?? 'warn';
@@ -4391,7 +4429,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     // so this is scoped to the new check, not a behavior change for over-target.
     if (target != null && isSchedulable(resident)) {
       const count = Object.values(rs).filter(Boolean).length;
-      if (count > target) {
+      if (count > getShiftCeiling(resident, appSettings)) {
         // Name the chief's own targetDelta override when it's the reason the number looks
         // unusual — otherwise "Over target: 17/17" reads as a mystery when it's really the
         // chief's own buy-down doing its job (target = base +/- delta).
@@ -4450,13 +4488,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Trauma shifts: ${traumaCount} — EM PGY-2/3 cap is ${traumaCap}/block (target 1–2)`, level: 'warn' });
     }
 
-    // BAMC: Thursday day shifts and Wednesday nights (run into Thursday GR) are as-needed only, at most ONE of
-    // them in total per block (2026-10-30). Each cell already carries its own asNeededException warn.
+    // BAMC: Wednesday nights (run into Thursday GR) are as-needed only, at most ONE per block (2026-10-30;
+    // Thursday day became a hard strip 2026-11-06). Each cell already carries its own asNeededException warn.
     if (resident.category === 'EM_BAMC') {
       const grExceptionCount = countBamcGrExceptions(rs);
       if (grExceptionCount > 1)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
-          message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
+          message: `${grExceptionCount} BAMC Wednesday-night shifts — at most one per block (they run into Thursday BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
     }
 
     // One full weekend off (goal, Settings-toggleable; as-needed rule 2026-11-01): a schedulable resident should have at
@@ -4472,9 +4510,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const pedsCount = Object.values(rs).filter(s => SHIFT_MAP[s]?.area === 'PED').length;
       const totalCount = Object.values(rs).filter(Boolean).length;
       const target = getShiftTarget(resident, appSettings);
+      // Above max = acknowledge-before-export (override tier, chief decision 2026-11-06); below min stays a plain warning.
       if (pedsCount > PEDS_EM_MIX.max)
-        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
-          message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: 'warn' });
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'pedsMixMax',
+          message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: severityFor('pedsMixMax', 'validator'), measured: pedsCount });
       else if (pedsCount < PEDS_EM_MIX.min && target != null && totalCount >= target)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
           message: `Peds/EM mix: ${pedsCount} peds shifts (goal ${PEDS_EM_MIX.min}–${PEDS_EM_MIX.max})`, level: 'warn' });
@@ -4502,13 +4541,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Trauma/Peds split: ${pedsHalfCount} peds shifts — peds half target is ${TRAUMA_PEDS_SPLIT.peds}`, level: severityFor('traumaPedsSplit', 'validator'), measured: pedsHalfCount });
     }
 
-    // Journal Club (EM Home only): cap of 3 worked/year (published blocks + this one), presenter
+    // Journal Club (EM Home only): cap of 3 worked/year (earlier saved blocks, published or not, + this one), presenter
     // day-of protections, and sanity checks on jcPresentDates entries.
     if (resident.category === 'EM_HOME') {
       const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, schedule, ayConf);
       if (jcTotal > JC_MAX_PER_AY)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'jcMaxPerAy',
-          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
+          message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts earlier saved blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), measured: jcTotal });
 
       // jcPresentDates accumulates across academic years, so the "is this actually a JC date"
       // check has to be scoped to THIS AY — the old isFirstTuesday test was AY-agnostic and let
@@ -5141,6 +5180,7 @@ function buildStaticGenContext({ allResidents, block, coverage, eligOverrides, a
 // generateScheduleBest supplies to share the expensive rng-independent setup (eligCache above
 // all) across its whole best-of-N + repair run; omit it (the default) for a one-off call.
 export function generateSchedule({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, clearFirst = false, blocksHistory = [], ayConf = {}, rng = Math.random, repair = false, ctx = null, deferUnderTargetDiagnostics = false, keptCellsOverride = null, diagnosticsOnly = false, seedUnfilled = null }) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   // repair: 'truePrimaryOnly' (R5, 2026-09-27 chief decision) is a fourth mode besides
   // true/false/undefined — see the fill-pass call site and the `preferTruePrimaryPass` definition
   // below for what it actually does and why it exists (generateScheduleBest's own post-selection
@@ -5340,6 +5380,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // comment: it's read-only for the whole generation, identical every attempt, and safe to share
   // by reference.
   const target = staticTarget;
+  // Over-target ceiling (target + payback allowance) — equals target for residents without an allowance.
+  const targetCeil = {};
+  for (const r of allResidents) targetCeil[r.id] = getShiftCeiling(r, appSettings);
   const assigned = {}, typeCount = {}, traumaCount = {}, pedsCount = {}, nightCount = {}, nightOnly = {}, jcCount = {};
   // PED-N-specific count (subset of pedsCount, which also includes PED-D/PED-E) — read by score()'s
   // pedsInternNightDeficit term, which trends a TRAUMA_PEDS/PEDS_TRAUMA split resident toward ~5-6
@@ -5533,9 +5576,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const asNeededFor = (r, ds) => asNeededByResident[r.id]?.[ds];
   const CANDIDATE_POOL_STAGES = [
     { reason: 'noEligible', applies: () => asNeededMode !== 'cells' && asNeededMode !== 'late', keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
-    // 'cells' (inline, fillDayPass): as-needed gate cells EXCEPT the BAMC Thursday-day/Wednesday-night ones.
+    // 'cells' (inline, fillDayPass): as-needed gate cells EXCEPT the BAMC Wednesday-night ones.
     // 'late' (lateAsNeededSweep, after fill + repair): strictly eligible residents (nights above 6 are admitted
-    // by the relaxed 'nightCapped' stage) PLUS the BAMC Thursday-day/Wednesday-night as-needed cells.
+    // by the relaxed 'nightCapped' stage) PLUS the BAMC Wednesday-night as-needed cells.
     {
       reason: 'asNeededFallback', applies: () => asNeededMode === 'cells' || asNeededMode === 'late',
       keep: (r, shift, ds) => {
@@ -5566,7 +5609,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'late' sweep: a MIN slot nobody else could fill outranks the shift-count target. The optional pass tops
     // residents up toward target first (POD max is 3 every day), so without this a resident parked at target
     // by top-ups could never take the night 7..12 / BAMC as-needed placement the sweep exists to make.
-    { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < target[r.id] },
+    { reason: 'allAtTarget', applies: () => asNeededMode !== 'late', keep: r => assigned[r.id] < targetCeil[r.id] },
     // Chief rule 2026-10-31: POD's 3rd body is preferably off-service. A core EM resident is admitted to a
     // POD D/E/N shift already holding POD_CORE_CAP core bodies only if they have no other option that day.
     // Reads eligCache/cachedWholeSchedule only - never candidatePool/firstBlockingReason (recursion).
@@ -6028,6 +6071,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Home PGY-2 over a PGY-1 — the opposite direction from POD's intern preference, chief-
     // directed. Never competes with getting the first qualifying PGY-2 placed (seniorFilled gate).
     const flexPgy2ThirdSlot = shift.area === 'FLEX' && seniorFilled && r.category === 'EM_HOME' && r.pgy === 2 ? 1 : 0;
+    // Chief 2026-11-06: Wednesday POD-D wants one BAMC body (soft, only while none is on the shift yet).
+    const wedPodBamcBody = shift.id === 'POD-D' && dow === 3 && r.category === 'EM_BAMC'
+      && !assignedHere.some(x => x.category === 'EM_BAMC') ? 1 : 0;
     // EM-count composition (2b-1, chief-directed, SOFT — see isEmResident/emCompositionRequired
     // and their own SCORE_WEIGHTS comments): distinct from SENIOR_COMPOSITION's hard PGY-CLASS
     // requirement on the shift's FIRST body, this discourages placing a NON-EM candidate on a
@@ -6180,7 +6226,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       - W.nightDurationAlternation * nightDurationAlternation - W.secondRestDay * secondRestDay
       + W.pedsInternNightDeficit * pedsInternNightDeficit
       - W.podEmComposition * podEmComposition - W.flexEmComposition * flexEmComposition
-      + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot + rng();
+      + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot
+      + W.wedPodBamcBody * wedPodBamcBody + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -6518,7 +6565,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
   }
   // Count-based as-needed rules (chief + program director 2026-10-30): nights 7..12 (6 is the goal) and the BAMC
-  // Thursday-day / Wednesday-night shifts (at most one in total) are used only AS NEEDED to fill a coverage
+  // Wednesday-night shifts (at most one) are used only AS NEEDED to fill a coverage
   // minimum. They run ONCE, LAST (after fill + repair), over the min slots still unfilled: deferring means
   // every ordinary fill and every repair swap had first call on the slot, so these are a true last resort and
   // never an early shortcut that steals capacity from the strict passes (measured on realScale/standard:
@@ -6636,8 +6683,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           unassignCell(fallback.id, ds);
           // poolForTruePrimary, not poolFor: an at-target true primary must still be found here —
           // see that function's own header for why.
-          const { candidates } = poolForTruePrimary(shift, ds);
-          const truePrimaries = candidates.filter(r => isPrimaryPgyFor(comp, r));
+          // FLEX's PGY-2 preference is routine (not a once-a-block substitute day), so it keeps the ordinary
+          // allAtTarget exclusion: the PGY-2 must be under target (no over-target trade for a preference).
+          const { candidates } = area === 'FLEX' ? poolFor(shift, ds) : poolForTruePrimary(shift, ds);
+          const truePrimaries = candidates.filter(r => isPreferredPgyFor(comp, r));
           if (truePrimaries.length) {
             const winner = pickBestScore(truePrimaries, shift, ds);
             assignCell(winner.id, shift.id, ds);
@@ -7548,6 +7597,7 @@ export const HINT_STICKINESS_WEIGHT = 100;
 // `report.shortlist`; pickEngineResult re-ranks them with betterQuality. 0 = off. Caller config wins.
 export const SOLVER_SHORTLIST_SIZE = 5;
 export function buildSolverPayload({ allResidents, block, coverage = {}, eligOverrides = {}, appSettings = {}, dayRules = {}, blocksHistory = [], ayConf = {}, config = {}, hint = null, alternateHints = null }) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   // Hand overrides (lib/handOverrides.js): the payload pins every non-empty cell, so an overridden
   // cell breaking a rule the solver enforces as a constraint would be INFEASIBLE. Throwing here
   // sends the generate path to its existing "optimizer unavailable -> keep the built-in result"
@@ -7697,7 +7747,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
           .filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf))
           .map(r => r.id);
         trueByDate[ds] = eligHere
-          .filter(r => isPrimaryPgyFor(comp, r))
+          .filter(r => isPreferredPgyFor(comp, r))
           .map(r => r.id);
       }
       if (Object.keys(byDate).length) seniorPrimary[shift.id] = byDate;
@@ -7793,9 +7843,11 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
           ? JC_MAX_PER_AY - countPublishedJC(r.id, block.academicYear, blocksHistory, block.id, ayConf)
           : null,
         bamcWedNights: r.category === 'EM_BAMC' ? 1 : null, // legacy (Wed nights only): old solvers read this — stricter-or-equal
-        bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Thu-day + Wed-night combined (2026-10-30)
+        bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Wed-night only since 2026-11-06 (Thu day is a hard strip); same value as bamcWedNights
         pedsMixMax: pedsMix ? PEDS_EM_MIX.max : null,
         pedsMixMin: pedsMix ? PEDS_EM_MIX.min : null,
+        // Payback allowance (2026-11-06): ceiling above `target`; omitted (null) = ceiling is target.
+        targetCeiling: target != null && getShiftCeiling(r, appSettings) > target ? getShiftCeiling(r, appSettings) : null,
         fm1PedsMax: isFm1 ? getFm1PedsCap(target) : null,
       },
       traumaPedsSplit: splitResident ? {
@@ -7922,9 +7974,9 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // residents the JS generator's pool-restrict-with-fallback does.
   const emResidentIds = schedulableResidents.filter(isEmResident).map(r => r.id);
   const emPgy2ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 2).map(r => r.id);
-  // 2026-10-30: FLEX no longer gates PGY-3 (an EM PGY-3 satisfies FLEX's senior requirement outright),
-  // so flexPgy3Fallback has nothing to charge: ship an EMPTY list (the solver term is inert on empty).
-  const emPgy3ResidentIds = [];
+  // Chief 2026-11-06: an EM PGY-3 still satisfies FLEX's hard senior rule outright, but PGY-2 is the preferred
+  // senior: ship the EM Home PGY-3 ids so flexPgy3Fallback (QUALITY tier, soft) charges a PGY-3 on FLEX.
+  const emPgy3ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 3).map(r => r.id);
 
   const resolvedConfig = {
     maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS,
@@ -8005,6 +8057,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
 // buildSolverPayload took) since that's all a response-mapper needs — no coverage/eligibility
 // re-derivation happens here, only reshaping.
 export function mapSolverResult(json, { block, allResidents, appSettings = {}, ayConf = {}, dayRules = {}, eligOverrides = {}, blocksHistory = [], coverage = null } = {}) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   const countAssigned = sched => Object.values(sched || {})
     .reduce((n, row) => n + Object.values(row || {}).filter(Boolean).length, 0);
 
@@ -9477,7 +9530,7 @@ export function summarizeGenerationReport(report, appSettings = {}, blockStart =
     if (reasonCounts.circadianBlocked) pushRec('circadianBlocked', `All eligible residents were blocked by a hard circadian rule (max ${NIGHT_RULES.maxRun} consecutive nights, or no evening→day-next-day turnaround) — rearrange nearby nights manually, or Generate again.`);
     if (reasonCounts.nightCapped) pushRec('nightCapped', `Eligible residents were already at the ${NIGHT_RULES.maxPerBlock}-night/block hard cap (or the ${NIGHT_RULES.targetPerBlock}-night target, which is exceeded only as needed) — spread nights across more residents, or cover ${label} manually.`);
     if (reasonCounts.nightStintCapped) pushRec('nightStintCapped', `Eligible residents already have 2 separate night stints this block — a 3rd would fragment nights further (hard error). Extend an existing run, cover ${label} with a different resident, or assign manually.`);
-    if (reasonCounts.jcCapped) pushRec('jcCapped', `Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts Published blocks) — cover ${label} with a resident under the cap.`);
+    if (reasonCounts.jcCapped) pushRec('jcCapped', `Eligible EM Home residents were already at ${JC_MAX_PER_AY} Journal Clubs worked this academic year (counts earlier saved blocks) — cover ${label} with a resident under the cap.`);
     if (reasonCounts.restProtected) pushRec('restProtected', `Left unfilled to protect the 24h post-night rest preference — filling ${label} here would have required a resident under ${NIGHT_RULES.postNightDayRestH}h off after a night shift. Reorder Soft Rule Priority on the Rules tab to allow this, or assign manually.`);
     if (reasonCounts.seniorProtected) pushRec('seniorProtected', `Left unfilled to protect FLEX/POD senior composition — no senior PGY was eligible for ${label}. Reorder Soft Rule Priority on the Rules tab to staff a junior instead, or assign manually.`);
     if (reasonCounts.pgy3Required) pushRec('pgy3Required', `No EM Home PGY-3 (or, on the block's own PGY-3 Wellness Wednesday, or during a conference that takes PGY-3s away (ACEP), PGY-2 substitute) was eligible for ${label} — this shift hard-requires one, no fallback. Assign one manually.`);
@@ -15050,6 +15103,11 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
                         onChange={e => setTargetDelta(res.id, e.target.value)}
                         placeholder="0"
                         className="w-14 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
+                      <label className="text-xs text-gray-500 shrink-0" title="Payback shifts: how many shifts ABOVE target this resident may be scheduled this block (e.g. owed after a sick call). Lifts the over-target ceiling to target + N without raising the target.">Payback:</label>
+                      <input type="number" min="0" step="1" value={ba.paybackAllowance ?? ''}
+                        onChange={e => setBA(res.id, 'paybackAllowance', e.target.value === '' ? undefined : Math.max(0, Math.floor(Number(e.target.value)) || 0))}
+                        placeholder="0"
+                        className="w-12 text-xs border border-gray-300 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary"/>
                       {hasDelta && (
                         <>
                           <input type="text" value={ba.targetNote ?? ''} onChange={e => setBA(res.id, 'targetNote', e.target.value)}
@@ -16136,7 +16194,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), open to EM Home/BAMC/FM-1/Peds, all 7 nights. Trauma day-of-week limits still apply on top.
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              POD max is 3 on <strong>every day</strong> (the 3rd body is only an optional top-up for an under-target or off-service resident; minimum stays 2). POD-D and FLEX-D also drop to <strong>min 1 / max 2 on Wednesdays</strong> (Grand Rounds — that floor is staffed by APPs, not editable here either). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
+              POD max is 3 on <strong>every day</strong> (the 3rd body is only an optional top-up for an under-target or off-service resident; minimum stays 2). POD-D drops to <strong>min 1 / max 3</strong> and FLEX-D to <strong>min 1 / max 2</strong> on Wednesdays (Grand Rounds — that floor is staffed by APPs, not editable here either). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
             </p>
             <p className="text-xs text-gray-500 mt-1">
               12h shifts only staff inside a <strong>12-Hour Shift Window</strong> — set those per academic year on the Dashboard tab (Block Calendar → 12-Hour Shift Windows), where you choose the dates, which areas swap, and whether the 9h shifts are replaced or kept alongside. An academic year you've never opened there still behaves as before: ACEP/AAEM/SAEM dates automatically run POD/MT/FLEX on 12h and suppress their 9h shifts.
@@ -16418,6 +16476,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
 // supply them yet, matching this file's usual "untrusted/partial shape" posture. Every caller that
 // CAN reach them (ShiftPickerModal, ScheduleGrid's handleDrop/inspectorData) does.
 export function cellViolations(resident, dateStr, sid, block, eligOverrides, appSettings, dayRules, ayConf, prevTail = {}, finalSunday = null, nextRotationMap = {}, allResidents = [], blocksHistory = []) {
+  ayConf = withCustomSeniorWellness(ayConf, allResidents, appSettings);
   if (!sid) return [];
   const sd = block.specialDays || {};
   const nextRotation = nextRotationMap[resident.id] || null;
@@ -16550,11 +16609,11 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     }
   }
 
-  // 12. BAMC: at most ONE Thursday-day / Wednesday-night (as-needed) shift in total per block (program tier — always hard).
+  // 12. BAMC: at most ONE Wednesday-night (as-needed) shift per block (program tier — always hard).
   if (shift && isBamcGrExceptionCell(resident.category, shift.id, dow)) {
     const grExceptionCount = countBamcGrExceptions(hypRow);
     if (grExceptionCount > 1)
-      vs.push({ message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: grExceptionCount });
+      vs.push({ message: `${grExceptionCount} BAMC Wednesday-night shifts — at most one per block (they run into Thursday BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: grExceptionCount });
   }
 
   // 13. Trauma/Peds split sub-caps (program tier — always hard).
@@ -16580,7 +16639,7 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     const scheduleWithPlacement = { ...(block.schedule || {}), [resident.id]: hypRow };
     const jcTotal = countPublishedJC(resident.id, block.academicYear, blocksHistory, block.id, ayConf) + countCurrentBlockJC(resident.id, block, scheduleWithPlacement, ayConf);
     if (jcTotal > JC_MAX_PER_AY)
-      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts Published blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
+      vs.push({ message: `${jcTotal} Journal Clubs worked this academic year — max is ${JC_MAX_PER_AY} (counts earlier saved blocks + this one)`, level: severityFor('jcMaxPerAy', 'validator'), rule: 'jcMaxPerAy', measured: jcTotal });
   }
 
   // Hand overrides: if this exact cell already holds a confirmed override for `sid`, its covered
@@ -24326,7 +24385,7 @@ function buildSeniorityRules(block, appSettings, ayConf, allResidents, eligOverr
     pedGuardOwnerLabels,
     composition: SENIOR_COMPOSITION,
     isCompositionExempt: (shift, ds) => seniorCompositionExempt(shift, ds),
-    substituteStatus: (area, ds) => substituteReasonFor(area, ds, block.startDate, appSettings, ayConf),
+    substituteStatus: (area, ds) => substituteReasonFor(area, ds, block.startDate, appSettings, withCustomSeniorWellness(ayConf, allResidents, appSettings)),
   };
 }
 
@@ -25708,6 +25767,8 @@ function composeAllResidents(emRoster, block, blocksHistory) {
       targetDelta: block.emBlockAssignments?.[r.id]?.targetDelta,
       targetNote: block.emBlockAssignments?.[r.id]?.targetNote,
       targetIsBuyDown: !!(block.emBlockAssignments?.[r.id]?.targetIsBuyDown),
+      // Payback allowance (2026-11-06): lifts the over-target ceiling only, see getShiftCeiling.
+      paybackAllowance: block.emBlockAssignments?.[r.id]?.paybackAllowance,
     }));
     // Off-service rotation-window delta (1.11): composed HERE, once, so generator/validateAll/
     // every UI surface that reads allResidents can't disagree on an off-service resident's

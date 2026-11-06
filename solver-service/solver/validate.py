@@ -446,11 +446,9 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
             failures.append(_fail("bamcWedNight", [resident.id], [], [], f"{bamc_n} BAMC Wed nights, cap {resident.caps.bamc_wed_nights}"))
 
         if resident.caps.bamc_gr_exceptions is not None:
-            gr_n = count(lambda sid: payload.shifts[sid].is_night, lambda d: timing.parse_date(d).weekday() == WEDNESDAY) + count(
-                lambda sid: payload.shifts[sid].type == "day", lambda d: timing.parse_date(d).weekday() == THURSDAY
-            )
+            gr_n = bamc_n  # Wednesday nights only since 2026-11-06 (Thursday day is never allowed)
             if gr_n > resident.caps.bamc_gr_exceptions:
-                failures.append(_fail("bamcWedNight", [resident.id], [], [], f"{gr_n} BAMC Thu-day/Wed-night shifts, cap {resident.caps.bamc_gr_exceptions}"))
+                failures.append(_fail("bamcWedNight", [resident.id], [], [], f"{gr_n} BAMC Wed-night shifts, cap {resident.caps.bamc_gr_exceptions}"))
 
         peds_n = count(lambda sid: payload.shifts[sid].area == "PED")
         if resident.caps.peds_mix_max is not None and peds_n > resident.caps.peds_mix_max:
@@ -461,8 +459,9 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
         # (non-schedulable OR a genuine bought-down-to-0 target); correct as written.
         if resident.target is not None:
             total_n = len(by_date)
-            if total_n > resident.target:
-                failures.append(_fail("targetCeiling", [resident.id], [], [], f"{total_n} assigned, target {resident.target}"))
+            ceiling = resident.caps.target_ceiling if resident.caps.target_ceiling is not None else resident.target
+            if total_n > ceiling:
+                failures.append(_fail("targetCeiling", [resident.id], [], [], f"{total_n} assigned, target {resident.target}, ceiling {ceiling}"))
 
         split = resident.trauma_peds_split
         if split is not None:
