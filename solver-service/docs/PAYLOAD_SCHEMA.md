@@ -1497,10 +1497,10 @@ Program decision: some scheduling rules are "the goal, but break as needed to fi
 
 ## 2026-10-30 chief-rules changes (JS payload + solver in lockstep)
 
-- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more, so `emPgy3ResidentIds` is always sent **empty** and `flexPgy3Fallback` is inert (weight key kept in `config/default_weights.json` because the model and tests still read it; `podPgy2Fallback` is unchanged).
+- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more. (Superseded 2026-11-06: see below, `emPgy3ResidentIds` is sent again.)
 - **`traumaMidRun` removed**: weight key, `add_trauma_mid_run_terms` and its objective call are gone (trauma-night position in a run is no longer a rule). Hard cap (rule 43) and `traumaSecondInRun` are unchanged.
 - **Final-Sunday overnight rule removed**: no `finalSundayUnconfirmed` preference is emitted and `eligible` no longer strips night shifts on the final Sunday.
-- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday stays min 1 / max 2.
+- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday is min 1 / max 3 (chief 2026-11-06; was max 2).
 
 **Extended 2026-10-30:** the same `asNeeded` list now also carries off-service weekday/shift-time restrictions (FM/IM/Neuro/Anes/Psych/Podiatry fullBlockDays, onlyDays and dayTypeRestrictions) and Peds/EM PGY-2 TRAUMA-N. No schema or solver change: the cells are produced by `getAsNeededShifts` and handled exactly as above. `coverage['MT-D'][<Wednesday>]` is now `{min:0,max:1}` and only EM_BAMC residents carry MT-D on Wednesdays in `eligible`; Trauma/Peds interns' peds-half `eligible` includes PED-S (no separate split filter in Python).
 
@@ -1618,3 +1618,9 @@ Response additions (all additive, `report` is a plain dict):
 Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
 
 Not ported (tried and rejected there or here): hand-written symmetry breaking (em: stalled 7/7 runs), `repair_hint` with staged re-solves (native CHECK crash), assumption literals for LNS fixing (weak presolve).
+
+## 2026-11-06 chief rules: Wednesday POD-D + FLEX senior preference
+
+- **POD-D Wednesday coverage** is `min 1 / max 3` (`DOW_COVERAGE_OVERRIDE`, direct replacement; was max 2). It flows through `coverage[POD-D][date]` as usual; nothing solver-side changed for it.
+- **FLEX PGY-2 preferred over PGY-3**: `emPgy3ResidentIds` is again sent (EM Home PGY-3 ids) so the existing `flexPgy3Fallback` (QUALITY tier, 250/assignment) charges a PGY-3 on any FLEX shift, and `truePrimary[FLEX-*]` now lists PGY-2 only (`SENIOR_COMPOSITION.preferred`), so `seniorTruePrimary` charges a PGY-3-only FLEX shift while a PGY-2 was eligible. A PGY-3 still satisfies the hard `seniorPrimary[FLEX-*]` rule; PGY-2 is only preferred. Do not re-empty the list.
+- **`wedPodBamcBody`** (`solver/model/pod_wed_bamc.py`, `perUnit` 150, QUALITY tier): per Wednesday POD-D date with at least one BAMC resident (`cohort` starting `EM_BAMC`) able to work it, charges 1 unit when no BAMC resident is on the shift. Independent of staffing, so it cannot favour leaving a minimum empty. Weight 0/absent disables it. Tests: `tests/test_pod_wed_bamc.py`.
