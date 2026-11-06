@@ -3,7 +3,7 @@
 1. Nights per block: `caps.nights` (6) is the SOFT target, `caps.nightsMax` (12) the HARD cap. Each night above the
    target costs `asNeededUse.perUnit`; an older payload without `nightsMax` keeps `nights` as the hard cap
    (stricter-or-equal for old payloads).
-2. BAMC: Thursday DAY + Wednesday NIGHT cells combined <= `caps.bamcGrExceptions` (1) per block.
+2. BAMC: Wednesday NIGHT cells <= `caps.bamcGrExceptions` (1) per block (Thursday DAY is never eligible, 2026-11-06).
 """
 
 from ortools.sat.python import cp_model
@@ -23,6 +23,8 @@ SHIFTS = {
 # 2026-01-05 is a Monday: Wed = 01-07, Thu = 01-08.
 WEEK = [f"2026-01-{5 + i:02d}" for i in range(7)]
 WED, THU = WEEK[2], WEEK[3]
+TWO_WEEKS = [f"2026-01-{5 + i:02d}" for i in range(14)]
+WED2 = TWO_WEEKS[9]
 
 
 def _night_dates(n_days=14):
@@ -127,35 +129,40 @@ def _build_caps(caps, eligible_days):
     return model, store
 
 
-def test_thursday_day_plus_wednesday_night_combined_cap():
+def test_second_wednesday_night_infeasible():
     caps = {"bamcWedNights": 1, "bamcGrExceptions": 1}
-    model, store = _build_caps(caps, WEEK)
-    model.add(store.get_x("b1", "D", THU) == 1)
+    model, store = _build_caps(caps, TWO_WEEKS)
     model.add(store.get_x("b1", "N", WED) == 1)
+    model.add(store.get_x("b1", "N", WED2) == 1)
     assert _status(model) == "INFEASIBLE"
 
 
-def test_one_of_the_two_is_fine():
+def test_one_wednesday_night_is_fine():
     caps = {"bamcWedNights": 1, "bamcGrExceptions": 1}
     model, store = _build_caps(caps, WEEK)
-    model.add(store.get_x("b1", "D", THU) == 1)
+    model.add(store.get_x("b1", "N", WED) == 1)
     assert _status(model) in ("OPTIMAL", "FEASIBLE")
-    model2, store2 = _build_caps(caps, WEEK)
-    model2.add(store2.get_x("b1", "N", WED) == 1)
-    assert _status(model2) in ("OPTIMAL", "FEASIBLE")
 
 
-def test_thursday_evening_and_night_do_not_count():
+def test_thursday_evening_and_night_stay_eligible_and_uncounted():
     caps = {"bamcWedNights": 1, "bamcGrExceptions": 1}
     model, store = _build_caps(caps, WEEK)
     model.add(store.get_x("b1", "E", THU) == 1)
     model.add(store.get_x("b1", "N", WED) == 1)
     assert _status(model) in ("OPTIMAL", "FEASIBLE")
+    model2, store2 = _build_caps(caps, WEEK)
+    model2.add(store2.get_x("b1", "N", THU) == 1)
+    model2.add(store2.get_x("b1", "N", WED) == 1)
+    assert _status(model2) in ("OPTIMAL", "FEASIBLE")
 
 
-def test_absent_field_adds_no_combined_cap():
-    """Old payload: no bamcGrExceptions -> the combined constraint is not built (legacy Wed-night cap only)."""
-    model, store = _build_caps({"bamcWedNights": 1}, WEEK)
-    model.add(store.get_x("b1", "D", THU) == 1)
-    model.add(store.get_x("b1", "N", WED) == 1)
-    assert _status(model) in ("OPTIMAL", "FEASIBLE")
+def test_thursday_day_not_a_cell_when_payload_omits_it():
+    """The app strips Thursday DAY from `eligible` for BAMC (hard), so the solver has no Thursday-day variable."""
+    raw = make_payload(
+        residents=[make_resident("b1", caps={"bamcGrExceptions": 1})], shifts=SHIFTS, dates=WEEK,
+        eligible={"b1": {d: (["E", "N"] if d == THU else ["D", "E", "N"]) for d in WEEK}},
+        coverage={sid: {d: {"min": 0, "max": 1} for d in WEEK} for sid in SHIFTS},
+    )
+    store = build_variables(cp_model.CpModel(), parse_payload(raw))
+    assert store.get_x("b1", "D", THU) is None
+    assert store.get_x("b1", "E", THU) is not None

@@ -321,16 +321,15 @@ export const DEFAULT_DAY_RULES = {
     ],
   },
   EM_BAMC_1: {
-    // Thursday = BAMC's own Grand Rounds (chief + program director, 2026-10-30). Thursday EVENING and NIGHT
-    // shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are
-    // AS NEEDED: the generator uses one only to fill an otherwise-empty coverage minimum, and AT MOST ONE of
-    // the two in total per block (hard, validateAll rule 'bamcWedNight'). `shiftTypes` narrows a gate to
-    // shifts of those types (see gateCoversShift).
+    // Thursday = BAMC's own Grand Rounds 10a-3p (chief decision 2026-11-06, supersedes 2026-10-30). Thursday
+    // DAY shifts are NEVER allowed (hard strip, no asNeeded). Thursday EVENING and NIGHT shifts are ordinary.
+    // Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED: the generator uses one only to fill an
+    // otherwise-empty coverage minimum, AT MOST ONE per block (hard, validateAll rule 'bamcWedNight').
+    // `shiftTypes` narrows a gate to shifts of those types (see gateCoversShift).
     specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }],
     shiftGates: [
       { id: 'bamc_thu_day', shiftIds: 'ALL', shiftTypes: ['day'], blockTypeFilter: null,
-        allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
-        asNeeded: true, asNeededLabel: 'BAMC Thursday day shift' },
+        allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true },
       { id: 'bamc_wed_night', shiftIds: 'ALL', shiftTypes: ['night'], blockTypeFilter: null,
         allowedDays: [0,1,2,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true,
         asNeeded: true, asNeededLabel: 'BAMC Wednesday night' },
@@ -533,6 +532,12 @@ export const LEGACY_DAY_RULE_DEFAULTS = {
     // this would mask the Thu-day/Wed-night as-needed correction forever.
     { fullBlockDays: [4], dayTypeRestrictions: [{ days: [3], mode: 'noNight', scope: 'generator' }], specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
       { id: 'mt_intern_mon_tue_evenight', shiftIds: ['MT-E','MT-N','MT-N12'], blockTypeFilter: null, allowedDays: [0,3,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: false, scope: 'generator' },
+    ] },
+    // Pre-2026-11-06 shape: Thursday DAY and Wednesday NIGHT were BOTH as-needed (combined cap 1). Thursday day
+    // is now a HARD strip (BAMC's own Grand Rounds 10a-3p); only Wednesday night stays as-needed.
+    { specialDayRules: [{ listKey: 'procDays', offset: 'sameDayAndDayBefore' }], shiftGates: [
+      { id: 'bamc_thu_day', shiftIds: 'ALL', shiftTypes: ['day'], blockTypeFilter: null, allowedDays: [0,1,2,3,5,6], outsideAction: 'stripShiftIds', overrideImmune: true, asNeeded: true, asNeededLabel: 'BAMC Thursday day shift' },
+      { id: 'bamc_wed_night', shiftIds: 'ALL', shiftTypes: ['night'], blockTypeFilter: null, allowedDays: [0,1,2,4,5,6], outsideAction: 'stripShiftIds', overrideImmune: true, asNeeded: true, asNeededLabel: 'BAMC Wednesday night' },
     ] },
   ],
   // GR Wednesday used to fully block the day for EM Home (fullBlockDays:[3]) — chief feedback
@@ -960,7 +965,7 @@ const RULE_NOTES = {
   EM_BAMC_1: {
     specialNotes: [
       'Midtrack evenings/nights Mon/Tue: interns may work them normally (old avoid-Mon/Tue gate removed 2026-10-30). Midtrack Day on a Wednesday is BAMC-only (min 0 / max 1).',
-      'Thursday is BAMC Grand Rounds (program decision 2026-10-30): Thursday evening and night shifts are ordinary. Thursday DAY shifts and Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED only — the generator uses one solely to fill an otherwise-empty coverage minimum ("BAMC Thursday day shift" / "BAMC Wednesday night" exceptions), and at most ONE of the two in total per block (hard; Validation errors on a second).',
+      'Thursday is BAMC Grand Rounds 10a-3p (chief decision 2026-11-06): Thursday DAY shifts are NEVER allowed (hard). Thursday evening and night shifts are ordinary. Wednesday NIGHT shifts (which run into Thursday GR) are AS NEEDED only — the generator uses one solely to fill an otherwise-empty coverage minimum ("BAMC Wednesday night" exception), at most ONE per block (hard; Validation errors on a second).',
       'Procedure days: off night before + day of (can work night-of if critical) — set by chief on the Dashboard tab.',
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
@@ -2295,12 +2300,12 @@ export function isSchedulable(resident) {
 // grWorkDow identifies a resident's Grand Rounds weekday (EM Home = Wednesday, BAMC = Thursday)
 // — used by GR-lecture validation, the weekly-hour-cap GR window (lib/acgmeHours.js's grHoursOn),
 // and (historically) isStreakWorkDay below.
-// BAMC Grand Rounds as-needed cells (2026-10-30): a Thursday DAY shift or a Wednesday NIGHT shift (which runs into
-// Thursday GR). At most ONE of the two per block combined (rule 'bamcWedNight', hard). `dow` = getDay().
+// BAMC Grand Rounds as-needed cell: a Wednesday NIGHT shift (runs into Thursday GR). At most ONE per block
+// (rule 'bamcWedNight', hard). Thursday DAY is no longer an exception since 2026-11-06: it is never allowed
+// (hard eligibility strip), so it never reaches this count. `dow` = getDay().
 function isBamcGrExceptionCell(category, shiftId, dow) {
   if (category !== 'EM_BAMC') return false;
-  const t = SHIFT_MAP[shiftId]?.type;
-  return (t === 'night' && dow === 3) || (t === 'day' && dow === 4);
+  return SHIFT_MAP[shiftId]?.type === 'night' && dow === 3;
 }
 function countBamcGrExceptions(rs) {
   return Object.entries(rs || {}).filter(([ds, s]) => s && isBamcGrExceptionCell('EM_BAMC', s, parseDate(ds).getDay())).length;
@@ -4450,13 +4455,13 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Trauma shifts: ${traumaCount} — EM PGY-2/3 cap is ${traumaCap}/block (target 1–2)`, level: 'warn' });
     }
 
-    // BAMC: Thursday day shifts and Wednesday nights (run into Thursday GR) are as-needed only, at most ONE of
-    // them in total per block (2026-10-30). Each cell already carries its own asNeededException warn.
+    // BAMC: Wednesday nights (run into Thursday GR) are as-needed only, at most ONE per block (2026-10-30;
+    // Thursday day became a hard strip 2026-11-06). Each cell already carries its own asNeededException warn.
     if (resident.category === 'EM_BAMC') {
       const grExceptionCount = countBamcGrExceptions(rs);
       if (grExceptionCount > 1)
         issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'bamcWedNight',
-          message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
+          message: `${grExceptionCount} BAMC Wednesday-night shifts — at most one per block (they run into Thursday BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), measured: grExceptionCount });
     }
 
     // One full weekend off (goal, Settings-toggleable; as-needed rule 2026-11-01): a schedulable resident should have at
@@ -5533,9 +5538,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   const asNeededFor = (r, ds) => asNeededByResident[r.id]?.[ds];
   const CANDIDATE_POOL_STAGES = [
     { reason: 'noEligible', applies: () => asNeededMode !== 'cells' && asNeededMode !== 'late', keep: (r, shift, ds) => eligCache[r.id][ds].has(shift.id) },
-    // 'cells' (inline, fillDayPass): as-needed gate cells EXCEPT the BAMC Thursday-day/Wednesday-night ones.
+    // 'cells' (inline, fillDayPass): as-needed gate cells EXCEPT the BAMC Wednesday-night ones.
     // 'late' (lateAsNeededSweep, after fill + repair): strictly eligible residents (nights above 6 are admitted
-    // by the relaxed 'nightCapped' stage) PLUS the BAMC Thursday-day/Wednesday-night as-needed cells.
+    // by the relaxed 'nightCapped' stage) PLUS the BAMC Wednesday-night as-needed cells.
     {
       reason: 'asNeededFallback', applies: () => asNeededMode === 'cells' || asNeededMode === 'late',
       keep: (r, shift, ds) => {
@@ -6518,7 +6523,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     if (r?.category === 'EM_HOME' && isJcDay(ds) && shiftOverlapsJC(sid)) jcCount[rid]++;
   }
   // Count-based as-needed rules (chief + program director 2026-10-30): nights 7..12 (6 is the goal) and the BAMC
-  // Thursday-day / Wednesday-night shifts (at most one in total) are used only AS NEEDED to fill a coverage
+  // Wednesday-night shifts (at most one) are used only AS NEEDED to fill a coverage
   // minimum. They run ONCE, LAST (after fill + repair), over the min slots still unfilled: deferring means
   // every ordinary fill and every repair swap had first call on the slot, so these are a true last resort and
   // never an early shortcut that steals capacity from the strict passes (measured on realScale/standard:
@@ -7793,7 +7798,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
           ? JC_MAX_PER_AY - countPublishedJC(r.id, block.academicYear, blocksHistory, block.id, ayConf)
           : null,
         bamcWedNights: r.category === 'EM_BAMC' ? 1 : null, // legacy (Wed nights only): old solvers read this — stricter-or-equal
-        bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Thu-day + Wed-night combined (2026-10-30)
+        bamcGrExceptions: r.category === 'EM_BAMC' ? 1 : null, // Wed-night only since 2026-11-06 (Thu day is a hard strip); same value as bamcWedNights
         pedsMixMax: pedsMix ? PEDS_EM_MIX.max : null,
         pedsMixMin: pedsMix ? PEDS_EM_MIX.min : null,
         fm1PedsMax: isFm1 ? getFm1PedsCap(target) : null,
@@ -16550,11 +16555,11 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     }
   }
 
-  // 12. BAMC: at most ONE Thursday-day / Wednesday-night (as-needed) shift in total per block (program tier — always hard).
+  // 12. BAMC: at most ONE Wednesday-night (as-needed) shift per block (program tier — always hard).
   if (shift && isBamcGrExceptionCell(resident.category, shift.id, dow)) {
     const grExceptionCount = countBamcGrExceptions(hypRow);
     if (grExceptionCount > 1)
-      vs.push({ message: `${grExceptionCount} BAMC Thursday-day / Wednesday-night shifts — at most one in total per block (Thursday is BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: grExceptionCount });
+      vs.push({ message: `${grExceptionCount} BAMC Wednesday-night shifts — at most one per block (they run into Thursday BAMC Grand Rounds)`, level: severityFor('bamcWedNight', 'validator'), rule: 'bamcWedNight', measured: grExceptionCount });
   }
 
   // 13. Trauma/Peds split sub-caps (program tier — always hard).

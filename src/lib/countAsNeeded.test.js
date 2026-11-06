@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getEligibleShifts, getAsNeededShifts, validateAll, generateSchedule, buildSolverPayload,
-  NIGHT_RULES, DEFAULT_DAY_RULES, countAsNeededExceptions,
+  NIGHT_RULES, DEFAULT_DAY_RULES, LEGACY_DAY_RULE_DEFAULTS, countAsNeededExceptions,
 } from '../ResidentScheduler.jsx';
 import { SHIFTS, SHIFT_MAP } from './shifts.js';
 import { mulberry32 } from './rng.js';
@@ -135,12 +135,12 @@ describe('BAMC Thursday day / Wednesday night: eligibility', () => {
     expect(s).not.toContain('POD-D');
     expect(s).not.toContain('FLEX-D');
   });
-  it('Thursday day shifts are as-needed, labelled; evenings/nights are not', () => {
+  it('Thursday day shifts are HARD-stripped: not eligible and not even as-needed', () => {
     const m = asNeeded(bamc(), THU);
-    expect(m.get('POD-D')).toBe('BAMC Thursday day shift');
-    expect(m.get('MT-D')).toBe('BAMC Thursday day shift');
-    expect(m.has('POD-E')).toBe(false);
-    expect(m.has('POD-N')).toBe(false);
+    expect(m.has('POD-D')).toBe(false);
+    expect(m.has('MT-D')).toBe(false);
+    expect(m.has('FLEX-D')).toBe(false);
+    expect(m.size).toBe(0);
   });
   it('Wednesday night is as-needed, labelled; Wednesday day/evening are ordinary', () => {
     const s = elig(bamc(), WED);
@@ -156,59 +156,73 @@ describe('BAMC Thursday day / Wednesday night: eligibility', () => {
   it('EM Home residents keep their own rules (no BAMC gate)', () => {
     expect(residentGateIds(DEFAULT_DAY_RULES.EM_HOME_2)).not.toContain('bamc_thu_day');
   });
+  it('the old as-needed Thursday-day shape is in LEGACY_DAY_RULE_DEFAULTS (stale overrides get pruned)', () => {
+    const legacy = LEGACY_DAY_RULE_DEFAULTS.EM_BAMC_1;
+    expect(legacy.some(l => (l.shiftGates || []).some(g => g.id === 'bamc_thu_day' && g.asNeeded === true))).toBe(true);
+    const cur = DEFAULT_DAY_RULES.EM_BAMC_1.shiftGates.find(g => g.id === 'bamc_thu_day');
+    expect(cur.asNeeded).toBeUndefined();
+  });
 });
 function residentGateIds(dr) { return (dr.shiftGates || []).map(g => g.id); }
 
 describe('BAMC Thursday day / Wednesday night: generator + validateAll', () => {
-  it('Thursday evening/night fill normally (no exception recorded)', () => {
-    const cov = coverageOnly({ 'PED-N': { min: 1, max: 1 } });
-    const rs = ['b1', 'b2', 'b3', 'b4', 'b5'].map(id => bamc({ id }));
-    const { schedule, report } = gen(rs, cov);
-    // a Thursday night was placed with no exception; only Wednesday nights (as needed) can be BAMC exceptions
-    expect(rs.some(r => Object.entries(schedule[r.id]).some(([ds, sid]) => sid === 'PED-N' && new Date(ds + 'T12:00:00').getDay() === 4))).toBe(true);
-    expect(report.asNeededPlacements.filter(p => p.label === 'BAMC Thursday day shift')).toEqual([]);
-  });
-  const threeBamc = () => ['b1', 'b2', 'b3'].map(id => bamc({ id }));
   const isThuDay = (ds, sid) => !!sid && SHIFT_MAP[sid].type === 'day' && new Date(ds + 'T12:00:00').getDay() === 4;
   const isWedNight = (ds, sid) => !!sid && SHIFT_MAP[sid].type === 'night' && new Date(ds + 'T12:00:00').getDay() === 3;
-  it('a Thursday-day minimum nobody else can fill is staffed as needed, at most once per resident', () => {
+  const threeBamc = () => ['b1', 'b2', 'b3'].map(id => bamc({ id }));
+  it('Thursday evening/night fill normally', () => {
+    const cov = coverageOnly({ 'PED-N': { min: 1, max: 1 } });
+    const rs = ['b1', 'b2', 'b3', 'b4', 'b5'].map(id => bamc({ id }));
+    const { schedule } = gen(rs, cov);
+    expect(rs.some(r => Object.entries(schedule[r.id]).some(([ds, sid]) => sid === 'PED-N' && new Date(ds + 'T12:00:00').getDay() === 4))).toBe(true);
+  });
+  it('a Thursday-day minimum only BAMC residents could fill stays unfilled: never a Thursday day shift', () => {
     const rs = threeBamc();
     const { schedule, report } = gen(rs, coverageOnly({ 'PED-D': { min: 1, max: 1 } }));
+    for (const r of rs) {
+      expect(Object.entries(schedule[r.id]).filter(([ds, sid]) => isThuDay(ds, sid))).toEqual([]);
+    }
+    expect(report.asNeededPlacements.filter(p => p.label === 'BAMC Thursday day shift')).toEqual([]);
+  });
+  it('Wednesday-night demand: at most one Wednesday night per resident, recorded as-needed', () => {
+    const rs = threeBamc();
+    const { schedule, report } = gen(rs, coverageOnly({ 'PED-D': { min: 1, max: 1 }, 'PED-N': { min: 1, max: 1 } }));
     let total = 0;
     for (const r of rs) {
-      const n = Object.entries(schedule[r.id]).filter(([ds, sid]) => isThuDay(ds, sid)).length;
-      expect(n).toBeLessThanOrEqual(1); // the combined cap: never two for one resident
-      total += n;
+      const row = Object.entries(schedule[r.id]);
+      expect(row.filter(([ds, sid]) => isThuDay(ds, sid)).length).toBe(0);
+      const w = row.filter(([ds, sid]) => isWedNight(ds, sid)).length;
+      expect(w).toBeLessThanOrEqual(1);
+      total += w;
     }
-    expect(total).toBeGreaterThan(0); // the strictly-empty Thursday minimum IS filled as needed
-    expect(report.asNeededPlacements.filter(p => p.label === 'BAMC Thursday day shift').length).toBe(total);
-  });
-  it('Thu-day + Wed-night demand together: combined count is still <= 1 per resident', () => {
-    const rs = threeBamc();
-    const { schedule } = gen(rs, coverageOnly({ 'PED-D': { min: 1, max: 1 }, 'PED-N': { min: 1, max: 1 } }));
-    for (const r of rs) {
-      const combined = Object.entries(schedule[r.id]).filter(([ds, sid]) => isThuDay(ds, sid) || isWedNight(ds, sid));
-      expect(combined.length).toBeLessThanOrEqual(1);
-    }
+    expect(report.asNeededPlacements.filter(p => p.label === 'BAMC Wednesday night').length).toBe(total);
   });
   it('optional (top-up) pass never uses a Thursday day shift or Wednesday night', () => {
     const cov = coverageOnly({ 'POD-D': { min: 0, max: 1 }, 'POD-N': { min: 0, max: 1 } });
     const { schedule } = gen([bamc()], cov);
     for (const [ds, sid] of Object.entries(schedule.bamc)) {
       if (!sid) continue;
-      const dow = new Date(ds + 'T12:00:00').getDay();
-      expect(SHIFT_MAP[sid].type === 'day' && dow === 4).toBe(false);
-      expect(SHIFT_MAP[sid].type === 'night' && dow === 3).toBe(false);
+      expect(isThuDay(ds, sid)).toBe(false);
+      expect(isWedNight(ds, sid)).toBe(false);
     }
   });
-  it('validateAll: one Thursday day shift is an as-needed warn; Thu day + Wed night is a program-tier error', () => {
+  it('validateAll: a hand-placed Thursday day shift is a hard error; Thursday evening/night is clean', () => {
     const b = bamc();
-    const one = validate([b], { bamc: { [THU]: 'POD-D' } }).filter(i => i.residentId === 'bamc');
+    const dayIssues = validate([b], { bamc: { [THU]: 'POD-D' } }).filter(i => i.residentId === 'bamc');
+    expect(dayIssues.some(i => i.level === 'error' && i.dateStr === THU)).toBe(true);
+    expect(dayIssues.find(i => i.rule === 'asNeededException')).toBeUndefined();
+    for (const sid of ['POD-E', 'POD-N']) {
+      const ok = validate([b], { bamc: { [THU]: sid } }).filter(i => i.residentId === 'bamc' && i.level === 'error' && i.dateStr === THU);
+      expect(ok).toEqual([]);
+    }
+  });
+  it('validateAll: one Wednesday night is an as-needed warn; a second is a program-tier error', () => {
+    const b = bamc();
+    const one = validate([b], { bamc: { [WED]: 'POD-N' } }).filter(i => i.residentId === 'bamc');
     const ex = one.find(i => i.rule === 'asNeededException');
     expect(ex.level).toBe('warn');
-    expect(ex.message).toMatch(/BAMC Thursday day shift/);
+    expect(ex.message).toMatch(/BAMC Wednesday night/);
     expect(one.find(i => i.rule === 'bamcWedNight')).toBeUndefined();
-    const two = validate([b], { bamc: { [THU]: 'POD-D', [WED]: 'POD-N' } }).filter(i => i.residentId === 'bamc');
+    const two = validate([b], { bamc: { [WED]: 'POD-N', '2026-07-15': 'POD-N' } }).filter(i => i.residentId === 'bamc');
     const cap = two.find(i => i.rule === 'bamcWedNight');
     expect(cap).toBeTruthy();
     expect(cap.level).toBe('error');
@@ -217,16 +231,20 @@ describe('BAMC Thursday day / Wednesday night: generator + validateAll', () => {
 });
 
 describe('BAMC: solver payload', () => {
-  it('ships the Thu-day / Wed-night cells as asNeeded, the combined cap, and the night soft target + hard max', () => {
+  it('ships only Wednesday-night cells as asNeeded (never Thursday day), plus the cap and night limits', () => {
     const fx = makeFixture('standard');
     const payload = buildSolverPayload({ ...fx, allResidents: [...fx.allResidents, bamc({ id: 'bamc_pl' })] });
     const cells = payload.asNeeded.filter(c => c.residentId === 'bamc_pl');
-    expect(cells.some(c => c.shiftId === 'POD-D' && new Date(c.date + 'T12:00:00').getDay() === 4)).toBe(true);
-    expect(cells.some(c => c.shiftId === 'POD-N' && new Date(c.date + 'T12:00:00').getDay() === 3)).toBe(true);
+    const dowOf = c => new Date(c.date + 'T12:00:00').getDay();
+    expect(cells.some(c => c.shiftId === 'POD-N' && dowOf(c) === 3)).toBe(true);
+    expect(cells.some(c => dowOf(c) === 4 && SHIFT_MAP[c.shiftId].type === 'day')).toBe(false);
+    for (const [ds, ids] of Object.entries(payload.eligible.bamc_pl)) {
+      if (new Date(ds + 'T12:00:00').getDay() === 4) expect(ids.some(id => SHIFT_MAP[id].type === 'day')).toBe(false);
+    }
     expect(payload.eligible.bamc_pl[fx.block.startDate]).toBeDefined();
     const caps = payload.residents.find(r => r.id === 'bamc_pl').caps;
     expect(caps.bamcGrExceptions).toBe(1);
-    expect(caps.bamcWedNights).toBe(1); // legacy field kept for old solvers (stricter-or-equal)
+    expect(caps.bamcWedNights).toBe(1);
     expect(caps.nights).toBe(6);
     expect(caps.nightsMax).toBe(12);
   });

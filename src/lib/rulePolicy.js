@@ -50,7 +50,7 @@ export const RULE_POLICY = {
   // 'program' is just as pass-2-unrelaxable as 'acgme' there) and solverTierParity.test.js (already
   // accepts acgme OR program for always-hard families).
   nightRunMax: { tier: 'program', label: 'Max 6 consecutive night shifts' },
-  bamcWedNight: { tier: 'program', label: 'BAMC more than one Thursday-day or Wednesday-night shift per block' },
+  bamcWedNight: { tier: 'program', label: 'BAMC more than one Wednesday-night shift per block' },
   traumaPedsSplit: { tier: 'program', label: 'Trauma/Peds split sub-cap exceeded' },
   jcMaxPerAy: { tier: 'program', label: 'Journal Club worked more than 3x this academic year' },
   grLectureEveNight: { tier: 'program', label: 'Evening/night shift the day before own Grand Rounds lecture' },

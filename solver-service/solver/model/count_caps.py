@@ -119,11 +119,10 @@ def add_count_cap_constraints(model, payload: Payload, store: VarStore, enforcem
 
 
 def _add_bamc_gr_exceptions(model, payload: Payload, store: VarStore, resident: Resident, enforcement=None) -> None:
-    """Count-based as-needed rule (2026-10-30): a BAMC PGY-1 may work at most `caps.bamcGrExceptions` (1) of
-    {Thursday DAY shift, Wednesday NIGHT shift} COMBINED per block (Thursday is BAMC Grand Rounds). Shares the
-    `bamcWedNight` enforcement literal with the legacy Wednesday-nights-only cap. An older payload without the
-    field is unaffected (the legacy `bamcWedNights` cap still binds, and the Thursday-day cells are not eligible
-    for an old solver at all -- they ship only in the optional `asNeeded` list)."""
+    """Count-based as-needed rule: a BAMC PGY-1 may work at most `caps.bamcGrExceptions` (1) Wednesday NIGHT
+    shifts per block (they run into BAMC's Thursday Grand Rounds). Since 2026-11-06 Thursday DAY shifts are never
+    allowed (the app strips them from `eligible`; they never ship in `asNeeded`), so the cap counts Wednesday
+    nights only. Shares the `bamcWedNight` enforcement literal with the legacy `bamcWedNights` cap."""
     cap = resident.caps.bamc_gr_exceptions
     if cap is None:
         return
@@ -131,10 +130,6 @@ def _add_bamc_gr_exceptions(model, payload: Payload, store: VarStore, resident: 
         payload, store, resident.id,
         shift_pred=lambda sid: payload.shifts[sid].is_night,
         date_pred=lambda d: timing.parse_date(d).weekday() == WEDNESDAY,
-    ) + terms_for(
-        payload, store, resident.id,
-        shift_pred=lambda sid: payload.shifts[sid].type == "day",
-        date_pred=lambda d: timing.parse_date(d).weekday() == THURSDAY,
     )
     if terms:
         lit = enforcement(resident.id, SPEC_TO_RULE["bamcWedNights"]) if enforcement else None
