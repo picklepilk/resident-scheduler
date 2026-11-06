@@ -461,8 +461,9 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
         # (non-schedulable OR a genuine bought-down-to-0 target); correct as written.
         if resident.target is not None:
             total_n = len(by_date)
-            if total_n > resident.target:
-                failures.append(_fail("targetCeiling", [resident.id], [], [], f"{total_n} assigned, target {resident.target}"))
+            ceiling = resident.caps.target_ceiling if resident.caps.target_ceiling is not None else resident.target
+            if total_n > ceiling:
+                failures.append(_fail("targetCeiling", [resident.id], [], [], f"{total_n} assigned, target {resident.target}, ceiling {ceiling}"))
 
         split = resident.trauma_peds_split
         if split is not None:

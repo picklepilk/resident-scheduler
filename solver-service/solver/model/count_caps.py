@@ -82,7 +82,7 @@ def _build_simple_specs(payload: Payload) -> list:
         ),
         CapSpec(
             name="targetCeiling",
-            cap_getter=lambda r: r.target,
+            cap_getter=lambda r: r.caps.target_ceiling if r.caps.target_ceiling is not None else r.target,
             shift_pred=lambda sid: True,
             date_pred=lambda d: True,
         ),

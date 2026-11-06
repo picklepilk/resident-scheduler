@@ -1618,3 +1618,11 @@ Response additions (all additive, `report` is a plain dict):
 Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
 
 Not ported (tried and rejected there or here): hand-written symmetry breaking (em: stalled 7/7 runs), `repair_hint` with staged re-solves (native CHECK crash), assumption literals for LNS fixing (weak presolve).
+
+## Payback allowance: `caps.targetCeiling` (2026-11-06)
+
+Optional per-resident `caps.targetCeiling` (int). When present it replaces `target` as the hard shift-count
+ceiling (rule 31 `targetCeiling`, `validate.py`); `target` itself (deficit/fairness) is unchanged. JS sends it only
+when the chief set a per-block `paybackAllowance` N > 0 on the resident (ceiling = target + N). Absent/null = ceiling is `target`.
+Note `pedsMixMax` now has an `override`-tier `RULE_POLICY` entry on the JS side (chief decision 2026-11-06: more than
+12 peds shifts is acknowledge-before-export); the solver cap itself is unchanged.

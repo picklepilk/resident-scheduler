@@ -132,6 +132,8 @@ class ResidentCaps:
     peds_mix_max: Optional[int] = None
     peds_mix_min: Optional[int] = None
     fm1_peds_max: Optional[int] = None
+    # Payback allowance (2026-11-06): hard shift-count ceiling above `target` (target + N). None = ceiling is `target`.
+    target_ceiling: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -367,6 +369,7 @@ def _parse_residents(raw: list) -> list:
             peds_mix_max=caps_raw.get("pedsMixMax"),
             peds_mix_min=caps_raw.get("pedsMixMin"),
             fm1_peds_max=caps_raw.get("fm1PedsMax"),
+            target_ceiling=caps_raw.get("targetCeiling"),
         )
         tps_raw = r.get("traumaPedsSplit")
         tps = None
