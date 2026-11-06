@@ -70,7 +70,7 @@ walkthrough mounts in (see "Decisions" below) — the `roles` tags below match t
 ### 5. Scheduling Rules — coverage targets
 - **Headline:** Set how many residents each shift needs before you generate.
 - **Bullets:**
-  - e.g. POD Day needs 2 on weekdays, 3 on Mon/Tue.
+  - e.g. POD Day needs at least 2, up to 3 any day.
   - Day-of-week rules like Grand Rounds Wednesday live here too.
 - **Target:** `tab-rules` · **Route:** `rules` · **Roles:** admin
 

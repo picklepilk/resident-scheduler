@@ -32,6 +32,7 @@ TRAUMA_PER_RUN_MAX = 2  # batch 2: mirrors trauma_runs.TRAUMA_PER_RUN_HARD_CAP,
 JC_WINDOW_START_H = 18
 JC_WINDOW_END_H = 21
 WEDNESDAY = 2
+THURSDAY = 3
 SATURDAY = 5
 
 
@@ -270,10 +271,11 @@ def _check_night_run_and_cap_and_segments(payload: Payload, schedule: dict) -> l
         if run > NIGHT_RUN_MAX:
             failures.append(_fail("nightRunMax", [resident.id], [], [], f"night run of {run}"))
 
-        if not resident.night_exempt and resident.caps.nights is not None:
+        night_hard = resident.caps.nights_max if resident.caps.nights_max is not None else resident.caps.nights
+        if not resident.night_exempt and night_hard is not None:
             total = sum(1 for d in payload.block.dates if flags.get(d))
-            if total > resident.caps.nights:
-                failures.append(_fail("nightCap", [resident.id], [], [], f"{total} nights, cap {resident.caps.nights}"))
+            if total > night_hard:
+                failures.append(_fail("nightCap", [resident.id], [], [], f"{total} nights, cap {night_hard}"))
 
         # night_exempt (e.g. FM-3 on PED-N-FM) skips the segments cap too, same as the nights-cap
         # check above -- mirrors circadian.py's `_add_night_run_segments` (fixed 2026-09-27) and
@@ -442,6 +444,13 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
         bamc_n = count(lambda sid: payload.shifts[sid].is_night, lambda d: timing.parse_date(d).weekday() == WEDNESDAY)
         if resident.caps.bamc_wed_nights is not None and bamc_n > resident.caps.bamc_wed_nights:
             failures.append(_fail("bamcWedNight", [resident.id], [], [], f"{bamc_n} BAMC Wed nights, cap {resident.caps.bamc_wed_nights}"))
+
+        if resident.caps.bamc_gr_exceptions is not None:
+            gr_n = count(lambda sid: payload.shifts[sid].is_night, lambda d: timing.parse_date(d).weekday() == WEDNESDAY) + count(
+                lambda sid: payload.shifts[sid].type == "day", lambda d: timing.parse_date(d).weekday() == THURSDAY
+            )
+            if gr_n > resident.caps.bamc_gr_exceptions:
+                failures.append(_fail("bamcWedNight", [resident.id], [], [], f"{gr_n} BAMC Thu-day/Wed-night shifts, cap {resident.caps.bamc_gr_exceptions}"))
 
         peds_n = count(lambda sid: payload.shifts[sid].area == "PED")
         if resident.caps.peds_mix_max is not None and peds_n > resident.caps.peds_mix_max:

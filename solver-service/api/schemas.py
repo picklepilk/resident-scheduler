@@ -41,7 +41,14 @@ class ConfigModel(_RequestModel):
     symmetryLevel: Optional[int] = None
     # Seed portfolio: K concurrent solves with distinct seeds, best kept (solver/solve.py).
     # Clamped to 1..8 by solver/io/payload.py.
-    portfolio: int = 1
+    # Absent -> service auto-picks K (2 when >= 12 effective workers, else 1); explicit value always wins.
+    portfolio: Optional[int] = None
+    # Optional per-run CP-SAT param overrides for portfolio runs; see PAYLOAD_SCHEMA.md.
+    portfolioParams: Optional[list[dict]] = None
+    # Per-changed-cell penalty vs `hint` (quality tier); 0/absent = off. solver/model/hint_stickiness.py.
+    hintStickiness: Optional[int] = None
+    # Optional outer LNS after the staged solve: {enabled, fraction, subSolveSeconds}; see solver/lns_outer.py.
+    outerLns: Optional[dict] = None
 
 
 class BlockModel(_RequestModel):
@@ -59,6 +66,8 @@ class ShiftModel(_RequestModel):
 
 class CapsModel(_RequestModel):
     nights: Optional[int] = None
+    nightsMax: Optional[int] = None
+    bamcGrExceptions: Optional[int] = None
     trauma: Optional[int] = None
     jcRemaining: Optional[int] = None
     bamcWedNights: Optional[int] = None
@@ -131,6 +140,8 @@ class SolveRequest(_RequestModel):
     # R9 (2026-09-27, CP-SAT-as-polisher): warm-start hint, SAME shape as
     # `locked` but a soft suggestion -- see solver/io/payload.py's Payload.hint.
     hint: list[LockedCellModel] = Field(default_factory=list)
+    # Extra warm starts for the seed portfolio (each same shape as `hint`); see Payload.alternate_hints.
+    alternateHints: list[list[LockedCellModel]] = Field(default_factory=list)
     coverage: dict = Field(default_factory=dict)
     seniorPrimary: dict = Field(default_factory=dict)
     jcDates: list = Field(default_factory=list)
@@ -168,6 +179,7 @@ class SolveResponse(BaseModel):
     report: dict
     feasibility: Optional[dict] = None
     validation: dict
+    tiers: Optional[dict] = None
 
 
 class HealthResponse(BaseModel):

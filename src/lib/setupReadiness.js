@@ -106,7 +106,7 @@ export function computeSetupGaps(input = {}) {
   let pressure = null;
   if (supplyDemand && supplyDemand.supply > 0) {
     const ratio = supplyDemand.demand / supplyDemand.supply;
-    pressure = { ratio, level: pressureLevel(ratio), demand: supplyDemand.demand, supply: supplyDemand.supply };
+    pressure = { ratio, level: pressureLevel(ratio), demand: supplyDemand.demand, supply: supplyDemand.supply, excess: Math.max(0, supplyDemand.demand - supplyDemand.supply) };
   }
   return { gaps, pressure };
 }

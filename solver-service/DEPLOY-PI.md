@@ -24,3 +24,7 @@ Set `VITE_SOLVER_URL=https://picklehub.tail424ec7.ts.net:10000` and redeploy. CS
 
 ## Ops
 `systemctl --user status|restart resident-solver`, `journalctl --user -u resident-solver -f`. The Pi must stay on; if it is off the app silently uses the built-in generator.
+
+## Run telemetry (`SOLVER_RUNLOG_DIR`)
+
+Set `SOLVER_RUNLOG_DIR=/path/to/dir` in the solver's environment (for example an `Environment=` line in the systemd unit) to append one JSON line per finished solve (sync `/solve` and background jobs) to `<dir>/runs.jsonl`. Each line carries host, cpu count, workers, budget/deadline, portfolio K, feature flags, resident/date counts, status, wall seconds, tiers, objective and the deadline/stall/outerLns summaries. It never contains resident ids, names, dates or the schedule. Unset means no file. Write failures are swallowed. Summarize with `python -I tools/runs_summary.py "$SOLVER_RUNLOG_DIR/runs.jsonl"` (grouped by host, budget and flags).

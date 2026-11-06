@@ -50,7 +50,7 @@ export const RULE_POLICY = {
   // 'program' is just as pass-2-unrelaxable as 'acgme' there) and solverTierParity.test.js (already
   // accepts acgme OR program for always-hard families).
   nightRunMax: { tier: 'program', label: 'Max 6 consecutive night shifts' },
-  bamcWedNight: { tier: 'program', label: 'BAMC more than one Wednesday-night shift per block' },
+  bamcWedNight: { tier: 'program', label: 'BAMC more than one Thursday-day or Wednesday-night shift per block' },
   traumaPedsSplit: { tier: 'program', label: 'Trauma/Peds split sub-cap exceeded' },
   jcMaxPerAy: { tier: 'program', label: 'Journal Club worked more than 3x this academic year' },
   grLectureEveNight: { tier: 'program', label: 'Evening/night shift the day before own Grand Rounds lecture' },
@@ -66,7 +66,7 @@ export const RULE_POLICY = {
   traumaDayRotationGuard: { tier: 'program', label: 'Trauma Day given to a resident off a Trauma/Peds rotation' },
 
   // ─── Tier: override ───────────────────────────────────────────────────────
-  nightsTotalBlock: { tier: 'override', label: 'More than 6 night shifts total this block' },
+  nightsTotalBlock: { tier: 'override', label: 'More than 12 night shifts total this block (6 is the target; 7-12 are as-needed exceptions)' },
   nightStintCount: { tier: 'override', label: 'More than 2 separate night stints this block' },
   traumaRunCap: { tier: 'override', label: 'More than 2 Trauma Night shifts in one night run' },
   podPgy3Composition: { tier: 'override', label: 'POD shift missing its required PGY-3' },
@@ -74,7 +74,6 @@ export const RULE_POLICY = {
   wellnessWednesday: { tier: 'override', label: 'Wellness Wednesday day/evening shift' },
   academicChiefTueEveNight: { tier: 'override', label: 'Academic chief scheduled Tuesday evening/night' },
   approvedDayOff: { tier: 'override', label: 'Shift scheduled on an approved day off' },
-  finalSundayOvernight: { tier: 'override', label: 'Final-Sunday overnight leaving the ED for a non-continuing rotation' },
   pedNightSwingOwnerGuard: { tier: 'override', label: "Peds night/swing shift given to a non-owner category" },
 
   // ─── Tier: info ───────────────────────────────────────────────────────────
@@ -94,6 +93,14 @@ export const RULE_POLICY = {
   // no export-blocking count or generator scoring. See CLAUDE.md's fix-plan note on this pair.
   seniorEmCountComposition: { tier: 'info', label: 'POD/FLEX shift short of its chief-directed EM headcount' },
   seniorPgyGating: { tier: 'info', label: 'Junior PGY covered a slot a senior PGY already filled (chief-directed gating)' },
+  // Program decision 2026-10-30: a day-rule gate flagged `asNeeded` ("the goal, but break as needed to
+  // fill the schedule") was broken to staff a coverage MINIMUM (getAsNeededShifts, validateAll). 'info'
+  // for the same reason as the pair above: always a plain, visible 'warn', never in EXPORT_BLOCKING_RULE_IDS
+  // or countBlockingWarns; best-of-N ranking prices it through the quality vector's last slot instead
+  // (scheduleQuality.js FAIRNESS_AXIS_WEIGHTS.asNeededUse), never a new slot.
+  // Chief rule 2026-10-31: a 3rd core EM body on POD D/E/N is the last resort (off-service preferred). Plain info warn.
+  podThirdBody: { tier: 'info', label: 'POD shift has 3 core EM residents (off-service preferred for the 3rd body)' },
+  asNeededException: { tier: 'info', label: 'Rule broken as needed to fill a coverage minimum' },
 };
 
 // 2026-10-18 chief decision: every 'program' rule plus rotationEligibility (tiered 'acgme' for

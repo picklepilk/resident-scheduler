@@ -18,9 +18,9 @@ describe('computeTotalCoverageSupply', () => {
     // id in no window" {0,0} branch for the other six). What remains: POD-D(2,
     // DOW_COVERAGE_OVERRIDE forces max 2 same as base) + POD-E(2) + POD-N(2) + PED-D(1) + PED-E(1)
     // + PED-N(1) + PED-N-FM(1) + PED-S(1) + FLEX-D(2, DOW_COVERAGE_OVERRIDE drops base max 3 -> 2)
-    // + FLEX-E(3) + FLEX-N(3) + MT-D(1) + MT-E(1) + MT-N(1) = 22.
+    // + FLEX-E(3) + FLEX-N(3) + MT-D(1) + MT-E(1) + MT-N(1) = 22; POD max is now 3 every day, so POD-E and POD-N are 3 each (POD-D keeps the Wednesday direct override of 2) = 24.
     const supply = computeTotalCoverageSupply(['2026-07-08'], {}, {});
-    expect(supply).toBe(22);
+    expect(supply).toBe(24); // was 22 before POD-E/POD-N max rose to 3 every day (2026-10-30)
   });
 
   it('is additive across dates (two ordinary Wednesdays = double one)', () => {

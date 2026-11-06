@@ -17,7 +17,6 @@ from solver.model.trauma_runs import (
     add_night_duration_alternation_terms,
     add_peds_intern_night_deficit_term,
     add_second_rest_day_terms,
-    add_trauma_mid_run_terms,
     add_trauma_run_hard_cap,
     add_trauma_second_in_run_terms,
 )
@@ -170,53 +169,15 @@ def test_trauma_second_in_run_is_free_with_only_one_trauma_night():
 
 
 # ---------------------------------------------------------------------------
-# soft: traumaMidRun -- steers a free choice to the run's edge
+# traumaMidRun REMOVED 2026-10-30 (chief + PD): trauma-night position within a run is no
+# longer a rule. The hard cap + traumaSecondInRun above are unchanged.
 # ---------------------------------------------------------------------------
 
-def test_trauma_mid_run_steers_the_free_night_away_from_trauma():
-    dates = _dates(3)
-    eligible = {"r1": {d: ["TRAUMA-N", "N"] for d in dates}}
-    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
-    payload, model, store = _build(
-        dates, TRAUMA_SHIFTS, eligible, coverage,
-        [make_resident("r1", caps={"nights": 6})],
-        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
-    )
-    # day0 and day2 (the run's edges) are non-trauma nights, fixed.
-    model.add(store.get_x("r1", "N", dates[0]) == 1)
-    model.add(store.get_x("r1", "N", dates[2]) == 1)
-    # day1 (strictly interior) is a FREE choice: TRAUMA-N or N.
-    model.add_exactly_one(store.get_x("r1", "TRAUMA-N", dates[1]), store.get_x("r1", "N", dates[1]))
-
-    group = TermGroup("t")
-    add_trauma_mid_run_terms(model, payload, store, group, coef=1000)
-    total_expr = sum((coef * expr for coef, expr in group.terms), start=0)
-    model.minimize(total_expr)
-
-    solver = cp_model.CpSolver()
-    assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
-    assert solver.value(store.get_x("r1", "TRAUMA-N", dates[1])) == 0
-    assert solver.value(store.get_x("r1", "N", dates[1])) == 1
-    assert solver.value(total_expr) == 0
-
-
-def test_trauma_mid_run_is_free_at_the_edge_of_a_run():
-    # day0 is the FIRST night of the run (a neighbor -- day "-1" -- doesn't
-    # exist), so even a trauma night there must be free of the mid-run cost.
-    dates = _dates(2)
-    eligible = {"r1": {d: ["TRAUMA-N", "N"] for d in dates}}
-    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
-    payload, model, store = _build(
-        dates, TRAUMA_SHIFTS, eligible, coverage,
-        [make_resident("r1", caps={"nights": 6})],
-        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
-    )
-    model.add(store.get_x("r1", "TRAUMA-N", dates[0]) == 1)
-    model.add(store.get_x("r1", "N", dates[1]) == 1)
-
-    group = TermGroup("t")
-    add_trauma_mid_run_terms(model, payload, store, group, coef=1000)
-    assert _cost_of(model, store, group.terms) == 0
+def test_trauma_mid_run_term_is_gone():
+    assert not hasattr(trauma_runs_mod, "add_trauma_mid_run_terms")
+    import json, pathlib
+    weights = json.loads((pathlib.Path(__file__).parent.parent / "config" / "default_weights.json").read_text())
+    assert "traumaMidRun" not in weights
 
 
 # ---------------------------------------------------------------------------
@@ -584,43 +545,6 @@ def test_second_in_run_stays_inert_when_one_endpoint_is_never_trauma_eligible():
 
     group = TermGroup("t")
     add_trauma_second_in_run_terms(model, payload, store, group, coef=1000)
-    assert group.terms == []
-
-
-def test_mid_run_stays_inert_when_the_middle_date_is_never_trauma_eligible():
-    """Resident IS trauma-eligible elsewhere in the block (dates[3]), so the
-    coarse per-resident skip must NOT fire -- proves the finer per-position
-    skip inside add_trauma_mid_run_terms is what suppresses this term for
-    the interior dates where TRAUMA-N was never offered."""
-    dates = _dates(4)
-    eligible = {
-        "r1": {
-            dates[0]: ["N"],
-            dates[1]: ["N"],                 # candidate mid date -- TRAUMA-N never offered
-            dates[2]: ["N"],
-            dates[3]: ["TRAUMA-N", "N"],      # trauma-eligible ELSEWHERE in the block
-        }
-    }
-    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in TRAUMA_SHIFTS}
-    payload, model, store = _build(
-        dates, TRAUMA_SHIFTS, eligible, coverage,
-        [make_resident("r1", caps={"nights": 6})],
-        raw_overrides={"traumaNightShiftIds": ["TRAUMA-N"]},
-    )
-    model.add(store.get_x("r1", "N", dates[0]) == 1)
-    model.add(store.get_x("r1", "N", dates[1]) == 1)
-    model.add(store.get_x("r1", "N", dates[2]) == 1)
-    model.add(store.get_x("r1", "N", dates[3]) == 1)
-
-    resident = payload.resident("r1")
-    assert trauma_runs_mod._trauma_possible_indices(payload, store, resident)  # non-empty
-
-    group = TermGroup("t")
-    add_trauma_mid_run_terms(model, payload, store, group, coef=1000)
-    # The only candidate mid-positions with a known idx+1 are dates[0..2]
-    # (dates[3] is the block's last date -- no idx+1 in range); none of them
-    # is ever trauma-eligible, so the group stays empty even though the
-    # resident overall IS trauma-eligible.
     assert group.terms == []
 
 

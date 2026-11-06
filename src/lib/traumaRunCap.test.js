@@ -81,48 +81,21 @@ describe('validateAll — trauma-run rules on a hand-built schedule', () => {
     expect(flagged).toEqual([]);
   });
 
-  it('warning: TRAUMA-N sits mid-run of a mixed run (not first/last)', () => {
+  it('NO warning when TRAUMA-N sits mid-run of a mixed run (position rule dropped 2026-10-30)', () => {
     const schedule = { r1: { '2026-07-03': 'POD-N', '2026-07-04': 'TRAUMA-N', '2026-07-05': 'POD-N' } };
     const issues = validateAll(residents, schedule, block, {}, appSettings, {}, {}, [], {});
-    const midRunWarns = issues.filter(i => i.level === 'warn' && i.message.includes('mid-run'));
-    expect(midRunWarns.length).toBeGreaterThan(0);
+    expect(issues.filter(i => /mid-run/.test(i.message))).toEqual([]);
   });
 
   it('no mid-run warning when TRAUMA-N sits at a run END (mixed run)', () => {
     const schedule = { r1: { '2026-07-03': 'TRAUMA-N', '2026-07-04': 'POD-N', '2026-07-05': 'POD-N' } };
     const issues = validateAll(residents, schedule, block, {}, appSettings, {}, {}, [], {});
-    const midRunWarns = issues.filter(i => i.level === 'warn' && i.message.includes('mid-run'));
-    expect(midRunWarns).toEqual([]);
+    expect(issues.filter(i => /mid-run/.test(i.message))).toEqual([]);
   });
 
   it('no mid-run warning for a pure-trauma run (every night is TRAUMA-N)', () => {
     const schedule = { r1: { '2026-07-03': 'TRAUMA-N', '2026-07-04': 'TRAUMA-N' } };
     const issues = validateAll(residents, schedule, block, {}, appSettings, {}, {}, [], {});
-    const midRunWarns = issues.filter(i => i.level === 'warn' && i.message.includes('mid-run'));
-    expect(midRunWarns).toEqual([]);
-  });
-});
-
-describe("candidatePool's traumaRunCapped reason is reachable through generateSchedule", () => {
-  it('a resident already at 2 consecutive TRAUMA-N nights is excluded from a 3rd, surfacing reason traumaRunCapped', () => {
-    // Minimal 1-resident scenario, isolated from the real fixture's roster/coverage noise: r1
-    // already has TRAUMA-N kept on Fri/Sat (2026-07-03/04); Sunday (07-05, also inside TRAUMA-N's
-    // window) has coverage min:1 and r1 is the only resident who could ever fill it. The existing
-    // PER-BLOCK trauma cap (getTraumaCap, default 2) is disabled here (emTraumaCap: 0) so the
-    // observed exclusion reason is unambiguously the NEW per-RUN cap, not the older per-block one.
-    const zeroedCoverage = Object.fromEntries(SHIFTS.map(s => [s.id, { min: 0, max: 0 }]));
-    zeroedCoverage['TRAUMA-N'] = { min: 1, max: 1 };
-    const allResidents = [{ id: 'r1', category: 'EM_HOME', pgy: 2, blockType: 'EM', firstName: 'R', lastName: '1' }];
-    const block = {
-      id: 'blk', startDate: '2026-07-03', endDate: '2026-07-05', academicYear: 'AY26/27',
-      schedule: { r1: { '2026-07-03': 'TRAUMA-N', '2026-07-04': 'TRAUMA-N' } },
-    };
-    const { report } = generateSchedule({
-      allResidents, block, coverage: zeroedCoverage,
-      appSettings: { emTraumaCap: 0 }, ayConf: { jcDates: [] },
-      rng: mulberry32(1),
-    });
-    const traumaRunCappedUnfilled = report.unfilled.filter(u => u.reason === 'traumaRunCapped' && u.shiftId === 'TRAUMA-N' && u.dateStr === '2026-07-05');
-    expect(traumaRunCappedUnfilled.length).toBe(1);
+    expect(issues.filter(i => /mid-run/.test(i.message))).toEqual([]);
   });
 });

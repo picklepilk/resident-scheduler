@@ -350,3 +350,20 @@ def test_trauma_cap_is_still_a_genuinely_relaxable_last_resort():
     assert len(violations) == 1
     assert violations[0]["rule"] == "traumaCap"
     assert violations[0]["residentIds"] == ["r1"]
+
+
+def test_locked_non_primary_senior_cell_gives_relaxed_with_senior_gaps():
+    """Senior composition is hard in pass 1 but slack in pass 2: a locked cell staffed only by a
+    non-primary resident forces pass 1 INFEASIBLE, pass 2 RELAXED with a reported seniorGap."""
+    d = "2026-01-05"
+    payload = parse_payload(make_payload(
+        residents=[make_resident("r1"), make_resident("r2")],
+        eligible={"r1": {d: ["D"]}, "r2": {}},
+        locked=[{"residentId": "r1", "date": d, "shiftId": "D"}],
+        seniorPrimary={"D": {d: ["r2"]}},
+        dates=[d],
+    ))
+    result = solve(payload)
+    assert result.status == "RELAXED"
+    assert result.mode == "relaxed"
+    assert result.report["seniorGaps"] == [{"dateStr": d, "shiftId": "D", "reason": "noSeniorPrimary"}]

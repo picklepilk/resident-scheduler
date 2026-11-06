@@ -82,3 +82,31 @@ def test_trauma_peds_split_peds_half_ok_when_trauma_half_ok():
     model.add(store.get_x("r1", "PED-D", dates[3]) == 1)
     solver = cp_model.CpSolver()
     assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
+
+
+def test_peds_mix_max_counts_peds_night():
+    # Chief 2026-11-01: Peds Night is peds work for Peds/EM PGY-2, so PED-N counts toward pedsMixMax
+    # exactly like PED-D (the cap keys off shift area == "PED", not shift type).
+    shifts = {
+        "PED-D": {"startH": 7, "durationH": 9, "type": "day", "area": "PED"},
+        "PED-N": {"startH": 23, "durationH": 9, "type": "night", "area": "PED"},
+    }
+    dates = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    eligible = {"r1": {d: ["PED-D", "PED-N"] for d in dates}}
+    coverage = {sid: {d: {"min": 0, "max": 1} for d in dates} for sid in shifts}
+
+    def run(forced, cap):
+        raw = make_payload(residents=[make_resident("r1", caps={"pedsMixMax": cap})], shifts=shifts,
+                           dates=dates, eligible=eligible, coverage=coverage)
+        payload = parse_payload(raw)
+        model = cp_model.CpModel()
+        store = build_variables(model, payload)
+        add_count_cap_constraints(model, payload, store)
+        for sid, d in forced:
+            model.add(store.get_x("r1", sid, d) == 1)
+        solver = cp_model.CpSolver()
+        return solver.status_name(solver.solve(model))
+
+    forced = [("PED-D", dates[0]), ("PED-D", dates[1]), ("PED-N", dates[2])]
+    assert run(forced, 2) == "INFEASIBLE"          # 2 day + 1 night = 3 > cap 2
+    assert run(forced, 3) in ("OPTIMAL", "FEASIBLE")

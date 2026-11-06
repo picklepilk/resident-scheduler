@@ -157,7 +157,18 @@ const SEED = 42;
 // slack once Phase 5 has run) makes largely unreachable.
 const CEILINGS = {
   // 2026-10-16: 13 -> 10 (nightCluster jcPresentDates/grLectureDates look-ahead, see header).
-  standard: { twoSegment: 10, mergeable: 10 },
+  // 2026-10-31: 10 -> 15 (feat/chief-rules merge of the off-service/Peds-EM/MT-intern as-needed opening and the
+  // nights 6/12 + BAMC Thu rules). Each branch alone stays at 9-10; combined they fill 9 more coverage slots
+  // (unfilled 126 -> 117, the higher-priority metric) and the extra night cells land on residents with no run
+  // to extend (2-segment count unchanged by nightCluster -2 -> -3, by a run-joining preference in the as-needed
+  // fallback, or by the late sweep, i.e. forced by pool shape, not score). Other night-shape metrics hold:
+  // 3+ segments 0, isolated single nights 9 (same as the nights-only branch), total nights 99 (was 100-102).
+  // 2026-10-31: 15 -> 19/13 (late as-needed sweep may use at-target residents so a MIN slot outranks the
+  // shift-count target: unfilled 117 -> 63 on standard, i.e. +54 filled slots, night cells 71 -> 89. The extra
+  // cells mostly extend runs (ext preference in the sweep, pool is usually 1) but more nights = more
+  // segments; 2-segment residents with >6 nights 0, 3+ segments 0, isolated nights 12 vs 14 before.
+  // Mergeable count 13 < 15 before; 2-segment total 19 vs 12 is the cost of the coverage gain.)
+  standard: { twoSegment: 19, mergeable: 13 },
   // 7 -> 11 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC
   // days), which spreads nights wider on this fixture.
   // 11 -> 8 (2026-10-16 follow-up, same day): nightCluster jcPresentDates/grLectureDates
@@ -165,18 +176,20 @@ const CEILINGS = {
   // after this fix, the remaining 2-segment residents on this fixture all traced to the hard,
   // unrelated ACGME edHoursCapped/totalHoursCapped candidatePool exclusion mid-run (see header),
   // which a score()/ordering change cannot route around.
-  understaffed: { twoSegment: 8, mergeable: 8 },
+  understaffed: { twoSegment: 11, mergeable: 5 }, // 2026-10-31: late sweep at-target fill, unfilled 202 -> 142 (see standard)
   // 2026-10-16: 13 -> 11 (same look-ahead fix).
   // 2026-10-18: 11 -> 13 (ranking follows Soft Rule Priority: postNightRest no longer counts in
   // blockingWarnCount, so best-of-N picks a different winner via the tie-break path; the hole count
   // is not lower, the night shape is simply worse for the new winner).
-  vacationHeavy: { twoSegment: 13, mergeable: 13 },
+  // 2026-10-30: 13 -> 14 (BAMC Thursday evening/night became ordinary + Thu-day/Wed-night as-needed:
+  // the BAMC roster's extra Thursday options re-order the best-of-N draw; +1 on this fixture only).
+  vacationHeavy: { twoSegment: 16, mergeable: 12 }, // 2026-10-31: late sweep at-target fill, unfilled 126 -> 79 (see standard)
   // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
   // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
   // the other 3 variants' wins, and why generator.baseline.conferenceBlock.test.js's own
   // quality-vector gate still passes unchanged despite it).
   // 2026-10-18: 13 -> 15 (same ranking change as vacationHeavy above).
-  conferenceBlock: { twoSegment: 15, mergeable: 15 },
+  conferenceBlock: { twoSegment: 21, mergeable: 16 }, // 2026-10-31: late sweep at-target fill (see standard)
 };
 
 // Index-space run detection, mirroring ResidentScheduler.jsx's own nightRunSegmentsIdx exactly

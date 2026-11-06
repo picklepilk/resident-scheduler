@@ -200,6 +200,7 @@ def test_in_memory_job_exposes_progress_from_real_solve():
     client = TestClient(app)
     payload = make_payload()
     payload["config"]["maxTimeSeconds"] = 3
+    payload["config"]["outerLns"] = {"enabled": False}
     resp = client.post("/jobs", json=payload)
     assert resp.status_code == 200
     jid = resp.json()["jobId"]
@@ -219,7 +220,9 @@ def test_in_memory_job_exposes_progress_from_real_solve():
 # ---- progress hook on a tiny model ------------------------------------------------------------
 def test_progress_hook_stages_are_monotonic():
     events = []
-    payload = parse_payload(load_fixture("small_feasible.json"))
+    raw = load_fixture("small_feasible.json")
+    raw.setdefault("config", {})["outerLns"] = {"enabled": False}
+    payload = parse_payload(raw)
     solve(payload, on_progress=events.append)
     assert events, "hook never called"
     stages = [e["stage"] for e in events]

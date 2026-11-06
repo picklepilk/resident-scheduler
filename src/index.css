@@ -259,6 +259,7 @@
   .dark [class~="bg-rose-50/60"] { background-color: rgba(244, 63, 94, 0.1); }
   .dark .border-rose-200 { border-color: rgba(244, 63, 94, 0.35); }
   .dark .text-rose-700 { color: #fda4af; }
+  .dark .bg-rose-100 { background-color: rgba(244, 63, 94, 0.22); }
 
   .dark .border-green-200 { border-color: rgba(34, 197, 94, 0.35); }
   .dark .border-green-300 { border-color: rgba(34, 197, 94, 0.5); }

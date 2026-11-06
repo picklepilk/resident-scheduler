@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from solver.io.sat_params import validate_params
+from solver.lns_outer import OuterLnsConfig, parse_outer_lns
 from solver.model.timing import ShiftTiming, add_days
 
 # Depth of the prior-block tail window every sliding-window constraint (night
@@ -36,6 +38,9 @@ class Config:
     coverage_min_mode: str = "elastic_always"  # or "hard_then_elastic"
     max_verification_resolves: int = 2
     weights: dict = field(default_factory=dict)
+    # 2026-10-30: per-changed-cell penalty vs the hint (TIER_QUALITY); None = use
+    # default_weights.json hintStickiness.perChange; 0 = off. See hint_stickiness.py.
+    hint_stickiness: int | None = None
     # R9: staged (lexicographic-tiered) objective vs. the original single
     # weighted sum -- see solver/model/objective.py's `stage_exprs` and
     # solve.py's `_solve_staged`. "staged" is the new default; "weighted"
@@ -79,7 +84,31 @@ class Config:
     symmetry_level: Optional[int] = None
     # Seed portfolio (solver/solve.py's `_solve_portfolio`): K independent solves of the same
     # payload with seeds random_seed+i, best kept. 1 = today's single solve, unchanged.
-    portfolio: int = 1
+    # None = absent: solve.py auto-picks K (`resolve_portfolio_k`). An explicit value (even 1) always wins.
+    portfolio: Optional[int] = None
+    # Per-run CP-SAT param overrides for portfolio runs (list of {SatParameters field: value};
+    # run i uses entry i % len). None -> built-in diversified variants (io/sat_params.py).
+    portfolio_params: Optional[list] = None
+    # Internal: params applied to every solver of THIS (sub)payload. Set by _solve_portfolio, never parsed.
+    solver_params: Optional[dict] = None
+    # Optional outer LNS after the staged solve (solver/lns_outer.py). Parsed leniently; off by default.
+    outer_lns: OuterLnsConfig = OuterLnsConfig()
+    # 2026-11-04 em-scheduler ports (docs/PAYLOAD_SCHEMA.md "em-scheduler ports"). Defaults keep the
+    # pre-port behavior except `deadline_seconds`, which only bounds an overrun.
+    # Total wall cap for the whole solve; None -> max_time_seconds + deadline.DEFAULT_GRACE_SECONDS.
+    deadline_seconds: Optional[float] = None
+    # Stall stop: end a stage after this many seconds with no improving incumbent. None -> solver
+    # default (max(30, 0.2 * stage budget)); 0 -> off.
+    stall_seconds: Optional[float] = None
+    # Keep up to N distinct best pass-1 schedules in report.shortlist (0 = off).
+    shortlist_size: int = 0
+    # "solve" (default) or "score": price payload.hint exactly (every x fixed), no search.
+    mode: str = "solve"
+    # Implied same-date clique constraints (solver/model/implied.py).
+    implied_cliques: bool = False
+    # Strict lexicographic stages: pure stage objective, `==` pin when OPTIMAL. Default ON since the
+    # 2026-11-05 PicklePower bench (PERF_NOTES.md); `lexStrict: false` restores the tiebreak ladder.
+    lex_strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -91,10 +120,15 @@ class Block:
 
 @dataclass(frozen=True)
 class ResidentCaps:
+    # `nights` is the per-block night SOFT TARGET (6) once `nights_max` is present, else the legacy hard cap.
     nights: Optional[int] = None
+    # Hard cap on nights/block (12). Optional: an older JS build omits it and `nights` stays a hard cap.
+    nights_max: Optional[int] = None
     trauma: Optional[int] = None
     jc_remaining: Optional[int] = None
     bamc_wed_nights: Optional[int] = None
+    # BAMC Thursday-DAY + Wednesday-NIGHT cells combined, at most this many per block (1). Optional.
+    bamc_gr_exceptions: Optional[int] = None
     peds_mix_max: Optional[int] = None
     peds_mix_min: Optional[int] = None
     fm1_peds_max: Optional[int] = None
@@ -147,6 +181,8 @@ class Resident:
     # count zero obligation hours and rest.py's GR-end adjustment a no-op, matching pre-R7 behavior.
     obligation_hours: dict = field(default_factory=dict)      # date -> hours (int)
     gr_dates: frozenset = field(default_factory=frozenset)
+    # Vacation + approved-day-off dates within the block +-1 day (JS workShape off-adjacency input). Optional.
+    off_dates: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -269,9 +305,22 @@ class Payload:
     # full TIER_ERRORS weight, never downgraded) -- never LESS strict than before.
     block_touches_conference: bool = False
 
+    # ---- as-needed cells (program decision 2026-10-30) ----
+    # {(residentId, date, shiftId)} -- cells a day-rule gate flagged `asNeeded` withholds from `eligible`
+    # (JS getAsNeededShifts; e.g. US/EM interns outside Sat/Sun/Mon). `parse_payload` MERGES them into
+    # `eligible` so every constraint family treats them like any other cell (rest/circadian/hours/caps all
+    # still bind); what makes them special is only (a) the `asNeededUse` objective penalty
+    # (objective.py), (b) the coverage link in coverage.py (an as-needed cell may only fill a coverage
+    # MINIMUM, never top up), and (c) their exclusion from the core-deficit count. OPTIONAL: absent = empty
+    # = byte-identical to a pre-feature payload, and an older solver build simply ignores the field.
+    as_needed: frozenset = field(default_factory=frozenset)
+
     # ---- derived, computed once in __post_init__ ----
     tail_dates: list = field(default_factory=list, repr=False)   # 14 contiguous dates before block.dates[0]
     all_dates: list = field(default_factory=list, repr=False)    # tail_dates + block.dates, contiguous
+    # Extra warm-start hints for the seed portfolio (each the same shape as `hint`; <= MAX_ALTERNATE_HINTS,
+    # invalid/empty entries dropped). Portfolio run i starts from ([hint] + alternate_hints)[i % len].
+    alternate_hints: list = field(default_factory=list)
 
     def __post_init__(self):
         if self.block.dates:
@@ -310,6 +359,8 @@ def _parse_residents(raw: list) -> list:
         caps_raw = r.get("caps", {}) or {}
         caps = ResidentCaps(
             nights=caps_raw.get("nights"),
+            nights_max=caps_raw.get("nightsMax"),
+            bamc_gr_exceptions=caps_raw.get("bamcGrExceptions"),
             trauma=caps_raw.get("trauma"),
             jc_remaining=caps_raw.get("jcRemaining"),
             bamc_wed_nights=caps_raw.get("bamcWedNights"),
@@ -349,6 +400,7 @@ def _parse_residents(raw: list) -> list:
                 ay_prior=ay,
                 obligation_hours={d: int(h) for d, h in (r.get("obligationHours", {}) or {}).items()},
                 gr_dates=frozenset(r.get("grDates", ()) or ()),
+                off_dates=frozenset(r.get("offDates", ()) or ()),
             )
         )
     return out
@@ -358,12 +410,37 @@ def _parse_eligible(raw: dict) -> dict:
     return {rid: {d: set(shifts) for d, shifts in by_date.items()} for rid, by_date in raw.items()}
 
 
+def _parse_as_needed(raw: list) -> frozenset:
+    return frozenset((e["residentId"], e["date"], e["shiftId"]) for e in raw)
+
+
 def _parse_obligations(raw: dict) -> dict:
     return {rid: set(dates) for rid, dates in raw.items()}
 
 
 def _parse_locked(raw: list) -> list:
     return [LockedCell(resident_id=e["residentId"], date=e["date"], shift_id=e["shiftId"]) for e in raw]
+
+
+MAX_ALTERNATE_HINTS = 4
+
+
+def _parse_alternate_hints(raw) -> list:
+    """Lenient: anything not a list of lists of well-formed {residentId,date,shiftId} cells is dropped
+    (an alternate is only a warm start); capped at MAX_ALTERNATE_HINTS."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for entry in raw:
+        try:
+            cells = _parse_locked(entry) if isinstance(entry, list) else []
+        except (KeyError, TypeError):
+            continue
+        if cells:
+            out.append(cells)
+        if len(out) >= MAX_ALTERNATE_HINTS:
+            break
+    return out
 
 
 def _parse_coverage(raw: dict) -> dict:
@@ -406,7 +483,16 @@ def parse_payload(raw: dict) -> Payload:
             objective_mode=config_raw.get("objectiveMode", "staged"),
             stage_split=tuple(float(x) for x in stage_split_raw) if stage_split_raw else Config.stage_split,
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
-            portfolio=max(1, min(8, int(config_raw.get("portfolio", 1) or 1))),
+            portfolio=(max(1, min(8, int(config_raw["portfolio"] or 1))) if config_raw.get("portfolio") is not None else None),
+            portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
+            hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
+            outer_lns=parse_outer_lns(config_raw.get("outerLns")),
+            deadline_seconds=float(config_raw["deadlineSeconds"]) if config_raw.get("deadlineSeconds") is not None else None,
+            stall_seconds=float(config_raw["stallSeconds"]) if config_raw.get("stallSeconds") is not None else None,
+            shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
+            mode="score" if config_raw.get("mode") == "score" else "solve",
+            implied_cliques=bool(config_raw.get("impliedCliques", False)),
+            lex_strict=bool(config_raw.get("lexStrict", True)),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
@@ -414,6 +500,10 @@ def parse_payload(raw: dict) -> Payload:
             enforce_weekend_off=bool(settings_raw.get("enforceWeekendOff", True)),
         )
         residents = _parse_residents(raw.get("residents", []))
+        as_needed = _parse_as_needed(raw.get("asNeeded", []) or [])
+        eligible = _parse_eligible(raw.get("eligible", {}))
+        for rid, date_str, shift_id in as_needed:
+            eligible.setdefault(rid, {}).setdefault(date_str, set()).add(shift_id)
         payload = Payload(
             version=int(raw.get("version", 1)),
             config=config,
@@ -421,7 +511,8 @@ def parse_payload(raw: dict) -> Payload:
             shifts=_parse_shifts(raw.get("shifts", {})),
             residents=residents,
             residents_by_id={r.id: r for r in residents},
-            eligible=_parse_eligible(raw.get("eligible", {})),
+            eligible=eligible,
+            as_needed=as_needed,
             obligations=_parse_obligations(raw.get("obligations", {})),
             locked=_parse_locked(raw.get("locked", [])),
             hint=_parse_locked(raw.get("hint", [])),
@@ -447,6 +538,7 @@ def parse_payload(raw: dict) -> Payload:
             true_primary=raw.get("truePrimary", {}) or {},
             obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
             block_touches_conference=bool(raw.get("blockTouchesConference", False)),
+            alternate_hints=_parse_alternate_hints(raw.get("alternateHints", [])) if raw.get("hint") else [],
         )
     except (KeyError, TypeError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc

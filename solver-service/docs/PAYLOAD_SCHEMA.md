@@ -107,6 +107,13 @@ only solves.**
   an eve-type shift the day before, 2h (GR_START_H-10:00) after a night-type shift ending that
   morning, 4h (GR_START_H-GR_END_H) otherwise. This module is unaffected by the change — it only ever
   reads the already-resolved per-date hour number, never recomputes the window itself.
+- `residents[].offDates: [date]` (**NEW**) -- vacation + approved days off within the block +-1 day (the JS
+  `workShape` off-adjacency input). Consumed only by `workShape.offAdjacencyCost`. Optional, defaults to `[]`.
+- `weights.workShape.areaChurnCost` / `pairRunCost` / `offAdjacencyCost` (**NEW**, default 25 each = JS unit 1 x 0.5
+  coefficient x 50 scale; absent = 0): interior-run area change between consecutive worked days, interior 2-day
+  runs, and a worked day adjacent to an off date. Mirror `scheduleQuality.js` `workShapePenalty`. Prior-tail
+  days are ignored for these three (as in JS). `fairness.*` spread is now an L1 deviation from the cohort mean
+  (coef = max(1, round(weight / max(1, n/4)))), not max-min.
 - `residents[].grDates`/`grEndH` **REMOVED 2026-10-15** (chief decision — "the only shifts that count
   towards time off before/after a shift ... are the actual clinical shifts"): rest is now always
   measured from a shift's own end, never Grand Rounds', so `rest.py`'s old GR-end adjustment
@@ -1433,3 +1440,181 @@ edge runs included (was: interior runs only, so edge run + interior run cost 0).
 115 -> 300 (JS 2.3 -> 6), `forcedCost` stays 100 (JS 2), `isolatedNight.perUnit` 200 -> 300 (JS
 singleton 4 -> 6). The singleton charge is still interior-only. Supersedes the "61% of real runs are
 1-3 nights" calibration.
+
+## Area spread and short night stint terms (2026-10-30)
+
+Two new `TIER_QUALITY` terms in `objective.py`, registered right after `_add_work_shape_term`.
+Motivation: on a real 58-resident block the solver beat the JS engine overall but made `areaSpread`
+worse (96 -> 118; no solver term existed) and left 31 "Isolated night stint of N" validator warnings.
+
+**`areaSpread.perUnit` = 100** (`_add_area_spread_term`). Mirrors `scheduleQuality.js` `areaSpread`:
+per resident, `max(0, topAreaCount - ceil(worked * 0.5))` (`AREA_CONCENTRATION_FLOOR` = 0.5).
+`worked` = sum of the resident's x vars; `ceil_floor = ceil(worked*50/100)` pinned by two linear
+bounds (`100*c >= 50*worked`, `100*c <= 50*worked + 99`; no `add_division_equality`, 2026-10-31, same values); `excess >= count_area - ceil_floor` per area, minimized. Scale: JS
+coefficient 2 (`FAIRNESS_AXIS_WEIGHTS.areaSpread`) x 50 (the same x50 mapping as `isolatedNight` 300 =
+JS singleton 6) = 100. Deviation: a resident with fewer than 2 distinct areas among their candidate
+x vars is skipped (with one area the JS charge depends only on `worked` and would become a
+per-assignment anti-fill cost in CP-SAT).
+
+**`shortNightStint.perUnit` = 60** (`_add_short_night_stint_term`). Mirrors the `validateAll` warning
+"Isolated night stint of N": night run of length < `NIGHT_RULES.minRun` (5), skipped for night-only
+residents (`nightExempt`) and for runs touching the block's first or last date. Cost per run =
+`60 * (5 - len)` for len 2..4 (180 / 120 / 60). Length-1 interior runs are NOT charged here
+(`isolatedNight`, 300, already covers them, so no double counting); a 2-night stint (180) is cheaper
+than an isolated single night (300). The JS scorer has no matching term (it charges only singleton and
+fragmentation), so this is validator-driven, not a scorer mirror. Per-run cost scales with shortfall so
+the optimizer prefers 4 over 3 over 2 nights; cost literals are one-sided (lower-bounded) like
+`isolatedNight`'s.
+
+Tests: `tests/test_area_spread_term.py`, `tests/test_short_night_stint_term.py`.
+
+## hintStickiness (2026-10-30)
+
+Optional "stick close to the starting schedule" penalty. Motivation: warm-started from the browser engine, the polisher rewrote ~90% of cells (552-619 of 641) on a real block for a modest score gain.
+
+- **Field:** `config.hintStickiness` (int, weight per changed cell). Absent falls back to `config/default_weights.json` `hintStickiness.perChange` (0 = off). `0` = off. Only active when `hint` is non-empty.
+- **Semantics:** every (resident, date) cell whose final assignment differs from the hint costs `weight`: a hinted shift removed or replaced (`1 - x[r,h,d]`), or a new shift on a hint-empty cell (`sum x[r,*,d]`). A hinted cell that keeps its shift and gains a second one is not counted (multi-shift days are not expected). Linear, no extra variables or solves (`solver/model/hint_stickiness.py`, one call in `build_objective`).
+- **Tier:** `TIER_QUALITY` (lowest). It can only trade against shape/fairness terms, never coverage, hard rules, targets or rest; the hint pins and staged lexicographic bounds are unchanged.
+- **Report:** `report.hintStickiness = {weight, changedCells}` (strict pass-1 results only; absent when off).
+- **App:** `appSettings.solverStickToHint` (default false, Settings > optimizer, "Keep optimizer changes small") sets `config.hintStickiness = HINT_STICKINESS_WEIGHT` (100, about one small shape defect: workShape 100, fairness 100, isolatedNight 300) in `buildSolverPayload` when a hint is passed. An explicit caller `config.hintStickiness` wins.
+- **Tuning:** raise the weight to move fewer cells; very large values approximate "don't change anything not needed by a higher tier".
+
+## Portfolio auto default (2026-10-30)
+
+`config.portfolio` absent no longer means 1: the service picks K=2 when the effective worker count (`_num_workers`, honoring `config.numWorkers` and `SOLVER_NUM_WORKERS`) is >= 12 (`AUTO_PORTFOLIO_MIN_WORKERS`), else K=1. An explicit value (1..8, including 1) always wins. Auto-picked K=2 sets `report.portfolio.auto = true`. Basis: one run each on a real 58-resident block, 16 cores, 300 s budget: K=1 -> 1 open coverage slot, quality 1010; K=2 -> 0 open slots, quality 984 (best); K=4 -> 1 open slot, 995.
+
+## asNeeded cells (2026-10-30)
+
+Program decision: some scheduling rules are "the goal, but break as needed to fill the schedule" (ACGME rest/hours/streak/vacation and true PGY/rotation eligibility stay hard). A day-rule `shiftGate` flagged `asNeeded: true` still strips shifts from `eligible` exactly as before; the shifts ONLY such gates withheld (and that pass every other eligibility check) travel separately.
+
+- **Field:** top-level `asNeeded: [{residentId, date, shiftId}]` (optional; omitted when empty; ids only). Built in `buildSolverPayload` from `getAsNeededShifts` with the same ctx and jeopardy filters as `eligible`. First consumer: US/EM interns outside Sat/Sun/Mon (`us_em_window`, label "US/EM outside Sat/Sun/Mon").
+- **Parse:** `payload.as_needed` (frozenset of `(residentId, date, shiftId)`), and each cell is merged into `payload.eligible`, so every constraint family (rest, circadian, hours, weekly hours, count caps, trauma runs, senior composition) treats it like any other cell. An older solver build that ignores the field never sees the cells, so it can only be stricter, never looser.
+- **Coverage link (hard, `coverage.py`):** an as-needed cell can be used only to fill a coverage MINIMUM: if `x` is taken, the (shift, date) headcount including it must be `<= min`. It can never ride into optional headroom or displace a normal fill past the minimum. A locked/hand-kept as-needed cell is exempt (fixed fact; must not cause infeasibility). Applies in pass 1 and pass 2.
+- **Deficit:** as-needed cells are excluded from the target-deficit count (`_assigned_expr(..., exclude_as_needed=True)`). The `targetDeficitCore` stage runs BEFORE coverage and would otherwise recruit an as-needed shift purely to bring a resident up to target ("fairness"). The resident's real count (caps, fairness, validation) still includes them.
+- **Penalty:** `asNeededUse.perUnit` = **20000** per used cell, in `TIER_RANK` (the stage right after errors/blocking, before rest/quality). Below `coverageMin.perSlack` (1,000,000): filling a minimum is always worth one use. Above both `targetDeficit` weights (5000 / 10000) and every fairness/shape weight: never worth using for those. Coverage-first rule priority puts rest violations in the later `TIER_REST`, so the solver prefers a rest compromise over an as-needed use; rest-first priority (rest in `TIER_BLOCKING`) reverses that, matching the generator (rest compromise is tried before the as-needed fallback).
+- **JS mirror:** `generateSchedule` has a candidate-pool stage `asNeededFallback` (min pass only, fresh pool per slot); `validateAll` emits `{level:'warn', rule:'asNeededException'}` (info tier, never export-blocking) instead of `rotationEligibility`; the quality vector's last slot adds `FAIRNESS_AXIS_WEIGHTS.asNeededUse = 40` per exception. `mapSolverResult` derives `report.asNeededPlacements = [{residentId, name, dateStr, shiftId, label}]` from the returned schedule (kept cells excluded).
+- **Tests:** `tests/test_as_needed.py`; JS `src/lib/asNeeded.test.js`.
+
+## 2026-10-30 chief-rules changes (JS payload + solver in lockstep)
+
+- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more, so `emPgy3ResidentIds` is always sent **empty** and `flexPgy3Fallback` is inert (weight key kept in `config/default_weights.json` because the model and tests still read it; `podPgy2Fallback` is unchanged).
+- **`traumaMidRun` removed**: weight key, `add_trauma_mid_run_terms` and its objective call are gone (trauma-night position in a run is no longer a rule). Hard cap (rule 43) and `traumaSecondInRun` are unchanged.
+- **Final-Sunday overnight rule removed**: no `finalSundayUnconfirmed` preference is emitted and `eligible` no longer strips night shifts on the final Sunday.
+- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday stays min 1 / max 2.
+
+**Extended 2026-10-30:** the same `asNeeded` list now also carries off-service weekday/shift-time restrictions (FM/IM/Neuro/Anes/Psych/Podiatry fullBlockDays, onlyDays and dayTypeRestrictions) and Peds/EM PGY-2 TRAUMA-N. No schema or solver change: the cells are produced by `getAsNeededShifts` and handled exactly as above. `coverage['MT-D'][<Wednesday>]` is now `{min:0,max:1}` and only EM_BAMC residents carry MT-D on Wednesdays in `eligible`; Trauma/Peds interns' peds-half `eligible` includes PED-S (no separate split filter in Python).
+
+## Count-based as-needed rules: nights and BAMC Thursday (2026-10-30)
+
+Chief + program director decisions, extending the asNeeded idea from cells to COUNTS.
+
+- **Nights per block:** target 6, hard max 12. `residents[].caps.nights` = **6** (the soft target) and NEW optional `residents[].caps.nightsMax` = **12** (hard). Parse: `ResidentCaps.nights_max`. Constraint: `circadian.py` `_add_night_cap` enforces `sum(nights) <= nightsMax` (hard, `nightCap` family, pass-2 relaxable as before); objective: `_add_night_excess_term` adds `excess >= sum(nights) - nights` and charges `asNeededUse.perUnit` (20000) per excess night in `TIER_RANK` (same tier as an as-needed cell; JS mirror = one `asNeededException` unit per night above 6, `FAIRNESS_AXIS_WEIGHTS.asNeededUse` 40). Night-exempt residents are skipped. The "only to fill a coverage minimum" restriction is economic (20000 per unit vs. at most 5000/10000 per unit of target deficit, and optional headroom has no reward), not a structural link like the cell case.
+- **Old solver safety:** `caps.nights` stays 6 for old builds that ignore `nightsMax`, where it is still a HARD cap => stricter than or equal to the new rule, never looser. A new solver given an old payload (no `nightsMax`) treats `nights` as the hard cap and adds no excess term.
+- **BAMC Thursday day / Wednesday night:** the cells ship in the existing `asNeeded` list (the BAMC `bamc_thu_day` / `bamc_wed_night` gates are `asNeeded`; Thursday evening/night are ordinary `eligible`). NEW optional `caps.bamcGrExceptions` = **1**: `count_caps.py` `_add_bamc_gr_exceptions` caps (Wednesday night cells + Thursday DAY cells) combined at that value, sharing the `bamcWedNight` enforcement literal. `caps.bamcWedNights` (1, Wednesday nights only) is still sent for old builds. Old solvers ignore `asNeeded`, so they simply never use the Thursday-day/Wednesday-night cells (stricter).
+- **Validation:** `validate.py` checks the night hard cap against `nightsMax` when present and the combined BAMC cap.
+- **JS side:** `NIGHT_RULES.targetPerBlock` 6 / `maxPerBlock` 12; generator uses the 6-night target in every pool and spends nights 7..12 plus the BAMC cells only in `lateAsNeededSweep` (after fill + repair, MIN slots still unfilled).
+- **Tests:** `tests/test_count_as_needed.py`; JS `src/lib/countAsNeeded.test.js`.
+
+## Diversified portfolio runs + full stage warm start (2026-10-31)
+
+- **Diversification**: portfolio run `i` now also gets its own CP-SAT params, not just `randomSeed + i`. Built-in table
+  (`solver/io/sat_params.py` `DEFAULT_PORTFOLIO_PARAMS`, run `i` uses entry `i % 4`): `{}` (default),
+  `{linearization_level:2, search_branching:PORTFOLIO_WITH_QUICK_RESTART_SEARCH, randomize_search:true}`,
+  `{optimize_with_core:true, linearization_level:0}`, `{use_lns_only:true}`. Workers are still split `W // concurrent`
+  per run (bounded by cpus). Deterministic per (payload, config). Applied to every stage solver of that run.
+- **`config.portfolioParams`** (optional list of objects, `SatParameters` field -> value; enums by name, e.g.
+  `"PORTFOLIO_SEARCH"`): replaces the built-in table; run `i` uses `portfolioParams[i % len]`. Validated at parse time:
+  unknown fields or bad enum names -> 400; `num_workers`, `max_time_in_seconds`, `random_seed`, `repair_hint`,
+  `fix_variables_to_their_hinted_value`, `stop_after_first_solution` are rejected (service-owned). Applies only when K > 1.
+- `report.portfolio.perRun[i]` gains `params` (the dict that run used).
+- **Warm start between stages**: `_carry_hint` previously hinted only `x` vars (partial hint). It now hints EVERY model
+  variable from the finished stage's solution (`solver.response_proto.solution`), so the next stage starts exactly at the
+  previous optimum. The pinned bound (`expr <= round(value)`) was already correct and is added before the hint, so the hint
+  satisfies it. `fix_variables_to_their_hinted_value` stays off; `repair_hint` stays off for stages (native-crash note above).
+
+## Outer LNS after the staged solve (2026-10-31, `solver/lns_outer.py`)
+
+On by default (2026-10-31; PicklePower bench: ~5% better score at equal time). `config.outerLns = {enabled: bool=true, fraction: float=0.5, subSolveSeconds: float=5}`; send `{enabled: false}` to turn off
+(lenient parse: only literal `true` enables; `fraction` clamped to [0.05, 0.9], `subSolveSeconds` to [0.5, 120];
+malformed -> defaults/disabled). Staged objective mode only; ignored for `objectiveMode: 'weighted'` and pass 2.
+
+- When enabled the staged ladder gets `maxTimeSeconds * (1 - fraction)`; the rest (plus any time the ladder
+  returned early) goes to the LNS, which ends at `start + maxTimeSeconds`.
+- Loop: pick a neighborhood, fix every x variable outside it to the incumbent value (domain reduction on a
+  private model clone, whole-solution hint), keep every earlier tier (errors, blocking, rank, rest) as a hard
+  `<=` bound at the incumbent's value, minimize the quality tier for `min(subSolveSeconds, time left)`, accept only a
+  strict lexicographic improvement of (tiers..., quality). Tiers can therefore never get worse.
+- Neighborhoods (`window` 7-day all residents, `residents` 4-6 residents same-cohort-preferring whole block,
+  `shiftWindow` one area or shift type over 10 days, `worstTerms` residents with target-deficit / post-night-rest
+  penalties in the incumbent). Each is tried once, then sampled by smoothed success rate; sizes adapt (x1.25 after a
+  proven-no-gain OPTIMAL sub-solve, x0.8 after a sub-solve that found nothing).
+- Skipped (report `skipped`) when the last staged stage was proven OPTIMAL or the quality tier is empty.
+- `report.outerLns = {iterations, accepted, byNeighborhood:{name:{tried,accepted}}, startObjective, endObjective, seconds[, skipped]}`
+  (objectives = quality-tier value). Progress gets one extra stage (`stages` 6, `stage` 6, `stageName: "outerLns"`,
+  `best` = current quality-tier incumbent). Cancel via the job `cancel_event` ends the loop.
+- Seeded: neighborhood choice from `randomSeed`, sub-solve seeds `randomSeed + iteration`; with `numWorkers: 1`
+  reproducible up to wall-clock limits. In a portfolio each run does its own LNS inside its share of the budget.
+
+## 2026-10-31: `alternateHints` (multi-hint seed portfolio)
+
+- `alternateHints: [[{residentId, date, shiftId}, ...], ...]` — OPTIONAL, backward compatible; `hint` stays the
+  primary. Each entry has the same shape as `hint` (soft `AddHint`, never a pin). Parsing is lenient: non-list
+  entries, empty lists and malformed cells are dropped, at most 4 are kept (`MAX_ALTERNATE_HINTS`), and the whole
+  field is ignored when there is no primary `hint`. Omitted by the client when empty.
+- Portfolio run `i` (seed = base + i) starts from `([hint] + alternateHints)[i % len]`, so run 0 is always the
+  primary; K=1 uses the primary only. Hint pinning / stickiness / carry-hint between stages all operate on that
+  run's own hint. `report.portfolio.perRun[i].hintSource` = `"primary"` | `"alternate:<n>"` | `"none"`.
+- Client: `generateScheduleBest(...).alternates` (non-enumerable, never persisted) = up to `alternates - 1`
+  (default 2) distinct runner-up schedules in the winner's own tier (same errorCount and blockingWarnCount);
+  `buildSolverPayload({hint, alternateHints})` builds the cells with the same loop as `hint`. Arbitration
+  (`pickEngineResult`) is unchanged: the solver must still STRICTLY beat the local winner.
+
+## `report.structuralFloor` (2026-10-31)
+
+Additive key on every solve report (`_build_report` and the relaxed path), from `solver/report/structural.py`.
+A LOWER BOUND ("at least") on the part of quality-vector slot 3 (fairness+shape) that no schedule can avoid:
+`{supply, demand, targetExcess, underTargetPoints, singleAreaResidents, areaSpreadUnits, areaSpreadPoints, totalPoints, approximate: true}`.
+`supply` = sum of coverage max; `demand` = sum of schedulable targets; `underTargetPoints` = 2 x `targetExcess`;
+single-area residents (eligibility spans one shift area) charge `target - ceil(target*0.5)` units x 2. Both terms are already
+inside slot 3 (never add it on top); the client shows `splitFairnessPoints(slot3, floor)` = structural vs movable.
+
+### podThirdBodyCore / pedNightOverSwing (2026-10-31)
+
+Two soft `TIER_QUALITY` terms, no new payload fields (weights only, `config/default_weights.json`):
+
+- `podThirdBodyCore.perUnit = 6000` (`solver/model/pod_third_body.py`): for each POD-D/E/N date with coverage max >= 3, charges each EM-core resident (`residents[].isEmCore`) beyond the first two. Prefers an off-service third body. Soft by design: "core only if no other option" is not expressible, but a core coverage/target deficit already sits in a higher tier, so core is still used when needed.
+- `pedNightOverSwing.perUnit = 600` (`solver/model/ped_night_priority.py`): per date where PED-N and PED-S both have max > 0, charges PED-S bodies in excess of PED-N bodies (`excess >= s - n`), so the optional PED Night is preferred over PED Swing.
+
+Weight 0 or absent disables either. Only `pedNightOverSwing` is in `tests/test_weight_tiering.py`'s `_anti_fill_sum` (`podThirdBodyCore` charges only bodies beyond the first two, so it cannot favor leaving a minimum empty).
+
+## Senior composition pass-2 slack (2026-10-31)
+
+| Item | Behavior |
+|---|---|
+| Pass 1 | `seniorPrimary` composition (rule 16) unchanged: hard. |
+| Pass 2 (`elastic.py`) | `add_senior_composition_constraints(..., slack=True)`: `Σprimary + gap[shift,date] ≥ staffed`. Locked non-primary cells now give `RELAXED` instead of `INFEASIBLE`. |
+| Penalty | `objective.senior_gap_weight(rulePriority, weights)` per gap, using the coverage-slack (`wc`) and postNightRest (`wr`) weights actually in use: seniorComposition above both -> `10·max(wc,wr)`; between -> `isqrt(wc·wr)`; below both -> `max(1, min(wc,wr)//10)`. `config/default_weights.json` `seniorComposition.perGap` (1000000) is the fallback anchor when either weight is absent. |
+| `report.seniorGaps` | `[{dateStr, shiftId, reason: "noSeniorPrimary"}]`, filled from `ObjectiveInfo.senior_gaps` (pass 2 only; `[]` in pass 1). |
+
+## em-scheduler ports (2026-11-04)
+
+Techniques ported from `../em-scheduler/solver/app/` (`lexico.py`, `solve.py`, `rules/implied.py`; see its `docs/DEVICE-SOLVER.md`). All new `config` keys are optional; defaults keep the earlier behavior, except `deadlineSeconds` (only bounds an overrun) and `lexStrict` (default ON since the 2026-11-05 bench, `solver-service/PERF_NOTES.md`).
+
+| `config` key | Default | Meaning |
+|---|---|---|
+| `deadlineSeconds` | `maxTimeSeconds + 10` | Hard wall cap for the WHOLE solve: hint-pin evaluation, staged ladder, outer LNS and pass 2 all size their limits from one `solver/deadline.py` `Deadline`. |
+| `stallSeconds` | `max(30, 0.2 × stage budget)` | A stage with no improving incumbent for this long is stopped (after its first incumbent only); its unused time flows to the next stage / outer LNS. `0` = off. |
+| `shortlistSize` | `0` (off) | Keep up to N distinct best strict schedules seen during pass 1 in `report.shortlist`; the client re-ranks them with `betterQuality`. Max 20. |
+| `mode` | `"solve"` | `"score"`: fix every x to `hint` and solve once to price that exact schedule (no search). Parity oracle for JS vs Python quality. |
+| `impliedCliques` | `false` | Add `sum(x) <= 1` over same-resident, same/adjacent-date shift cliques already pairwise forbidden (`solver/model/implied.py`). |
+| `lexStrict` | `true` | Stages minimize their own expression only (no `1e6 × stage + later` tiebreak); the pin is `==` when the stage proved OPTIMAL, else `<=`. |
+
+Response additions (all additive, `report` is a plain dict):
+- `report.deadline = {seconds, hit: bool, overrunSeconds}`
+- `report.stall = [{stage, stoppedAfterSeconds, budgetSeconds, reseeded}]`
+- `report.shortlist = [{schedule, tiers}]` (best first, excludes the returned winner)
+- score mode: `status: "SCORED"` (or `"INFEASIBLE"` with `report.score.conflicts`), `tiers`, normal `report`.
+
+Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
+
+Not ported (tried and rejected there or here): hand-written symmetry breaking (em: stalled 7/7 runs), `repair_hint` with staged re-solves (native CHECK crash), assumption literals for LNS fixing (weak presolve).

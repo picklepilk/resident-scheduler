@@ -20,7 +20,11 @@ const VARIANTS = ['standard', 'understaffed', 'vacationHeavy', 'conferenceBlock'
 // quality vector and no longer pay blockingWarnCount, so a repair lift that costs a postNightRest
 // warning is (correctly) not strictly better and an unrepaired winner can keep legal headroom. Known
 // measured exception, pinned so any NEW occurrence still fails.
-const KNOWN_LEGAL_UNUSED = new Set(['conferenceBlock:1234:syn_kilo']);
+//
+// 2026-10-31: the conferenceBlock truePrimaryOnly-winner pins (seeds 42/7/1234/99) are gone: generateScheduleBest
+// now runs Phase 5 on such winners as a replayable `truePrimaryLift` step (adopted on strict betterQuality).
+const KNOWN_LEGAL_UNUSED = new Set([
+]);
 
 describe('generateScheduleBest — under-target lift completeness (A4)', () => {
   for (const variant of VARIANTS) {

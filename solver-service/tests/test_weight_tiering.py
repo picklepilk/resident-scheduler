@@ -74,7 +74,7 @@ def _anti_fill_sum(weights: dict) -> int:
     slot (shape/fairness/dow preference/batch-2 trauma-run placement) --
     the thing coverageMin's slack weight must dominate.
 
-    Batch 2 (2026-08-22) additions: traumaSecondInRun/traumaMidRun/
+    Batch 2 (2026-08-22) additions: traumaSecondInRun/
     nightDurationAlternation/secondRestDay are all "this assignment isn't
     the PREFERRED one" penalties, not "leave it empty" ones, but the same
     domination property matters for them -- generous, not exact, per-single-
@@ -85,20 +85,24 @@ def _anti_fill_sum(weights: dict) -> int:
     it pushes TOWARD assigning a shift, never away from one.
 
     Round 2b additions: podEmComposition/flexEmComposition (one shortfall
-    var per (POD|FLEX shift, date), same ×1 stacking as traumaMidRun -- a
+    var per (POD|FLEX shift, date), same ×1 stacking as traumaSecondInRun -- a
     single (shift,date) pair only ever contributes one shortfall var) and
     podPgy2Fallback/flexPgy3Fallback (a flat per-assignment cost, same ×1
     stacking as weekendOff/internPair -- one assignment can only ever be
     charged once)."""
     isolated_night = weights["isolatedNight"]["perUnit"]
     night_fragment = max(weights["nightFragment"]["avoidableCost"], weights["nightFragment"]["forcedCost"])
-    work = max(weights["workShape"]["isolatedCost"], weights["workShape"]["fragmentCost"])
+    ws = weights["workShape"]
+    # one assignment sits in up to 2 churn pairs and 2 pair-run windows, plus one off-adjacency charge
+    work = (
+        max(ws["isolatedCost"], ws["fragmentCost"])
+        + 2 * ws.get("areaChurnCost", 0) + 2 * ws.get("pairRunCost", 0) + ws.get("offAdjacencyCost", 0)
+    )
     fairness = sum(weights["fairness"].values())
     weekend_off = weights["weekendOff"]["perMissing"]
     intern_pair = weights["internPair"]["perExcess"]
     dow = weights["dowPreference"]["scale"] * 20
     trauma_second = weights["traumaSecondInRun"]["perUnit"] * 5
-    trauma_mid = weights["traumaMidRun"]["perUnit"]
     night_alt = weights["nightDurationAlternation"]["perUnit"] * 2
     second_rest = weights["secondRestDay"]["perUnit"]
     pod_em_comp = weights["podEmComposition"]["perUnit"]
@@ -108,11 +112,14 @@ def _anti_fill_sum(weights: dict) -> int:
     # R7 (2026-09-27, gap 3): seniorTruePrimary -- one penalty var per (shift,date), same x1 stacking
     # as podPgy2Fallback/flexPgy3Fallback (a single (shift,date) pair is only ever charged once).
     senior_true_primary = weights["seniorTruePrimary"]["perUnit"]
+    # podThirdBodyCore only charges a core body BEYOND the first two POD bodies (an optional top-up,
+    # never a coverage minimum), so it cannot prefer leaving a minimum slot empty: excluded here.
+    ped_night_swing = weights["pedNightOverSwing"]["perUnit"]
     return (
         isolated_night + night_fragment + work + fairness + weekend_off + intern_pair + dow
-        + trauma_second + trauma_mid + night_alt + second_rest
+        + trauma_second + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
-        + senior_true_primary
+        + senior_true_primary + ped_night_swing
     )
 
 
@@ -132,6 +139,9 @@ def _generous_soft_objective_max(weights: dict) -> int:
         * GENEROUS_RESIDENTS * GENEROUS_DATES
         + (weights["workShape"]["isolatedCost"] + weights["workShape"]["fragmentCost"])
         * GENEROUS_RESIDENTS * GENEROUS_DATES
+        + (weights["workShape"].get("areaChurnCost", 0) + weights["workShape"].get("pairRunCost", 0)
+           + weights["workShape"].get("offAdjacencyCost", 0))
+        * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["weekendOff"]["perMissing"] * GENEROUS_RESIDENTS
         + weights["pedsMixMin"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["fm1Peds"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
@@ -139,7 +149,6 @@ def _generous_soft_objective_max(weights: dict) -> int:
         + weights["dowPreference"]["scale"] * 20 * GENEROUS_COVERAGE_SLOTS
         # batch 2 (2026-08-22)
         + weights["traumaSecondInRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
-        + weights["traumaMidRun"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["nightDurationAlternation"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES * 2
         + weights["secondRestDay"]["perUnit"] * GENEROUS_RESIDENTS * GENEROUS_DATES
         + weights["pedsInternNightDeficit"]["perUnit"] * GENEROUS_RESIDENTS
@@ -182,7 +191,7 @@ def test_overstaff_coverage_dominates_ordinary_soft_rules():
         max(weights["fairness"].values()),
         weights["weekendOff"]["perMissing"],
         weights["internPair"]["perExcess"],
-        weights["traumaSecondInRun"]["perUnit"], weights["traumaMidRun"]["perUnit"],
+        weights["traumaSecondInRun"]["perUnit"],
         weights["nightDurationAlternation"]["perUnit"], weights["secondRestDay"]["perUnit"],
         weights["pedsMixMin"]["perUnit"], weights["fm1Peds"]["perUnit"],
         weights["podEmComposition"]["perUnit"], weights["flexEmComposition"]["perUnit"],
@@ -203,12 +212,19 @@ def test_overstaff_coverage_is_cheaper_than_any_target_shortfall():
 # (c) positivity
 # ---------------------------------------------------------------------------
 
+# Opt-in terms whose default weight is 0 = off; the payload's config turns them on.
+OFF_BY_DEFAULT = {("hintStickiness", "perChange")}
+
+
 def test_all_default_weights_are_positive_ints():
     weights = load_default_weights()
     for name, sub in weights.items():
         assert isinstance(sub, dict), name
         for key, value in sub.items():
             assert isinstance(value, int), f"{name}.{key}"
+            if (name, key) in OFF_BY_DEFAULT:
+                assert value == 0, f"{name}.{key}"
+                continue
             assert value > 0, f"{name}.{key}"
 
 
@@ -307,12 +323,35 @@ def test_build_objective_applied_weights_are_positive_ints():
     never 0 or negative."""
     info = _build_objective_for(make_payload())
     for name, sub in info.weights.items():
-        values = sub.values() if isinstance(sub, dict) else [sub]
-        for value in values:
+        items = sub.items() if isinstance(sub, dict) else [(None, sub)]
+        for key, value in items:
             assert isinstance(value, int)
+            if (name, key) in OFF_BY_DEFAULT:
+                continue
             assert value > 0
 
 
 def test_build_objective_sets_a_minimize_objective():
     info = _build_objective_for(make_payload())
     assert info.total_expr is not None
+
+
+# ---------------------------------------------------------------------------
+# senior composition gap weight (pass 2)
+# ---------------------------------------------------------------------------
+
+def test_senior_gap_weight_three_rank_cases():
+    import math
+    from solver.model.objective import senior_gap_weight
+    weights = apply_rule_priority(merged_weights(parse_payload(make_payload())), ["coverageMin", "seniorComposition", "postNightRest"])
+    wc, wr = weights["coverageMin"]["perSlack"], weights["postNightRest"]["perViolation"]
+    assert senior_gap_weight(["seniorComposition", "coverageMin", "postNightRest"], weights) == 10 * max(wc, wr)
+    assert senior_gap_weight(["coverageMin", "seniorComposition", "postNightRest"], weights) == math.isqrt(wc * wr)
+    assert senior_gap_weight(["coverageMin", "postNightRest", "seniorComposition"], weights) == max(1, min(wc, wr) // 10)
+
+
+def test_senior_gap_weight_worst_case_stays_under_int64():
+    from solver.model.objective import senior_gap_weight
+    weights = merged_weights(parse_payload(make_payload()))
+    w = senior_gap_weight(["seniorComposition", "coverageMin", "postNightRest"], weights)
+    assert w * GENEROUS_COVERAGE_SLOTS + _generous_soft_objective_max(weights) < 10 ** 16

@@ -99,22 +99,16 @@ function assignedCount(schedule, rid, dates) {
 }
 
 // Trauma-night-within-run penalty (mirrors ResidentScheduler.jsx's candidatePool traumaRunCapped
-// hard exclusion and score()'s traumaSecondInRun/traumaMidRun soft terms — the retrospective
-// counterpart of that same chief-directed rule): for ONE night run, count TRAUMA-N placements
-// sitting strictly mid-run (not first/last position within the run) PLUS max(0, trauma-nights-in-
-// run - 1) — i.e. every trauma night beyond the first, wherever it sits. `run` is
+// hard exclusion and score()'s traumaSecondInRun soft term — the retrospective counterpart of that
+// same chief-directed rule): for ONE night run, max(0, trauma-nights-in-run - 1) — i.e. every
+// trauma night beyond the first, wherever it sits. The old mid-run-position component was DROPPED
+// 2026-10-30 (chief + PD: trauma-night position within a run is no longer a rule). `run` is
 // `{start, end, len}` (indices into `dates`), matching nightShapePenalty's own run-detection
 // shape. Exported for direct unit testing (src/lib/scheduleQuality.test.js).
 export function traumaRunPenaltyFor(rs, run, dates) {
-  const shiftIds = [];
-  for (let i = run.start; i <= run.end; i++) shiftIds.push(rs[dates[i]]);
-  const traumaCount = shiftIds.filter(sid => sid === 'TRAUMA-N').length;
-  if (traumaCount === 0) return 0;
-  let midRunCount = 0;
-  shiftIds.forEach((sid, idx) => {
-    if (sid === 'TRAUMA-N' && idx > 0 && idx < shiftIds.length - 1) midRunCount++;
-  });
-  return midRunCount + Math.max(0, traumaCount - 1);
+  let traumaCount = 0;
+  for (let i = run.start; i <= run.end; i++) if (rs[dates[i]] === 'TRAUMA-N') traumaCount++;
+  return Math.max(0, traumaCount - 1);
 }
 
 // Second-rest-day penalty (mirrors score()'s secondRestDay soft term — the retrospective
@@ -158,6 +152,9 @@ export function computeQualityMetrics({
   weekendPairs,
   seniorGapCount,
   restCompromiseCount,
+  // Count of validateAll `asNeededException` warns (see FAIRNESS_AXIS_WEIGHTS.asNeededUse). Caller-
+  // computed from the issue list, like restCompromiseCount; default 0 so older callers are unchanged.
+  asNeededCount = 0,
   // Supplied by buildQualityInput rather than imported: this module must never import from
   // ResidentScheduler.jsx (that file imports lib/* the other direction — circular). Defaulted so
   // an older/among-tests caller that omits it still produces a finite workShapePenalty.
@@ -517,6 +514,7 @@ export function computeQualityMetrics({
     areaSpread,
     traumaRunPenalty,
     secondRestDayPenalty,
+    asNeededUse: asNeededCount,
   };
 }
 
@@ -542,6 +540,15 @@ export const FAIRNESS_AXIS_WEIGHTS = {
   areaSpread: 2,
   traumaRunPenalty: 2,
   secondRestDayPenalty: 1,
+  // Program decision 2026-10-30 (as-needed rules): one count per validateAll `asNeededException` warn
+  // (a goal-but-breakable gate, e.g. US/EM outside Sat/Sun/Mon, used to fill a coverage minimum).
+  // Coefficient 40 is deliberately LARGE: one as-needed use outweighs a typical shape/fairness
+  // difference (e.g. 0.5/workShape unit, 10/deficitSpread, 2/underTarget shift), so best-of-N prefers
+  // the attempt that needed fewer exceptions when everything higher is equal — but it lives in this
+  // EXISTING last slot (never a 5th slot: SCORE_WEIGHTS/vector is a ratchet), so it can never outrank
+  // coverage (slot 0), rest, or seniority. The exception only exists to fill a coverage minimum, which
+  // slot 0 rewards far more than 40.
+  asNeededUse: 40,
 };
 export function fairnessAxes(metrics) {
   const out = {};

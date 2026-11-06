@@ -133,6 +133,7 @@ async function captureOnce(variant, baseSeed) {
     coverage: fixture.coverage,
     seniorGapCount: report.seniorGaps.length,
     restCompromiseCount: issues.filter(i => i.rule === 'postNightRest').length,
+    asNeededCount: issues.filter(i => i.rule === 'asNeededException').reduce((n, i) => n + (i.units ?? 1), 0),
   });
   const rulePriority = normalizeRulePriority(fixture.appSettings?.rulePriority);
   return {

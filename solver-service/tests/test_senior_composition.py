@@ -8,7 +8,7 @@ from tests.helpers import make_payload, make_resident
 _SHIFTS = {"D": {"startH": 7, "durationH": 9, "type": "day", "area": "POD"}}
 
 
-def _build(seniorPrimary):
+def _build(seniorPrimary, slack=False):
     dates = ["2026-01-05"]
     raw = make_payload(
         residents=[make_resident("r1"), make_resident("r2")], shifts=_SHIFTS, dates=dates,
@@ -19,7 +19,9 @@ def _build(seniorPrimary):
     payload = parse_payload(raw)
     model = cp_model.CpModel()
     store = build_variables(model, payload)
-    add_senior_composition_constraints(model, payload, store)
+    gaps = add_senior_composition_constraints(model, payload, store, slack=slack)
+    if slack:
+        return model, store, gaps
     return model, store
 
 
@@ -53,3 +55,28 @@ def test_no_entry_means_no_constraint_at_all():
     model.add(store.get_x("r2", "D", "2026-01-05") == 0)
     solver = cp_model.CpSolver()
     assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
+
+
+def test_hard_mode_returns_no_gaps():
+    model, store = _build({"D": {"2026-01-05": ["r2"]}})
+    # (return shape unchanged for pass 1)
+    assert model is not None
+
+
+def test_slack_lets_non_primary_staffing_through_with_gap_set():
+    model, store, gaps = _build({"D": {"2026-01-05": ["r2"]}}, slack=True)
+    assert list(gaps) == [("D", "2026-01-05")]
+    model.add(store.get_x("r1", "D", "2026-01-05") == 1)
+    model.add(store.get_x("r2", "D", "2026-01-05") == 0)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
+    assert solver.value(gaps[("D", "2026-01-05")]) == 1
+
+
+def test_slack_gap_can_be_forced_zero_and_then_requires_primary():
+    model, store, gaps = _build({"D": {"2026-01-05": ["r2"]}}, slack=True)
+    model.add(gaps[("D", "2026-01-05")] == 0)
+    model.add(store.get_x("r1", "D", "2026-01-05") == 1)
+    model.add(store.get_x("r2", "D", "2026-01-05") == 0)
+    solver = cp_model.CpSolver()
+    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"

@@ -60,10 +60,11 @@ export const QGENDA_TASKS = {
   // NOT a real SHIFTS id — the synthetic id (QGENDA_JEOPARDY_TASK_ID below) buildQGendaCSVRows
   // (ResidentScheduler.jsx) uses to export a jeopardy/call day through this SAME qgendaTaskFor
   // override mechanism, so the chief can fix its task name in Settings exactly like any clinical
-  // shift, no separate code path. 'Call' is an UNCONFIRMED placeholder (no real QGenda export has
-  // ever included a jeopardy row) — correct it here, the same way the 12h ids above will be
-  // corrected once a real name is confirmed.
-  JEOPARDY: 'Call',
+  // shift, no separate code path.
+  // CONFIRMED from the chief's real grid: jeopardy/sick-call days read `Res_Call PGY1|2|3` by the
+  // resident's PGY (qgendaImport.js RES_CALL_RE reads the same strings). Unknown PGY returns ''
+  // so qgendaTaskFor reports source:'fallback' and exportConfirm warns instead of guessing a PGY.
+  JEOPARDY: (r) => ([1, 2, 3].includes(r?.pgy) ? `Res_Call PGY${r.pgy}` : ''),
 };
 
 // Synthetic shift id for a jeopardy/call day (no matching SHIFTS entry, no SHIFT_TIMING entry —

@@ -23,8 +23,8 @@ def _raw(portfolio=None, workers=3, seconds=5):
 
 
 def test_config_default_and_clamp():
-    assert ConfigModel().portfolio == 1
-    assert parse_payload(_raw()).config.portfolio == 1
+    assert ConfigModel().portfolio is None
+    assert parse_payload(_raw()).config.portfolio is None
     assert parse_payload(_raw(0)).config.portfolio == 1
     assert parse_payload(_raw(-4)).config.portfolio == 1
     assert parse_payload(_raw(99)).config.portfolio == 8
@@ -54,7 +54,7 @@ def test_portfolio_3_returns_valid_best_with_report():
     assert len(p["perRun"]) == 3
     assert [r["seed"] for r in p["perRun"]] == [42, 43, 44]
     for r in p["perRun"]:
-        assert set(r) == {"seed", "status", "tiers", "wallSeconds"}
+        assert set(r) == {"seed", "params", "hintSource", "status", "tiers", "wallSeconds"}
     # winner = lexicographic best of perRun, ties to the lowest index
     keys = [tuple(r["tiers"][n] for n in solve_module._STAGE_NAMES) for r in p["perRun"]]
     assert p["winnerIndex"] == keys.index(min(keys))
@@ -168,3 +168,49 @@ def test_rank_key_includes_rest_tier_between_rank_and_quality():
     more_rest = res({**base, "tier3b_restAfterCoverage": 2, "tier4_quality": 0})
     worse_cov = res({**base, "tier3_qualityRank": 1, "tier3b_restAfterCoverage": 0, "tier4_quality": 0})
     assert sorted([worse_cov, more_rest, fewer_rest], key=_result_rank_key) == [fewer_rest, more_rest, worse_cov]
+
+
+# --- alternateHints: per-run warm start ------------------------------------
+
+def _hint_cells(rid, sid="D"):
+    return [{"residentId": rid, "date": d, "shiftId": sid} for d in load_fixture("small_feasible.json")["block"]["dates"]]
+
+
+def test_alternate_hints_parse_cap_and_drop_invalid():
+    raw = _raw(2)
+    raw["hint"] = _hint_cells("r1")
+    good = _hint_cells("r2")
+    raw["alternateHints"] = [good, [], "junk", [{"residentId": "r1"}], good, good, good, good, good]
+    p = parse_payload(raw)
+    assert len(p.alternate_hints) == 4  # invalid/empty dropped, capped at 4
+    assert all(len(h) == len(good) for h in p.alternate_hints)
+    # No primary hint -> alternates ignored; absent field -> empty.
+    raw2 = _raw(2)
+    raw2["alternateHints"] = [good]
+    assert parse_payload(raw2).alternate_hints == []
+    assert parse_payload(_raw(2)).alternate_hints == []
+
+
+def test_portfolio_run_i_uses_hint_i_mod_len_and_reports_source(monkeypatch):
+    raw = _raw(3)
+    raw["hint"] = _hint_cells("r1")
+    raw["alternateHints"] = [_hint_cells("r2")]
+    seen = {}
+    real = solve_module._solve_single
+
+    def recorder(payload, cancel_event=None, on_progress=None):
+        seen[payload.config.random_seed] = {c.resident_id for c in payload.hint}
+        assert payload.alternate_hints == []
+        return real(payload, cancel_event, on_progress)
+
+    monkeypatch.setattr(solve_module, "_solve_single", recorder)
+    result = solve(parse_payload(raw))
+    assert seen == {42: {"r1"}, 43: {"r2"}, 44: {"r1"}}  # run 0 always the primary
+    assert [r["hintSource"] for r in result.report["portfolio"]["perRun"]] == ["primary", "alternate:1", "primary"]
+
+
+def test_no_alternates_means_primary_everywhere():
+    raw = _raw(2)
+    raw["hint"] = _hint_cells("r1")
+    result = solve(parse_payload(raw))
+    assert [r["hintSource"] for r in result.report["portfolio"]["perRun"]] == ["primary", "primary"]

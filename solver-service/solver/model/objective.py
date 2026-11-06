@@ -39,7 +39,7 @@ broke the old scheme. Instead:
     sum is comfortably below coverageMin's 1,000,000 with a >100x margin,
     asserted by `tests/test_weight_tiering.py` (see that file's
     `_anti_fill_sum` for the exact per-term accounting, updated for batch 2's
-    2026-08-22 addition of traumaSecondInRun/traumaMidRun/
+    2026-08-22 addition of traumaSecondInRun/
     nightDurationAlternation/secondRestDay -- `pedsInternNightDeficit` is
     excluded from that sum on purpose: like targetDeficit, it pushes TOWARD
     assigning a shift, not away from it).
@@ -67,6 +67,8 @@ held to.
 from __future__ import annotations
 
 import json
+import math
+from datetime import date as _date, timedelta as _timedelta
 from functools import lru_cache
 from itertools import product
 from dataclasses import dataclass, field
@@ -77,6 +79,9 @@ from solver.model import timing
 from solver.model.circadian import NIGHT_RUN_MAX
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
+from solver.model.pod_third_body import add_pod_third_body_terms
+from solver.model.ped_night_priority import add_ped_night_priority_terms
+from solver.model.hint_stickiness import add_hint_stickiness_term
 from solver.model.em_composition import add_em_composition_terms, add_pgy_fallback_terms
 from solver.model.senior_composition import add_true_primary_preference_terms
 from solver.model.sequence_constraints import add_soft_sequence_constraint
@@ -84,7 +89,6 @@ from solver.model.trauma_runs import (
     add_night_duration_alternation_terms,
     add_peds_intern_night_deficit_term,
     add_second_rest_day_terms,
-    add_trauma_mid_run_terms,
     add_trauma_second_in_run_terms,
 )
 from solver.model.variables import VarStore, as_literal, candidates_by_date, resident_candidates
@@ -145,6 +149,26 @@ def rest_outranks_coverage(rule_priority: list) -> bool:
     ["postNightRest"] -> rest first; ["coverageMin"], [], None -> coverage first."""
     rp = rule_priority if isinstance(rule_priority, list) else []
     return _priority_order(rp)[0] == "postNightRest"
+
+
+def senior_gap_weight(rule_priority, weights: dict) -> int:
+    """Pass-2 penalty per senior-composition gap. `wc`/`wr` are the coverage-slack and
+    postNightRest weights actually in use (post `apply_rule_priority`). seniorComposition
+    ranked above both -> 10*max(wc,wr); between them -> isqrt(wc*wr); below both ->
+    max(1, min(wc,wr)//10). Missing/unknown entries append in canonical order."""
+    canonical = ("coverageMin", "seniorComposition", "postNightRest")
+    rp = rule_priority if isinstance(rule_priority, list) else []
+    order = [r for r in rp if r in canonical]
+    order += [r for r in canonical if r not in order]
+    anchor = int((weights.get("seniorComposition") or {}).get("perGap", 1000000))  # fallback if a weight is absent
+    wc = max(1, int((weights.get("coverageMin") or {}).get("perSlack", anchor)))
+    wr = max(1, int((weights.get("postNightRest") or {}).get("perViolation", anchor)))
+    pos = order.index("seniorComposition")
+    if pos == 0:
+        return 10 * max(wc, wr)
+    if pos == 1:
+        return max(1, math.isqrt(wc * wr))
+    return max(1, min(wc, wr) // 10)
 
 
 def apply_rule_priority(weights: dict, rule_priority: list) -> dict:
@@ -258,6 +282,8 @@ class ObjectiveInfo:
     # of the 4 groups) -- the staged solve is a re-partitioning of the same
     # objective, never a different one.
     stage_exprs: dict = field(default_factory=dict)
+    # Pass 2 only (elastic.py): (shiftId, date) -> senior-composition gap BoolVar; empty in pass 1.
+    senior_gaps: dict = field(default_factory=dict)
 
 
 def _weekend_dates(payload: Payload) -> list:
@@ -284,21 +310,40 @@ def _cohorts(payload: Payload) -> dict:
     return {k: v for k, v in groups.items() if len(v) >= 2}
 
 
-def _assigned_expr(payload: Payload, store: VarStore, resident_id: str):
+def _assigned_expr(payload: Payload, store: VarStore, resident_id: str, exclude_as_needed: bool = False):
     terms = []
     for date_str in payload.block.dates:
-        terms.extend(store.x_sum_for_resident_date(resident_id, date_str))
+        if exclude_as_needed and payload.as_needed:
+            terms.extend(
+                v for sid, v in store.by_resident_date.get((resident_id, date_str), [])
+                if (resident_id, date_str, sid) not in payload.as_needed
+            )
+        else:
+            terms.extend(store.x_sum_for_resident_date(resident_id, date_str))
     return sum(terms)
 
 
 def _add_spread(model, group: TermGroup, prefix: str, weight: int, values: list, value_ub: int) -> None:
+    """L1 fairness: T = ceil(sum_i |v_i - mean| ) with n*dev_i = |n*v_i - S|; charged coef*T where
+    coef = max(1, round(weight / max(1, n/4))) (a 2-member cohort ~= range * weight; larger cohorts
+    charge every member's deviation, not only the extremes)."""
     if weight == 0 or len(values) < 2:
         return
-    mx = model.new_int_var(0, value_ub, f"{prefix}_max")
-    mn = model.new_int_var(0, value_ub, f"{prefix}_min")
-    model.add_max_equality(mx, values)
-    model.add_min_equality(mn, values)
-    group.add(weight, mx - mn)
+    n = len(values)
+    total = sum(values)
+    devs = []
+    for i, v in enumerate(values):
+        dev = model.new_int_var(0, n * value_ub, f"{prefix}_dev{i}")
+        diff = model.new_int_var(-n * value_ub, n * value_ub, f"{prefix}_diff{i}")
+        model.add(diff == n * v - total)
+        model.add_abs_equality(dev, diff)
+        devs.append(dev)
+    t = model.new_int_var(0, n * value_ub, f"{prefix}_l1")
+    sd = sum(devs)
+    model.add(n * t >= sd)
+    model.add(n * t <= sd + n - 1)
+    coef = max(1, round(weight / max(1, n / 4)))
+    group.add(coef, t)
 
 
 # ---- rule 24: coverageMin slack ----
@@ -307,6 +352,49 @@ def _add_coverage_term(payload: Payload, group: TermGroup, coverage_result: Cove
     coef = int(weights["coverageMin"]["perSlack"])
     for (shift_id, date_str), slack in coverage_result.slacks.items():
         group.add(coef, slack)
+
+
+# ---- asNeededUse: a goal-but-breakable gate used to fill a coverage minimum ----
+#
+# Program decision 2026-10-30. One unit per as-needed cell taken (payload.as_needed). Lives in TIER_RANK,
+# the stage right after errors/blocking and BEFORE rest/quality, with `perUnit` 20000:
+#   * far BELOW coverageMin.perSlack (1,000,000): filling a minimum slot with an as-needed cell is always
+#     worth it -- the whole point -- and no realistic number of uses (each fills a distinct slot) reaches 1e6;
+#   * ABOVE every TIER_QUALITY/TIER_REST preference and above both targetDeficit weights (5000 non-core,
+#     10000 core): using an as-needed cell never pays for itself by bringing a resident up to target or by
+#     smoothing fairness/shape, so the solver reaches for one only when coverage needs it. (coverage.py
+#     additionally forbids using one to exceed `min`, and the deficit count excludes them.)
+# JS mirror: validateAll's `asNeededException` warn, priced in the quality vector's last slot at
+# FAIRNESS_AXIS_WEIGHTS.asNeededUse (40) -- never a 5th slot.
+def _add_as_needed_term(payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    if not payload.as_needed:
+        return
+    coef = int(weights["asNeededUse"]["perUnit"])
+    for rid, date_str, shift_id in sorted(payload.as_needed):
+        var = store.get_x(rid, shift_id, date_str)
+        if var is not None:
+            group.add(coef, var)
+
+
+# ---- night excess: count-based as-needed rule (nights above the 6/block target) ----
+#
+# Program decision 2026-10-30: 6 nights/block is the goal; 7..12 (`caps.nightsMax`) only as needed to fill
+# coverage. circadian.py's `_add_night_cap` enforces the hard cap (nightsMax); here each night above the soft
+# target `caps.nights` costs `asNeededUse.perUnit`, in the SAME tier (TIER_RANK) as an as-needed cell, so
+# the solver reaches for a 7th+ night only when a coverage minimum needs it (coverageMin.perSlack is 50x
+# larger). Mirrors validateAll's `asNeededException` units (one per excess night). Skipped for night-exempt
+# residents and for payloads without `nightsMax` (legacy: `nights` is a hard cap, nothing can exceed it).
+def _add_night_excess_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights["asNeededUse"]["perUnit"])
+    dates = payload.block.dates
+    for resident in payload.residents:
+        target, hard = resident.caps.nights, resident.caps.nights_max
+        if resident.night_exempt or target is None or hard is None or hard <= target:
+            continue
+        night_vars = [store.night[(resident.id, d)] for d in dates]
+        excess = model.new_int_var(0, max(hard - target, 0), f"night_excess[{resident.id}]")
+        model.add(excess >= sum(night_vars) - target)
+        group.add(coef, excess)
 
 
 # ---- overstaffCoverage: last-resort +1-over-max, mirrors the JS repair
@@ -359,7 +447,12 @@ def _add_target_deficit_terms(
     for resident in payload.residents:
         if resident.target is None:
             continue
-        assigned_expr = _assigned_expr(payload, store, resident.id)
+        # As-needed cells (payload.as_needed) are NOT counted toward the deficit: an as-needed shift may only
+        # fill a coverage minimum, so it must never be recruited just to bring a resident up to target
+        # (the errors-tier core-deficit stage runs BEFORE coverage and would otherwise pull them in for
+        # "fairness"). The resident's REAL count still includes them (count caps, fairness, validation);
+        # this only keeps the modeled deficit from rewarding them.
+        assigned_expr = _assigned_expr(payload, store, resident.id, exclude_as_needed=True)
         deficit = model.new_int_var(0, resident.target, f"deficit[{resident.id}]")
         model.add_max_equality(deficit, [resident.target - assigned_expr, 0])
         result[resident.id] = (resident.target, deficit)
@@ -663,13 +756,183 @@ def _add_work_shape_term(model, payload: Payload, store: VarStore, group: TermGr
         model.add_max_equality(excess, [num_runs - ceil_runs, 0])
         group.add(fragment_cost, excess)
 
+    _add_work_shape_extras(model, payload, store, group, w)
+
+
+# ---- rule 37a: workShape area churn / interior pairs / off-adjacency (mirrors scheduleQuality.js) ----
+#
+# JS loop per resident (runs = maximal consecutive worked days; "interior" = run.start > 0 and run.end < last):
+#   * area churn: +1 per consecutive worked pair (k,k+1) INSIDE an interior run whose two known areas differ;
+#   * interior run of length 2: +1;
+#   * +1 per worked day with a vacation/approved-off date the day before or after (offDates).
+# Weights are JS unit x 0.5 coefficient x 50 scale = 25 each. Prior-tail days are ignored (JS ignores them).
+# Edge exemption of a pair (k,k+1): its run touches day 0 iff days 0..k are all worked (L[k]), and touches the
+# last day iff days k+1..D-1 are all worked (R[k+1]); both reach literals are defined with equality.
+def _add_work_shape_extras(model, payload: Payload, store: VarStore, group: TermGroup, w: dict) -> None:
+    churn_cost = int(w.get("areaChurnCost", 0))
+    pair_cost = int(w.get("pairRunCost", 0))
+    off_cost = int(w.get("offAdjacencyCost", 0))
+    if not (churn_cost or pair_cost or off_cost):
+        return
+    dates = payload.block.dates
+    D = len(dates)
+    for resident in payload.residents:
+        rid = resident.id
+        works = [store.work[(rid, d)] for d in dates]
+
+        if off_cost and resident.off_dates:
+            for i, d in enumerate(dates):
+                prev_d = _shift_date(d, -1)
+                next_d = _shift_date(d, 1)
+                if prev_d in resident.off_dates or next_d in resident.off_dates:
+                    group.add(off_cost, works[i])
+
+        if pair_cost and D >= 4:
+            for i in range(1, D - 2):
+                p = model.new_bool_var(f"workPair[{rid},{i}]")
+                model.add_bool_or([works[i - 1], works[i + 2], works[i].negated(), works[i + 1].negated(), p])
+                group.add(pair_cost, p)
+
+        if churn_cost and D >= 2:
+            by_area: dict = {}
+            for i, d in enumerate(dates):
+                for sid, var in store.by_resident_date.get((rid, d), []):
+                    area = payload.shifts[sid].area if sid in payload.shifts else None
+                    if area:
+                        by_area.setdefault(area, {}).setdefault(i, []).append(var)
+            if len(by_area) < 2:
+                continue
+            A = {}
+            for area, per_day in by_area.items():
+                for i in range(D):
+                    vs = per_day.get(i)
+                    if vs:
+                        A[(i, area)] = sum(vs)
+            known = [sum(A[(i, a)] for a in by_area if (i, a) in A) if any((i, a) in A for a in by_area) else 0
+                     for i in range(D)]
+            # reach literals
+            L = [None] * D
+            R = [None] * D
+            for i in range(D):
+                L[i] = model.new_bool_var(f"workReachL[{rid},{i}]")
+                prev = [works[i]] + ([L[i - 1]] if i > 0 else [])
+                model.add_bool_and(prev).only_enforce_if(L[i])
+                model.add_bool_or([x.negated() for x in prev]).only_enforce_if(L[i].negated())
+            for i in range(D - 1, -1, -1):
+                R[i] = model.new_bool_var(f"workReachR[{rid},{i}]")
+                nxt = [works[i]] + ([R[i + 1]] if i < D - 1 else [])
+                model.add_bool_and(nxt).only_enforce_if(R[i])
+                model.add_bool_or([x.negated() for x in nxt]).only_enforce_if(R[i].negated())
+            for i in range(D - 1):
+                same = []
+                for area in by_area:
+                    if (i, area) in A and (i + 1, area) in A:
+                        s_var = model.new_bool_var(f"workSameArea[{rid},{i},{area}]")
+                        model.add(s_var <= A[(i, area)])
+                        model.add(s_var <= A[(i + 1, area)])
+                        same.append(s_var)
+                c = model.new_bool_var(f"workChurn[{rid},{i}]")
+                model.add(c >= known[i] + known[i + 1] - 1 - sum(same) - L[i] - R[i + 1])
+                group.add(churn_cost, c)
+
+
+def _shift_date(date_str: str, delta: int) -> str:
+    return (_date.fromisoformat(date_str) + _timedelta(days=delta)).isoformat()
+
+
+# ---- rule 37b: areaSpread (2026-10-30) ----
+#
+# Mirrors scheduleQuality.js's `areaSpread` (AREA_CONCENTRATION_FLOOR = 0.5): per resident,
+# penalty = max(0, topAreaCount - ceil(worked * 0.5)), where `worked` = every day carrying ANY
+# shift and the tally covers shifts whose area is known. The JS term has FAIRNESS_AXIS_WEIGHTS
+# coefficient 2; scale derivation (x50, same as isolatedNight 300 = JS singleton 6, nightFragment
+# 300 = JS 6): 2 * 50 = 100 -> `areaSpread.perUnit`.
+#
+# Linearization: worked = sum of the resident's x vars; ceil_floor = ceil(worked * 50 / 100) pinned by two linear
+# bounds (100*c >= 50*worked, 100*c <= 50*worked + 99; no division constraint);
+# excess >= count_a - ceil_floor for each area a and excess >= 0, minimized (positive weight), which
+# equals max(0, max_a count_a - ceil_floor).
+# Deviation from JS: residents with fewer than 2 distinct areas among their candidate x vars are
+# skipped. With one area, topArea == worked, so the JS charge is a function of worked only; in
+# CP-SAT that would act as a per-assignment anti-fill cost rather than a shape preference.
+AREA_CONCENTRATION_FLOOR_PCT = 50
+
+
+def _add_area_spread_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights.get("areaSpread", {}).get("perUnit", 0))
+    if coef == 0:
+        return
+    D = len(payload.block.dates)
+    for resident in payload.residents:
+        by_area: dict = {}
+        all_vars = []
+        for d in payload.block.dates:
+            for sid, var in store.by_resident_date.get((resident.id, d), []):
+                all_vars.append(var)
+                area = payload.shifts[sid].area if sid in payload.shifts else None
+                if area:
+                    by_area.setdefault(area, []).append(var)
+        if len(by_area) < 2:
+            continue
+        worked = model.new_int_var(0, D, f"areaSpread_worked[{resident.id}]")
+        model.add(worked == sum(all_vars))
+        # ceil(worked * PCT / 100) WITHOUT add_division_equality (poor propagation): `worked` is an
+        # exact integer, so pin ceil_floor with two linear bounds,
+        #   100*c >= PCT*worked   and   100*c <= PCT*worked + 99   (=> c = ceil(PCT*worked/100)).
+        ceil_floor = model.new_int_var(0, D, f"areaSpread_ceil[{resident.id}]")
+        model.add(100 * ceil_floor >= AREA_CONCENTRATION_FLOOR_PCT * worked)
+        model.add(100 * ceil_floor <= AREA_CONCENTRATION_FLOOR_PCT * worked + 99)
+        excess = model.new_int_var(0, D, f"areaSpread_excess[{resident.id}]")
+        for vs in by_area.values():
+            model.add(excess >= sum(vs) - ceil_floor)
+        group.add(coef, excess)
+
+
+# ---- rule 37c: shortNightStint (2026-10-30) ----
+#
+# Mirrors the validateAll warning "Isolated night stint of N -- aim for minRun-idealRun in a
+# row" (ResidentScheduler.jsx): a night run with len < NIGHT_RULES.minRun (5) is flagged unless
+# the resident is night-only (solver: nightExempt) or the run touches the block's first/last date.
+# Cost per flagged run = perUnit * (SHORT_NIGHT_STINT_MIN_RUN - len), for len 2..4 only.
+# Length-1 interior runs are already charged by `isolatedNight` (300) and are NOT charged again
+# here (no double counting). Weight: perUnit 60 -> len 4: 60, 3: 120, 2: 180, all below the
+# 300 a single isolated night costs, so the preference order is 5+ < 4 < 3 < 2 < 1. (x50 scale:
+# 60 = 1.2 JS nightShape units per missing night.) Edge runs are exempt, matching the validator.
+SHORT_NIGHT_STINT_MIN_RUN = 5
+
+
+def _add_short_night_stint_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int(weights.get("shortNightStint", {}).get("perUnit", 0))
+    if coef == 0:
+        return
+    dates = payload.block.dates
+    D = len(dates)
+    for resident in payload.residents:
+        if resident.night_exempt:
+            continue
+        nights = [store.night[(resident.id, d)] for d in dates]
+        for length in range(2, SHORT_NIGHT_STINT_MIN_RUN):
+            # interior only: a day before (start >= 1) and a day after (start + length <= D - 1)
+            for start in range(1, D - length):
+                lit = model.new_bool_var(f"shortNightStint[{resident.id}]: start={start},len={length}")
+                span = [nights[start - 1], nights[start + length]]
+                span += [nights[start + i].negated() for i in range(length)]
+                span.append(lit)
+                model.add_bool_or(span)
+                group.add(coef * (SHORT_NIGHT_STINT_MIN_RUN - length), lit)
+
 
 # ---- rules 38-41: band8 ----
 
+# Chief decision 2026-11-01: one full weekend off per block is the GOAL, broken only to fill a coverage minimum
+# (an as-needed rule). Priced at asNeededUse.perUnit in TIER_RANK (same tier as as-needed cells / nights 7..12),
+# far below coverageMin.perSlack and above every TIER_QUALITY preference and target-deficit weight, so the
+# solver gives up a weekend only to fill a minimum. JS mirror: validateAll's `asNeededException`
+# ('No full weekend off this block', units 1). `weekendOff.perMissing` is now unused by the model.
 def _add_weekend_off_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
     if not payload.settings.enforce_weekend_off:
         return
-    coef = int(weights["weekendOff"]["perMissing"])
+    coef = int(weights["asNeededUse"]["perUnit"])
     pairs = _weekend_pairs(payload)
     if not pairs:
         return
@@ -730,7 +993,6 @@ def _add_intern_pair_term(model, payload: Payload, store: VarStore, group: TermG
 
 
 def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
-    _add_weekend_off_term(model, payload, store, group, weights)
     _add_peds_mix_and_fm1_terms(model, payload, store, group, weights)
     _add_intern_pair_term(model, payload, store, group, weights)
 
@@ -744,7 +1006,6 @@ def _add_band8_terms(model, payload: Payload, store: VarStore, group: TermGroup,
 
 def _add_trauma_run_batch2_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
     add_trauma_second_in_run_terms(model, payload, store, group, int(weights["traumaSecondInRun"]["perUnit"]))
-    add_trauma_mid_run_terms(model, payload, store, group, int(weights["traumaMidRun"]["perUnit"]))
     add_night_duration_alternation_terms(
         model, payload, store, group, int(weights["nightDurationAlternation"]["perUnit"])
     )
@@ -780,6 +1041,14 @@ def _add_dow_preference_term(payload: Payload, store: VarStore, group: TermGroup
         group.add(-scale * p.bonus, var)
 
 
+def _add_pod_third_body_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_pod_third_body_terms(model, payload, store, group, weights)
+
+
+def _add_ped_night_priority_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    add_ped_night_priority_terms(model, payload, store, group, weights)
+
+
 def build_objective(model, payload: Payload, store: VarStore, coverage_result: CoverageResult) -> ObjectiveInfo:
     weights = apply_rule_priority(merged_weights(payload), payload.rule_priority)
 
@@ -797,6 +1066,9 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     tier_rest = TermGroup(TIER_REST)
 
     _add_coverage_term(payload, tier_rank, coverage_result, weights)
+    _add_as_needed_term(payload, store, tier_rank, weights)
+    _add_night_excess_term(model, payload, store, tier_rank, weights)
+    _add_weekend_off_term(model, payload, store, tier_rank, weights)
     rest_first = rest_outranks_coverage(payload.rule_priority)
     rest_weights = weights
     if rest_first:
@@ -821,11 +1093,16 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_isolated_night_term(model, payload, store, tier_quality, weights)
     _add_night_fragment_term(model, payload, store, tier_quality, weights)
     _add_work_shape_term(model, payload, store, tier_quality, weights)
+    _add_area_spread_term(model, payload, store, tier_quality, weights)
+    _add_short_night_stint_term(model, payload, store, tier_quality, weights)
     _add_band8_terms(model, payload, store, tier_quality, weights)
     _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)
     _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)
     _add_true_primary_preference_term(model, payload, store, tier_quality, weights)
     _add_dow_preference_term(payload, store, tier_quality, weights)
+    _add_pod_third_body_term(model, payload, store, tier_quality, weights)
+    _add_ped_night_priority_term(model, payload, store, tier_quality, weights)
+    add_hint_stickiness_term(model, payload, store, tier_quality, weights)
 
     groups = {TIER_ERRORS: tier_errors, TIER_BLOCKING: tier_blocking, TIER_RANK: tier_rank, TIER_REST: tier_rest, TIER_QUALITY: tier_quality}
     stage_exprs = {name: sum((coef * expr for coef, expr in g.terms), start=0) for name, g in groups.items()}

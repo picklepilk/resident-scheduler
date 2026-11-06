@@ -243,10 +243,15 @@ describe('traumaRunPenaltyFor — pure helper', () => {
     expect(traumaRunPenaltyFor(rs, run, dates)).toBe(1);
   });
 
-  it('a TRAUMA-N sitting strictly mid-run of a mixed 3-night run is penalized', () => {
+  it('a TRAUMA-N sitting mid-run of a mixed 3-night run is FREE (position rule dropped 2026-10-30)', () => {
     const rs = { [dates[0]]: 'POD-N', [dates[1]]: 'TRAUMA-N', [dates[2]]: 'POD-N' };
     const run = { start: 0, end: 2, len: 3 };
-    // traumaCount=1, midRunCount=1 (idx 1 is strictly interior) -> 1 + max(0,1-1) = 1
+    expect(traumaRunPenaltyFor(rs, run, dates)).toBe(0);
+  });
+
+  it('a 2nd TRAUMA-N in a run is still penalized once, wherever it sits (traumaSecondInRun kept)', () => {
+    const rs = { [dates[0]]: 'TRAUMA-N', [dates[1]]: 'POD-N', [dates[2]]: 'TRAUMA-N' };
+    const run = { start: 0, end: 2, len: 3 };
     expect(traumaRunPenaltyFor(rs, run, dates)).toBe(1);
   });
 
@@ -322,9 +327,16 @@ describe('computeQualityMetrics — trauma-run / second-rest-day integration', (
     restCompromiseCount: 0,
   };
 
-  it('a mid-run TRAUMA-N placement surfaces as a nonzero traumaRunPenalty', () => {
+  it('a mid-run TRAUMA-N placement scores zero traumaRunPenalty (position rule dropped 2026-10-30)', () => {
     const dates = mkDates('2026-01-01', 9);
     const schedule = { r1: { [dates[2]]: 'POD-N', [dates[3]]: 'TRAUMA-N', [dates[4]]: 'POD-N' } };
+    const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
+    expect(metrics.traumaRunPenalty).toBe(0);
+  });
+
+  it('two TRAUMA-N in one interior run still surface as a nonzero traumaRunPenalty', () => {
+    const dates = mkDates('2026-01-01', 9);
+    const schedule = { r1: { [dates[2]]: 'TRAUMA-N', [dates[3]]: 'POD-N', [dates[4]]: 'TRAUMA-N' } };
     const metrics = computeQualityMetrics({ ...baseInput, schedule, dates });
     expect(metrics.traumaRunPenalty).toBeGreaterThan(0);
   });

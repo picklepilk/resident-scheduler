@@ -59,9 +59,12 @@ describe('generateScheduleBest — true-primary fix under Clear & Regenerate', (
   it('clearFirst:true yields the same schedule as the fill-from-empty run (fix not wiped)', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
-    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 7 });
-    expect(fresh.report.truePrimaryFixApplied).toBe(true); // seed chosen because the fix fires
-    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 7 });
+    // seed chosen because the fix fires (re-picked 2026-10-31 after the chief-rules merge + late sweep:
+    // seeds 3/7/8/11/12 fire it, seed 1 no longer does; re-picked again after the POD-3rd-body stage + PED-N-first
+    // optional sweep: seeds 1/6/8/10/11/12 fire it, 3 and 7 no longer do; re-picked again after weekend-off optional-pass protection: seeds 1/5/8/11/12 fire it, 6 no longer does).
+    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 1 });
+    expect(fresh.report.truePrimaryFixApplied).toBe(true);
+    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 1 });
     expect(cleared.report.truePrimaryFixApplied).toBe(true);
     expect(cleared.schedule).toEqual(fresh.schedule);
   }, 120000);
@@ -71,7 +74,9 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
   it('accepts improvements on realScale and never reintroduces a fallback-PGY composition', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
-    const opts = { attempts: 20, baseSeed: 7 };
+    // seed 8 (was 7): since the late as-needed sweep may use at-target residents, seed 7 reaches 0 unfilled on
+    // realScale before LNS, leaving LNS nothing to improve (lnsAccepted 0 at 60 and 200 iters); seed 8 still has holes.
+    const opts = { attempts: 20, baseSeed: 8 };
     const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
     const post = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 60 });
     expect(post.report.lnsAccepted).toBeGreaterThan(0);

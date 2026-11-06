@@ -1,5 +1,7 @@
 {
   "coverageMin": { "perSlack": 1000000 },
+  "seniorComposition": { "perGap": 1000000 },
+  "asNeededUse": { "perUnit": 20000 },
   "targetDeficitCore": { "perUnit": 10000 },
   "postNightRest": { "perViolation": 50000 },
   "conferenceTolerated": { "perUnit": 50000 },
@@ -9,9 +11,8 @@
   "fairness": { "deficit": 100, "holiday": 80, "night": 60, "weekend": 40 },
   "isolatedNight": { "perUnit": 300 },
   "nightFragment": { "avoidableCost": 300, "forcedCost": 100 },
-  "workShape": { "isolatedCost": 100, "fragmentCost": 100 },
+  "workShape": { "isolatedCost": 100, "fragmentCost": 100, "areaChurnCost": 25, "pairRunCost": 25, "offAdjacencyCost": 25 },
   "traumaSecondInRun": { "perUnit": 400 },
-  "traumaMidRun": { "perUnit": 400 },
   "nightDurationAlternation": { "perUnit": 300 },
   "weekendOff": { "perMissing": 500 },
   "pedsMixMin": { "perUnit": 300 },
@@ -23,5 +24,10 @@
   "podPgy2Fallback": { "perUnit": 250 },
   "flexPgy3Fallback": { "perUnit": 250 },
   "seniorTruePrimary": { "perUnit": 600 },
-  "dowPreference": { "scale": 1 }
+  "dowPreference": { "scale": 1 },
+  "areaSpread": { "perUnit": 100 },
+  "shortNightStint": { "perUnit": 60 },
+  "podThirdBodyCore": { "perUnit": 6000 },
+  "pedNightOverSwing": { "perUnit": 600 },
+  "hintStickiness": { "perChange": 0 }
 }

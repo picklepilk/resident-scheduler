@@ -195,8 +195,8 @@ def _cached_indices(store: VarStore, attr: str, resident, compute) -> frozenset:
 
 def _trauma_possible_indices_cached(payload: Payload, store: VarStore, resident) -> frozenset:
     """Memoized `_trauma_possible_indices` -- the three consumers below
-    (`add_trauma_run_hard_cap`, `add_trauma_second_in_run_terms`,
-    `add_trauma_mid_run_terms`) each loop every resident and previously
+    (`add_trauma_run_hard_cap`, `add_trauma_second_in_run_terms`)
+    each loop every resident and previously
     recomputed this same frozenset from scratch per function."""
     return _cached_indices(
         store, "_trauma_possible_cache", resident,
@@ -354,51 +354,10 @@ def add_trauma_second_in_run_terms(model, payload: Payload, store: VarStore, gro
                 group.add(coef, p)
 
 
-# ---------------------------------------------------------------------------
-# rule A (soft): trauma night in the MIDDLE of a mixed run
-# ---------------------------------------------------------------------------
-
-def add_trauma_mid_run_terms(model, payload: Payload, store: VarStore, group, coef: int) -> None:
-    """mid[r,d] = trauma[d] AND night[d-1] AND night[d+1] AND NOT(trauma[d-1]
-    AND trauma[d+1]) -- `d` is strictly interior to a run (both neighbors are
-    nights, so the run has length >= 3) and the run is "mixed" (not every
-    night in it is trauma). The hard cap above already guarantees a run of
-    length >= 3 has at most 2 trauma nights, so the "mixed" condition is
-    actually implied whenever the first three conjuncts hold -- it is
-    included anyway so this term stays correct on its own, independent of
-    the hard cap continuing to hold exactly as encoded (defense in depth,
-    per the plan's own suggested encoding). Pure-trauma runs (impossible at
-    length >= 3 under the hard cap), 1-night runs, and start/end placements
-    (a neighbor is not a night) are free, matching the chief's rule."""
-    if coef == 0:
-        return
-    n = len(payload.all_dates)
-    tail_len = len(payload.tail_dates)
-    for resident in payload.residents:
-        trauma_idx = _trauma_possible_indices_cached(payload, store, resident)
-        if not trauma_idx:
-            continue  # trauma[r,d] == 0 everywhere -- every AND below is provably 0
-        for idx in range(max(tail_len, 1), n - 1):
-            if idx not in trauma_idx:
-                # trauma_d is a provable 0 -- the AND that requires it to be
-                # 1 is provably 0 regardless of the other three conjuncts.
-                continue
-            date_str = payload.all_dates[idx]
-            trauma_d = _trauma_term_for_position(payload, store, resident, idx)
-            night_prev = _night_term_for_position(payload, store, resident, idx - 1)
-            night_next = _night_term_for_position(payload, store, resident, idx + 1)
-            trauma_prev = _trauma_term_for_position(payload, store, resident, idx - 1)
-            trauma_next = _trauma_term_for_position(payload, store, resident, idx + 1)
-
-            mixed = _or_cost_var(
-                model, f"traumaMixedRun[{resident.id},{date_str}]",
-                [1 - trauma_prev, 1 - trauma_next],
-            )
-            p = _and_cost_var(
-                model, f"traumaMidRun[{resident.id},{date_str}]",
-                [trauma_d, night_prev, night_next, mixed],
-            )
-            group.add(coef, p)
+# NOTE (2026-10-30): the soft "trauma night in the MIDDLE of a mixed run" term
+# (add_trauma_mid_run_terms / traumaMidRun) was REMOVED -- chief + program
+# director dropped trauma-night position within a run as a rule. The hard cap
+# above (rule 43) and the soft traumaSecondInRun term are unchanged.
 
 
 # ---------------------------------------------------------------------------

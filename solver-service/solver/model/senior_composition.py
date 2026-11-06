@@ -1,4 +1,5 @@
-"""Rule 16: senior composition, hard and never-relaxable.
+"""Rule 16: senior composition, hard in pass 1; pass 2 may take a penalized
+`gap` (slack=True, see below).
 
 `payload.seniorPrimary[shiftId][date]` lists the resident ids who count as
 "primary" for that (shift, date) -- every exception (Wednesday day-shift
@@ -21,7 +22,13 @@ from solver.io.payload import Payload
 from solver.model.variables import VarStore
 
 
-def add_senior_composition_constraints(model, payload: Payload, store: VarStore) -> None:
+def add_senior_composition_constraints(model, payload: Payload, store: VarStore, slack: bool = False) -> dict:
+    """Adds rule 16. `slack=False` (pass 1, default): hard, returns {}.
+    `slack=True` (pass-2 elastic only): `sum(primary) + gap >= staffed` with a
+    `gap[shift,date]` BoolVar, so locked non-primary cells can't make pass 2
+    infeasible; returns `{(shift_id, date_str): gapBool}` for the caller to
+    penalize (elastic.py) and report (`seniorGaps`)."""
+    gaps: dict = {}
     for shift_id, by_date in payload.senior_primary.items():
         for date_str, primary_ids in by_date.items():
             all_assigned = store.x_sum_for_shift_date(shift_id, date_str)
@@ -37,7 +44,13 @@ def add_senior_composition_constraints(model, payload: Payload, store: VarStore)
                 for resident_id, var in store.by_shift_date.get((shift_id, date_str), [])
                 if resident_id in primary_ids
             ]
-            model.add(sum(primary_terms) >= staffed)
+            if slack:
+                gap = model.new_bool_var(f"seniorGap[{shift_id},{date_str}]")
+                gaps[(shift_id, date_str)] = gap
+                model.add(sum(primary_terms) + gap >= staffed)
+            else:
+                model.add(sum(primary_terms) >= staffed)
+    return gaps
 
 
 # ---------------------------------------------------------------------------
