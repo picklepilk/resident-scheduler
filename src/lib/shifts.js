@@ -242,14 +242,16 @@ export function overlappingAssignments(schedule, allResidents, dateStr, shiftId,
 // there's nothing to measure a gap from, so both come back null. Builds the whole timeline fresh
 // each call rather than caching it — blocks are ~28 days, a full sort per call is fine, same
 // tradeoff validateAll's own per-resident timeline walk (ResidentScheduler.jsx) makes.
-export function shiftGapsFor(rs, dateStr) {
+export function shiftGapsFor(rs, dateStr, endMsFor = shiftEndMs) {
+  // endMsFor(sid, ds): where the rest clock starts after that shift (default = its own end; callers pass
+  // acgmeHours.restEndMs bound to the resident so attended Grand Rounds counts, 2026-11-06).
   const result = { prev: null, next: null };
   const anchorSid = rs?.[dateStr];
   if (!anchorSid || !SHIFT_TIMING[anchorSid]) return result;
 
   const timeline = Object.entries(rs || {})
     .filter(([, sid]) => sid && SHIFT_TIMING[sid])
-    .map(([ds, sid]) => ({ ds, sid, startMs: shiftStartMs(sid, ds), endMs: shiftEndMs(sid, ds) }))
+    .map(([ds, sid]) => ({ ds, sid, startMs: shiftStartMs(sid, ds), endMs: endMsFor(sid, ds) }))
     .sort((a, b) => a.startMs - b.startMs);
 
   const idx = timeline.findIndex(e => e.ds === dateStr);

@@ -28,13 +28,10 @@ policy into the payload; the solver only solves" and this rule's own `restShiftL
 src/lib/rulePolicy.js, tier 'acgme'). Rules 18-23 already always ran regardless of that toggle; this
 just closes the one remaining gap.
 
-R9 follow-up (2026-10-15, chief decision): the earlier "GR-end adjustment" (rest measured from Grand
-Rounds' own end instead of the shift's own end, when GR fell on the shift's end date) is REMOVED --
-"the only shifts that count towards time off before/after a shift ... are the actual clinical shifts
-that we are scheduling for." Rest is now always measured from the EARLIER shift's own end, full
-stop, mirroring `src/lib/acgmeHours.js`/`ResidentScheduler.jsx`'s `checkRestViolations`/`validateAll`,
-which no longer read Grand Rounds for this at all. (Grand Rounds' own hours still count toward the
-ACGME weekly-hour caps -- see weekly_hours.py -- just never toward this rest gap.)
+R9 follow-up (2026-10-15) REVERSED 2026-11-06 (chief decision "follow ACGME for now"): attended Grand
+Rounds is WORK, so rest is measured from the END of GR when GR follows the earlier eve/night shift
+(`timing.rest_end_min`, fed by `residents[].grDates`; mirrors `src/lib/acgmeHours.js` `restEndMs`).
+The required gap is still the earlier shift's own duration.
 
 `enforcement`, when given, is `(resident_id, family) -> BoolVar` (see
 solver/model/elastic.py's `LitPool`) -- pass 2 passes it so every forbidden
@@ -69,7 +66,7 @@ def add_rest_constraints(model, payload: Payload, store: VarStore, enforcement=N
                 for shift_id1, var1 in by_date[date1]:
                     shift1 = payload.shifts[shift_id1]
                     required = timing.required_rest_gap_min(shift1)
-                    earlier_end = timing.shift_end_min(date1, shift1)
+                    earlier_end = timing.rest_end_min(resident, date1, shift1)
                     for shift_id2, var2 in by_date[date2]:
                         shift2 = payload.shifts[shift_id2]
                         gap = timing.shift_start_min(date2, shift2) - earlier_end

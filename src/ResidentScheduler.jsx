@@ -86,7 +86,7 @@ import { expectedFillerFor } from './lib/expectedFiller.js';
 import { coverageCellStatus, buildHeatmapRows } from './lib/coverageBoard.js';
 import { RULE_POLICY, OVERRIDE_TIER_RULE_IDS, severityFor, isHandOverridable } from './lib/rulePolicy.js';
 import { getHandOverride, applyHandOverrideToViolations, applyHandOverridesToIssues, syncHandOverrides, normalizeHandOverrides, handOverrideCells, listHandOverrides, overrideTooltip, solverUnsafeHandOverrides } from './lib/handOverrides.js';
-import { worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H } from './lib/acgmeHours.js';
+import { worstRollingWeek, buildDailyContributions, weeklyCapBreachAt, grHoursOn, jcHoursOn, restEndMs, ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H } from './lib/acgmeHours.js';
 import { shiftOverlapsJeopardyWindow, scheduleHitsJeopardyWindow } from './lib/jeopardyWindow.js';
 import { summarizeSlotBlockers } from './lib/unfilledExplainer.js';
 import { applyScenario, compareResultSets } from './lib/whatIf.js';
@@ -1514,18 +1514,19 @@ function parseOffServiceSheet(sheetRows, ayStartYear) {
 
 // Returns violation strings for adding `newShiftId` on `dateStr` for a given resident.
 // Rule (ACGME EM 6.17.a.2, ALWAYS on — memory acgme-em-work-hours): after completing a shift of
-// length H, resident must have >= H hours off before the next shift, counted strictly from the
-// shift's OWN end (chief decision 2026-10-15: "the only shifts that count towards time off
-// before/after a shift in general are the actual clinical shifts that we are scheduling for" — Grand
-// Rounds never pushes this clock, in either direction; see lib/acgmeHours.js's grWindowFor for where
-// GR's own window DOES still matter — the weekly-hour-cap total, not rest).
+// length H, resident must have >= H hours off before the next shift. Since the 2026-11-06 chief
+// decision ("follow ACGME for now", REVERSING 2026-10-15) attended Grand Rounds is work: when GR
+// follows the earlier shift the clock runs from GR's END (lib/acgmeHours.js restEndMs), the
+// required length staying the earlier shift's own duration. Hard, never overridable.
 function checkRestViolations(resident, dateStr, newShiftId, schedule) {
   const violations = [];
+  const grDow = grWorkDow(resident);
   const nt = SHIFT_TIMING[newShiftId];
   if (!nt) return violations;
 
   const newStart = shiftStartMs(newShiftId, dateStr);
   const newEnd   = newStart + nt.durationH * 3_600_000;
+  const newRestEnd = restEndMs(resident, newShiftId, dateStr, grDow);
   const rs       = schedule[resident.id] || {};
   const refDate  = parseDate(dateStr);
 
@@ -1540,6 +1541,7 @@ function checkRestViolations(resident, dateStr, newShiftId, schedule) {
 
     const exStart = shiftStartMs(existSid, checkDs);
     const exEnd   = exStart + et.durationH * 3_600_000;
+    const exRestEnd = restEndMs(resident, existSid, checkDs, grDow);
 
     // Overlap check (shouldn't happen with one-shift-per-day model, but guard anyway)
     if (newStart < exEnd && exStart < newEnd) {
@@ -1549,21 +1551,21 @@ function checkRestViolations(resident, dateStr, newShiftId, schedule) {
 
     if (exEnd <= newStart) {
       // Existing finishes before new starts → required gap = existing shift's duration, measured
-      // strictly from the existing shift's own end (Grand Rounds never extends this).
-      const gapH = (newStart - exEnd) / 3_600_000;
+      // from the end of the existing shift or of the Grand Rounds that follows it (restEndMs).
+      const gapH = (newStart - exRestEnd) / 3_600_000;
       if (gapH < et.durationH) {
         violations.push(
-          `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after ${existSid} on ${formatDisplayDate(checkDs)} — ` +
+          `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off after ${existSid} on ${formatDisplayDate(checkDs)}${exRestEnd > exEnd ? ' and Grand Rounds' : ''} — ` +
           `that ${et.durationH}h shift requires ${et.durationH}h rest before returning`
         );
       }
     } else if (newEnd <= exStart) {
       // New finishes before existing starts → required gap = new shift's duration, measured
-      // strictly from the new shift's own end.
-      const gapH = (exStart - newEnd) / 3_600_000;
+      // from the end of the new shift or of the Grand Rounds that follows it (restEndMs).
+      const gapH = (exStart - newRestEnd) / 3_600_000;
       if (gapH < nt.durationH) {
         violations.push(
-          `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off before ${existSid} on ${formatDisplayDate(checkDs)} — ` +
+          `Rest: only ${gapH % 1 === 0 ? gapH : gapH.toFixed(1)}h off before ${existSid} on ${formatDisplayDate(checkDs)} — ${newRestEnd > newEnd ? '(counting Grand Rounds) ' : ''}` +
           `this ${nt.durationH}h shift requires ${nt.durationH}h rest afterward`
         );
       }
@@ -4583,15 +4585,16 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
 
     // Rest-period check (ACGME 6.17.a.2, ALWAYS on — no more appSettings.enforceRest gate; memory
     // acgme-em-work-hours) — sort all assignments by start time, then check each consecutive pair.
-    // Rest must be >= the length of the shift just worked, counted strictly from that shift's own
-    // end (chief decision 2026-10-15 — Grand Rounds never extends this clock) — same rule
-    // checkRestViolations enforces going forward in the generator/picker.
+    // Rest must be >= the length of the shift just worked, counted from that shift's end or from the
+    // end of the Grand Rounds that follows it (restEndMs; chief decision 2026-11-06, ACGME treats
+    // attended GR as work) — same rule checkRestViolations enforces going forward in the generator/picker.
     const assignments = Object.entries(rs)
       .filter(([, sid]) => sid && SHIFT_TIMING[sid])
       .map(([ds, sid]) => ({
         ds, sid,
         startMs: shiftStartMs(sid, ds),
         endMs:   shiftEndMs(sid, ds),
+        restEndMs: restEndMs(resident, sid, ds, grDow),
         durationH: SHIFT_TIMING[sid].durationH,
       }))
       .sort((a, b) => a.startMs - b.startMs);
@@ -4606,11 +4609,11 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           message: `Overlap: ${a.sid} (${formatDisplayDate(a.ds)}) and ${b.sid} (${formatDisplayDate(b.ds)}) overlap`,
           level: 'error' });
       } else {
-        const gapH = (b.startMs - a.endMs) / 3_600_000;
+        const gapH = (b.startMs - a.restEndMs) / 3_600_000;
         if (gapH < a.durationH) {
           const gapStr = gapH % 1 === 0 ? `${gapH}h` : `${gapH.toFixed(1)}h`;
           issues.push({ residentId: resident.id, name, dateStr: b.ds, shiftId: b.sid, rule: 'restShiftLength',
-            message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)}) — ` +
+            message: `Rest violation: ${gapStr} off after ${a.sid} (${formatDisplayDate(a.ds)})${a.restEndMs > a.endMs ? ' and Grand Rounds' : ''} — ` +
                      `${a.durationH}h shift requires ${a.durationH}h rest before next shift`,
             level: severityFor('restShiftLength', 'validator') });
         }
@@ -7749,8 +7752,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     // priorTailObligations/obligations/obligationsExemptAfterNight/grDates were REMOVED 2026-10-15:
     // the 6-consecutive-work-day streak now counts clinical shifts only (chief decision — GR
     // weekday/JC presenting date no longer extend a run, see isStreakWorkDay), so there's no more
-    // "shift-less obligation day" for the solver's rule 19 to reify, and GR no longer pushes rest
-    // (see checkRestViolations/validateAll) so rest.py has no GR-end adjustment left to feed either.
+    // "shift-less obligation day" for the solver's rule 19 to reify. (grDates, below, was
+    // RE-INTRODUCED 2026-11-06 for rest only: GR pushes the rest clock again, see restEndMs.)
 
     const ayPrior = ayPriorAll[r.id] || { nights: 0, weekendDates: 0, holidays: 0 };
 
@@ -7765,10 +7768,15 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
     const rBlockRs = block.schedule?.[r.id] || {};
     const shiftOn = (ds) => rBlockRs[ds] || rPrevTail[ds];
     const obligationHours = {};
+    // grDates (re-introduced 2026-11-06, chief "follow ACGME for now"): this resident's attended-GR
+    // calendar dates (GR weekday, not vacation/approved-off) over the same span. rest.py/validate.py
+    // start the rest clock at GR's end after an eve/night shift on the day before (restEndMs).
+    const grDates = [];
     for (let d = parseDate(tailWindowStart); d <= parseDate(block.endDate); d = addDays(d, 1)) {
       const ds = toDateStr(d);
       const prevDs = toDateStr(addDays(d, -1));
       const gr = grHoursOn(r, ds, grDowR, shiftOn(prevDs));
+      if (grHoursOn(r, ds, grDowR, null) > 0) grDates.push(ds);
       const jc = jcHoursOn(r, ds);
       const h = gr + jc;
       if (h > 0) obligationHours[ds] = h;
@@ -7807,6 +7815,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       priorTail: rPrevTail,
       priorTailHours,
       obligationHours,
+      grDates,
       // workShape off-adjacency input (vacation + approved days off within the block +-1 day).
       offDates: [...new Set([...(r.vacationDates || []), ...(r.approvedDatesOff || [])])].filter(ds => offNearBlock.has(ds)),
       ayPrior: { nights: ayPrior.nights || 0, weekends: ayPrior.weekendDates || 0, holidays: ayPrior.holidays || 0 },
@@ -9713,7 +9722,7 @@ async function exportResidentCalendarPDF({ block, allResidents, schedule, demoMo
       // Hours since/until the nearest shift — current block only, same scope limit as
       // ResidentCard/ScheduleGrid (see their own comments); display only.
       if (sid) {
-        const gaps = shiftGapsFor(rs, ds);
+        const gaps = shiftGapsFor(rs, ds, (s2, d2) => restEndMs(r, s2, d2, grWorkDow(r)));
         if (gaps.prev) notes.push(`${formatGapH(gaps.prev.gapH)} since prev shift`);
         if (gaps.next) notes.push(`${formatGapH(gaps.next.gapH)} until next shift`);
       }
@@ -16782,7 +16791,7 @@ function ShiftPickerModal({ resident, dateStr, currentShift, block, eligOverride
             // crash on s.chip/s.hours below.
             if (!s) return null;
             // What the gaps WOULD BE if this candidate were placed here — display only.
-            const gaps = shiftGapsFor({ ...clearedRow, [dateStr]: sid }, dateStr);
+            const gaps = shiftGapsFor({ ...clearedRow, [dateStr]: sid }, dateStr, (s2, d2) => restEndMs(resident, s2, d2, grWorkDow(resident)));
             const prevShort = gaps.prev && gapIsShort(gaps.prev.sid, gaps.prev.gapH);
             const nextShort = gaps.next && gapIsShort(sid, gaps.next.gapH);
             return (
@@ -18570,7 +18579,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           // Hours since/until the nearest shift, measured against this resident's whole row within
           // the CURRENT BLOCK only (see ResidentCard's identical comment — same scope limit, same
           // reason). Display only; gapIsShort is the only place "too short" is decided.
-          const gaps = shift ? shiftGapsFor(sched[res.id]||{}, ds) : null;
+          const gaps = shift ? shiftGapsFor(sched[res.id]||{}, ds, (s2, d2) => restEndMs(res, s2, d2, grWorkDow(res))) : null;
           const gapsWords = shift && !lockMode
             ? [gaps?.prev && gapWords(gaps.prev,'prev'), gaps?.next && gapWords(gaps.next,'next')].filter(Boolean).join('; ')
             : '';
@@ -20403,7 +20412,7 @@ function ResidentCard({ res, rs, dates, appSettings, ayConf, violMap, dayRules, 
                 // week) but scoped to the CURRENT BLOCK only — a shift on the block's first day
                 // legitimately shows no "since" gap even though the resident may have worked the
                 // prior block's tail; that's a scope limit, not a bug.
-                const gaps = shift ? shiftGapsFor(rs, ds) : null;
+                const gaps = shift ? shiftGapsFor(rs, ds, (s2, d2) => restEndMs(res, s2, d2, grWorkDow(res))) : null;
                 const prevShort = gaps?.prev && gapIsShort(gaps.prev.sid, gaps.prev.gapH);
                 const nextShort = gaps?.next && gapIsShort(sid, gaps.next.gapH);
                 return (
@@ -23138,7 +23147,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             <Lock size={14} className="text-gray-400 mt-0.5 shrink-0" />
             <span>
               <span className="block text-xs font-semibold text-gray-700">Rest between shifts is always enforced</span>
-              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured strictly from that shift's own end — Grand Rounds never extends or shortens this clock. No longer a setting — this can't be turned off.</span>
+              <span className="block text-xs text-gray-400">ACGME: after a shift of H hours, the resident needs at least H hours off before the next shift (e.g. 12h Trauma → 12h rest), measured from that shift's own end, or from the END of Grand Rounds when GR follows an evening/night shift (ACGME counts attended GR as work: 10:00 after a night, 12:00 after an evening; the required hours stay the shift's own length). No longer a setting — this can't be turned off.</span>
             </span>
           </div>
 
