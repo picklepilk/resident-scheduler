@@ -47,6 +47,7 @@ function parseArgs(argv) {
     else if (t === '--fixture') a.fixture = rest[++i];
     else if (t === '--variants') a.variants = JSON.parse(fs.readFileSync(rest[++i], 'utf-8'));
     else if (t === '--seeds') a.seeds = Math.max(1, Number(rest[++i]) || 1);
+    else if (t === '--dump') a.dump = rest[++i];
     else if (t.startsWith('--')) throw new Error(`unknown flag ${t}`);
     else a.file = t;
   }
@@ -75,7 +76,7 @@ const unwrap = v => { if (typeof v !== 'string') return v; try { return JSON.par
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const app = await import('../src/ResidentScheduler.jsx');
-  const { generateScheduleBest, buildSolverPayload, mapSolverResult, pickEngineResult, offServiceWindowTargetDelta } = app;
+  const { generateScheduleBest, buildSolverPayload, mapSolverResult, pickEngineResult, offServiceWindowTargetDelta, validateAll } = app;
 
   let baseArgs; let label;
   if (args.fixture) {
@@ -121,6 +122,16 @@ async function main() {
   if (!localRes) throw new Error('block has no valid date range');
   const localWall = (Date.now() - t0) / 1000;
   const localCmp = pickEngineResult(null, localRes, solveArgs).engineComparison.local;
+  // --dump <dir>: one JSON per run with the schedule and its error-level validateAll issues (diagnosis only).
+  const dump = (name, schedule, extra = {}) => {
+    if (!args.dump) return;
+    const a = solveArgs;
+    const issues = validateAll(a.allResidents, schedule, a.block, a.eligOverrides, a.appSettings, a.dayRules, a.coverage, a.blocksHistory, a.ayConf);
+    const errors = issues.filter(i => i.level === 'error').map(i => ({ rule: i.rule, message: i.message, overridden: !!i.overridden }));
+    fs.mkdirSync(args.dump, { recursive: true });
+    fs.writeFileSync(`${args.dump}/${name}.json`, JSON.stringify({ name, errors, schedule, ...extra }));
+  };
+  dump('local', localRes.schedule);
 
   const rows = [{ engine: 'local', budget: '-', wall: localWall, status: 'best-of-20', cmp: localCmp, winner: '-' }];
   if (args.url) {
@@ -143,6 +154,7 @@ async function main() {
         const extra = { seed: config.randomSeed ?? 42, stall: (json.report?.stall || []).length, deadlineHit: json.report?.deadline?.hit, cliques: json.report?.impliedCliques, shortlistIndex: engineComparison.shortlistIndex ?? null, lns: json.report?.outerLns ? `${json.report.outerLns.accepted}/${json.report.outerLns.iterations}` : null };
         rows.push({ engine: v.name, budget, wall, status: json.status, cmp: engineComparison.solver, winner, extra });
         console.log(JSON.stringify({ variant: v.name, budget, wall: Math.round(wall), status: json.status, cmp: engineComparison.solver, winner, ...extra }));
+        dump(`${v.name}-${budget}-${extra.seed}`, solverRes.schedule, { tiers: json.tiers });
       } catch (e) {
         rows.push({ engine: v.name, budget, wall: (Date.now() - t1) / 1000, status: `ERR ${String(e.message).slice(0, 60)}`, cmp: null, winner: '-' });
       }
