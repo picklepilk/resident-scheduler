@@ -19,7 +19,8 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSolverPayload, mapSolverResult, validateAll } from '../ResidentScheduler.jsx';
+import { buildSolverPayload, mapSolverResult, validateAll, generateSchedule } from '../ResidentScheduler.jsx';
+import { mulberry32 } from './rng.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 const RUN_PARITY = process.env.SOLVER_PARITY === '1' || process.env.SOLVER_PARITY === 'true';
@@ -90,6 +91,61 @@ const PYTHON = process.platform === 'win32'
         console.error('Structural validateAll errors on solver output:', structural.slice(0, 10));
       }
       expect(structuralErrorCount(issues)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120000);
+  // em-scheduler port (2026-11-04): config.mode "score" fixes every x to `hint` and prices that exact
+  // schedule with one solve (no search) - the JS-vs-Python quality oracle. Contract:
+  // solver-service/docs/PAYLOAD_SCHEMA.md "em-scheduler ports". Written against that contract BEFORE the
+  // Python score mode merged; it only passes once solver/score.py is on this branch.
+  //
+  // KNOWN_DRIFT: facts that are deliberately NOT asserted equal, so a future reader sees them as
+  // decisions rather than gaps. Each entry is { what, why }.
+  const KNOWN_DRIFT = [
+    { what: 'tiers.* absolute values vs JS qualityVector slots', why: 'Python tier values are integer-weighted CP-SAT objective terms (weights in config/default_weights.json); JS qualityVector slots are unitless metric counts/points. Only ORDERING and the unfilled count are comparable.' },
+    { what: 'report.underTarget / overstaffed lists vs generator report', why: 'Score mode prices slack on a fixed schedule; the generator report lists are produced by different bookkeeping (and the solver widens targets via asNeeded cells).' },
+    { what: 'a hint cell the solver rejects as ineligible', why: 'Score mode returns INFEASIBLE with report.score.conflicts instead of silently repairing; the generator only emits eligible cells so this fixture expects SCORED.' },
+  ];
+
+  it('score mode prices the local generator schedule: SCORED, unfilled count agrees with JS', () => {
+    const fixture = makeFixture('feasible');
+    const local = generateSchedule({ ...fixture, rng: mulberry32(7) });
+    const payload = buildSolverPayload({ ...fixture, hint: local.schedule, config: { mode: 'score', maxTimeSeconds: 30 } });
+    expect(payload.config.mode).toBe('score');
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'solver-parity-score-'));
+    const inputPath = path.join(dir, 'payload.json');
+    const outputPath = path.join(dir, 'result.json');
+    writeFileSync(inputPath, JSON.stringify(payload), 'utf-8');
+    try {
+      const proc = spawnSync(PYTHON, ['cli.py', '--input', inputPath, '--output', outputPath], { cwd: SOLVER_DIR, encoding: 'utf-8', timeout: 120000 });
+      if (proc.error) throw new Error(`Failed to spawn solver CLI (${PYTHON}): ${proc.error.message}`);
+      if (proc.status !== 0 && proc.status !== 1) {
+        throw new Error(`solver-service/cli.py exited ${proc.status}.
+stdout: ${proc.stdout}
+stderr: ${proc.stderr}`);
+      }
+      const json = JSON.parse(readFileSync(outputPath, 'utf-8'));
+      expect(json.status, JSON.stringify(json.report?.score?.conflicts ?? null)).toBe('SCORED');
+      expect(json.tiers && typeof json.tiers).toBe('object');
+      expect(Object.keys(json.tiers).length).toBeGreaterThan(0);
+      for (const v of Object.values(json.tiers)) expect(Number.isFinite(v)).toBe(true);
+
+      // The scored schedule must be exactly the hint (no search happened).
+      const scored = mapSolverResult(json, { block: fixture.block });
+      for (const [rid, row] of Object.entries(local.schedule)) {
+        for (const [ds, sh] of Object.entries(row)) {
+          if (sh) expect(scored.schedule[rid]?.[ds], `${rid} ${ds}`).toBe(sh);
+        }
+      }
+
+      // Comparable slot: unfilled coverage minimums. JS count from the generator report, Python count
+      // from report.unfilled (shortBy summed), both for the SAME schedule.
+      const jsUnfilled = (local.report.unfilled || []).length;
+      const pyUnfilled = (json.report?.unfilled || []).reduce((n, u) => n + Math.max(1, Number(u.shortBy) || 1), 0);
+      expect(pyUnfilled).toBe(jsUnfilled);
+      expect(KNOWN_DRIFT.length).toBeGreaterThan(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

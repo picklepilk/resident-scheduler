@@ -179,6 +179,7 @@ class SolveResponse(BaseModel):
     report: dict
     feasibility: Optional[dict] = None
     validation: dict
+    tiers: Optional[dict] = None
 
 
 class HealthResponse(BaseModel):

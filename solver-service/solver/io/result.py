@@ -17,4 +17,6 @@ def build_response(payload_version: int, result) -> dict:
         "report": result.report,
         "feasibility": result.feasibility,
         "validation": result.validation,
+        # Strict/scored results: achieved stage-expression values (lexicographic ladder). None otherwise.
+        "tiers": getattr(result, "tiers", None),
     }

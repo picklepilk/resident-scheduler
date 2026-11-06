@@ -309,3 +309,53 @@ cd solver-service
 # build_small.py / build_mid.py / build_tiny.py, param_sweep.py) -- not
 # committed, per "solver-service scope only" / "don't commit".
 ```
+
+## em-scheduler ports A/B (2026-11-05, PicklePower)
+
+PicklePower (8 cores, Windows, OR-Tools 9.15), EMSolver idle (`busy:false`, CPU 8%). `scripts/bench-engines.mjs --fixture realScale --budgets 300 --seeds 3 --variants <file>` (58 synthetic residents), warm-started from the local best-of-20 (`errors 6, blockWarn 4, [14,0,0,1971.4]`). Columns are the JS `betterQuality` inputs, scored by `validateAll` on the returned schedule. Every variant has stall on except A.
+
+| Variant | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| A base (stall off) | 5 / 5 / [5,0,0,1953.8] | 5 / 4 / [6,0,0,1680.3] | 4 / 6 / [6,0,0,1886.3] |
+| B stall | 5 / 5 / [7,0,0,1814.0] | 5 / 4 / [5,0,0,1825.4] | 4 / 5 / [4,0,0,1924.9] |
+| C stall + impliedCliques (1825) | 5 / 5 / [7,0,0,1775.2] | 5 / 4 / [6,0,0,1622.0] | 5 / 5 / [9,0,0,1418.1] |
+| **D stall + lexStrict** | **3 / 3 / [0,0,0,1293.1]** | **3 / 3 / [0,0,0,1317.2]** | **3 / 3 / [0,0,0,1416.1]** |
+| E stall + shortlist 5 | 5 / 5 / [6,0,0,1544.5] | 5 / 4 / [6,0,0,1512.5] | 5 / 4 / [9,0,0,1301.4] |
+
+Format: errors / blocking warns / quality `[miss, senior, rest, fair]`. Wall time was 300.5–301.6 s on every run, so the deadline held (`deadlineHit` false). CP-SAT beat local on all 15 runs.
+
+Decisions:
+- **`lexStrict` default ON.** It won 3/3 seeds on every ladder slot: errors 3 vs 4–5, blocking warns 3 vs 4–6, coverage miss 0 vs 4–9. The tiebreak sum (`1e6 × stage + later`) made each stage chase later tiers at the cost of its own proof; with pure stage objectives, LNS also accepted more moves (38–44 of 58–61, against 9–27 of 43–48 for base). `lexStrict: false` restores the old ladder.
+- `impliedCliques` stays off: it added 1825 constraints and won 0/3.
+- Stall stays on by default: it is neutral. It fired once in 15 runs (D, seed 44). The real block rarely plateaus long enough at 300 s.
+- Shortlist stays on (client sends 5): it never beat the winner here (`shortlistIndex` null), and the re-rank can't make the result worse.
+- Fixed the same day: a cold solve (no hint) of the parity `standard` fixture at 30 s used to overrun its 40 s deadline by about 13 s. The cause was the pass-2 recommendation verify re-solves (up to 2 × 10 s, each with its own fresh deadline plus grace). They now fit inside the run deadline (`report/builder.py` `_verify_single_edit`, skipped below 1 s left), and the overrun is down to 0.5 s.
+
+## lexStrict follow-ups (2026-11-05/06, PicklePower)
+
+Same setup as above, with lexStrict now the default. Each cell shows errors / blocking warns / `[miss, senior, rest, fair]`.
+
+**120 s (the app's default budget).** Local best-of-20 scored 4 / 6 / [10,0,0,1845.6].
+
+| Variant | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| lexStrict (default) | 3 / 6 / [2,0,0,1795.9] | 3 / 6 / [0,0,1,1726.2] | 3 / 7 / [0,0,1,1535.0] |
+| `lexStrict: false` | 4 / 6 / [13,0,0,1739.3] (local won) | 4 / 6 / [9,0,0,1449.2] | 4 / 6 / [10,0,0,1555.0] |
+
+lexStrict also wins 3/3 at 120 s: one fewer error and coverage miss 0–2 instead of 9–13.
+
+**300 s, settings stacked on lexStrict.** The lexStrict baseline is row D in the table above: 3 / 3 / [0,0,0, 1293.1 · 1317.2 · 1416.1].
+
+| Variant | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| + impliedCliques | 3 / 3 / [0,0,0,1425.0] | 3 / 3 / [0,0,0,1368.8] | 3 / 3 / [0,0,0,1294.3] |
+| + shortlist 5 | 3 / 3 / [0,0,0,1300.7] | 3 / 3 / [0,0,0,1320.5] | 3 / 3 / [0,0,0,1305.5] |
+| outerLns.fraction 0.7 | 3 / 3 / [1,0,0,1402.7] | 3 / 4 / [0,0,0,1404.4] | 3 / 3 / [0,0,0,1994.5] |
+| outerLns.fraction 0.3 | 3 / 3 / [0,0,0,1419.7] | lost (host went offline) | lost |
+
+Decisions: no further default changes.
+- Cliques: 1/3 wins against the lexStrict baseline, so they stay off.
+- Shortlist: still never chosen (`shortlistIndex` null). The fairness differences are noise.
+- LNS fraction: 0.7 is worse (one coverage miss, one extra blocking warn, fair 1994). 0.3 was worse on the only seed that finished. The 0.5 default stays.
+
+**The 3 remaining errors are inherent to the fixture.** All are `underTarget` on the three PGY-1 Trauma/Peds split interns (`syn_rs_r01..03`, target 19 = traumaCap 8 + pedsCap 11). The trauma half allows only TRAUMA-D, which has a max of 1 per day, so 3 × 8 = 24 trauma shifts compete for at most 14 slots. This is not drift between the solver and JS. Diagnose with `bench-engines.mjs --dump <dir>`.

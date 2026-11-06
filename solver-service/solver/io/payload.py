@@ -93,6 +93,22 @@ class Config:
     solver_params: Optional[dict] = None
     # Optional outer LNS after the staged solve (solver/lns_outer.py). Parsed leniently; off by default.
     outer_lns: OuterLnsConfig = OuterLnsConfig()
+    # 2026-11-04 em-scheduler ports (docs/PAYLOAD_SCHEMA.md "em-scheduler ports"). Defaults keep the
+    # pre-port behavior except `deadline_seconds`, which only bounds an overrun.
+    # Total wall cap for the whole solve; None -> max_time_seconds + deadline.DEFAULT_GRACE_SECONDS.
+    deadline_seconds: Optional[float] = None
+    # Stall stop: end a stage after this many seconds with no improving incumbent. None -> solver
+    # default (max(30, 0.2 * stage budget)); 0 -> off.
+    stall_seconds: Optional[float] = None
+    # Keep up to N distinct best pass-1 schedules in report.shortlist (0 = off).
+    shortlist_size: int = 0
+    # "solve" (default) or "score": price payload.hint exactly (every x fixed), no search.
+    mode: str = "solve"
+    # Implied same-date clique constraints (solver/model/implied.py).
+    implied_cliques: bool = False
+    # Strict lexicographic stages: pure stage objective, `==` pin when OPTIMAL. Default ON since the
+    # 2026-11-05 PicklePower bench (PERF_NOTES.md); `lexStrict: false` restores the tiebreak ladder.
+    lex_strict: bool = True
 
 
 @dataclass(frozen=True)
@@ -471,6 +487,12 @@ def parse_payload(raw: dict) -> Payload:
             portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
             outer_lns=parse_outer_lns(config_raw.get("outerLns")),
+            deadline_seconds=float(config_raw["deadlineSeconds"]) if config_raw.get("deadlineSeconds") is not None else None,
+            stall_seconds=float(config_raw["stallSeconds"]) if config_raw.get("stallSeconds") is not None else None,
+            shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
+            mode="score" if config_raw.get("mode") == "score" else "solve",
+            implied_cliques=bool(config_raw.get("impliedCliques", False)),
+            lex_strict=bool(config_raw.get("lexStrict", True)),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(

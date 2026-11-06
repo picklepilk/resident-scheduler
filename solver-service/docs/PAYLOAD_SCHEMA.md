@@ -1595,3 +1595,26 @@ Weight 0 or absent disables either. Only `pedNightOverSwing` is in `tests/test_w
 | Pass 2 (`elastic.py`) | `add_senior_composition_constraints(..., slack=True)`: `Σprimary + gap[shift,date] ≥ staffed`. Locked non-primary cells now give `RELAXED` instead of `INFEASIBLE`. |
 | Penalty | `objective.senior_gap_weight(rulePriority, weights)` per gap, using the coverage-slack (`wc`) and postNightRest (`wr`) weights actually in use: seniorComposition above both -> `10·max(wc,wr)`; between -> `isqrt(wc·wr)`; below both -> `max(1, min(wc,wr)//10)`. `config/default_weights.json` `seniorComposition.perGap` (1000000) is the fallback anchor when either weight is absent. |
 | `report.seniorGaps` | `[{dateStr, shiftId, reason: "noSeniorPrimary"}]`, filled from `ObjectiveInfo.senior_gaps` (pass 2 only; `[]` in pass 1). |
+
+## em-scheduler ports (2026-11-04)
+
+Techniques ported from `../em-scheduler/solver/app/` (`lexico.py`, `solve.py`, `rules/implied.py`; see its `docs/DEVICE-SOLVER.md`). All new `config` keys are optional; defaults keep the earlier behavior, except `deadlineSeconds` (only bounds an overrun) and `lexStrict` (default ON since the 2026-11-05 bench, `solver-service/PERF_NOTES.md`).
+
+| `config` key | Default | Meaning |
+|---|---|---|
+| `deadlineSeconds` | `maxTimeSeconds + 10` | Hard wall cap for the WHOLE solve: hint-pin evaluation, staged ladder, outer LNS and pass 2 all size their limits from one `solver/deadline.py` `Deadline`. |
+| `stallSeconds` | `max(30, 0.2 × stage budget)` | A stage with no improving incumbent for this long is stopped (after its first incumbent only); its unused time flows to the next stage / outer LNS. `0` = off. |
+| `shortlistSize` | `0` (off) | Keep up to N distinct best strict schedules seen during pass 1 in `report.shortlist`; the client re-ranks them with `betterQuality`. Max 20. |
+| `mode` | `"solve"` | `"score"`: fix every x to `hint` and solve once to price that exact schedule (no search). Parity oracle for JS vs Python quality. |
+| `impliedCliques` | `false` | Add `sum(x) <= 1` over same-resident, same/adjacent-date shift cliques already pairwise forbidden (`solver/model/implied.py`). |
+| `lexStrict` | `true` | Stages minimize their own expression only (no `1e6 × stage + later` tiebreak); the pin is `==` when the stage proved OPTIMAL, else `<=`. |
+
+Response additions (all additive, `report` is a plain dict):
+- `report.deadline = {seconds, hit: bool, overrunSeconds}`
+- `report.stall = [{stage, stoppedAfterSeconds, budgetSeconds, reseeded}]`
+- `report.shortlist = [{schedule, tiers}]` (best first, excludes the returned winner)
+- score mode: `status: "SCORED"` (or `"INFEASIBLE"` with `report.score.conflicts`), `tiers`, normal `report`.
+
+Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
+
+Not ported (tried and rejected there or here): hand-written symmetry breaking (em: stalled 7/7 runs), `repair_hint` with staged re-solves (native CHECK crash), assumption literals for LNS fixing (weak presolve).

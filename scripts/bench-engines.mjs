@@ -3,6 +3,9 @@
 // Run through vite-node (the app's big file is JSX/ESM and cannot be imported by plain node):
 //   npx vite-node scripts/bench-engines.mjs -- <backup.json> [--block <id>] [--url <solverUrl>]
 //                                             [--budgets 45,120,300] [--portfolio K]
+//                                             [--variants v.json] [--seeds N]
+// --variants: JSON array of {name, config}; each config is merged into the solver config (A/B of
+// solver flags). --seeds N runs each variant with randomSeed 42..42+N-1. Local result computed once.
 //   npx vite-node scripts/bench-engines.mjs -- --fixture realScale [--url ...] [--budgets ...]
 //
 // <backup.json> is a Settings -> Backup file ({data:{res_*...}} or the bare map). The block is
@@ -33,7 +36,7 @@ if (typeof globalThis.localStorage === 'undefined') {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseArgs(argv) {
-  const a = { budgets: [45], file: null, block: null, url: null, portfolio: null, fixture: null };
+  const a = { budgets: [45], file: null, block: null, url: null, portfolio: null, fixture: null, variants: null, seeds: 1 };
   const rest = argv.filter(x => x !== '--');
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
@@ -42,6 +45,9 @@ function parseArgs(argv) {
     else if (t === '--budgets') a.budgets = rest[++i].split(',').map(Number).filter(n => n > 0);
     else if (t === '--portfolio') a.portfolio = Number(rest[++i]);
     else if (t === '--fixture') a.fixture = rest[++i];
+    else if (t === '--variants') a.variants = JSON.parse(fs.readFileSync(rest[++i], 'utf-8'));
+    else if (t === '--seeds') a.seeds = Math.max(1, Number(rest[++i]) || 1);
+    else if (t === '--dump') a.dump = rest[++i];
     else if (t.startsWith('--')) throw new Error(`unknown flag ${t}`);
     else a.file = t;
   }
@@ -70,7 +76,7 @@ const unwrap = v => { if (typeof v !== 'string') return v; try { return JSON.par
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const app = await import('../src/ResidentScheduler.jsx');
-  const { generateScheduleBest, buildSolverPayload, mapSolverResult, pickEngineResult, offServiceWindowTargetDelta } = app;
+  const { generateScheduleBest, buildSolverPayload, mapSolverResult, pickEngineResult, offServiceWindowTargetDelta, validateAll } = app;
 
   let baseArgs; let label;
   if (args.fixture) {
@@ -116,11 +122,22 @@ async function main() {
   if (!localRes) throw new Error('block has no valid date range');
   const localWall = (Date.now() - t0) / 1000;
   const localCmp = pickEngineResult(null, localRes, solveArgs).engineComparison.local;
+  // --dump <dir>: one JSON per run with the schedule and its error-level validateAll issues (diagnosis only).
+  const dump = (name, schedule, extra = {}) => {
+    if (!args.dump) return;
+    const a = solveArgs;
+    const issues = validateAll(a.allResidents, schedule, a.block, a.eligOverrides, a.appSettings, a.dayRules, a.coverage, a.blocksHistory, a.ayConf);
+    const errors = issues.filter(i => i.level === 'error').map(i => ({ rule: i.rule, message: i.message, overridden: !!i.overridden }));
+    fs.mkdirSync(args.dump, { recursive: true });
+    fs.writeFileSync(`${args.dump}/${name}.json`, JSON.stringify({ name, errors, schedule, ...extra }));
+  };
+  dump('local', localRes.schedule);
 
   const rows = [{ engine: 'local', budget: '-', wall: localWall, status: 'best-of-20', cmp: localCmp, winner: '-' }];
   if (args.url) {
-    for (const budget of args.budgets) {
-      const config = { maxTimeSeconds: budget };
+    const variants = args.variants || [{ name: 'cpsat', config: {} }];
+    for (const budget of args.budgets) for (const v of variants) for (let si = 0; si < args.seeds; si++) {
+      const config = { maxTimeSeconds: budget, ...(args.seeds > 1 ? { randomSeed: 42 + si } : {}), ...v.config };
       if (args.portfolio) config.portfolio = args.portfolio;
       const payload = buildSolverPayload({ ...solveArgs, hint: localRes.schedule, config });
       const t1 = Date.now();
@@ -134,9 +151,12 @@ async function main() {
         const wall = (Date.now() - t1) / 1000;
         const solverRes = mapSolverResult(json, { block: solveArgs.block, allResidents: solveArgs.allResidents, appSettings: solveArgs.appSettings, ayConf: solveArgs.ayConf });
         const { engineComparison, winner } = pickEngineResult(solverRes, localRes, solveArgs);
-        rows.push({ engine: 'cpsat', budget, wall, status: json.status, cmp: engineComparison.solver, winner });
+        const extra = { seed: config.randomSeed ?? 42, stall: (json.report?.stall || []).length, deadlineHit: json.report?.deadline?.hit, cliques: json.report?.impliedCliques, shortlistIndex: engineComparison.shortlistIndex ?? null, lns: json.report?.outerLns ? `${json.report.outerLns.accepted}/${json.report.outerLns.iterations}` : null };
+        rows.push({ engine: v.name, budget, wall, status: json.status, cmp: engineComparison.solver, winner, extra });
+        console.log(JSON.stringify({ variant: v.name, budget, wall: Math.round(wall), status: json.status, cmp: engineComparison.solver, winner, ...extra }));
+        dump(`${v.name}-${budget}-${extra.seed}`, solverRes.schedule, { tiers: json.tiers });
       } catch (e) {
-        rows.push({ engine: 'cpsat', budget, wall: (Date.now() - t1) / 1000, status: `ERR ${String(e.message).slice(0, 60)}`, cmp: null, winner: '-' });
+        rows.push({ engine: v.name, budget, wall: (Date.now() - t1) / 1000, status: `ERR ${String(e.message).slice(0, 60)}`, cmp: null, winner: '-' });
       }
     }
   }
