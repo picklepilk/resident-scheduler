@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   worstRollingWeek, wouldBreachWeeklyCaps, grWindowFor, grHoursOn,
-  buildDailyContributions, weeklyCapBreachAt, restEndMs,
+  buildDailyContributions, weeklyCapBreachAt,
   ED_WEEKLY_CAP_H, TOTAL_WEEKLY_CAP_H, GR_START_H, GR_END_H, GR_DURATION_H, JC_DURATION_H,
 } from './acgmeHours.js';
 import { SHIFT_TIMING } from './shifts.js';
@@ -246,9 +246,9 @@ describe('buildDailyContributions/weeklyCapBreachAt agrees with wouldBreachWeekl
 
 // grWindowFor/grHoursOn (chief decision 2026-10-15): Grand Rounds' own window — and therefore how
 // many hours it contributes to the weekly-hour caps — depends on what was worked the calendar day
-// immediately before GR. Since 2026-11-06 (ACGME: attended GR is work) the same window also starts
-// the rest clock after an eve/night shift — see restEndMs below and ResidentScheduler.jsx's
-// checkRestViolations/validateAll and solver-service's rest.py.
+// immediately before GR. This has NO bearing on rest-period math any more (effectiveShiftEndMs was
+// removed; rest is always measured from a shift's own end — see ResidentScheduler.jsx's
+// checkRestViolations/validateAll and solver-service's rest.py).
 describe('grWindowFor', () => {
   it('an eve-type shift the day before GR -> 10:00-GR_END_H (2h)', () => {
     const r = resident();
@@ -316,37 +316,5 @@ describe('grHoursOn', () => {
   it('0 when grDow is null (no GR obligation)', () => {
     const r = resident();
     expect(grHoursOn(r, '2026-07-08', null, 'POD-N')).toBe(0);
-  });
-});
-
-// restEndMs (chief decision 2026-11-06, ACGME 6.17.a.2: attended GR is work): the rest clock starts at
-// GR's END when GR follows an eve/night shift, never earlier than the shift's own end.
-describe('restEndMs', () => {
-  const hourAt = (ms) => { const d = new Date(ms); return `${toDateStr(d)} ${String(d.getHours()).padStart(2, '0')}:00`; };
-  it('night starting Tue ends Wed 08:00 (PED-N-FM 23:00 start, 9h) and GR 08-10 -> rest clock starts Wed 10:00', () => {
-    expect(hourAt(restEndMs(resident(), 'POD-N', '2026-07-07', 3))).toBe('2026-07-08 10:00');
-  });
-  it('eve ending Wed 00:00 (POD-E) -> GR 10-12 -> Wed 12:00', () => {
-    expect(hourAt(restEndMs(resident(), 'POD-E', '2026-07-07', 3))).toBe('2026-07-08 12:00');
-  });
-  it('FLEX-E ends Tue 23:00 -> still pushed to Wed 12:00 (GR follows)', () => {
-    expect(hourAt(restEndMs(resident(), 'FLEX-E', '2026-07-07', 3))).toBe('2026-07-08 12:00');
-  });
-  it('day shift is never extended', () => {
-    expect(hourAt(restEndMs(resident(), 'POD-D', '2026-07-07', 3))).toBe('2026-07-07 16:00');
-  });
-  it('no GR obligation (grDow null) or GR on another weekday -> plain end', () => {
-    expect(hourAt(restEndMs(resident(), 'POD-N', '2026-07-07', null))).toBe('2026-07-08 08:00');
-    expect(hourAt(restEndMs(resident(), 'POD-N', '2026-07-07', 4))).toBe('2026-07-08 08:00');
-  });
-  it('vacation / approved-off on the GR date -> no GR -> plain end', () => {
-    expect(hourAt(restEndMs(resident({ vacationDates: ['2026-07-08'] }), 'POD-N', '2026-07-07', 3))).toBe('2026-07-08 08:00');
-    expect(hourAt(restEndMs(resident({ approvedDatesOff: ['2026-07-08'] }), 'POD-E', '2026-07-07', 3))).toBe('2026-07-08 00:00');
-  });
-  it('BAMC Thursday GR: night starting Wed ends Thu 08:00 -> Thu 10:00', () => {
-    expect(hourAt(restEndMs(resident(), 'POD-N', '2026-07-08', 4))).toBe('2026-07-09 10:00');
-  });
-  it('unknown shift id -> null', () => {
-    expect(restEndMs(resident(), 'NOPE', '2026-07-07', 3)).toBeNull();
   });
 });

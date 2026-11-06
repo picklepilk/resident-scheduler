@@ -114,13 +114,7 @@ only solves.**
   runs, and a worked day adjacent to an off date. Mirror `scheduleQuality.js` `workShapePenalty`. Prior-tail
   days are ignored for these three (as in JS). `fairness.*` spread is now an L1 deviation from the cohort mean
   (coef = max(1, round(weight / max(1, n/4)))), not max-min.
-- `residents[].grDates` **RE-INTRODUCED 2026-11-06** (chief "follow ACGME for now": attended Grand Rounds is
-  work): `[date]` of this resident's attended-GR calendar dates (GR weekday, vacation/approved-off excluded) over the
-  tail+block span. `solver/model/timing.rest_end_min` starts the rest clock at GR's end (12:00 after an eve, 10:00
-  after a night shift on the day before; later of that and the shift's own end); required gap unchanged. Used by
-  `rest.py`, `validate.py`, `implied.py`; mirrors `src/lib/acgmeHours.js` `restEndMs`. `grEndH` stays unused
-  (hard-coded 12/10). The 2026-10-15 text below is superseded for `grDates`.
-- (superseded) `residents[].grDates`/`grEndH` **REMOVED 2026-10-15** (chief decision — "the only shifts that count
+- `residents[].grDates`/`grEndH` **REMOVED 2026-10-15** (chief decision — "the only shifts that count
   towards time off before/after a shift ... are the actual clinical shifts"): rest is now always
   measured from a shift's own end, never Grand Rounds', so `rest.py`'s old GR-end adjustment
   (`_effective_earlier_end_min`) is gone and these two fields it alone consumed are no longer sent by

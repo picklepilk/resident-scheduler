@@ -30,7 +30,7 @@ MAX_WINDOW_NODES = 60        # skip pathological windows (Bron-Kerbosch is expon
 _WINDOW_DAYS = 3             # rest scan covers date deltas 1 and 2 -> windows of 3 calendar dates
 
 
-def _conflict(payload: Payload, resident, date1: str, shift_id1: str, date2: str, shift_id2: str, delta: int) -> bool:
+def _conflict(payload: Payload, date1: str, shift_id1: str, date2: str, shift_id2: str, delta: int) -> bool:
     """date1 <= date2 (delta = days apart). True when both can never be assigned together."""
     if delta == 0:
         return shift_id1 != shift_id2
@@ -38,7 +38,7 @@ def _conflict(payload: Payload, resident, date1: str, shift_id1: str, date2: str
     shift2 = payload.shifts[shift_id2]
     if delta == 1 and shift1.type == "eve" and shift2.type == "day":
         return True
-    gap = timing.shift_start_min(date2, shift2) - timing.rest_end_min(resident, date1, shift1)
+    gap = timing.shift_start_min(date2, shift2) - timing.shift_end_min(date1, shift1)
     return gap < timing.required_rest_gap_min(shift1)
 
 
@@ -82,9 +82,9 @@ def add_implied_cliques(model, payload: Payload, store: VarStore) -> int:
                     di, ki, si, _ = nodes[i]
                     dj, kj, sj, _ = nodes[j]
                     if ki <= kj:
-                        edge = _conflict(payload, resident, di, si, dj, sj, kj - ki)
+                        edge = _conflict(payload, di, si, dj, sj, kj - ki)
                     else:
-                        edge = _conflict(payload, resident, dj, sj, di, si, ki - kj)
+                        edge = _conflict(payload, dj, sj, di, si, ki - kj)
                     if edge:
                         adj[i].add(j)
                         adj[j].add(i)

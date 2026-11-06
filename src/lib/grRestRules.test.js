@@ -236,10 +236,10 @@ describe('validateAll — night stint count thresholds (1.7)', () => {
   });
 });
 
-describe('validateAll — rest is measured from the END of attended Grand Rounds (chief decision 2026-11-06, ACGME; reverses 2026-10-15)', () => {
-  // A PGY-3 with Wednesday GR (syn_papa, EM_HOME). 2026-10-15 had GR never push rest (the 3h
-  // "false error" after an evening shift); 2026-11-06 reverses it: attended GR is work, so rest runs
-  // from GR's end (10:00 after a night, 12:00 after an eve; required length = earlier shift's length).
+describe('validateAll — rest length never reads Grand Rounds any more (chief decision 2026-10-15)', () => {
+  // Reproduces the reported case: a PGY-3 with Wednesday GR (syn_papa, EM_HOME) scheduled an
+  // evening shift the day before GR used to be flagged with only 3h "rest" (GR's push to 12:00
+  // ate into the gap) — a false error. Rest is now always measured from the shift's own end.
   function papaFixture() {
     const fixture = makeFixture('standard');
     const papa = fixture.allResidents.find(r => r.id === 'syn_papa'); // EM_HOME PGY-3, Wed GR
@@ -255,45 +255,14 @@ describe('validateAll — rest is measured from the END of attended Grand Rounds
     return issues.filter(i => i.residentId === papa.id && i.rule === 'restShiftLength');
   }
 
-  it('Tue POD-D + Wed POD-D: day shift never extended by GR — 15h gap >= 9h, legal', () => {
-    const { fixture, papa } = papaFixture();
-    const rs = { '2026-07-07': 'POD-D', '2026-07-08': 'POD-D' };
-    expect(restIssues(fixture, papa, rs)).toEqual([]);
-  });
-
-  it('Tue POD-E (ends Wed 00:00) + Wed POD-E (15:00): rest runs from GR end 12:00 -> 3h < 9h, error naming Grand Rounds', () => {
+  it('Tue POD-E + Wed POD-E: 15h gap >= POD-E\'s own 9h requirement — legal, no restShiftLength error', () => {
     const { fixture, papa } = papaFixture();
     const rs = { '2026-07-07': 'POD-E', '2026-07-08': 'POD-E' }; // 07-08 is Wednesday (GR)
-    const issues = restIssues(fixture, papa, rs);
-    expect(issues.length).toBe(1);
-    expect(issues[0].message).toMatch(/3h/);
-    expect(issues[0].message).toMatch(/Grand Rounds/);
-  });
-
-  it('night ending 08:00 Wed, GR 08-10, next shift 15:00: 5h from GR end < 9h — error (was 7h, measured from shift end)', () => {
-    const { fixture, papa } = papaFixture();
-    const rs = { '2026-07-07': 'POD-N', '2026-07-08': 'POD-E' };
-    const issues = restIssues(fixture, papa, rs);
-    expect(issues.length).toBe(1);
-    expect(issues[0].message).toMatch(/5h/);
-    expect(issues[0].message).toMatch(/Grand Rounds/);
-  });
-
-  it('night ending Wed 08:00, GR to 10:00, next shift Wed 23:00 (13h from GR end >= 9h): legal', () => {
-    const { fixture, papa } = papaFixture();
-    const rs = { '2026-07-07': 'POD-N', '2026-07-08': 'POD-N' };
     expect(restIssues(fixture, papa, rs)).toEqual([]);
   });
 
-  it('night ending Wed 08:00, GR to 10:00, next shift Wed 19:00 (PED-N): exactly 9h from GR end — legal; boundary', () => {
+  it('Tue POD-N (ends Wed 08:00) + Wed POD-E (15:00): 7h gap < POD-N\'s 9h requirement — still an error, measured strictly from the shift\'s own end', () => {
     const { fixture, papa } = papaFixture();
-    const rs = { '2026-07-07': 'POD-N', '2026-07-08': 'PED-N' };
-    expect(restIssues(fixture, papa, rs)).toEqual([]);
-  });
-
-  it('a Wednesday GR on vacation is not attended: Tue POD-N + Wed POD-E reverts to the shift-end gap (7h)', () => {
-    const { fixture, papa } = papaFixture();
-    papa.vacationDates = ['2026-07-08'];
     const rs = { '2026-07-07': 'POD-N', '2026-07-08': 'POD-E' };
     const issues = restIssues(fixture, papa, rs);
     expect(issues.length).toBe(1);

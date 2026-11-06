@@ -9,7 +9,7 @@
 // never import ResidentScheduler.jsx"). Business-rule mappings that live in that file (grWorkDow's
 // category->weekday, isSchedulable/isEmResident) are passed in as plain values (`grDow`) by the
 // caller rather than re-derived here, so there is exactly one place that can drift.
-import { SHIFT_TIMING, SHIFT_MAP, shiftStartMs, shiftEndMs } from './shifts.js';
+import { SHIFT_TIMING, SHIFT_MAP, shiftStartMs } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { JC_WINDOW_START_H, JC_WINDOW_END_H } from './shifts.js';
 
@@ -24,9 +24,10 @@ export const TOTAL_WEEKLY_CAP_H = 72;
 // calendar day immediately before GR — see grWindowFor. GR_START_H/GR_END_H remain the DEFAULT
 // window (08:00-12:00, used when there's no shift the day before, or a day shift) — GR_DURATION_H is
 // that default's length, still exported for the no-shift-before case tests/call sites reference.
-// GR hours count toward the weekly caps (grHoursOn) AND, since the 2026-11-06 chief decision
-// ("follow ACGME for now"), push the rest clock: see restEndMs at the bottom (supersedes the
-// 2026-10-15 "rest is always measured from the shift's own end" ruling).
+// IMPORTANT: this is now ONLY about GR HOURS counted toward the weekly caps — rest-period math
+// (checkRestViolations/validateAll in ResidentScheduler.jsx) no longer reads Grand Rounds at all
+// (chief decision 2026-10-15: "the only shifts that count towards time off ... are the actual
+// clinical shifts" — rest is always measured from the shift's own end, full stop).
 export const GR_START_H = 8;
 export const GR_END_H = 12;
 export const GR_DURATION_H = GR_END_H - GR_START_H; // 4h (default-window length)
@@ -301,27 +302,8 @@ export function weeklyCapBreachAt(contrib, candidateIdx, shiftId) {
   return { edBreach, totalBreach };
 }
 
-// restEndMs: the timestamp the ACGME 6.17.a.2 rest clock (time off >= the EARLIER shift's length)
-// runs FROM after working `shiftId` on `dateStr`. Chief decision 2026-11-06 ("follow ACGME for
-// now") REVERSES the 2026-10-15 removal of this idea: attended Grand Rounds is WORK, so when the
-// resident's GR follows the shift (the window grWindowFor derives from that very shift: GR on the
-// calendar day after an eve/night shift, 10:00-12:00 after an eve, 08:00-10:00 after a night) the
-// rest clock starts at GR's END, never earlier than the shift's own end. The REQUIRED length is
-// unchanged (the shift's own duration), so this can only make rest stricter. A day shift never
-// gets a GR extension (its GR window is the default one and sits wholly before the next day's
-// shift would matter; same as the original 2026-09-27 behavior, which only fired when the shift
-// ended on the GR date). Vacation/approved-off date -> no GR -> plain shift end. `grDow` is
-// grWorkDow(resident) (null = no GR obligation). Hard (ACGME tier), never overridable. Soft
-// postNightRest and the 6-day streak/sixDayRunRest are deliberately NOT routed through this.
-export function restEndMs(resident, shiftId, dateStr, grDow) {
-  const endMs = shiftEndMs(shiftId, dateStr);
-  if (grDow == null || endMs == null) return endMs;
-  const type = SHIFT_MAP[shiftId]?.type;
-  if (type !== 'eve' && type !== 'night') return endMs;
-  const g = addDays(parseDate(dateStr), 1);
-  if (g.getDay() !== grDow) return endMs;
-  const win = grWindowFor(resident, toDateStr(g), shiftId);
-  if (!win) return endMs;
-  const grEndMs = new Date(g.getFullYear(), g.getMonth(), g.getDate(), win.endH, 0, 0).getTime();
-  return grEndMs > endMs ? grEndMs : endMs;
-}
+// effectiveShiftEndMs was REMOVED 2026-10-15 (chief decision — "the only shifts that count towards
+// time off before/after a shift ... are the actual clinical shifts"): rest-period math never reads
+// Grand Rounds at all now. Callers that used to push a shift's end forward to GR's own end now just
+// use lib/shifts.js's plain shiftEndMs(shiftId, dateStr) directly — see checkRestViolations and
+// validateAll's rest-period loop in ResidentScheduler.jsx.

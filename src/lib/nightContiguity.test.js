@@ -168,10 +168,7 @@ const CEILINGS = {
   // cells mostly extend runs (ext preference in the sweep, pool is usually 1) but more nights = more
   // segments; 2-segment residents with >6 nights 0, 3+ segments 0, isolated nights 12 vs 14 before.
   // Mergeable count 13 < 15 before; 2-segment total 19 vs 12 is the cost of the coverage gain.)
-  // 2026-11-06: 19/13 -> 20/15 standard, 11/5 -> 13/7 understaffed, 16/12 -> 17/12 vacationHeavy: ACGME rest now runs
-  // from the END of attended Grand Rounds (restEndMs; chief "follow ACGME for now"), a tighter hard rule for
-  // every EM Home (Wed) / BAMC (Thu) resident that fragments night runs. Deterministic (seed 42), not noise.
-  standard: { twoSegment: 20, mergeable: 15 },
+  standard: { twoSegment: 19, mergeable: 13 },
   // 7 -> 11 (2026-10-16): rest and the 6-day streak now count clinical shifts only (no GR/JC
   // days), which spreads nights wider on this fixture.
   // 11 -> 8 (2026-10-16 follow-up, same day): nightCluster jcPresentDates/grLectureDates
@@ -179,14 +176,14 @@ const CEILINGS = {
   // after this fix, the remaining 2-segment residents on this fixture all traced to the hard,
   // unrelated ACGME edHoursCapped/totalHoursCapped candidatePool exclusion mid-run (see header),
   // which a score()/ordering change cannot route around.
-  understaffed: { twoSegment: 13, mergeable: 7 }, // 2026-10-31: late sweep at-target fill, unfilled 202 -> 142 (see standard)
+  understaffed: { twoSegment: 11, mergeable: 5 }, // 2026-10-31: late sweep at-target fill, unfilled 202 -> 142 (see standard)
   // 2026-10-16: 13 -> 11 (same look-ahead fix).
   // 2026-10-18: 11 -> 13 (ranking follows Soft Rule Priority: postNightRest no longer counts in
   // blockingWarnCount, so best-of-N picks a different winner via the tie-break path; the hole count
   // is not lower, the night shape is simply worse for the new winner).
   // 2026-10-30: 13 -> 14 (BAMC Thursday evening/night became ordinary + Thu-day/Wed-night as-needed:
   // the BAMC roster's extra Thursday options re-order the best-of-N draw; +1 on this fixture only).
-  vacationHeavy: { twoSegment: 17, mergeable: 12 }, // 2026-10-31: late sweep at-target fill, unfilled 126 -> 79 (see standard)
+  vacationHeavy: { twoSegment: 16, mergeable: 12 }, // 2026-10-31: late sweep at-target fill, unfilled 126 -> 79 (see standard)
   // 2026-10-16: 11 -> 13 — a REGRESSION on this one fixture/metric from the same look-ahead fix
   // (see header's "Tried and REJECTED" / "MEASURED RESULT" notes for why this trades off against
   // the other 3 variants' wins, and why generator.baseline.conferenceBlock.test.js's own
