@@ -908,7 +908,7 @@ const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a da
 // rather than referencing those constants directly — a top-level const referencing another
 // const declared later in module order hits the temporal dead zone and throws at load time.
 const CIRCADIAN_RULE_NOTE = 'Circadian scheduling: nights should cluster into one run of 5-6 (max 6) rather than isolated shifts — two separate stints in a block is tolerated only if necessary (warned), three or more is an error; an evening shift can never be immediately followed by a day shift the next day (hard, either placement order) — a day shift followed by an evening shift the next day (~23h off, forward rotation) is allowed (chief decision 2026-09-27); aim for 6 night shifts/block; 7-12 are allowed ONLY AS NEEDED to fill a coverage minimum (the generator uses them last, Validation flags each night above 6 as an as-needed exception), and more than 12 is an error (residents whose eligibility is entirely night shifts, e.g. FM-3 on PED-N-FM, are exempt from the per-block cap) — all enforced, including in Validation even when the rest-hours toggle is off. 24h off after a night shift before a day or evening shift is a ranked soft rule (Rules tab → Soft Rule Priority) — the generator only breaks it to protect a higher-ranked rule.';
-const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
+const SENIOR_COMPOSITION_NOTE = 'Every staffed FLEX shift needs an EM Home PGY-2 or PGY-3 — hard (either class satisfies it; no substitute needed); PGY-2 is the preferred senior and a PGY-3 the fallback (soft). Wednesday POD-D runs min 1 / max 3 and prefers one BAMC body (soft). Every staffed POD shift needs an EM PGY-3 — hard, sole exception the resident\'s own 3rd Wellness Wednesday (PGY-2 may substitute that one day). POD/FLEX **day** shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident is eligible for a day shift that day). Enforced by the generator (slot left unfilled and reported rather than staffed with the wrong PGY if no primary PGY is available) and Validation. A 3rd POD body is preferably off-service: core EM residents take it only with no other option (info flag otherwise).';
 const JC_RULE_NOTE = 'Journal Club: 18:00-21:00, on the dates the chief logs for the academic year (Dashboard tab; Suggest proposes first Tuesdays). Any shift overlapping that window counts as "worked," including PED Swing and Trauma Night. Max 3 worked per academic year (July 1 - July 1), counting earlier saved blocks in the same academic year (published or not) plus the current block. One EM Home PGY-1, PGY-2, and PGY-3 present each Journal Club (set on the resident\'s profile or from the Journal Club card); a presenter\'s own overlapping shifts are hard-blocked that day, and a late night shift afterward is generator-avoided (manually placeable with a warning).';
 const GR_LECTURE_RULE_NOTE = 'Grand Rounds lecture dates (set per-resident on the resident\'s profile): no evening/night shift the day before a lecture date (hard — enforced by the generator and Validation, error if violated). The generator also keeps that whole day off where possible (chief feedback); the manual picker still allows a day shift there if needed.';
 // Chief role is set per-resident on the EM Residents tab (roster-level, not per-block) — see
@@ -1842,6 +1842,9 @@ const SCORE_WEIGHTS = {
   // 2nd/3rd slot instead prefers an intern once the PGY-3 is present). Weight matched to
   // podPgy1SecondSlot(15) for the same directional-preference magnitude; `flex` group.
   flexPgy2ThirdSlot: 15,
+  // Chief 2026-11-06: Wednesday POD-D prefers that one body be a BAMC resident. Fires only while the shift has
+  // no BAMC body yet, so it asks for ONE, not all. `pod` group.
+  wedPodBamcBody: 8,
 
   // ── PREFERENCE (always-on) ── Phase 1 work-shape steering. Unlike every preference above,
   // these can fire on ANY shift, so they stack with whichever shift-specific group applies and
@@ -1920,7 +1923,7 @@ const PREFERENCE_GROUPS = {
   // Phase 2.1/2.2 add wedPodLadder and podPgy2Deprioritize here — both POD-only, so they belong in
   // this group like every other POD-specific term (see PREFERENCE_BAND_CEILING.pod for the
   // resulting conscious ceiling increase). 2b-1 adds podEmComposition here too — same reasoning.
-  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition'],
+  pod: ['podPgy1SecondSlot', 'bamcFlexPodPedsDay', 'bamcWedBonus', 'wedPodLadder', 'podPgy2Deprioritize', 'podEmComposition', 'wedPodBamcBody'],
   // New group (2b-1): FLEX-specific terms had none before this. flexEmComposition/
   // flexPgy2ThirdSlot only ever fire on FLEX-area slots, mutually exclusive with every other
   // group's terms for a single scored candidate — same reasoning as `pod`. See
@@ -2018,7 +2021,10 @@ const MAX_SHIFT_TARGET = Math.max(...Object.values(SHIFT_TARGETS), ...Object.val
 // genuinely meant to be small nudges (see their own SCORE_WEIGHTS comments). Any FUTURE `always`
 // addition, or any shrink of flexPgy2ThirdSlot/flexEmComposition, must re-check this margin by
 // hand — it is now the binding constraint, tighter than traumaNight/peds/pod's much larger bands.
-const PREFERENCE_BAND_CEILING = { traumaNight: 27, peds: 46, pod: 43, always: 19, flex: 21 };
+// CONSCIOUS DECISION (chief 2026-11-06): `pod` 43 -> 51 (wedPodBamcBody, 8): Wednesday POD-D wants a BAMC body.
+// (FLEX's PGY-2-over-PGY-3 preference is deliberately NOT a score() term: see SENIOR_COMPOSITION.preferred /
+// preferTruePrimaryPass - measured, any nonzero score term worsened the best-of-N baselines.)
+const PREFERENCE_BAND_CEILING = { traumaNight: 27, peds: 46, pod: 51, always: 19, flex: 21 };
 
 export const SCORE_TIERS = {
   SCORE_WEIGHTS, PREFERENCE_GROUPS, PREFERENCE_ALWAYS, PREFERENCE_MAX_INPUT, MAX_SHIFT_TARGET,
@@ -2609,9 +2615,9 @@ const PEDS_EM_MIX = { min: 10, max: 12 };
 
 // ─── FLEX/POD seniority composition ────────────────────────────────────────
 // FLEX and POD (AY26/27 chief-directed, both changes): every staffed shift on either area
-// REQUIRES its own primary EM-Home PGY (POD: PGY-3, FLEX: PGY-2) — hard, no fallback-to-junior
-// exception, except (a) that area's own Wellness Wednesday (see podWellnessSubstituteAllowed /
-// flexWellnessSubstituteAllowed) or (b) an AY conference date that takes the primary PGY class
+// REQUIRES its own primary EM-Home PGY (POD: PGY-3, FLEX: PGY-2 preferred / PGY-3 accepted) — hard, no fallback-to-junior
+// exception, except (a) POD's own Wellness Wednesday (see podWellnessSubstituteAllowed;
+// FLEX has none since 2026-11-06) or (b) an AY conference date that takes the primary PGY class
 // away entirely (see isConferenceAwayFor, near getConferencesInBlock/conferenceDefs — e.g. ACEP
 // takes PGY-3s away, migrating POD's requirement to PGY-2 for those dates; AAEM does the mirror
 // for FLEX/PGY-2), when the OTHER PGY substituting for the missing primary is explicitly allowed.
@@ -2636,8 +2642,12 @@ const PEDS_EM_MIX = { min: 10, max: 12 };
 // PGY-2 OR PGY-3 (`primaries: [2, 3]`), so FLEX has NO fallback PGY and no Wellness-Wednesday
 // substitute (`fallback: null` => nothing is ever "gated" or "substituted" on FLEX). `primary` is the
 // display/legacy PGY (FLEX 2). POD is unchanged: PGY-3 only, PGY-2 the Wellness/conference fallback.
-const SENIOR_COMPOSITION = { FLEX: { primary: 2, primaries: [2, 3], fallback: null }, POD: { primary: 3, primaries: [3], fallback: 2 } };
+// `preferred` (chief 2026-11-06): the PGY classes that count as the TRUE senior. Equals `primaries` for POD; FLEX accepts
+// PGY-2 or PGY-3 (hard rule) but PGY-2 is the default senior, a PGY-3 the fallback, so Phase 3b
+// (preferTruePrimaryPass, winner-only) swaps a lone FLEX PGY-3 for an under-target PGY-2 when one exists.
+const SENIOR_COMPOSITION = { FLEX: { primary: 2, primaries: [2, 3], preferred: [2], fallback: null }, POD: { primary: 3, primaries: [3], preferred: [3], fallback: 2 } };
 const isPrimaryPgyFor = (comp, resident) => resident.category === 'EM_HOME' && comp.primaries.includes(resident.pgy);
+const isPreferredPgyFor = (comp, resident) => resident.category === 'EM_HOME' && comp.preferred.includes(resident.pgy);
 const primaryPgyLabel = comp => comp.primaries.map(p => `PGY-${p}`).join(' or ');
 function isSeniorFor(area, resident) {
   const comp = SENIOR_COMPOSITION[area];
@@ -2694,16 +2704,9 @@ function podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) {
   if (appSettings?.wellnessWednesdaysEnabled === false) return false;
   return isLoggedDate('wellnessWednesday', ayConf, ds, 3) || !!ayConf?.customSeniorWellness?.POD?.includes(ds);
 }
-// FLEX's mirror of the above (SENIOR_COMPOSITION.FLEX is now hard too — see the block header
-// comment): the block's own PGY-2 Wellness Wednesday (2nd Wednesday on/after the block's start
-// date — DEFAULT_DAY_RULES.EM_HOME_2's computedDayRules), when a PGY-3 substituting for the
-// missing PGY-2 is explicitly allowed.
-// RETIRED 2026-10-30: an EM PGY-3 now satisfies FLEX outright (SENIOR_COMPOSITION.FLEX.primaries), so
-// there is no FLEX Wellness-Wednesday substitute any more. Kept as an always-false stub only so any
-// stale importer fails closed rather than throwing.
-function flexWellnessSubstituteAllowed() {
-  return false;
-}
+// FLEX has NO Wellness-Wednesday/AAEM substitute (removed 2026-11-06, chief): an EM PGY-2 OR PGY-3
+// satisfies the hard senior rule outright (SENIOR_COMPOSITION.FLEX.primaries); PGY-2 is merely the
+// PREFERRED senior (Phase 3b preferTruePrimaryPass on the winner; solver flexPgy3Fallback + seniorTruePrimary).
 // Single dispatcher so every call site (validateAll, fillDayPass, narrowForSeniority/
 // compositionStillSatisfied) asks one function "may the fallback PGY substitute for the missing
 // primary today" instead of re-deriving the POD-vs-FLEX Wellness-Wednesday branch, or the
@@ -2739,9 +2742,7 @@ function compositionSatisfies(area, resident, ds, blockStart, appSettings, ayCon
 // lands inside a conference window (e.g. AY26/27 Block 4's own POD Wellness Wednesday inside ACEP).
 // Returns null when neither path matched (caller has no business calling this then).
 function substituteReasonFor(area, ds, blockStart, appSettings, ayConf) {
-  const ownWellness = area === 'POD'
-    ? podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf)
-    : area === 'FLEX' ? flexWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf) : false;
+  const ownWellness = area === 'POD' && podWellnessSubstituteAllowed(ds, blockStart, appSettings, ayConf);
   if (ownWellness) return 'wellness';
   if (isConferenceAwayFor(area, ds, ayConf)) return 'conference';
   return null;
@@ -2824,11 +2825,12 @@ function seniorCompositionExempt(shift, ds) {
 // placement". Returns the fallback resident, or undefined when this shift/date has none.
 function fallbackCompositionAt(schedule, allResidents, area, shift, ds, block, appSettings, ayConf) {
   const comp = SENIOR_COMPOSITION[area];
+  // A resident who satisfies the composition rule but is not a PREFERRED senior: POD's PGY-2 substitute, or FLEX's PGY-3.
   const fallback = allResidents.find(r =>
-    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && comp.fallback != null && r.pgy === comp.fallback &&
+    schedule[r.id]?.[ds] === shift.id && r.category === 'EM_HOME' && !comp.preferred.includes(r.pgy) &&
     compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf));
   if (!fallback) return undefined;
-  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && isPrimaryPgyFor(comp, r))) return undefined;
+  if (allResidents.some(r => schedule[r.id]?.[ds] === shift.id && isPreferredPgyFor(comp, r))) return undefined;
   return fallback;
 }
 // Scans the whole block for any fallbackCompositionAt hit across both SENIOR_COMPOSITION areas
@@ -3895,7 +3897,7 @@ export function shiftBlockedByRestrictions(resident, dateStr, shiftId) {
 //     resident/block.
 // Every consumer (getEligibleShifts, validateAll, cellViolations, the grid's WW marker,
 // ResidentCardsView, the PDF/ICS exporters) goes through this so they can't drift.
-// NOT used by podWellnessSubstituteAllowed/flexWellnessSubstituteAllowed (declared below,
+// NOT used by podWellnessSubstituteAllowed (declared below,
 // hard-composition substitution days) — those stay anchored to the COMPUTED 3rd/2nd Wednesday
 // regardless of any individual resident's override; a custom wellness date is a personal
 // eligibility strip, not a change to who may substitute into POD/FLEX's senior slot.
@@ -6072,6 +6074,9 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Home PGY-2 over a PGY-1 — the opposite direction from POD's intern preference, chief-
     // directed. Never competes with getting the first qualifying PGY-2 placed (seniorFilled gate).
     const flexPgy2ThirdSlot = shift.area === 'FLEX' && seniorFilled && r.category === 'EM_HOME' && r.pgy === 2 ? 1 : 0;
+    // Chief 2026-11-06: Wednesday POD-D wants one BAMC body (soft, only while none is on the shift yet).
+    const wedPodBamcBody = shift.id === 'POD-D' && dow === 3 && r.category === 'EM_BAMC'
+      && !assignedHere.some(x => x.category === 'EM_BAMC') ? 1 : 0;
     // EM-count composition (2b-1, chief-directed, SOFT — see isEmResident/emCompositionRequired
     // and their own SCORE_WEIGHTS comments): distinct from SENIOR_COMPOSITION's hard PGY-CLASS
     // requirement on the shift's FIRST body, this discourages placing a NON-EM candidate on a
@@ -6224,7 +6229,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       - W.nightDurationAlternation * nightDurationAlternation - W.secondRestDay * secondRestDay
       + W.pedsInternNightDeficit * pedsInternNightDeficit
       - W.podEmComposition * podEmComposition - W.flexEmComposition * flexEmComposition
-      + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot + rng();
+      + W.flexPgy2ThirdSlot * flexPgy2ThirdSlot
+      + W.wedPodBamcBody * wedPodBamcBody + rng();
   }
 
   // Fills one day's slots for a subset of SHIFTS. phase 'min' fills every shift up to its
@@ -6680,8 +6686,10 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
           unassignCell(fallback.id, ds);
           // poolForTruePrimary, not poolFor: an at-target true primary must still be found here —
           // see that function's own header for why.
-          const { candidates } = poolForTruePrimary(shift, ds);
-          const truePrimaries = candidates.filter(r => isPrimaryPgyFor(comp, r));
+          // FLEX's PGY-2 preference is routine (not a once-a-block substitute day), so it keeps the ordinary
+          // allAtTarget exclusion: the PGY-2 must be under target (no over-target trade for a preference).
+          const { candidates } = area === 'FLEX' ? poolFor(shift, ds) : poolForTruePrimary(shift, ds);
+          const truePrimaries = candidates.filter(r => isPreferredPgyFor(comp, r));
           if (truePrimaries.length) {
             const winner = pickBestScore(truePrimaries, shift, ds);
             assignCell(winner.id, shift.id, ds);
@@ -7742,7 +7750,7 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
           .filter(r => compositionSatisfies(area, r, ds, block.startDate, appSettings, ayConf))
           .map(r => r.id);
         trueByDate[ds] = eligHere
-          .filter(r => isPrimaryPgyFor(comp, r))
+          .filter(r => isPreferredPgyFor(comp, r))
           .map(r => r.id);
       }
       if (Object.keys(byDate).length) seniorPrimary[shift.id] = byDate;
@@ -7975,9 +7983,9 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
   // residents the JS generator's pool-restrict-with-fallback does.
   const emResidentIds = schedulableResidents.filter(isEmResident).map(r => r.id);
   const emPgy2ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 2).map(r => r.id);
-  // 2026-10-30: FLEX no longer gates PGY-3 (an EM PGY-3 satisfies FLEX's senior requirement outright),
-  // so flexPgy3Fallback has nothing to charge: ship an EMPTY list (the solver term is inert on empty).
-  const emPgy3ResidentIds = [];
+  // Chief 2026-11-06: an EM PGY-3 still satisfies FLEX's hard senior rule outright, but PGY-2 is the preferred
+  // senior: ship the EM Home PGY-3 ids so flexPgy3Fallback (QUALITY tier, soft) charges a PGY-3 on FLEX.
+  const emPgy3ResidentIds = schedulableResidents.filter(r => r.category === 'EM_HOME' && r.pgy === 3).map(r => r.id);
 
   const resolvedConfig = {
     maxTimeSeconds: DEFAULT_SOLVE_MAX_TIME_SECONDS,
@@ -16195,7 +16203,7 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               The generator always fills every shift to its minimum first; it only fills toward the maximum for residents still under their own shift-count target. Set a shift's minimum (and maximum) to 0 to leave it out of generation entirely — Peds Night is two separate shifts, both defaulting to 0/1 best-effort (not required): PED-N-FM (23:00-08:00), FM-3-exclusive Mon/Tue/Wed, and PED-N (19:00-04:00), open to EM Home/BAMC/FM-1/Peds, all 7 nights. Trauma day-of-week limits still apply on top.
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              POD max is 3 on <strong>every day</strong> (the 3rd body is only an optional top-up for an under-target or off-service resident; minimum stays 2). POD-D and FLEX-D also drop to <strong>min 1 / max 2 on Wednesdays</strong> (Grand Rounds — that floor is staffed by APPs, not editable here either). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
+              POD max is 3 on <strong>every day</strong> (the 3rd body is only an optional top-up for an under-target or off-service resident; minimum stays 2). POD-D drops to <strong>min 1 / max 3</strong> and FLEX-D to <strong>min 1 / max 2</strong> on Wednesdays (Grand Rounds — that floor is staffed by APPs, not editable here either). A staffed POD shift also always requires an EM PGY-3 (no PGY-2 fallback, except the block's own PGY-3 Wellness Wednesday) — Validation errors if one is missing. POD/FLEX <strong>day</strong> shifts on Wednesdays are exempt entirely (Grand Rounds — no EM Home resident works a day shift that day).
             </p>
             <p className="text-xs text-gray-500 mt-1">
               12h shifts only staff inside a <strong>12-Hour Shift Window</strong> — set those per academic year on the Dashboard tab (Block Calendar → 12-Hour Shift Windows), where you choose the dates, which areas swap, and whether the 9h shifts are replaced or kept alongside. An academic year you've never opened there still behaves as before: ACEP/AAEM/SAEM dates automatically run POD/MT/FLEX on 12h and suppress their 9h shifts.

@@ -329,9 +329,9 @@ describe('buildSolverPayload', () => {
     const payload = buildSolverPayload(fixture);
     expect(payload.emPgy2ResidentIds).toContain('syn_golf'); // EM_HOME PGY-2
     expect(payload.emPgy2ResidentIds).not.toContain('syn_mike'); // PGY-3
-    // 2026-10-30: FLEX no longer gates PGY-3 (a PGY-3 satisfies FLEX's senior requirement outright),
-    // so flexPgy3Fallback is retired: the id list is always empty.
-    expect(payload.emPgy3ResidentIds).toEqual([]);
+    // Chief 2026-11-06: PGY-2 is FLEX's preferred senior, PGY-3 the fallback -> flexPgy3Fallback charges EM_HOME PGY-3.
+    expect(payload.emPgy3ResidentIds).toContain('syn_mike'); // EM_HOME PGY-3
+    expect(payload.emPgy3ResidentIds).not.toContain('syn_golf'); // PGY-2
     // EM_BAMC is never in either list, regardless of pgy — SENIOR_COMPOSITION/isSeniorFor/
     // narrowForPgyGate only ever gate EM_HOME.
     expect(payload.emPgy2ResidentIds).not.toContain('syn_sierra');

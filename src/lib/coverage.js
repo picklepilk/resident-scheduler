@@ -83,7 +83,9 @@ export const DOW_COVERAGE_MAX_OVERRIDE = { 'POD-D': ALL_DOWS_MAX3, 'POD-E': ALL_
 // DOW_COVERAGE_MAX_OVERRIDE and the TRAUMA_SOLO_IDS clamp both already operate on the resolved
 // base rather than gating on whether the base came from a default or an override.
 export const DOW_COVERAGE_OVERRIDE = {
-  'POD-D':  { 3: { min: 1, max: 2 } },
+  // POD-D Wednesday max raised 2 -> 3 (chief, 2026-11-06); min stays 1 (unconfirmed). Direct replacement, so a saved
+  // old max-2/any chief number can never mask it. The 3rd body is the usual optional top-up.
+  'POD-D':  { 3: { min: 1, max: 3 } },
   'FLEX-D': { 3: { min: 1, max: 2 } },
   // Midtrack Day on Wednesday (program decision 2026-10-30): only BAMC residents may work it (EM Home is at
   // Grand Rounds; the eligibility strip lives in getEligibleShifts), so min 0 / max 1 — filled only by the
@@ -278,7 +280,7 @@ function applyTraumaClampAndDow(shiftId, base, dow) {
     if (raiseOverride != null && raiseOverride > result.max) result = { min: result.min, max: raiseOverride };
     // Direct replacement, not a clamp — see DOW_COVERAGE_OVERRIDE's own comment for why. Applied
     // after the raise-only override above; the two never target the same shiftId+dow today
-    // (POD-D's raise entries are every day, so the Wednesday direct override below WINS and keeps POD-D at min 1 / max 2 that day), but this ordering means
+    // (POD-D's raise entries are every day, so the Wednesday direct override below WINS and keeps POD-D at min 1 / max 3 that day), but this ordering means
     // the Wednesday GR/APP rule would win if that ever changed.
     const directOverride = DOW_COVERAGE_OVERRIDE[shiftId]?.[dow];
     if (directOverride != null) result = { min: directOverride.min, max: directOverride.max };
