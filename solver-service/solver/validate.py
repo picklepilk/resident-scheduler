@@ -207,9 +207,8 @@ def _check_senior_composition(payload: Payload, schedule: dict) -> list:
 
 
 def _check_rest_gap(payload: Payload, schedule: dict) -> list:
-    """Rest gap check -- mirrors rest.py's own `add_rest_constraints` exactly, including its
-    2026-10-15 removal of the GR-end adjustment: rest is always measured from the earlier shift's
-    own end, never Grand Rounds' (see that module's docstring)."""
+    """Rest gap check -- mirrors rest.py's own `add_rest_constraints` exactly, including the
+    2026-11-06 GR-end adjustment (`timing.rest_end_min`, see that module's docstring)."""
     failures = []
     for resident in payload.residents:
         for date1 in payload.all_dates:
@@ -218,7 +217,7 @@ def _check_rest_gap(payload: Payload, schedule: dict) -> list:
                 continue
             shift1 = payload.shifts[shift_id1]
             required = timing.required_rest_gap_min(shift1)
-            earlier_end = timing.shift_end_min(date1, shift1)
+            earlier_end = timing.rest_end_min(resident, date1, shift1)
             for delta in (1, 2):
                 date2 = timing.add_days(date1, delta)
                 shift_id2 = _shift_on(payload, resident, date2, schedule)

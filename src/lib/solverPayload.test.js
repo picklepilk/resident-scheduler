@@ -339,20 +339,24 @@ describe('buildSolverPayload', () => {
   });
 
   // ── R7 (2026-09-27): ACGME EM 6.17.a.3 weekly caps via obligationHours. grDates/the GR-end rest
-  // adjustment were REMOVED 2026-10-15 (chief decision — rest never reads Grand Rounds at all).
+  // adjustment were REMOVED 2026-10-15 and RE-INTRODUCED 2026-11-06 (ACGME: attended GR is work, so
+  // rest runs from GR's end — see restEndMs; rest.py consumes residents[].grDates).
   it('residents[] carries obligationHours for the weekly-hour caps, windowed by what was worked the day before GR', () => {
     const fixture = makeFixture('standard');
     const payload = buildSolverPayload(fixture);
     const mike = payload.residents.find(p => p.id === 'syn_mike'); // EM_HOME chief PGY-3
     expect(mike).toBeTruthy();
-    expect(mike).not.toHaveProperty('grDates');
+    // grDates: attended-GR calendar dates (Wednesdays for EM_HOME), vacation/approved-off excluded.
+    expect(Array.isArray(mike.grDates)).toBe(true);
+    expect(mike.grDates).toContain('2026-07-15');
+    expect(mike.grDates.every(ds => new Date(ds + 'T00:00:00').getDay() === 3)).toBe(true);
     expect(typeof mike.obligationHours).toBe('object');
     // No shift assigned anywhere pre-generation (block.schedule is {}), so the day before GR
     // (2026-07-14) resolves to "no shift" — the default 4h (08:00-12:00) window applies.
     expect(mike.obligationHours['2026-07-15']).toBe(4); // GR_DURATION_H
   });
 
-  // ── obligations / obligationsExemptAfterNight / priorTailObligations / grDates / grEndH were all
+  // ── obligations / obligationsExemptAfterNight / priorTailObligations / grEndH were all
   // REMOVED 2026-10-15 (chief decision): the 6-consecutive-work-day streak counts clinical shifts
   // only now, so there's no more shift-less "obligation day" for the solver's rule 19 to treat as a
   // workday, and rest never reads Grand Rounds either. buildSolverPayload no longer sends any of

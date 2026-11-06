@@ -114,3 +114,22 @@ def rolling_window(get_term, num_positions: int, window_len: int):
         return
     for start in range(0, num_positions - window_len + 1):
         yield start, [get_term(i) for i in range(start, start + window_len)]
+
+
+# Grand Rounds as WORK for the rest clock (ACGME 6.17.a.2; chief decision 2026-11-06, mirrors
+# src/lib/acgmeHours.js `restEndMs`): after an eve/night shift whose NEXT calendar day is one of the
+# resident's attended GR dates (`resident.gr_dates`, already vacation/off-filtered by the JS side),
+# the rest clock starts at GR's end -- 12:00 after an eve shift, 10:00 after a night shift -- if that
+# is later than the shift's own end. Day-type shifts never extend. Required length is unchanged.
+_GR_REST_END_H = {"eve": 12, "night": 10}
+
+
+def rest_end_min(resident, date_str: str, shift: ShiftTiming) -> int:
+    end = shift_end_min(date_str, shift)
+    end_h = _GR_REST_END_H.get(shift.type)
+    if end_h is None or not resident.gr_dates:
+        return end
+    g = add_days(date_str, 1)
+    if g not in resident.gr_dates:
+        return end
+    return max(end, hour_mark_min(g, end_h))
