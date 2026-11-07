@@ -358,4 +358,26 @@ Decisions: no further default changes.
 - Shortlist: still never chosen (`shortlistIndex` null). The fairness differences are noise.
 - LNS fraction: 0.7 is worse (one coverage miss, one extra blocking warn, fair 1994). 0.3 was worse on the only seed that finished. The 0.5 default stays.
 
-**The 3 remaining errors are inherent to the fixture.** All are `underTarget` on the three PGY-1 Trauma/Peds split interns (`syn_rs_r01..03`, target 19 = traumaCap 8 + pedsCap 11). The trauma half allows only TRAUMA-D, which has a max of 1 per day, so 3 × 8 = 24 trauma shifts compete for at most 14 slots. This is not drift between the solver and JS. Diagnose with `bench-engines.mjs --dump <dir>`.
+**The 3 remaining errors are inherent to the fixture.** All are `underTarget` on the three PGY-1 Trauma/Peds split interns (`syn_rs_r01..03`, target 19 = traumaCap 8 + pedsCap 11). The trauma half allows only TRAUMA-D, which has a max of 1 per day, so 3 × 8 = 24 trauma shifts compete for at most 14 slots. This is not drift between the solver and JS. Diagnose with `bench-engines.mjs --dump <dir>`. (Corrected 2026-11-07: TRAUMA-D runs Tue/Thu/Sat/Sun only, so each 14-day half has 8 slots, and a split intern's vacation inside a half is a second cause. See below.)
+
+## Current master + staggered fixture (2026-11-07, PicklePower)
+
+**Current master `6ec0bec`** (2026-11-06 rule changes + Neuro Tue/Thu night preference), `--fixture realScale`, EMSolver idle. Local best-of-20: 3 / 7 / [10,0,0,2067.2].
+
+| Budget | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| 120 s | 3 / 5 / [0,0,4,1564.1] | 3 / 6 / [1,0,0,1563.0] | 3 / 6 / [0,0,0,1570.6] |
+| 300 s | 3 / 3 / [0,0,0,1343.0] | 3 / 3 / [0,0,0,1298.8] | 3 / 3 / [0,0,0,1395.3] |
+
+CP-SAT won 6/6, wall within 0.2 s of budget (`deadlineHit` false), shortlist never picked. 300 s matches the lexStrict baseline above (1293 / 1317 / 1416); 120 s is slightly better than the follow-up table (5-6 blocking warns, fair ~1565). The rule changes cost nothing measurable.
+
+**New `--fixture realScaleStaggered`** (`makeRealScaleFixture({ staggerSplit: true })`): 1 TRAUMA_PEDS + 1 PEDS_TRAUMA intern (one per half) + 5 EM PGY-1s, and split interns kept off vacation. The default `realScale` shape stays as-is because the quality baseline ratchet is built on it. With the default shape, every engine ends at exactly 3 `underTarget` errors, so the errors slot can't separate engines; staggered makes it measure the engine. (A first try that only staggered the halves still left 1 error: the PEDS_TRAUMA intern's 7-day vacation sat inside their 14-day peds half.)
+
+Local best-of-20: 3 / 6 / [7,0,1,2067.8].
+
+| Budget | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| 120 s | 2 / 5 / [0,0,0,1536.2] | 0 / 9 / [5,0,1,2143.9] | 1 / 7 / [0,0,3,1858.2] |
+| 300 s | 0 / 7 / [0,0,0,1669.9] | 0 / 5 / [0,0,0,1366.7] | 0 / 5 / [0,0,0,1443.7] |
+
+At 300 s CP-SAT reaches 0 errors on 3/3 seeds; at 120 s it still leaves 0-2 under-target EM PGY-1s, and seed 43 trades 0 errors for 5 coverage misses. Use 300 s (Long Solve) for a final block. `--dump` now records each error's synthetic `residentId`.

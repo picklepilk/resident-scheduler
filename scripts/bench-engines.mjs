@@ -6,7 +6,7 @@
 //                                             [--variants v.json] [--seeds N]
 // --variants: JSON array of {name, config}; each config is merged into the solver config (A/B of
 // solver flags). --seeds N runs each variant with randomSeed 42..42+N-1. Local result computed once.
-//   npx vite-node scripts/bench-engines.mjs -- --fixture realScale [--url ...] [--budgets ...]
+//   npx vite-node scripts/bench-engines.mjs -- --fixture realScale|realScaleStaggered [--url ...] [--budgets ...]
 //
 // <backup.json> is a Settings -> Backup file ({data:{res_*...}} or the bare map). The block is
 // res_current_block unless --block names an id from res_current_block / res_blocks_history.
@@ -80,10 +80,10 @@ async function main() {
 
   let baseArgs; let label;
   if (args.fixture) {
-    if (args.fixture !== 'realScale') throw new Error(`unknown fixture "${args.fixture}" (only realScale)`);
+    if (args.fixture !== 'realScale' && args.fixture !== 'realScaleStaggered') throw new Error(`unknown fixture "${args.fixture}" (realScale | realScaleStaggered)`);
     const { makeRealScaleFixture } = await import('../src/lib/__fixtures__/realScale.js');
-    baseArgs = makeRealScaleFixture();
-    label = 'fixture realScale';
+    baseArgs = makeRealScaleFixture({ staggerSplit: args.fixture === 'realScaleStaggered' });
+    label = `fixture ${args.fixture}`;
   } else {
     const abs = refuseUntrackedRepoPath(args.file);
     const parsed = JSON.parse(fs.readFileSync(abs, 'utf-8'));
@@ -127,7 +127,7 @@ async function main() {
     if (!args.dump) return;
     const a = solveArgs;
     const issues = validateAll(a.allResidents, schedule, a.block, a.eligOverrides, a.appSettings, a.dayRules, a.coverage, a.blocksHistory, a.ayConf);
-    const errors = issues.filter(i => i.level === 'error').map(i => ({ rule: i.rule, message: i.message, overridden: !!i.overridden }));
+    const errors = issues.filter(i => i.level === 'error').map(i => ({ rule: i.rule, residentId: i.residentId ?? null, message: i.message, overridden: !!i.overridden }));
     fs.mkdirSync(args.dump, { recursive: true });
     fs.writeFileSync(`${args.dump}/${name}.json`, JSON.stringify({ name, errors, schedule, ...extra }));
   };
