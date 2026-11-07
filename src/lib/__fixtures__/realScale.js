@@ -53,7 +53,14 @@ function prng(seed) {
 
 const BLOCK_DATES = dateRange(BLOCK_START, BLOCK_END);
 
-export function makeRealScaleFixture({ seed = 20260706 } = {}) {
+// staggerSplit: bench-only variant (scripts/bench-engines.mjs --fixture realScaleStaggered). The default
+// shape puts 3 TRAUMA_PEDS interns on the same trauma half, which has only 8 TRAUMA-D slots
+// (Tue/Thu/Sat/Sun, max 1) for 3x8 = 24 trauma shifts, so every engine's result carries the same
+// 3 underTarget errors. Staggered = 1 TRAUMA_PEDS + 1 PEDS_TRAUMA (one intern per half) + 5 EM, with
+// no vacation for the split interns, so
+// the error count in trials measures the engine. The quality baseline keeps the default shape
+// (changing it would rewrite the realScale ratchet).
+export function makeRealScaleFixture({ seed = 20260706, staggerSplit = false } = {}) {
   const rnd = prng(seed);
   const pick = n => Math.floor(rnd() * n);
   let counter = 0;
@@ -83,7 +90,9 @@ export function makeRealScaleFixture({ seed = 20260706 } = {}) {
   const residents = [];
   const add = (n, o) => { for (let i = 0; i < n; i++) residents.push(mk(typeof o === 'function' ? o(i) : o)); };
 
-  add(7, i => ({ category: 'EM_HOME', pgy: 1, blockType: i < 3 ? 'TRAUMA_PEDS' : 'EM' }));
+  add(7, i => ({ category: 'EM_HOME', pgy: 1, blockType: staggerSplit
+    ? (i === 0 ? 'TRAUMA_PEDS' : i === 1 ? 'PEDS_TRAUMA' : 'EM')
+    : (i < 3 ? 'TRAUMA_PEDS' : 'EM') }));
   add(6, i => ({ category: 'EM_HOME', pgy: 2, blockType: i === 0 ? 'EM_TOX' : i === 1 ? 'EM_EMS' : 'EM' }));
   add(6, i => ({ category: 'EM_HOME', pgy: 3, chiefRole: i < 2 ? 'scheduling' : null }));
   add(3, { category: 'EM_BAMC', pgy: 1 });
@@ -113,7 +122,10 @@ export function makeRealScaleFixture({ seed = 20260706 } = {}) {
   offService('POD', 1, 4);
 
   // Vacations: 7 EM residents (distinct), 7-day windows.
-  const emIdx = residents.map((r, i) => (r.category === 'EM_HOME' || r.category === 'EM_BAMC') ? i : -1).filter(i => i >= 0);
+  // staggerSplit also keeps split interns off vacation: a 7-day vacation inside a 14-day half leaves
+  // no room for that half's 8/11-shift target (another fixture-inherent underTarget error).
+  const isSplit = r => r.blockType === 'TRAUMA_PEDS' || r.blockType === 'PEDS_TRAUMA';
+  const emIdx = residents.map((r, i) => (r.category === 'EM_HOME' || r.category === 'EM_BAMC') && !(staggerSplit && isSplit(r)) ? i : -1).filter(i => i >= 0);
   const vacIdx = new Set();
   while (vacIdx.size < 10) vacIdx.add(emIdx[pick(emIdx.length)]);
   for (const i of vacIdx) {
