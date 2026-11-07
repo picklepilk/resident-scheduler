@@ -29,6 +29,7 @@
   "shortNightStint": { "perUnit": 60 },
   "podThirdBodyCore": { "perUnit": 6000 },
   "wedPodBamcBody": { "perUnit": 150 },
+  "neuroTueThuNight": { "perUnit": 150 },
   "pedNightOverSwing": { "perUnit": 600 },
   "hintStickiness": { "perChange": 0 }
 }

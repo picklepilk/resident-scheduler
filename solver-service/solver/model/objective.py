@@ -80,6 +80,7 @@ from solver.model.circadian import NIGHT_RUN_MAX
 from solver.model.coverage import CoverageResult
 from solver.model.count_caps import terms_for
 from solver.model.pod_third_body import add_pod_third_body_terms
+from solver.model.avoid_night_dow import add_avoid_night_dow_terms
 from solver.model.pod_wed_bamc import add_wed_pod_bamc_terms
 from solver.model.ped_night_priority import add_ped_night_priority_terms
 from solver.model.hint_stickiness import add_hint_stickiness_term
@@ -1107,6 +1108,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_dow_preference_term(payload, store, tier_quality, weights)
     _add_pod_third_body_term(model, payload, store, tier_quality, weights)
     _add_wed_pod_bamc_term(model, payload, store, tier_quality, weights)
+    add_avoid_night_dow_terms(model, payload, store, tier_quality, weights)
     _add_ped_night_priority_term(model, payload, store, tier_quality, weights)
     add_hint_stickiness_term(model, payload, store, tier_quality, weights)
 
