@@ -29,8 +29,6 @@ REQUIRED_REST_AFTER_RUN_MIN = 24 * 60
 TRAUMA_PER_RUN_MAX = 2  # batch 2: mirrors trauma_runs.TRAUMA_PER_RUN_HARD_CAP,
                         # re-declared per this file's own "independent
                         # re-implementation" philosophy (see module docstring)
-JC_WINDOW_START_H = 18
-JC_WINDOW_END_H = 21
 WEDNESDAY = 2
 THURSDAY = 3
 SATURDAY = 5
@@ -435,7 +433,7 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
             failures.append(_fail("traumaCap", [resident.id], [], [], f"{trauma_n} trauma, cap {resident.caps.trauma}"))
 
         jc_n = count(
-            lambda sid: timing.overlaps_hour_window(payload.shifts[sid], JC_WINDOW_START_H, JC_WINDOW_END_H),
+            lambda sid: timing.overlaps_hour_window(payload.shifts[sid], payload.jc_window_start_h, payload.jc_window_end_h),
             lambda d: d in payload.jc_dates,
         )
         if resident.caps.jc_remaining is not None and jc_n > resident.caps.jc_remaining:
