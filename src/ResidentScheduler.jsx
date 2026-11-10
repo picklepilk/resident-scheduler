@@ -12991,9 +12991,12 @@ function HolidayDatesEditor({ ay, conf, onUpdate }) {
   const holidays = resolveHolidays(conf);
 
   const commit = next => onUpdate({ ...conf, holidays: next });
-  const patch = (i, fields) => commit(holidays.map((h, j) => j === i ? { ...h, ...fields } : h));
-  const remove = i => commit(holidays.filter((_, j) => j !== i));
-  const addBlank = () => commit([...holidays, { id: `h_${Date.now()}`, name: '', start: '', end: '' }]);
+  // Rows render from the RAW stored array, so index-based edits must target it too (the resolved list
+  // is filtered and sorted, so its indexes drift from the rendered rows; a blank new row would vanish).
+  const rawList = Array.isArray(conf.holidays) ? conf.holidays : [];
+  const patch = (i, fields) => commit(rawList.map((h, j) => j === i ? { ...h, ...fields } : h));
+  const remove = i => commit(rawList.filter((_, j) => j !== i));
+  const addBlank = () => commit([...rawList, { id: `h_${Date.now()}`, name: '', start: '', end: '' }]);
   // Merges rather than replaces, and matches on START DATE so pressing this twice can't duplicate
   // a holiday the chief has since renamed ("Christmas Eve & Day" -> "Christmas").
   const addDefaults = () => {
