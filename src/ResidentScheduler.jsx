@@ -18051,14 +18051,18 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     const tgtSid = sched[tgtRes.id]?.[tgtDs] || null;
     const kind = tgtSid ? 'swap' : 'move';
 
+    // Same-resident swap: the other half lands in this resident's own row, so validate each half with the
+    // swapped value in place rather than with the other cell cleared.
+    const sameResSwap = kind === 'swap' && src.resId === tgtRes.id;
+    const withCell = (residentId, ds, sid) => ({ ...sched, [residentId]: { ...(sched[residentId] || {}), [ds]: sid } });
     const violTgt = cellViolations(tgtRes, tgtDs, src.sid,
-      { ...block, schedule: scheduleClearing(src.resId, src.ds) },
+      { ...block, schedule: sameResSwap ? withCell(src.resId, src.ds, tgtSid) : scheduleClearing(src.resId, src.ds) },
       eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
     ).map(v => ({ message: `${tgtRes.lastName}, ${tgtRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: tgtRes.id, dateStr: tgtDs } }));
 
     const violSrc = kind === 'swap'
       ? cellViolations(srcRes, src.ds, tgtSid,
-          { ...block, schedule: scheduleClearing(tgtRes.id, tgtDs) },
+          { ...block, schedule: sameResSwap ? withCell(tgtRes.id, tgtDs, src.sid) : scheduleClearing(tgtRes.id, tgtDs) },
           eligOverrides, appSettings, dayRules, ayConf, prevTail, finalSunday, nextRotationMap, allResidents, blocksHistory
         ).map(v => ({ message: `${srcRes.lastName}, ${srcRes.firstName}: ${v.message}`, level: v.level, rule: v.rule, measured: v.measured, cell: { residentId: srcRes.id, dateStr: src.ds } }))
       : [];
