@@ -3,6 +3,8 @@
 // value the caller already holds (blocksHistory snapshots + the live block) - nothing here reads
 // ResidentScheduler.jsx state.
 
+import { isoDayNumber as dayNumber } from './dates.js';
+
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** Sorted-descending unique AY strings across saved snapshots and the live block ('Unknown' = no AY). */
@@ -58,11 +60,6 @@ export function railNumeral(name, index) {
   const m = /\d+/.exec(typeof name === 'string' ? name : '');
   const n = m ? parseInt(m[0], 10) : (Number(index) || 0) + 1;
   return String(n).padStart(2, '0');
-}
-
-function dayNumber(iso) {
-  const m = ISO_RE.exec(iso || '');
-  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 : null;
 }
 
 /** Which block contains `todayIso`, and where (0..1, centre of today's day column) within its inclusive span. */

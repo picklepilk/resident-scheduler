@@ -8,6 +8,12 @@ export function toDateStr(d) { return isNaN(d.getTime()) ? null : d.toISOString(
 export function parseDate(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
 export function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 
+// 'YYYY-MM-DD' -> whole days since the Unix epoch (UTC, so DST-proof); null for anything else.
+export function isoDayNumber(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86_400_000 : null;
+}
+
 // M/d/yyyy (4-digit year) — QGenda's CSV importer rejects prettyDate's M/d/yy (2-digit year)
 // with "Date must be in M/d/yyyy format". Scoped to the QGenda export only; every on-screen UI
 // date label keeps using prettyDate (ResidentScheduler.jsx) — do not repoint those here.
