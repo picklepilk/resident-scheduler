@@ -1170,8 +1170,7 @@ Two related but separate rule changes, both effective immediately on both engine
 `timing.shift_end_min`), `solver/validate.py` (same simplification, its own independent
 re-implementation). `solver/model/workday_limits.py`/`solver/io/payload.py` untouched — already
 no-ops under the new empty payload fields (see that module's updated docstring). `timing.py`'s
-`shift_end_date`/`hour_mark_min` helpers are now unused by anything in-tree but kept as general
-utilities.
+`shift_end_date`/`hour_mark_min` helpers, unused by anything in-tree, were later deleted.
 
 **Tests**: `solver-service` pytest (185 passed, same 4 pre-existing `jwt`-import collection errors as
 every other run in this doc). `test_rest.py`'s old GR-end-adjustment-fires test was rewritten to prove

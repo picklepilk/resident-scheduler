@@ -26,10 +26,8 @@ def test_required_rest_gap_uses_earlier_shifts_own_duration():
     assert timing.required_rest_gap_min(long_) == 12 * 60
 
 
-def test_add_days_and_date_diff_cross_month_and_nonleap_feb():
+def test_add_days_cross_month_and_nonleap_feb():
     assert timing.add_days("2026-02-28", 1) == "2026-03-01"  # 2026 is not a leap year
-    assert timing.date_diff_days("2026-03-01", "2026-02-28") == 1
-    assert timing.date_diff_days("2026-02-28", "2026-03-01") == -1
 
 
 def test_overlaps_hour_window_matches_journal_club_window():
