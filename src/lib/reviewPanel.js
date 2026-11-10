@@ -149,13 +149,6 @@ export function issueJumpTarget(issue) {
     : { type: 'row', residentId: issue.residentId };
 }
 
-// An issue row can only jump anywhere when it names a resident (see issueJumpTarget) — a handful of
-// issue kinds (coverage gaps, "two residents on one shift") name only a shiftId/date and have no
-// person to jump to at all.
-export function isJumpableIssue(issue) {
-  return !!issueJumpTarget(issue);
-}
-
 // Stable React key for an issue row/group member — several validateAll issues share the same array
 // index across re-renders once grouping/filtering reorders them, so `key={i}` was letting React
 // reuse the wrong DOM node's local state (e.g. an expanded group) across an unrelated issue. Every

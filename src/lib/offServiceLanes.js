@@ -14,11 +14,6 @@ import { isoDayNumber } from './dates.js';
 
 const dayNum = isoDayNumber;
 
-/** Block-boundary x positions: n+1 entries (0, cw, 2cw ...). */
-export function laneBoundaries(blockCount, cellWidth) {
-  return Array.from({ length: Math.max(0, blockCount) + 1 }, (_, i) => i * cellWidth);
-}
-
 /**
  * @param blocks [{start,end}] sorted ascending (ISO inclusive)
  * @param window {start,end}

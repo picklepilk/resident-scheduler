@@ -1,20 +1,7 @@
 // Unit tests for the pure click/drag commit math behind TimeOffModal (ResidentScheduler.jsx).
 import { describe, it, expect } from 'vitest';
-import { toggleDateInList, paintActionFor, applyDateRangePaint } from './dateSetPaint.js';
+import { paintActionFor, applyDateRangePaint } from './dateSetPaint.js';
 import { getBlockDates } from './dates.js';
-
-describe('toggleDateInList', () => {
-  it('adds an absent date, sorted', () => {
-    expect(toggleDateInList(['2026-08-01', '2026-08-05'], '2026-08-03'))
-      .toEqual(['2026-08-01', '2026-08-03', '2026-08-05']);
-  });
-  it('removes a present date', () => {
-    expect(toggleDateInList(['2026-08-01', '2026-08-03'], '2026-08-03')).toEqual(['2026-08-01']);
-  });
-  it('treats a missing/undefined list as empty', () => {
-    expect(toggleDateInList(undefined, '2026-08-03')).toEqual(['2026-08-03']);
-  });
-});
 
 describe('paintActionFor', () => {
   it('is "remove" when the anchor date is already in the list', () => {

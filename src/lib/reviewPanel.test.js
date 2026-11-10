@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  groupPanelIssues, labelForIssue, isJumpableIssue, ISSUE_RULE_LABELS,
+  groupPanelIssues, labelForIssue, ISSUE_RULE_LABELS,
   normalizeIssueMessage, groupIssuesByKind, labelForIssueGroup, groupKeyForIssue, GROUP_MESSAGE_LABELS,
   issueJumpTarget, issueKey, classifyCellIssues,
 } from './reviewPanel.js';
@@ -71,10 +71,9 @@ describe('labelForIssue', () => {
   });
 });
 
-describe('issueJumpTarget / isJumpableIssue', () => {
+describe('issueJumpTarget', () => {
   it('targets a cell when residentId and dateStr are both present', () => {
     expect(issueJumpTarget(err())).toEqual({ type: 'cell', residentId: 'r1', dateStr: '2026-01-05' });
-    expect(isJumpableIssue(err())).toBe(true);
   });
 
   it('falls back to anchorDate for a cell target when dateStr is null', () => {
@@ -85,13 +84,11 @@ describe('issueJumpTarget / isJumpableIssue', () => {
   it('targets the resident ROW when a resident is named but no date (nor anchorDate) is known', () => {
     const issue = err({ dateStr: null });
     expect(issueJumpTarget(issue)).toEqual({ type: 'row', residentId: 'r1' });
-    expect(isJumpableIssue(issue)).toBe(true);
   });
 
   it('is not jumpable at all when no resident is named — block-wide issues have no row or cell', () => {
     expect(issueJumpTarget(err({ residentId: null }))).toBeNull();
-    expect(isJumpableIssue(err({ residentId: null }))).toBe(false);
-    expect(isJumpableIssue(null)).toBe(false);
+    expect(issueJumpTarget(null)).toBeNull();
   });
 });
 
