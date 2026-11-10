@@ -9830,7 +9830,7 @@ function useLocalStorage(key, def) {
   const [val, setVal] = useState(() => {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
   });
-  useEffect(() => { localStorage.setItem(key, JSON.stringify(val)); }, [key, val]);
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota/blocked storage: keep in-memory state */ } }, [key, val]);
   return [val, setVal];
 }
 
