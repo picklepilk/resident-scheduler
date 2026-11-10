@@ -13095,11 +13095,12 @@ function TwelveHourWindowsEditor({ ay, conf, onUpdate }) {
   const commit = next => onUpdate({ ...conf, twelveHourWindows: next });
   const patch = (i, fields) => commit(windows.map((w, j) => j === i ? { ...w, ...fields } : w));
   const reset = () => { const c = { ...conf }; delete c.twelveHourWindows; onUpdate(c); setExpanded(null); };
-  const addWindow = () => commit([...windows, { id: `w${windows.length + 1}_${ay}`, label: '', start: '', end: '', areas: ['POD','MT','FLEX'], mode: 'replace' }]);
+  const addWindow = () => commit([...windows, { id: `w_${uuid()}_${ay}`, label: '', start: todayLocalIso(), end: '', areas: ['POD','MT','FLEX'], mode: 'replace' }]);
   const removeWindow = i => { commit(windows.filter((_, j) => j !== i)); setExpanded(null); };
 
   const toggleArea = (i, area) => {
     const cur = windows[i].areas || [];
+    if (cur.includes(area) && cur.length <= 1) return; // a window with no areas is dropped by normalization
     patch(i, { areas: cur.includes(area) ? cur.filter(a => a !== area) : [...cur, area] });
   };
   const setOverride = (i, sid, field, raw) => {
