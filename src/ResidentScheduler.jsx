@@ -26780,6 +26780,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   // forever, since overrides replace a key's default wholesale. Genuinely customized overrides
   // are left alone — they're flagged for review on the Rules tab instead (DAY_RULE_DEFAULTS_CHANGED).
   useEffect(() => {
+    // Gate on the cloud overlay like the sibling migrations below (idempotent, so a re-run is harmless);
+    // pruning before the overlay would only touch the stale local copy.
+    if (!(dbReady || !SUPABASE_ENABLED)) return;
     setDayRules(prev => {
       let changed = false;
       const next = { ...prev };
@@ -26811,7 +26814,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       return changed ? next : prev;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [dbReady]);
 
   // One-time mount migration: rewrite stale PED-N assignments belonging to FM-3 residents to the
   // new PED-N-FM id (see migratePedNightAssignments above for why this exists). Gated on a stored
