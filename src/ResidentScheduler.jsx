@@ -15466,6 +15466,31 @@ function areaDividerClass(area) {
   return (AREA_COLORS[area]?.tint || '').match(/border-\S+/)?.[0] || 'border-gray-300';
 }
 
+// Module-level (not nested in ShiftMatrixTab): a nested component gets a new identity every render and
+// remounted every cell on each hover change. Hover state arrives as props. See the hover notes in ShiftMatrixTab.
+function CellButton({ k, s, checked, inherited = false, onToggle, rowHovered = false, boundary = false, hoveredCol, setHoveredCol }) {
+  const colHovered = hoveredCol === s.id;
+  const cross = rowHovered && colHovered;
+  const tint = cross ? 'bg-primary/15' : colHovered ? 'bg-blue-50/70' : rowHovered ? 'bg-blue-50/30' : '';
+  return (
+    <td onMouseEnter={()=>setHoveredCol(s.id)} onMouseLeave={()=>setHoveredCol(null)}
+      className={`p-0 text-center transition-colors ${boundary ? `border-r-2 ${areaDividerClass(s.area)}` : ''} ${tint}`}>
+      <button onClick={onToggle}
+        title={`${checked ? 'Remove' : 'Add'} ${s.label} (${s.hours})${inherited ? ' — inherited from category default; clicking creates a rotation override' : ''}`}
+        className={`w-full h-10 flex items-center justify-center transition-colors ${checked && !inherited ? 'bg-primary/10 hover:bg-primary/10' : 'hover:bg-gray-100'}`}>
+        {checked
+          ? (inherited
+            ? <div className="relative w-4 h-4 rounded border-2 border-dashed border-gray-300 flex items-center justify-center bg-white">
+                <Check size={9} className="text-gray-500"/>
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-gray-300 border border-white"/>
+              </div>
+            : <div className={`w-4 h-4 rounded flex items-center justify-center ${s.chip}`}><Check size={9}/></div>)
+          : <div className={`w-4 h-4 rounded border-2 ${inherited ? 'border-gray-100' : 'border-gray-200'}`}/>}
+      </button>
+    </td>
+  );
+}
+
 function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // expanded: which EM Home rows show their per-rotation sub-rows
   const [expanded, setExpanded] = useState({});
@@ -15542,29 +15567,6 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
   // (never layered) so row-hover and column-hover never fight over which utility class's
   // background-color wins the cascade — the two states combine into one resolved class name
   // rather than stacking two same-specificity background utilities on the same element.
-  function CellButton({ k, s, checked, inherited = false, onToggle, rowHovered = false, boundary = false }) {
-    const colHovered = hoveredCol === s.id;
-    const cross = rowHovered && colHovered;
-    const tint = cross ? 'bg-primary/15' : colHovered ? 'bg-blue-50/70' : rowHovered ? 'bg-blue-50/30' : '';
-    return (
-      <td onMouseEnter={()=>setHoveredCol(s.id)} onMouseLeave={()=>setHoveredCol(null)}
-        className={`p-0 text-center transition-colors ${boundary ? `border-r-2 ${areaDividerClass(s.area)}` : ''} ${tint}`}>
-        <button onClick={onToggle}
-          title={`${checked ? 'Remove' : 'Add'} ${s.label} (${s.hours})${inherited ? ' — inherited from category default; clicking creates a rotation override' : ''}`}
-          className={`w-full h-10 flex items-center justify-center transition-colors ${checked && !inherited ? 'bg-primary/10 hover:bg-primary/10' : 'hover:bg-gray-100'}`}>
-          {checked
-            ? (inherited
-              ? <div className="relative w-4 h-4 rounded border-2 border-dashed border-gray-300 flex items-center justify-center bg-white">
-                  <Check size={9} className="text-gray-500"/>
-                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-gray-300 border border-white"/>
-                </div>
-              : <div className={`w-4 h-4 rounded flex items-center justify-center ${s.chip}`}><Check size={9}/></div>)
-            : <div className={`w-4 h-4 rounded border-2 ${inherited ? 'border-gray-100' : 'border-gray-200'}`}/>}
-        </button>
-      </td>
-    );
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
@@ -15700,7 +15702,8 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                           checked={isElig(row.key, s.id)}
                           onToggle={()=>toggle(row.key, s.id)}
                           rowHovered={hoveredRow===row.key}
-                          boundary={AREA_LAST_SHIFT.has(s.id)}/>
+                          boundary={AREA_LAST_SHIFT.has(s.id)}
+                          hoveredCol={hoveredCol} setHoveredCol={setHoveredCol}/>
                       ))}
                       <td className="px-2">
                         {mod && <button onClick={()=>resetRow(row.key)} title="Reset row"><RefreshCw size={11} className="text-gray-400 hover:text-primary"/></button>}
@@ -15729,7 +15732,8 @@ function ShiftMatrixTab({ eligOverrides, setEligOverrides }) {
                               inherited={!hasOv}
                               onToggle={()=>subToggle(row.key, bt.id, s.id)}
                               rowHovered={hoveredRow===subK}
-                              boundary={AREA_LAST_SHIFT.has(s.id)}/>
+                              boundary={AREA_LAST_SHIFT.has(s.id)}
+                          hoveredCol={hoveredCol} setHoveredCol={setHoveredCol}/>
                           ))}
                           <td className="px-2">
                             {hasOv && <button onClick={()=>subReset(row.key, bt.id)} title="Remove override (revert to inherited)"><RefreshCw size={11} className="text-gray-400 hover:text-purple-600"/></button>}
