@@ -14780,7 +14780,16 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
     updateBlock(b => {
       const s = { ...b.schedule };          delete s[id];
       const a = { ...b.emBlockAssignments }; delete a[id];
-      return { ...b, schedule: s, emBlockAssignments: a };
+      // Drop the id from jeopardy call tracks too, else the dropdown shows 'Unknown resident'.
+      let jeo = b.jeopardySchedule;
+      if (jeo) {
+        jeo = { ...jeo };
+        for (const track of Object.keys(jeo)) {
+          if (!jeo[track] || typeof jeo[track] !== 'object') continue;
+          jeo[track] = Object.fromEntries(Object.entries(jeo[track]).filter(([, rid]) => rid !== id));
+        }
+      }
+      return { ...b, schedule: s, emBlockAssignments: a, ...(jeo ? { jeopardySchedule: jeo } : {}) };
     });
     setConfirmRemove(null);
   }
