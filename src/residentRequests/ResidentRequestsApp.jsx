@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase, AUTH_ENABLED, ROLE } from '../supabaseClient';
 import LoginScreen from './LoginScreen';
 import ResidentPicker from './ResidentPicker';
@@ -7,6 +7,7 @@ import RequestList from './RequestList';
 import WalkthroughRoot from '../walkthrough/WalkthroughRoot';
 import { useWalkthroughContext } from '../walkthrough/Walkthrough';
 import { RESIDENT_WALKTHROUGH_STEPS } from '../walkthrough/walkthroughSteps';
+import { nextProfile } from '../lib/profileState.js';
 
 // Unobtrusive replay entry point — the admin surface has a whole User Guide tab to put this in;
 // this single-flow page doesn't, so it's a small divider line at the bottom rather than its own
@@ -27,6 +28,7 @@ export default function ResidentRequestsApp() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
   const [profile, setProfile] = useState(undefined); // undefined = not fetched, null = no row yet
   const [refreshKey, setRefreshKey] = useState(0);
+  const lastUserIdRef = useRef(null);
 
   useEffect(() => {
     if (!AUTH_ENABLED) { setSession(null); return; }
@@ -37,6 +39,11 @@ export default function ResidentRequestsApp() {
 
   useEffect(() => {
     if (!session) return;
+    // A different account must not inherit the previous account's profile while its own loads.
+    if (lastUserIdRef.current !== session.user.id) {
+      lastUserIdRef.current = session.user.id;
+      setProfile(undefined);
+    }
     let cancelled = false;
     (async () => {
       // Sequential upsert-then-read, same reasoning as AppGate: firing both at once lets the
@@ -44,9 +51,9 @@ export default function ResidentRequestsApp() {
       await supabase
         .from('profiles')
         .upsert({ id: session.user.id, email: session.user.email }, { onConflict: 'id', ignoreDuplicates: true });
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('profiles').select('role, resident_id').eq('id', session.user.id).maybeSingle();
-      if (!cancelled) setProfile(data);
+      if (!cancelled) setProfile(prev => nextProfile(prev, data, error));
     })();
     return () => { cancelled = true; };
   }, [session]);
