@@ -26177,7 +26177,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
       if (syncSuspended) return; // import/clear owns the row right now — don't race them
-      savePromiseRef.current = saveCloudNow().finally(() => { savePromiseRef.current = null; });
+      startCloudSave();
     }, 1500);
     return () => clearTimeout(saveTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -26249,12 +26249,23 @@ export default function ResidentScheduler({ viewer } = {}) {
   // awaited rather than abandoned, since the reload would otherwise race and abort it underneath
   // the caller. Never throws — saveCloudNow itself is best-effort, so every caller can just
   // `await flushPendingCloudSave()` and proceed regardless of outcome.
+  // Starts a cloud save, or queues it behind the one already in flight. Two overlapping saveCloudNow()
+  // runs would both PATCH against the same base.version, so the second would be rejected as a false
+  // "saved by another admin" conflict. saveCloudNow re-checks the baseline when it runs, so a queued
+  // save that has nothing left to write is a no-op.
+  function startCloudSave() {
+    const prev = savePromiseRef.current;
+    const p = (prev ? prev.then(() => saveCloudNow()) : saveCloudNow())
+      .finally(() => { if (savePromiseRef.current === p) savePromiseRef.current = null; });
+    savePromiseRef.current = p;
+  }
+
   async function flushPendingCloudSave() {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
       if (SUPABASE_ENABLED && dbReady && !syncSuspended) {
-        savePromiseRef.current = saveCloudNow().finally(() => { savePromiseRef.current = null; });
+        startCloudSave();
       }
     }
     if (savePromiseRef.current) await savePromiseRef.current;
