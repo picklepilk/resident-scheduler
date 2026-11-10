@@ -13730,7 +13730,12 @@ function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         generationReport: null, startDate: start, endDate: end, name, academicYear: getAcademicYearFor(start),
       },
     };
-    setBlocksHistory(prev => [snap, ...prev.filter(b => b.id !== snap.id)].slice(0, appSettings?.maxSavedBlocks ?? 24));
+    setBlocksHistory(prev => {
+      // Re-importing the same start replaces the snapshot; keep a previously published flag (same as saveBlock).
+      const published = prev.find(b => b.id === snap.id)?.published;
+      const next = published ? { ...snap, published } : snap;
+      return [next, ...prev.filter(b => b.id !== snap.id)].slice(0, appSettings?.maxSavedBlocks ?? 24);
+    });
 
     // Import History entry — counts and the date range only, never a resident name list (see
     // src/lib/importLog.js header comment).
