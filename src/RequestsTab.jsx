@@ -6,6 +6,7 @@ import RequestForm from './residentRequests/RequestForm';
 import RequestList from './residentRequests/RequestList';
 import { formatResidentName, groupByBlock } from './residentRequests/blockLookup';
 import { holidayNameForDateAnyAy } from './lib/holidays.js';
+import { wasDecisionApplied, DECISION_STALE_MESSAGE } from './lib/decideGuard.js';
 
 // Admin-only tab inside the main scheduler. AppGate has already established the viewer is an
 // admin before this ever mounts, so the session/role checks below are defence in depth rather
@@ -259,10 +260,17 @@ function ApprovalQueue({ emRoster, setEmRoster, blocks, session, onRequestsChang
     // Check the write's own error rather than assuming success — an RLS denial, expired session,
     // or network blip must not update local approvedDatesOff/UI state while the database write
     // itself never took effect (that desync is exactly what the code review flagged).
-    const { error: updateError } = await supabase.from('day_off_requests').update({
+    // Conditional on still being pending: a stale list must not flip a request the resident has
+    // since withdrawn (or another admin already decided) and then stamp approvedDatesOff.
+    const { data: updatedRows, error: updateError } = await supabase.from('day_off_requests').update({
       status, decision_note: note, decided_at: decidedAt, decided_by: session.user.id,
-    }).eq('id', req.id);
+    }).eq('id', req.id).eq('status', 'pending').select('id');
     if (updateError) { setError(updateError.message); return; }
+    if (!wasDecisionApplied(updatedRows)) {
+      setError(DECISION_STALE_MESSAGE);
+      loadRequests();
+      return;
+    }
     setError(null);
     if (status === 'approved') {
       // The resident's typed reason and the admin's own note are otherwise stuck in Supabase —
