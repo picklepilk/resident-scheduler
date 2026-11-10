@@ -74,6 +74,7 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
     """
     result = CoverageResult()
     elastic = payload.config.coverage_min_mode != "hard_then_elastic"
+    locked = {(lc.resident_id, lc.shift_id, lc.date) for lc in payload.locked} if payload.as_needed else frozenset()
 
     for shift_id, by_date in payload.coverage.items():
         shift = payload.shifts[shift_id]
@@ -96,7 +97,6 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
             # so it is exempt (it must not make the model infeasible when the kept headcount already
             # exceeds min). Hard, in pass 1 and pass 2 alike (this function builds both).
             if payload.as_needed:
-                locked = {(lc.resident_id, lc.shift_id, lc.date) for lc in payload.locked}
                 for rid, var in store.by_shift_date.get((shift_id, date_str), []):
                     key = (rid, shift_id, date_str)
                     if key in payload.as_needed and key not in locked:

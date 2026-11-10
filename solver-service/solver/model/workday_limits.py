@@ -152,6 +152,7 @@ def _run6_end_terms(model, payload: Payload, store: VarStore, resident):
 
 def _add_post_run6_rest(model, payload: Payload, store: VarStore, enforcement=None) -> None:
     tail_len = len(payload.tail_dates)
+    block_dates = frozenset(payload.block.dates)
     for resident in payload.residents:
         run6_end = _run6_end_terms(model, payload, store, resident)  # stays hard: a definitional reification, not a policy limit
 
@@ -173,7 +174,7 @@ def _add_post_run6_rest(model, payload: Payload, store: VarStore, enforcement=No
                 shift1 = payload.shifts[shift_id1]
                 for delta in _D2_SCAN_DAYS:
                     date2 = timing.add_days(date1, delta)
-                    if date2 not in payload.block.dates:
+                    if date2 not in block_dates:
                         continue
                     for shift_id2, var2 in store.by_resident_date.get((resident.id, date2), []):
                         shift2 = payload.shifts[shift_id2]
