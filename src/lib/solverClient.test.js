@@ -114,6 +114,23 @@ describe('solverClient — solveRemote', () => {
     await expect(solveRemote({}, { timeoutMs: 10 })).rejects.toThrow(/timed out/);
   });
 
+  it('times out when the server sends headers and then stalls the body', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, opts) => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => {
+          const err = new Error('Aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { solveRemote } = await freshModule();
+    await expect(solveRemote({}, { timeoutMs: 10 })).rejects.toThrow(/timed out/);
+  });
+
   it('throws immediately, without calling fetch, when the solver is not configured', async () => {
     delete globalThis.__SOLVER_URL__;
     const fetchMock = vi.fn();

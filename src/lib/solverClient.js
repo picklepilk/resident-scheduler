@@ -56,27 +56,37 @@ export async function solveRemote(payload, { timeoutMs = 120000, accessToken = n
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = { 'Content-Type': 'application/json' };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  let res;
+  // The timeout covers the response BODY too, not just the headers: a server that sends headers
+  // and then stalls would otherwise leave res.json() waiting forever (the timer was cleared as soon
+  // as fetch() resolved).
   try {
-    res = await fetch(`${target}/solve`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
-    throw new Error(`Solver request failed: ${e?.message || e}`);
+    let res;
+    try {
+      res = await fetch(`${target}/solve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
+      throw new Error(`Solver request failed: ${e?.message || e}`);
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try { detail = await res.text(); } catch { /* best-effort only — a body-read failure shouldn't mask the real status error */ }
+      throw new Error(`Solver returned ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
+    }
+    try {
+      return await res.json();
+    } catch (e) {
+      if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
+      throw e;
+    }
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    let detail = '';
-    try { detail = await res.text(); } catch { /* best-effort only — a body-read failure shouldn't mask the real status error */ }
-    throw new Error(`Solver returned ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
-  }
-  return res.json();
 }
 
 // ─── "Run the optimizer on this computer" ──────────────────────────────────────────────────────
