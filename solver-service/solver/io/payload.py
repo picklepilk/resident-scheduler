@@ -9,6 +9,7 @@ basic shape validation; it just gives the rest of the solver a typed surface.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -463,6 +464,19 @@ def _parse_preferences(raw: list) -> list:
     ]
 
 
+# Largest time budget the app ever asks for is 30 min; with no cap one authenticated caller could
+# hold the single solve slot (409 for everyone else) indefinitely.
+MAX_TIME_SECONDS_CAP = 1800.0
+DEADLINE_GRACE_CAP_SECONDS = 60.0
+
+
+def _finite_seconds(value, name: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds):
+        raise PayloadError(f"Malformed payload: {name} must be a finite number")
+    return seconds
+
+
 def parse_payload(raw: dict) -> Payload:
     try:
         block_raw = raw["block"]
@@ -474,7 +488,7 @@ def parse_payload(raw: dict) -> Payload:
         config_raw = raw.get("config", {}) or {}
         stage_split_raw = config_raw.get("stageSplit")
         config = Config(
-            max_time_seconds=float(config_raw.get("maxTimeSeconds", 30)),
+            max_time_seconds=min(_finite_seconds(config_raw.get("maxTimeSeconds", 30), "maxTimeSeconds"), MAX_TIME_SECONDS_CAP),
             num_workers=int(config_raw.get("numWorkers", 0) or 0),
             random_seed=int(config_raw.get("randomSeed", 42)),
             coverage_min_mode=config_raw.get("coverageMinMode", "elastic_always"),
@@ -487,8 +501,8 @@ def parse_payload(raw: dict) -> Payload:
             portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
             outer_lns=parse_outer_lns(config_raw.get("outerLns")),
-            deadline_seconds=float(config_raw["deadlineSeconds"]) if config_raw.get("deadlineSeconds") is not None else None,
-            stall_seconds=float(config_raw["stallSeconds"]) if config_raw.get("stallSeconds") is not None else None,
+            deadline_seconds=min(_finite_seconds(config_raw["deadlineSeconds"], "deadlineSeconds"), MAX_TIME_SECONDS_CAP + DEADLINE_GRACE_CAP_SECONDS) if config_raw.get("deadlineSeconds") is not None else None,
+            stall_seconds=_finite_seconds(config_raw["stallSeconds"], "stallSeconds") if config_raw.get("stallSeconds") is not None else None,
             shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
             mode="score" if config_raw.get("mode") == "score" else "solve",
             implied_cliques=bool(config_raw.get("impliedCliques", False)),
@@ -540,6 +554,8 @@ def parse_payload(raw: dict) -> Payload:
             block_touches_conference=bool(raw.get("blockTouchesConference", False)),
             alternate_hints=_parse_alternate_hints(raw.get("alternateHints", [])) if raw.get("hint") else [],
         )
-    except (KeyError, TypeError) as exc:
+    except PayloadError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
         raise PayloadError(f"Malformed payload: {exc!r}") from exc
     return payload
