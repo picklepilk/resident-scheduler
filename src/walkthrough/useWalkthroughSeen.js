@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { APP_KEY } from './walkthroughSteps';
 
-export const WALKTHROUGH_SEEN_LS_KEY = `walkthrough_seen:${APP_KEY}`;
+const WALKTHROUGH_SEEN_LS_KEY = `walkthrough_seen:${APP_KEY}`;
 
 /**
  * Pure. Merges this app's seen flag into whatever `walkthrough_seen` object `user_metadata`

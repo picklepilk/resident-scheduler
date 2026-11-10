@@ -16,7 +16,7 @@
 import { SHIFT_TIMING, shiftStartMs, shiftEndMs } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 
-export const JEOPARDY_WINDOW_START_H = 7;
+const JEOPARDY_WINDOW_START_H = 7;
 
 function hourMs(dateStr, hour) {
   const d = parseDate(dateStr);

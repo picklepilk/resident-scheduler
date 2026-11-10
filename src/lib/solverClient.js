@@ -132,7 +132,7 @@ export function resolveSolverTarget({ preference, localHealthy }) {
 // anything else (missing, legacy, hand-edited) reads as 'cloud', the long-standing default.
 // Legacy 'remote:<slug>' / 'pc:<slug>' (the removed PR #5 remote-target picker ids) map to
 // 'pool:<Name>' when a `pool` entry's name slugifies to that slug, else 'cloud'.
-export const slugifySolverName = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const slugifySolverName = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 export function normalizeSolverTarget(v, { pool = [] } = {}) {
   if (typeof v === 'string' && v.startsWith('pool:') && v.slice(5).trim()) return v; // manual pool machine
   if (typeof v === 'string') {

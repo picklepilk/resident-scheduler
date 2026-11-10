@@ -8,7 +8,7 @@
 // odd response must never show a false "new version" banner.
 
 export const VERSION_POLL_MS = 5 * 60 * 1000;    // background poll cadence
-export const VERSION_MIN_GAP_MS = 60 * 1000;     // at most one check per minute (focus/visibility bursts)
+const VERSION_MIN_GAP_MS = 60 * 1000;     // at most one check per minute (focus/visibility bursts)
 export const VERSION_SNOOZE_MS = 30 * 60 * 1000; // "Later" hides the banner at least this long
 export const VERSION_FETCH_TIMEOUT_MS = 15 * 1000; // a hung index.html fetch is abandoned after this
 

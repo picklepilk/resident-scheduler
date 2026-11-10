@@ -16,7 +16,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, us
 import { supabase, AUTH_ENABLED } from './supabaseClient.js';
 import { DEFAULT_UI_PREFS, normalizeUiPrefs, clampGridZoom, clampGridColExtra, GRID_GROUP_MODES } from './lib/uiPrefs.js';
 
-export const UI_PREFS_KEY = 'res_ui_prefs';
+const UI_PREFS_KEY = 'res_ui_prefs';
 export { normalizeUiPrefs } from './lib/uiPrefs.js';
 
 function readDeviceLocal() {

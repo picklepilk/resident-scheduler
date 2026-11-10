@@ -329,9 +329,9 @@ export const DEFAULT_BEHIND_TARGET_THRESHOLD = 2;
 // group's median rate, but ALSO requires the raw count to differ from the group's median raw
 // count by at least DEFAULT_FLAG_RAW_DELTA — the raw-count gate keeps a tiny group (or a
 // resident who worked very few shifts) from being flagged over noise like "1 night vs 0".
-export const DEFAULT_HEAVY_RATE_MULTIPLIER = 1.4;
-export const DEFAULT_LIGHT_RATE_MULTIPLIER = 0.6;
-export const DEFAULT_FLAG_RAW_DELTA = 2;
+const DEFAULT_HEAVY_RATE_MULTIPLIER = 1.4;
+const DEFAULT_LIGHT_RATE_MULTIPLIER = 0.6;
+const DEFAULT_FLAG_RAW_DELTA = 2;
 // Rate-based flags need at least this many comparable (assigned > 0) peers in the group, or a
 // single resident's own rate would trivially equal "the median", producing meaningless flags.
 const MIN_COMPARABLE_FOR_RATE_FLAGS = 2;

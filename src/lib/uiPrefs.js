@@ -13,7 +13,7 @@
 // mount — one source of truth here instead.
 export const GRID_ZOOM_MIN = 50;
 export const GRID_ZOOM_MAX = 150;
-export const GRID_ZOOM_DEFAULT = 100;
+const GRID_ZOOM_DEFAULT = 100;
 export const GRID_COL_EXTRA_MAX = 120;
 // gridGroupBy: which axis the Schedule tab banners rows by — see lib/scheduleGrouping.js. Same
 // device/viewer-preference posture as everything else here (how one person likes to read the grid

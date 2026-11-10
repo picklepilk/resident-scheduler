@@ -20,7 +20,7 @@
 // would also do this in a tracked update; done here so the helper is self-contained).
 const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
 
-export const CLEAR_MODES = ['all', 'unlocked', 'range'];
+const CLEAR_MODES = ['all', 'unlocked', 'range'];
 
 function inRange(ds, start, end) {
   return typeof ds === 'string' && ds >= start && ds <= end;

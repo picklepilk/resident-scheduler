@@ -40,7 +40,7 @@ export const PGY_GROUPS = [
 // are already named by their own label ("EM/TOX", "Peds/Trauma", …), so per-rotation colour would
 // add maintenance for no information. Off-service residents are NOT styled from here — in rotation
 // mode their category IS their rotation, so they reuse their own CATEGORIES entry verbatim.
-export const ROTATION_EM_STYLE = { badge: 'bg-indigo-600 text-white', rowBg: 'bg-blue-50' };
+const ROTATION_EM_STYLE = { badge: 'bg-indigo-600 text-white', rowBg: 'bg-blue-50' };
 
 // BLOCK_TYPES_EM (ResidentScheduler.jsx) carries only `label` — no separate abbreviation field to
 // borrow the way CATEGORIES' own `shortLabel` does — so a rotation group's short form is derived
