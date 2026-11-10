@@ -7,6 +7,11 @@ describe('stampNewEntries', () => {
     const next = [{ id: 'a' }, { id: 'b' }, { id: 'c', by: 'x@y' }];
     expect(stampNewEntries(next, prev, 'me@x')).toEqual([{ id: 'a' }, { id: 'b', by: 'me@x' }, { id: 'c', by: 'x@y' }]);
   });
+  it('returns the same array when nothing needed stamping', () => {
+    const arr = [{ id: 'a' }, { id: 'c', by: 'x@y' }];
+    expect(stampNewEntries(arr, [{ id: 'a' }], 'me@x')).toBe(arr);
+    expect(stampNewEntries(arr, arr, 'me@x')).toBe(arr);
+  });
   it('no-ops without an actor or with a non-array', () => {
     const next = [{ id: 'b' }];
     expect(stampNewEntries(next, [], null)).toBe(next);

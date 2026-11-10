@@ -55,7 +55,13 @@ export function normalizeImportLog(value) {
 export function stampNewEntries(next, prev, by) {
   if (!by || !Array.isArray(next)) return next;
   const seen = new Set((Array.isArray(prev) ? prev : []).map(e => e && e.id));
-  return next.map(e => (e && !seen.has(e.id) && !e.by ? { ...e, by } : e));
+  let changed = false;
+  const out = next.map(e => {
+    if (e && !seen.has(e.id) && !e.by) { changed = true; return { ...e, by }; }
+    return e;
+  });
+  // Same reference when nothing was stamped, so reference-equality checks (cloud baseline) hold.
+  return changed ? out : next;
 }
 
 // Splits the log for the Sources panel: entries scoped to this block (or its AY), and roster-wide
