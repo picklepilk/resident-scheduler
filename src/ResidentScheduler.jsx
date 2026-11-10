@@ -9812,6 +9812,18 @@ function buildResidentICS(resident, dates, sched, demoMode, dayRules, blockStart
   return lines.join('\r\n');
 }
 
+// Writes an imported/restored document into localStorage after the cloud write succeeded. With cloud
+// sync the cloud row already holds the document and the reload's overlay applies it, so a quota/blocked
+// write must not abort the reload (syncSuspended would stay set). Without cloud, localStorage is the
+// only copy, so the failure still propagates to the caller as before.
+function writeBackupToLocalStorage(clean) {
+  for (const k of LS_BACKUP_KEYS) {
+    if (clean[k] === undefined) continue;
+    try { localStorage.setItem(k, JSON.stringify(clean[k])); }
+    catch (err) { if (!SUPABASE_ENABLED) throw err; }
+  }
+}
+
 // ─── HOOKS ────────────────────────────────────────────────────────────────────
 
 function useLocalStorage(key, def) {
@@ -22877,7 +22889,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             return;
           }
         }
-        for (const k of LS_BACKUP_KEYS) { if (clean[k] !== undefined) localStorage.setItem(k, JSON.stringify(clean[k])); }
+        writeBackupToLocalStorage(clean);
         window.location.reload();
       } catch {
         showToast('Could not read backup file — is it a valid export?', 'red');
@@ -23042,7 +23054,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       showToast('Restore could not sync to the cloud — nothing changed. Try again when online.', 'red');
       return;
     }
-    for (const k of LS_BACKUP_KEYS) { if (clean[k] !== undefined) localStorage.setItem(k, JSON.stringify(clean[k])); }
+    writeBackupToLocalStorage(clean);
     window.location.reload();
   }
 
