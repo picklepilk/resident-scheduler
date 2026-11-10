@@ -16,7 +16,8 @@ Two layers, in order:
      from `require_auth` short-circuits before this bucket is touched). Env:
      `SOLVER_RATE_PER_MIN` (default 6), `SOLVER_RATE_BURST` (default 3).
 
-IP for both is read from the `Fly-Client-IP` header first, falling back to
+IP for both is read from the `Fly-Client-IP` header first (only when `FLY_APP_NAME`
+is set, i.e. running on Fly), falling back to
 the ASGI-reported `request.client.host`. On Fly, every request reaching this
 service has already passed through Fly's edge proxy, which sets (overwrites,
 not merely appends to) `Fly-Client-IP` with the real origin IP -- trusting
@@ -55,9 +56,12 @@ _SWEEP_INTERVAL_SECONDS = 60.0
 
 
 def _client_ip(request: Request) -> str:
-    fly_ip = request.headers.get("fly-client-ip")
-    if fly_ip:
-        return fly_ip.strip()
+    # Fly's edge is the only proxy that overwrites this header; elsewhere (Pi, local,
+    # other hosts) a caller can set it freely to mint a fresh bucket per request.
+    if os.environ.get("FLY_APP_NAME"):
+        fly_ip = request.headers.get("fly-client-ip")
+        if fly_ip:
+            return fly_ip.strip()
     client = request.client
     return client.host if client else "unknown"
 

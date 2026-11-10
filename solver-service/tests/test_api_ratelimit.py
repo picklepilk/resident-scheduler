@@ -107,6 +107,7 @@ def test_rate_limit_keys_on_fly_client_ip_header_not_proxy_host(monkeypatch):
     (set/overwritten by Fly itself, not attacker-controlled) must be used
     instead when present.
     """
+    monkeypatch.setenv("FLY_APP_NAME", "test-app")
     monkeypatch.setenv("SOLVER_RATE_PER_MIN", "6")
     monkeypatch.setenv("SOLVER_RATE_BURST", "1")
     client = TestClient(app)
@@ -223,3 +224,15 @@ def test_idle_buckets_are_evicted(monkeypatch):
     limiter.check("fresh-key")
 
     assert limiter.bucket_count() == 1  # stale-key gone, fresh-key remains
+
+
+def test_spoofed_fly_client_ip_ignored_off_fly(monkeypatch):
+    """Off Fly nothing scrubs Fly-Client-IP, so it must not pick the bucket."""
+    monkeypatch.delenv("FLY_APP_NAME", raising=False)
+    monkeypatch.setenv("SOLVER_RATE_PER_MIN", "6")
+    monkeypatch.setenv("SOLVER_RATE_BURST", "1")
+    client = TestClient(app)
+
+    assert _post(client, headers={"Fly-Client-IP": "203.0.113.1"}).status_code == 200
+    # A different spoofed value must NOT mint a fresh bucket.
+    assert _post(client, headers={"Fly-Client-IP": "203.0.113.2"}).status_code == 429
