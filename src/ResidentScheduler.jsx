@@ -31,7 +31,7 @@ import { loggedDates, isLoggedDate, loggedDatesInRange, withLoggedDates, suggest
 import { computeSetupGaps, buildGapStamp, openStampedGaps, blockingGapCount } from './lib/setupReadiness.js';
 import { describeCapacityGap, splitFairnessPoints } from './lib/structuralFloor.js';
 import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange, holidaysInRange, buildHolidayRoster } from './lib/holidays.js';
-import { resolveEligibilityList, eligibilityDiff, applyEligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
+import { resolveEligibilityList, eligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality, nightRunsOf, nightFragmentationCost } from './lib/scheduleQuality.js';
@@ -39,7 +39,7 @@ import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGe
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
 import { mulberry32 } from './lib/rng.js';
 import RunLocationPanel from './RunLocationPanel.jsx';
-import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, getSolverJobsMode, markSolverJobsDurable, probeSolverJobsMode, getSolverUrl, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
+import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, markSolverJobsDurable, probeSolverJobsMode, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
 import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarget, poolTargetName, pickSolverTarget, probePool, probeSolverHealth } from './lib/solverPool.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
@@ -49,18 +49,18 @@ import {
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
 } from './lib/qgenda.js';
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
-import { computeJeopardyTotals, computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
+import { computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { diffState } from './lib/stateDiff.js';
 import {
-  REAL_ROW_ID, LEGACY_DEMO_ROW_ID, PLAYGROUND_META_KEY, isPlaygroundId, isSandboxRowId,
-  ownerUidFromPlaygroundId, makePlaygroundId, isPlaygroundModeValue, resolveActiveRowId,
+  REAL_ROW_ID, LEGACY_DEMO_ROW_ID, PLAYGROUND_META_KEY, isPlaygroundId,
+  makePlaygroundId,
   assertWriteTargetRowId, makePlaygroundMeta, shapePlaygroundListRow, filterOwnPlaygrounds,
   findMatchingRealBlock, summarizePromoteDiff, promoteBlockSchedule,
 } from './lib/playgrounds.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog, stampNewEntries, sourcesFor } from './lib/importLog.js';
 import { parseAcademicDocx, summarizeParsed, fileHash } from './lib/academicSchedule.js';
-import { buildAcademicPlan, applyAcademicPlan, defaultJcMode, provenanceFor, personKey } from './lib/academicImportPlan.js';
+import { buildAcademicPlan, applyAcademicPlan, defaultJcMode, provenanceFor } from './lib/academicImportPlan.js';
 import { paddedCalendarWeeks as monthPaddedWeeks, monthDates, monthsInRange, sameMonth } from './lib/calendarGrid.js';
 import { paintActionFor, applyDateRangePaint } from './lib/dateSetPaint.js';
 import { UiPrefsProvider, useUiPrefsContext, useUiPrefs } from './uiPrefs.js';
