@@ -9238,17 +9238,20 @@ export async function runOptimizationSweep(args, {
   // draws (same rules, different random restart — useful when a tie was broken unluckily). The
   // old "rest-hours soft check disabled" variant is gone — rest >= shift length is now ACGME-hard
   // and always on (2026-09-26 policy), so there's no longer a legal "off" state to sweep.
+  // Variants regenerate from a fresh working schedule (locked cells only), like runWhatIf does: passing the
+  // full live schedule would make generateSchedule keep every non-empty cell, so each variant == baseline.
+  const sweepArgs = { ...args, block: { ...block, schedule: freshWorkingScheduleHonoringLocks(block) } };
   const ruleVariants = buildRulePriorityVariants(referenceRulePriority).map((v, i) => ({
     id: `rule-${i}`, kind: 'rules', rulePriority: v.rulePriority,
     label: `Rule order: ${v.rulePriority.map(id => SOFT_RULES.find(r => r.id === id)?.label || id).join(' → ')}`,
-    variantArgs: { ...args, appSettings: { ...appSettings, rulePriority: v.rulePriority } },
+    variantArgs: { ...sweepArgs, appSettings: { ...appSettings, rulePriority: v.rulePriority } },
   }));
   const seedBase = (block.generationReport?.baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const seedVariants = Array.from({ length: SWEEP_SEED_VARIANT_COUNT }, (_, k0) => {
     const k = k0 + 1;
     return {
       id: `seed-${k}`, kind: 'seed', label: `Alternative random draw #${k} (same rules)`,
-      variantArgs: args, seed: (seedBase + (100 + k) * 0x9E3779B9) >>> 0,
+      variantArgs: sweepArgs, seed: (seedBase + (100 + k) * 0x9E3779B9) >>> 0,
     };
   });
   const allVariants = [...ruleVariants, ...seedVariants];
