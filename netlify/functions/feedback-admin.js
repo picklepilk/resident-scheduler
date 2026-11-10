@@ -3,8 +3,17 @@
 // ONLY way feedback rows are ever read back; the client's sbFetch calls (submitFeedback) use
 // the anon key and can only INSERT, per the table's RLS policy (see
 // docs/superpowers/plans/2026-07-18-user-feedback-plan.md Task 1).
+import { createHash, timingSafeEqual } from 'node:crypto';
+
 const APP_NAME = 'resident-scheduler';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; // id goes into a PostgREST filter: no stray query params
+
+// Constant-time compare (hash both so the buffers are equal length). Does not stop brute force on
+// its own; a rate limit or admin-JWT gate is a separate, deferred change.
+const passwordMatches = (supplied, expected) => {
+  const digest = v => createHash('sha256').update(String(v ?? '')).digest();
+  return timingSafeEqual(digest(supplied), digest(expected));
+};
 
 export const handler = async (event) => {
   const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
@@ -19,7 +28,7 @@ export const handler = async (event) => {
   }
 
   const suppliedPassword = event.headers['x-feedback-password'] || event.headers['X-Feedback-Password'];
-  if (suppliedPassword !== ADMIN_PASSWORD) {
+  if (!passwordMatches(suppliedPassword, ADMIN_PASSWORD)) {
     return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 
