@@ -8,7 +8,7 @@
 //
 // Storage posture mirrors `res_dark_mode` (see ResidentScheduler.jsx's LS_BACKUP_KEYS comment):
 // this is a device/viewer display preference, not chief scheduling data, so it is NOT one of the
-// nine `LS_BACKUP_KEYS` slots and never rides through Settings backup/restore or the hand-rolled
+// ten `LS_BACKUP_KEYS` slots and never rides through Settings backup/restore or the hand-rolled
 // `res_state` cloud sync. It is also NOT wrapped by the Demo Sandbox's `physKey` — same reasoning
 // as `res_dark_mode`: a viewer's own UI layout preference has nothing to do with which sandbox
 // they're currently poking at.
