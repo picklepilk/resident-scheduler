@@ -27077,7 +27077,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // recording regardless of whether the schedule under it was generated or hand-built.
   function updateBlockTracked(fn, overrideMeta, activityMeta) {
     setUndoStack(s => {
-      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }];
+      const next = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps, generationReport: block.generationReport }];
       return next.length > UNDO_CAP ? next.slice(next.length - UNDO_CAP) : next;
     });
     setRedoStack([]);
@@ -27107,9 +27107,9 @@ export default function ResidentScheduler({ viewer } = {}) {
     if (peekSnap || !undoStack.length) return; // history belongs to the live block
 
     const prev = undoStack[undoStack.length - 1];
-    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }]);
+    setRedoStack(r => [...r, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps, generationReport: block.generationReport }]);
     setUndoStack(s => s.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides, lastGenerated: prev.lastGenerated, generatedWithGaps: prev.generatedWithGaps }, { kind: 'undo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: prev.schedule, lockedCells: prev.lockedCells, handOverrides: prev.handOverrides, lastGenerated: prev.lastGenerated, generatedWithGaps: prev.generatedWithGaps, generationReport: prev.generationReport }, { kind: 'undo' }, viewer));
   }
 
   function redoSchedule() {
@@ -27117,11 +27117,11 @@ export default function ResidentScheduler({ viewer } = {}) {
 
     const next = redoStack[redoStack.length - 1];
     setUndoStack(s => {
-      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps }];
+      const n = [...s, { schedule: block.schedule, lockedCells: block.lockedCells, handOverrides: block.handOverrides, lastGenerated: block.lastGenerated, generatedWithGaps: block.generatedWithGaps, generationReport: block.generationReport }];
       return n.length > UNDO_CAP ? n.slice(n.length - UNDO_CAP) : n;
     });
     setRedoStack(r => r.slice(0, -1));
-    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides, lastGenerated: next.lastGenerated, generatedWithGaps: next.generatedWithGaps }, { kind: 'undo', note: 'redo' }, viewer));
+    setBlock(b => withActivity(b, { ...b, schedule: next.schedule, lockedCells: next.lockedCells, handOverrides: next.handOverrides, lastGenerated: next.lastGenerated, generatedWithGaps: next.generatedWithGaps, generationReport: next.generationReport }, { kind: 'undo', note: 'redo' }, viewer));
   }
 
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo. Skipped while a text input/textarea has
