@@ -14246,6 +14246,9 @@ function parseLectureImportDate(raw) {
   if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
   let yr = Number(m[3]);
   if (yr < 100) yr += 2000;
+  // Reject calendar-impossible dates (2/31 would otherwise roll over to a bogus ISO string).
+  const chk = new Date(Date.UTC(yr, mo - 1, da));
+  if (chk.getUTCMonth() !== mo - 1 || chk.getUTCDate() !== da) return null;
   const pad = n => String(n).padStart(2, '0');
   return `${yr}-${pad(mo)}-${pad(da)}`;
 }
