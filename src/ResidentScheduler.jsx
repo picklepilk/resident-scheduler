@@ -12584,6 +12584,8 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     new Set(emRoster.map(r => normalizeToken(r.firstName) + '|' + normalizeToken(r.lastName))),
     [emRoster]);
 
+  const pickSeqRef = useRef(0);
+
   function pickFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -12592,11 +12594,14 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     setFileHashStr('');
     setError('');
     setPreview(null);
+    const pickSeq = ++pickSeqRef.current; // a newer pick supersedes this read
     const reader = new FileReader();
     reader.onload = async () => {
+      if (pickSeq !== pickSeqRef.current) return;
       try {
         setFileHashStr(fileHash(new Uint8Array(reader.result)));
         const XLSX = await import('xlsx');
+        if (pickSeq !== pickSeqRef.current) return;
         const wb = XLSX.read(reader.result, { type: 'array' });
         const detected = detectHomeAndOffSheetsByContent(wb, XLSX);
         const homeSheetName = wb.SheetNames.find(n => /home/i.test(n)) || detected.homeSheetName || wb.SheetNames[0];
@@ -13621,6 +13626,8 @@ function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
   const [error, setError] = useState('');
   const fileRef = useRef(null);
 
+  const pickSeqRef = useRef(0);
+
   function pickFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -13628,11 +13635,14 @@ function ImportQGendaModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
     setFileSizeBytes(file.size || 0);
     setFileHashStr('');
     setError(''); setPreview(null); setAssign({});
+    const pickSeq = ++pickSeqRef.current; // a newer pick supersedes this read
     const reader = new FileReader();
     reader.onload = async () => {
+      if (pickSeq !== pickSeqRef.current) return;
       try {
         setFileHashStr(fileHash(new Uint8Array(reader.result)));
         const XLSX = await import('xlsx');
+        if (pickSeq !== pickSeqRef.current) return;
         const wb = XLSX.read(reader.result, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
         const parsed = parseQGendaGrid(rows);
