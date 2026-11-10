@@ -4,12 +4,10 @@
 // when the env var is unset. "This computer" (loopback run-local solver, LOCAL_SOLVER_URL) is NOT a
 // pool entry: it is only reachable from the browser on that same machine (e.g. the chief's PC).
 // No React, no import from ResidentScheduler.jsx.
-import { getSolverUrl, isUnresolvedToken, LOCAL_SOLVER_URL } from './solverClient.js';
+import { getSolverUrl, LOCAL_SOLVER_URL } from './solverClient.js';
+import { readGlobal as readEnvGlobal } from './envGlobal.js';
 
-const readGlobal = key => {
-  const raw = (typeof globalThis !== 'undefined' && globalThis[key]) || '';
-  return isUnresolvedToken(raw) ? '' : String(raw);
-};
+const readGlobal = key => String(readEnvGlobal(key));
 
 // "A=https://x,B=https://y" -> [{name, url}]. Drops malformed entries, non-https URLs, duplicate
 // names; trims a trailing slash so `${url}/health` stays clean.

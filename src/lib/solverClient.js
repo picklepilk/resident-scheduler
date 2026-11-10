@@ -11,12 +11,8 @@
 // otherwise make SOLVER_ENABLED falsely truthy, and every solve attempt would fetch
 // "%VITE_SOLVER_URL%/solve" (a same-origin relative URL that resolves to something that isn't the
 // solver) instead of cleanly falling back to the built-in JS generator.
-export const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
-
-const readGlobal = key => {
-  const raw = (typeof globalThis !== 'undefined' && globalThis[key]) || '';
-  return isUnresolvedToken(raw) ? '' : raw;
-};
+import { isUnresolvedToken, readGlobal } from './envGlobal.js';
+export { isUnresolvedToken };
 
 // Exported (rather than inlined into SOLVER_ENABLED) so callers/tests can read the resolved URL
 // directly — e.g. to build the exact `${url}/solve` endpoint themselves, or to assert it's empty
