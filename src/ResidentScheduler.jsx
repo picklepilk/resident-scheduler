@@ -14150,7 +14150,7 @@ function ImportVacationModal({ emRoster, setEmRoster, onClose, showToast, setImp
           {fileName && <span className="text-xs text-gray-500">{fileName}</span>}
           <label className="flex items-center gap-1.5 text-xs text-gray-500 ml-auto">
             AY start year
-            <input type="number" value={ayStartYear} onChange={e => setAyStartYear(Number(e.target.value))}
+            <input type="number" value={ayStartYear} onChange={e => { setAyStartYear(Number(e.target.value)); setPreview(null); }}
               className="w-20 text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
           </label>
         </div>
@@ -14402,7 +14402,7 @@ function ImportLecturesModal({ emRoster, setEmRoster, onClose, showToast, ayData
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-xs text-gray-500">
             AY start year
-            <input type="number" value={ayStartYear} onChange={e => setAyStartYear(Number(e.target.value))}
+            <input type="number" value={ayStartYear} onChange={e => { setAyStartYear(Number(e.target.value)); setPreview(null); }}
               className="w-20 text-xs border border-gray-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"/>
           </label>
           <button type="button" onClick={parse} disabled={!text.trim()}
