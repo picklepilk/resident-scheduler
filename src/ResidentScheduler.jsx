@@ -14867,7 +14867,7 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
       ) : byPGY.map(({ pgy, list }) => {
         const key = `pgy-${pgy}`;
         const isCollapsed = !!collapsed[key];
-        const schedulableCount = list.filter(r => { const bt = BLOCK_TYPE_MAP[r.blockType || (assign[r.id]?.blockType) || 'EM']; return bt?.schedulable; }).length;
+        const schedulableCount = list.filter(r => { const bt = BLOCK_TYPE_MAP[assign[r.id]?.blockType ?? 'EM']; return bt?.schedulable; }).length;
         return (
         <div key={pgy} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
           {/* Collapsible group header */}
