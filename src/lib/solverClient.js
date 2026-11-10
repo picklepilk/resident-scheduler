@@ -154,6 +154,16 @@ const healthCache = new Map(); // url -> { mode, host, preferJobs, defaultBudget
 // synchronous (non-job) solve runs, since that path never produces progress ticks.
 const runnerCache = new Map();
 export const getCachedRunner = url => runnerCache.get(url) ?? null;
+// The optional SOLVER_HOST_KIND hints a /health body may carry; absent = null/false/null.
+export function parseHealthHints(json) {
+  const budget = Number(json?.defaultBudgetSeconds);
+  return {
+    host: typeof json?.host === 'string' && json.host ? json.host : null,
+    preferJobs: json?.preferJobs === true,
+    defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+  };
+}
+
 // Full /health read: { mode: 'durable'|'memory', host: string|null, preferJobs: bool,
 // defaultBudgetSeconds: number|null } or null when unreachable. `host`/`preferJobs`/
 // `defaultBudgetSeconds` are optional server hints (SOLVER_HOST_KIND=pi|pc); absent = Fly/Modal.
@@ -167,12 +177,9 @@ export async function probeSolverHealth(url, { timeoutMs = 20000, fresh = false 
     const res = await fetch(`${url}/health`, { signal: controller.signal });
     if (!res.ok) return null;
     const json = await res.json();
-    const budget = Number(json?.defaultBudgetSeconds);
     const info = {
       mode: json?.jobs === 'durable' ? 'durable' : 'memory',
-      host: typeof json?.host === 'string' && json.host ? json.host : null,
-      preferJobs: json?.preferJobs === true,
-      defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+      ...parseHealthHints(json),
     };
     healthCache.set(url, info);
     if (json?.runner) runnerCache.set(url, json.runner);

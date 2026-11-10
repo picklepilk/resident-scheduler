@@ -359,3 +359,18 @@ describe('normalizeSolverTarget — legacy remote ids', () => {
     expect(normalizeSolverTarget(undefined)).toBe('cloud');
   });
 });
+
+describe('parseHealthHints', () => {
+  it('reads host / preferJobs / defaultBudgetSeconds', async () => {
+    const { parseHealthHints } = await freshModule();
+    expect(parseHealthHints({ host: 'pi', preferJobs: true, defaultBudgetSeconds: '120' }))
+      .toEqual({ host: 'pi', preferJobs: true, defaultBudgetSeconds: 120 });
+  });
+  it('defaults when absent or invalid', async () => {
+    const { parseHealthHints } = await freshModule();
+    const none = { host: null, preferJobs: false, defaultBudgetSeconds: null };
+    expect(parseHealthHints({})).toEqual(none);
+    expect(parseHealthHints(null)).toEqual(none);
+    expect(parseHealthHints({ host: '', preferJobs: 'yes', defaultBudgetSeconds: -5 })).toEqual(none);
+  });
+});

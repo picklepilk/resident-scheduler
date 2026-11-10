@@ -4,7 +4,7 @@
 // when the env var is unset. "This computer" (loopback run-local solver, LOCAL_SOLVER_URL) is NOT a
 // pool entry: it is only reachable from the browser on that same machine (e.g. the chief's PC).
 // No React, no import from ResidentScheduler.jsx.
-import { getSolverUrl, LOCAL_SOLVER_URL } from './solverClient.js';
+import { getSolverUrl, LOCAL_SOLVER_URL, parseHealthHints } from './solverClient.js';
 import { readGlobal as readEnvGlobal } from './envGlobal.js';
 
 const readGlobal = key => String(readEnvGlobal(key));
@@ -62,12 +62,9 @@ export async function probeSolverHealth(url, { timeoutMs = 2500 } = {}) {
     const res = await fetch(`${url}/health`, { signal: controller.signal });
     if (!res.ok) return OFFLINE;
     const json = await res.json();
-    const budget = Number(json?.defaultBudgetSeconds);
     return {
       online: true, busy: json?.busy === true, runner: json?.runner ?? null, jobsMode: json?.jobs === 'durable' ? 'durable' : 'memory',
-      host: typeof json?.host === 'string' && json.host ? json.host : null,
-      preferJobs: json?.preferJobs === true,
-      defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+      ...parseHealthHints(json),
     };
   } catch {
     return OFFLINE;
