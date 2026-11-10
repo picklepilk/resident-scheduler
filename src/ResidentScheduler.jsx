@@ -27187,6 +27187,7 @@ export default function ResidentScheduler({ viewer } = {}) {
 
   function blockReset() {
     updateBlock(b=>({...makeDefaultBlock(),id:b.id,name:b.name,academicYear:b.academicYear,startDate:b.startDate,endDate:b.endDate,emBlockAssignments:{}}));
+    setUndoStack([]); setRedoStack([]); // undo history belongs to the block it was made in
     showToast('Block reset','amber');
   }
 
