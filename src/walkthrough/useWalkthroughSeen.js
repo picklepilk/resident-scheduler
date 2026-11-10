@@ -50,15 +50,27 @@ export function useWalkthroughSeen(session) {
     return metaSeen || readLocalMirror();
   });
 
-  const markSeen = useCallback(() => {
+  const markSeen = useCallback(async () => {
     setSeen(true);
     writeLocalMirror();
     if (!supabase || !session?.user) return; // AUTH_ENABLED false — local-only, nothing to merge into
-    const merged = mergeWalkthroughSeen(session.user.user_metadata?.walkthrough_seen);
-    supabase.auth.updateUser({ data: { walkthrough_seen: merged } }).catch(() => {
+    // Merge from the CURRENT user_metadata, not the copy captured when the session loaded: a
+    // sibling app may have set its own flag since, and updateUser replaces the whole top-level
+    // `walkthrough_seen` key. Fall back to the session copy if the fresh read fails.
+    let existing = session.user.user_metadata?.walkthrough_seen;
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (!error && data?.user) existing = data.user.user_metadata?.walkthrough_seen;
+    } catch {
+      // keep the session copy
+    }
+    const merged = mergeWalkthroughSeen(existing);
+    try {
+      await supabase.auth.updateUser({ data: { walkthrough_seen: merged } });
+    } catch {
       // Best-effort — the local mirror above already covers the "don't re-show on reload" case;
       // a failed cloud write just means another device won't see the flag until it's set there too.
-    });
+    }
   }, [session]);
 
   return { seen, markSeen };
