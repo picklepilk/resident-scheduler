@@ -23933,7 +23933,9 @@ async function fetchFeedbackAdmin(password) {
   const res = await fetchWithTimeout('/api/feedback-admin/', { headers: { 'x-feedback-password': password } });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${res.status})`);
+    const err = new Error(body.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -23966,6 +23968,12 @@ function FeedbackAdminTab() {
       const data = await fetchFeedbackAdmin(pw);
       setRows(data);
     } catch (e) {
+      if (e.status === 401 || e.status === 403) {
+        // Stored password was rotated or revoked: re-lock instead of staying 'unlocked' with a dead key.
+        try { sessionStorage.removeItem(FEEDBACK_ADMIN_SS_KEY); } catch { /* best-effort */ }
+        setPassword('');
+        setUnlocked(false);
+      }
       setLoadError(e.message);
     }
   }
