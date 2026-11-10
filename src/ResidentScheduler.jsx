@@ -26299,6 +26299,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     for (const k of keysToClearOnSignOut(allKeys)) {
       try { localStorage.removeItem(k); } catch { /* best-effort */ }
     }
+    // The feedback-admin password lives in sessionStorage (not enumerated above); drop it too.
+    try { sessionStorage.removeItem(FEEDBACK_ADMIN_SS_KEY); } catch { /* best-effort */ }
   }
 
   async function performSignOut() {
