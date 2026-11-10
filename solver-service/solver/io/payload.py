@@ -270,11 +270,6 @@ class Payload:
     jc_window_end_h: int = 21
     post_night_day_rest_h: int = 24
     # ---- R7 (2026-09-27, solver parity gaps 2/3) ----
-    # `gr_end_h`: same "altitude fix" convention as the three fields directly above (Grand Rounds'
-    # own end hour, src/lib/acgmeHours.js's GR_END_H). UNUSED since 2026-10-16: rest is measured
-    # between clinical shifts only, so rest.py no longer reads it. Still accepted (default 12) so an
-    # older JS build that sends it doesn't fail validation.
-    gr_end_h: int = 12
     # `true_primary[shiftId][date]` -- SAME shape/keys as `senior_primary`, restricted to residents
     # who satisfy the area's composition as the TRUE primary PGY (never a Wellness-Wednesday/
     # conference-away substitute). OPTIONAL, additive, defaults to {} (a documented no-op for
@@ -552,7 +547,6 @@ def parse_payload(raw: dict) -> Payload:
             jc_window_start_h=int(raw.get("jcWindowStartH", 18) or 18),
             jc_window_end_h=int(raw.get("jcWindowEndH", 21) or 21),
             post_night_day_rest_h=int(raw.get("postNightDayRestH", 24) or 24),
-            gr_end_h=int(raw.get("grEndH", 12) or 12),
             true_primary=raw.get("truePrimary", {}) or {},
             obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
             block_touches_conference=bool(raw.get("blockTouchesConference", False)),
