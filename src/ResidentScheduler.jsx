@@ -12055,7 +12055,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
     () => buildRailBlocks({ blocksHistory, liveBlock: block, ay: selectedAy }),
     [blocksHistory, block, selectedAy]
   );
-  const selectedAyConf = ayData[selectedAy] || { ...DEFAULT_AY_CONF };
+  const selectedAyConf = ayData[selectedAy] || DEFAULT_AY_CONF;
   // Off-service lanes (display-only). Open state + "only misaligned" ride the shared ui-prefs
   // cardOpen store (device-local, same as CollapsibleCard prefId): lanes default OFF, filter default ON.
   const { prefs: lanePrefs, setCardOpen: setLanePref } = useUiPrefsContext();
@@ -26921,7 +26921,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   }
 
   // Convenience: conference data for the current block's AY
-  const currentAyConf = ayData[block.academicYear] || { ...DEFAULT_AY_CONF };
+  const currentAyConf = ayData[block.academicYear] || DEFAULT_AY_CONF;
 
   function showToast(msg, tone='amber') {
     setToast({msg,tone});
