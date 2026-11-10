@@ -10712,7 +10712,7 @@ function JournalClubPlanner({ allResidents, block, blocksHistory, ayConf = {}, o
   }
 
   const jcDates = resolveJcDates(block.academicYear, ayConf, { fallbackDateStr: block.startDate });
-  const today = toDateStr(new Date());
+  const today = todayLocalIso();
   // How many dates each resident already presents this AY — surfaced in the dropdown so the chief
   // can see who is already committed before creating the once-per-AY conflict validateAll warns on.
   const presentingCount = {};
@@ -13446,7 +13446,7 @@ function ResidentForm({ initial, onSubmit, onClose, title, submitLabel, persiste
                 const v = e.target.value;
                 if (v === '') return set('wellnessOverride', null);
                 if (v === 'optOut') return set('wellnessOverride', 'optOut');
-                const existing = form.wellnessOverride && form.wellnessOverride !== 'optOut' ? form.wellnessOverride : toDateStr(new Date());
+                const existing = form.wellnessOverride && form.wellnessOverride !== 'optOut' ? form.wellnessOverride : todayLocalIso();
                 set('wellnessOverride', existing);
               }}
               className="input-field">
@@ -15013,7 +15013,7 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
                         onChange={e => {
                           const v = e.target.value;
                           const next = v === '' ? null : v === 'optOut' ? 'optOut'
-                            : (res.wellnessOverride && res.wellnessOverride !== 'optOut' ? res.wellnessOverride : toDateStr(new Date()));
+                            : (res.wellnessOverride && res.wellnessOverride !== 'optOut' ? res.wellnessOverride : todayLocalIso());
                           setEmRoster(p => p.map(r => r.id === res.id ? { ...r, wellnessOverride: next } : r));
                         }}
                         title="Program-wide toggle is on the Rules tab; this overrides just this resident"
