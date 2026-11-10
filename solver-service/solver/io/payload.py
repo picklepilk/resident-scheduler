@@ -9,6 +9,7 @@ basic shape validation; it just gives the rest of the solver a typed surface.
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from typing import Optional
@@ -322,6 +323,9 @@ class Payload:
     # Extra warm-start hints for the seed portfolio (each the same shape as `hint`; <= MAX_ALTERNATE_HINTS,
     # invalid/empty entries dropped). Portfolio run i starts from ([hint] + alternate_hints)[i % len].
     alternate_hints: list = field(default_factory=list)
+    # The request dict this Payload was parsed from (deep copy). Verification re-solves edit this
+    # rather than rebuilding the request field by field, which silently dropped many inputs.
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self):
         if self.block.dates:
@@ -553,6 +557,7 @@ def parse_payload(raw: dict) -> Payload:
             obligations_exempt_after_night=_parse_obligations(raw.get("obligationsExemptAfterNight", {}) or {}),
             block_touches_conference=bool(raw.get("blockTouchesConference", False)),
             alternate_hints=_parse_alternate_hints(raw.get("alternateHints", [])) if raw.get("hint") else [],
+            raw=copy.deepcopy(raw),
         )
     except PayloadError:
         raise
