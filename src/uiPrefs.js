@@ -76,8 +76,14 @@ export function useUiPrefs(viewer) {
     cloudLoadedRef.current = false;
     editedDuringLoadRef.current = false;
     (async () => {
-      const { data } = await supabase.from('profiles').select('ui_prefs').eq('id', viewer.userId).maybeSingle();
+      const { data, error } = await supabase.from('profiles').select('ui_prefs').eq('id', viewer.userId).maybeSingle();
       if (cancelled) return;
+      if (error) {
+        // Load failed: leave cloudLoadedRef false so the save effect never PATCHes this device's
+        // (possibly default) prefs over the cloud copy we could not read.
+        console.warn('uiPrefs: cloud load failed', error);
+        return;
+      }
       if (data?.ui_prefs != null && !editedDuringLoadRef.current) setPrefs(normalizeUiPrefs(data.ui_prefs));
       cloudLoadedRef.current = true;
       if (editedDuringLoadRef.current) {
