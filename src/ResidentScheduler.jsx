@@ -12687,7 +12687,10 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
 
     setBlocksHistory(prev => {
       const newIds = new Set(newSnaps.map(s => s.id));
-      return [...newSnaps, ...prev.filter(b => !newIds.has(b.id))].slice(0, appSettings?.maxSavedBlocks ?? 24);
+      // Re-upload replaces the snapshot; keep a previously published flag (same as saveBlock).
+      const publishedIds = new Set(prev.filter(b => b.published && newIds.has(b.id)).map(b => b.id));
+      const merged = newSnaps.map(s => (publishedIds.has(s.id) ? { ...s, published: true } : s));
+      return [...merged, ...prev.filter(b => !newIds.has(b.id))].slice(0, appSettings?.maxSavedBlocks ?? 24);
     });
 
     // Import History entry — counts + block date ranges only, never a resident name list (see
