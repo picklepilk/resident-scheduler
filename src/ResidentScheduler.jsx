@@ -25767,6 +25767,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // toastHistory.js's own header comment). `toastHistoryOpen` is the bell dropdown's own open/closed
   // state, independent of whether a toast is currently showing.
   const [toastHistory, setToastHistory] = useState([]);
+  const toastTimerRef = useRef(null);
   const [toastHistoryOpen, setToastHistoryOpen] = useState(false);
   const [switchPending, setSwitchPending] = useState(null);
   const [switchStay, setSwitchStay] = useState(false);
@@ -26926,7 +26927,8 @@ export default function ResidentScheduler({ viewer } = {}) {
   function showToast(msg, tone='amber') {
     setToast({msg,tone});
     setToastHistory(h => addToastEntry(h, {msg, tone}));
-    setTimeout(()=>setToast(null),5000);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(()=>setToast(null),5000);
   }
 
   const allResidents = useMemo(()=>composeAllResidents(emRoster,block,blocksHistory),[emRoster,block.emBlockAssignments,block.offServiceResidents,block.startDate,block.endDate,blocksHistory]);
