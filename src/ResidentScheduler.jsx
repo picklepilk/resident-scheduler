@@ -58,7 +58,7 @@ import {
   assertWriteTargetRowId, makePlaygroundMeta, shapePlaygroundListRow, filterOwnPlaygrounds,
   findMatchingRealBlock, summarizePromoteDiff, promoteBlockSchedule,
 } from './lib/playgrounds.js';
-import { readPending, writePending, clearPending, decideMountOverlay, localDiffersFromCloud } from './lib/pendingSync.js';
+import { readPending, writePending, clearPending, decideMountOverlay, isBlankLocalState, localDiffersFromCloud } from './lib/pendingSync.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog, stampNewEntries, sourcesFor } from './lib/importLog.js';
 import { parseAcademicDocx, summarizeParsed, fileHash } from './lib/academicSchedule.js';
@@ -23140,6 +23140,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
             return;
           }
         }
+        clearPending(RES_STATE_ROW_ID); // cloud now holds the import; no unconfirmed edits remain
         writeBackupToLocalStorage(clean);
         window.location.reload();
       } catch {
@@ -23179,6 +23180,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       if (SUPABASE_ENABLED) localStorage.removeItem(k.replace(/^res_/, 'res_demo_'));
     }
     if (SUPABASE_ENABLED) localStorage.removeItem(DEMO_MODE_KEY);
+    clearPending(RES_STATE_ROW_ID);
     window.location.reload();
   }
 
@@ -23305,6 +23307,7 @@ function SettingsTab({ block, updateBlock, onBlockReset, appSettings, setAppSett
       showToast('Restore could not sync to the cloud — nothing changed. Try again when online.', 'red');
       return;
     }
+    clearPending(RES_STATE_ROW_ID);
     writeBackupToLocalStorage(clean);
     window.location.reload();
   }
@@ -26239,6 +26242,9 @@ export default function ResidentScheduler({ viewer } = {}) {
   // just saved" from "edited while the save was in flight" (see confirmCloudSaved).
   const latestSyncRef = useRef([]);
   latestSyncRef.current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+  // Values as hydrated from localStorage on this page load; "the user edited" = differs from this.
+  const mountSnapshotRef = useRef(null);
+  if (mountSnapshotRef.current === null) mountSnapshotRef.current = latestSyncRef.current;
   // Row this mount reads/writes; keys the persisted "local edits not yet confirmed in the cloud"
   // marker (src/lib/pendingSync.js). Set when a local edit diverges from the cloud baseline, cleared
   // only when a cloud save is confirmed (or the cloud copy is deliberately taken), so a reload or
@@ -26280,8 +26286,9 @@ export default function ResidentScheduler({ viewer } = {}) {
         LS_BACKUP_KEYS.forEach(k => { localByKey[k] = syncBindings[k][0]; });
         const decision = decideMountOverlay({
           marker,
-          cloud: { status: 'ok', version: row.version },
-          localDiffers: marker ? localDiffersFromCloud(localByKey, d, LS_BACKUP_KEYS) : false,
+          cloudVersion: row.version,
+          localEqualsCloud: marker ? !localDiffersFromCloud(localByKey, d, LS_BACKUP_KEYS) : true,
+          localIsBlank: isBlankLocalState(localByKey),
         });
         if (decision === 'keep-local' || decision === 'ask') {
           // Skip the overlay. Baseline = the cloud copy, so the normal versioned save pushes local
@@ -26486,10 +26493,12 @@ export default function ResidentScheduler({ viewer } = {}) {
   useEffect(() => {
     if (!SUPABASE_ENABLED) return;
     const base = cloudBaselineRef.current;
-    if (dbReady) {
-      const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
-      if (base && current.every((v, i) => v === base.values[i])) return;
-    } else if (dbStatus !== 'error') return; // still loading: the overlay may be about to replace this
+    const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+    if (!dbReady && dbStatus !== 'error') return; // still loading: the overlay may be about to replace this
+    // Only a real edit sets the marker: differs from the cloud baseline once loaded, else (failed
+    // load, or empty cloud awaiting its first seed) from what this page load hydrated.
+    const ref = base ? base.values : mountSnapshotRef.current;
+    if (current.every((v, i) => v === ref[i])) return;
     if (!readPending(syncRowKey)) writePending(syncRowKey, { baseVersion: base ? base.version : null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog, dbReady, dbStatus]);
@@ -26940,6 +26949,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         try { localStorage.removeItem(LOCAL_PG_META_KEY); localStorage.removeItem(PLAYGROUND_SLOT_KEY); } catch { /* best-effort */ }
       }
       if (activeRowId === id) localStorage.setItem(DEMO_MODE_KEY, 'false');
+      clearPending(id);
       window.location.reload();
     } catch {
       syncSuspended = false;
@@ -27010,6 +27020,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         for (const k of LS_BACKUP_KEYS) localStorage.removeItem(demoPhysKey(k));
         localStorage.setItem(DEMO_MODE_KEY, 'false');
       }
+      clearPending(LEGACY_DEMO_ROW_ID);
       window.location.reload();
     } catch {
       syncSuspended = false;

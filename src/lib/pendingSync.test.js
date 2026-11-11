@@ -1,38 +1,63 @@
 import { describe, it, expect } from 'vitest';
-import { decideMountOverlay, localDiffersFromCloud, pendingKey, readPending, writePending, clearPending } from './pendingSync.js';
+import { decideMountOverlay, isBlankLocalState, localDiffersFromCloud, pendingKey, readPending, writePending, clearPending } from './pendingSync.js';
 
 const mem = () => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) }; };
 
-describe('decideMountOverlay', () => {
+const KEYS = ['a', 'b'];
+describe('decideMountOverlay (arguments as the JSX passes them)', () => {
+  const base = { marker: { baseVersion: 5 }, cloudVersion: 5, localEqualsCloud: false, localIsBlank: false };
   it('marker clear: takes the cloud copy (normal overlay)', () => {
-    expect(decideMountOverlay({ marker: null, cloud: { status: 'ok', version: 5 }, localDiffers: true })).toBe('take-cloud');
+    expect(decideMountOverlay({ ...base, marker: null })).toBe('take-cloud');
   });
-  it('marker set but local already equals cloud: takes cloud', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: 5 }, cloud: { status: 'ok', version: 6 }, localDiffers: false })).toBe('take-cloud');
+  it('marker clear + blank local: still takes cloud', () => {
+    expect(decideMountOverlay({ ...base, marker: null, localIsBlank: true })).toBe('take-cloud');
+  });
+  it('marker set, local content equals cloud (any version): silently takes cloud', () => {
+    expect(decideMountOverlay({ ...base, cloudVersion: 6, localEqualsCloud: true })).toBe('take-cloud');
+    expect(decideMountOverlay({ ...base, localEqualsCloud: true })).toBe('take-cloud');
   });
   it('marker set + cloud unchanged since base: keeps local', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: 5 }, cloud: { status: 'ok', version: 5 }, localDiffers: true })).toBe('keep-local');
+    expect(decideMountOverlay(base)).toBe('keep-local');
   });
-  it('marker set + cloud changed: asks', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: 5 }, cloud: { status: 'ok', version: 6 }, localDiffers: true })).toBe('ask');
+  it('marker set + cloud version changed + content differs: asks', () => {
+    expect(decideMountOverlay({ ...base, cloudVersion: 6 })).toBe('ask');
   });
   it('marker set + unknown base version: asks', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: null }, cloud: { status: 'ok', version: 6 }, localDiffers: true })).toBe('ask');
-    expect(decideMountOverlay({ marker: {}, cloud: { status: 'ok', version: 6 }, localDiffers: true })).toBe('ask');
+    expect(decideMountOverlay({ ...base, marker: { baseVersion: null } })).toBe('ask');
+    expect(decideMountOverlay({ ...base, marker: {} })).toBe('ask');
   });
-  it('marker set + cloud fetch failed: holds (no overlay, no write)', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: 5 }, cloud: { status: 'error' }, localDiffers: true })).toBe('hold');
+  it('never keeps local when local is blank/default, even with equal versions', () => {
+    expect(decideMountOverlay({ ...base, localIsBlank: true })).toBe('ask');
   });
-  it('marker set + cloud row empty: not decided here (seed path owns it)', () => {
-    expect(decideMountOverlay({ marker: { baseVersion: 5 }, cloud: { status: 'empty' }, localDiffers: true })).toBe('take-cloud');
+});
+
+describe('isBlankLocalState', () => {
+  const blank = { res_em_roster: [], res_blocks_history: [], res_import_log: [], res_ay_data: {}, res_eligibility_overrides: {}, res_day_rules: {}, res_coverage: {} };
+  it('true for defaults, false once any user data exists', () => {
+    expect(isBlankLocalState(blank)).toBe(true);
+    expect(isBlankLocalState({ ...blank, res_em_roster: [{ id: 'x' }] })).toBe(false);
+    expect(isBlankLocalState({ ...blank, res_ay_data: { '2026': {} } })).toBe(false);
+    expect(isBlankLocalState({ ...blank, res_blocks_history: [{}] })).toBe(false);
   });
 });
 
 describe('localDiffersFromCloud', () => {
   it('ignores keys the cloud lacks and compares deeply', () => {
-    expect(localDiffersFromCloud({ a: [1], b: 2 }, { a: [1] }, ['a', 'b'])).toBe(false);
-    expect(localDiffersFromCloud({ a: [1] }, { a: [2] }, ['a'])).toBe(true);
-    expect(localDiffersFromCloud({ a: [1] }, { a: null }, ['a'])).toBe(false);
+    expect(localDiffersFromCloud({ a: [1], b: 2 }, { a: [1] }, KEYS)).toBe(false);
+    expect(localDiffersFromCloud({ a: [1] }, { a: [2] }, KEYS)).toBe(true);
+    expect(localDiffersFromCloud({ a: [1] }, { a: null }, KEYS)).toBe(false);
+  });
+  it('is key-order independent (jsonb reorders keys), at any depth', () => {
+    expect(localDiffersFromCloud({ a: { x: 1, y: { p: 1, q: [{ m: 1, n: 2 }] } } }, { a: { y: { q: [{ n: 2, m: 1 }], p: 1 }, x: 1 } }, KEYS)).toBe(false);
+  });
+  it('array order still matters', () => {
+    expect(localDiffersFromCloud({ a: [1, 2] }, { a: [2, 1] }, KEYS)).toBe(true);
+  });
+  it('treats undefined-valued keys as missing, like a JSON round trip', () => {
+    expect(localDiffersFromCloud({ a: { x: 1, y: undefined } }, { a: { x: 1 } }, KEYS)).toBe(false);
+    expect(localDiffersFromCloud({ a: { x: 1 } }, { a: { x: 1, y: undefined } }, KEYS)).toBe(false);
+    expect(localDiffersFromCloud({ a: [undefined] }, { a: [null] }, KEYS)).toBe(false);
+    expect(localDiffersFromCloud({ a: { x: 1, y: 0 } }, { a: { x: 1 } }, KEYS)).toBe(true);
   });
 });
 
