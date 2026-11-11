@@ -91,6 +91,7 @@ SOLVABLE_STATUSES = ("OPTIMAL", "FEASIBLE")
 PROBE_TIME_SECONDS = 5.0
 PASS2_HARD_FLOOR_SECONDS = 2.0  # pass 2 always gets this much, even after pass 1 spent the deadline
 _STALL_STAGES = (TIER_RANK, TIER_REST, TIER_QUALITY)  # stages the stall stop applies to
+_EARLY_STALL_STAGES = (TIER_ERRORS, TIER_BLOCKING)  # added by config.stallEarlySeconds (opt-in)
 
 # R9 (2026-09-27, CP-SAT-as-polisher): the staged solve runs the JS engine's
 # betterQuality ladder (errorCount, blockingWarnCount, qualityVector) as a
@@ -378,7 +379,7 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None, stall_log=None):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None, stall_log=None, stage_log=None):
     """Runs the (up to 5-stage) lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -466,6 +467,11 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
     kept only if the stage expression strictly improves. Each stall appends
     `{stage, stoppedAfterSeconds, budgetSeconds, reseeded}` to `stall_log` (-> `report["stall"]`).
 
+    EARLY STALL (opt-in `config.stallEarlySeconds`, absent = off): ERRORS and BLOCKING also get a stall stop
+    with that fixed threshold; a stalled stage's unused time rolls forward (same path as a RANK stall), so
+    without the flag nothing changes. `stage_log` (-> `report["stages"]`) gets one
+    `{name, seconds, status, objective, budgetSeconds, stalled}` row per stage (`status` "EMPTY" = skipped).
+
     LEX_STRICT (`config.lexStrict`): non-final stages minimize their OWN expr only (no tiebreak sum);
     the pin is `expr == value` when the stage proved OPTIMAL, else `expr <= value`.
     """
@@ -501,6 +507,8 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         budget = budget + rollover_seconds
         rollover_seconds = 0.0
         if _is_empty_stage(expr):
+            if stage_log is not None:
+                stage_log.append({"name": name, "seconds": 0.0, "status": "EMPTY", "objective": 0, "budgetSeconds": round(budget, 2), "stalled": False})
             rollover_seconds = budget  # nothing to solve here -- hand the whole share onward
             continue
         is_last = name == stage_defs[-1][0]
@@ -520,6 +528,8 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         if progress is not None:
             progress.begin_stage(i + 1)
         threshold = stall_threshold(payload.config.stall_seconds, budget) if name in _STALL_STAGES else 0.0
+        if name in _EARLY_STALL_STAGES and payload.config.stall_early_seconds:
+            threshold = float(payload.config.stall_early_seconds)
         t0 = time.time()
         with StallStop(solver, threshold) as stall:
             status = _solve_with_progress(solver, model, progress, [*handlers, *([stall] if threshold > 0 else [])])
@@ -560,6 +570,15 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
                 solver = last_good_solver = retry
                 status_name = retry.status_name(retry_status)
                 last_status_name = status_name
+        if stage_log is not None:
+            stage_log.append({
+                "name": name,
+                "seconds": round(time.time() - t0, 2),
+                "status": status_name,
+                "objective": round(solver.value(expr)),
+                "budgetSeconds": round(budget, 2),
+                "stalled": bool(stalled),
+            })
         if stalled and stall_log is not None:
             stall_log.append({
                 "stage": name,
@@ -714,6 +733,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     outer_report = None
     handlers = []
     stall_log: list = []
+    stage_log: list = []
     if payload.config.objective_mode == "staged":
         staged_payload = payload
         if outer.enabled:
@@ -726,7 +746,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 ),
             )
         handlers = _pass1_handlers(payload, build_result)
-        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline, stall_log)
+        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline, stall_log, stage_log)
         if outer.enabled and status_name in SOLVABLE_STATUSES:
             if progress is not None:
                 progress.begin_stage(len(_STAGE_NAMES) + 1, "outerLns")
@@ -739,6 +759,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 seed=payload.config.random_seed,
                 progress=progress,
                 cancel_event=cancel_event,
+                tiers=outer.tiers,
                 # OPTIMAL for the QUALITY stage specifically: that stage minimizes the bare quality expr, so its
                 # objective equals the quality tier's value (an earlier stage's tiebreak composite would not).
                 proven_optimal=(status_name == "OPTIMAL"
@@ -779,6 +800,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
             ]
     if payload.config.objective_mode == "staged":
         report["stall"] = stall_log
+    report["stages"] = stage_log
     if payload.config.implied_cliques:
         report["impliedCliques"] = build_result.implied_cliques
     _stick_w = stickiness_weight(payload, objective.weights)

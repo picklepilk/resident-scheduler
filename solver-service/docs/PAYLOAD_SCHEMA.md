@@ -1632,3 +1632,19 @@ Note `pedsMixMax` now has an `override`-tier `RULE_POLICY` entry on the JS side 
 - **FLEX PGY-2 preferred over PGY-3**: `emPgy3ResidentIds` is again sent (EM Home PGY-3 ids) so the existing `flexPgy3Fallback` (QUALITY tier, 250/assignment) charges a PGY-3 on any FLEX shift, and `truePrimary[FLEX-*]` now lists PGY-2 only (`SENIOR_COMPOSITION.preferred`), so `seniorTruePrimary` charges a PGY-3-only FLEX shift while a PGY-2 was eligible. A PGY-3 still satisfies the hard `seniorPrimary[FLEX-*]` rule; PGY-2 is only preferred. Do not re-empty the list.
 - **`wedPodBamcBody`** (`solver/model/pod_wed_bamc.py`, `perUnit` 150, QUALITY tier): per Wednesday POD-D date with at least one BAMC resident (`cohort` starting `EM_BAMC`) able to work it, charges 1 unit when no BAMC resident is on the shift. Independent of staffing, so it cannot favour leaving a minimum empty. Weight 0/absent disables it. Tests: `tests/test_pod_wed_bamc.py`.
 - **`neuroTueThuNight`** (`solver/model/avoid_night_dow.py`, `perUnit` 150, QUALITY tier; chief 2026-11-06): soft preference that Neurology PGY-1 avoid Tuesday/Thursday NIGHT shifts. Charges 1 unit per assignment of a resident whose `cohort` is a key of `AVOID_NIGHT_DOW` (currently `NEURO_1`, weekdays Tue/Thu) to any shift whose payload `shifts[*].type` is `night` (12h night ids included). No new payload field: the cohort is the JS `eligKey`, and the map is mirrored from `AVOID_NIGHT_DOW` in `src/ResidentScheduler.jsx` (change both together). Never forbids; a coverage minimum can still use these residents. Weight 0/absent disables it. Tests: `tests/test_avoid_night_dow.py`, `src/lib/neuroNightPref.test.js`.
+
+## Opt-in bench knobs and per-stage timing (2026-11-11)
+
+All three knobs default OFF/absent and leave every existing behavior byte-for-byte unchanged.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `outerLns.tiers` | `"quality"` | `"all"`: outer LNS also improves RANK / REST. Holds tiers up to and including the first still-non-zero tier among RANK/REST/QUALITY (the "primary") `<=` incumbent, and minimizes `1_000_000 * primary + sum(later tiers)` (later tiers are not bounded; the accept test is lexicographic over all five tiers, so trading them for a primary gain is a strict improvement). Scale = `lns_outer.LNS_TIER_SCALE` (equals `_TIEBREAK_MULTIPLIER`); stage values are ~1e3..1e7, product << int64. `proven_optimal` skip is ignored in this mode unless RANK/REST/QUALITY are all 0. Report adds `outerLns.{tiers:"all", primaryTier, startTiers, endTiers}` (only in this mode). Any other value parses as `"quality"`. |
+| `stallEarlySeconds` | absent (off) | Seconds without a strictly better incumbent after which ERRORS and BLOCKING stages stop (RANK/REST/QUALITY keep `stallSeconds`). The stalled stage's unused time rolls forward to the next stage via the existing stall rollover. `<= 0` = off. `stageSplit` takes 4 (errors, blocking, rank, quality) or 5 (errors, blocking, rank, rest, quality) fractions, renormalized. |
+
+Always-on additive report field: `report.stages = [{name, seconds, status, objective, budgetSeconds, stalled}]` in ladder order
+(`tier1_errors`, `tier2_blockingWarns`, `tier3_qualityRank`, `tier3b_restAfterCoverage`, `tier4_quality`); `status` is the CP-SAT status or
+`"EMPTY"` (stage has no terms, skipped); `objective` = the stage's own expression value at its final incumbent; `seconds` includes a QUALITY stall re-seed. Empty list in `objectiveMode: "weighted"`. LNS counts stay in `report.outerLns.{iterations, accepted}`.
+
+Portfolio resolution (unchanged): `resolve_portfolio_k` returns an explicit `config.portfolio` (clamped 1..8) else 2 when `_num_workers >= 12`, else 1.
+`portfolio: 1` runs `_solve_single` with `_num_workers` = `numWorkers` clamped to `os.cpu_count()` (absent/0 -> `SOLVER_NUM_WORKERS` env, else all cores), so `{"portfolio":1,"numWorkers":16}` is one 16-worker run on a >=16-core host.
