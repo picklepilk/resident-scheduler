@@ -10,7 +10,7 @@ from solver.build import build_model
 from solver.io.payload import parse_payload
 from solver.lns_outer import OuterLnsConfig, parse_outer_lns, run_outer_lns
 from solver.solve import _STAGE_NAMES, _configure_solver, solve
-from solver.model.objective import TIER_QUALITY
+from solver.model.objective import TIER_QUALITY, TIER_RANK, TIER_REST
 from tests.helpers import load_fixture
 
 
@@ -117,3 +117,60 @@ def test_progress_label_outer_lns():
     solve(payload, on_progress=seen.append)
     assert seen[-1]["stages"] == len(_STAGE_NAMES) + 1
     assert all("stageName" not in p for p in seen if p["stage"] <= len(_STAGE_NAMES)) 
+
+
+# --- config.outerLns.tiers = "all" (opt-in) ---
+
+def test_tiers_parse_default_and_all():
+    assert parse_outer_lns(None).tiers == "quality" and OuterLnsConfig().tiers == "quality"
+    assert parse_outer_lns({"tiers": "all"}).tiers == "all"
+    assert parse_outer_lns({"tiers": "bogus"}).tiers == "quality"
+    assert parse_payload(_raw(outerLns={"tiers": "all"})).config.outer_lns.tiers == "all"
+
+
+def test_default_quality_mode_report_has_no_tier_keys():
+    payload = parse_payload(_raw())
+    br, s = _bad_incumbent(payload)
+    _best, rep = run_outer_lns(
+        payload, br, s, _STAGE_NAMES, TIER_QUALITY, lambda: _configure_solver(payload, allow_repair_hint=False),
+        deadline=time.time() + 2, sub_solve_seconds=1, seed=7,
+    )
+    assert "primaryTier" not in rep and "tiers" not in rep
+
+
+def _bad_rank_incumbent(payload):
+    """Feasible incumbent that is deliberately poor on the first non-empty RANK/REST tier."""
+    br = build_model(payload)
+    target = next((n for n in (TIER_RANK, TIER_REST) if not isinstance(br.objective.stage_exprs[n], int)), None)
+    assert target is not None
+    br.model.maximize(br.objective.stage_exprs[target])
+    s = _configure_solver(payload, allow_repair_hint=False)
+    s.parameters.max_time_in_seconds = 3
+    assert s.status_name(s.solve(br.model)) in ("OPTIMAL", "FEASIBLE")
+    return br, s, target
+
+
+def test_tiers_all_improves_earlier_tier_and_never_worsens_errors_blocking():
+    payload = parse_payload(_raw())
+    br, s, target = _bad_rank_incumbent(payload)
+    before = {n: round(s.value(br.objective.stage_exprs[n])) for n in _STAGE_NAMES}
+    assert before[target] > 0
+    best, rep = run_outer_lns(
+        payload, br, s, _STAGE_NAMES, TIER_QUALITY, lambda: _configure_solver(payload, allow_repair_hint=False),
+        deadline=time.time() + 5, sub_solve_seconds=1, seed=7, tiers="all", proven_optimal=True,  # proven flag ignored
+    )
+    after = {n: round(best.value(br.objective.stage_exprs[n])) for n in _STAGE_NAMES}
+    assert "skipped" not in rep and rep["tiers"] == "all"
+    assert rep["primaryTier"] == next(n for n in _STAGE_NAMES[2:] if before[n] > 0)
+    for n in _STAGE_NAMES[:2]:
+        assert after[n] <= before[n]
+    assert tuple(after[n] for n in _STAGE_NAMES) < tuple(before[n] for n in _STAGE_NAMES)
+    assert rep["startTiers"] == before and rep["endTiers"] == after
+
+
+def test_tiers_all_end_to_end_never_worse():
+    base = solve(parse_payload(_raw(outerLns={"enabled": True, "fraction": 0.5, "subSolveSeconds": 1})))
+    res = solve(parse_payload(_raw(outerLns={"enabled": True, "fraction": 0.5, "subSolveSeconds": 1, "tiers": "all"})))
+    assert res.status in ("OPTIMAL", "FEASIBLE")
+    assert res.report["outerLns"].get("tiers") == "all" or "skipped" in res.report["outerLns"]
+    assert "tiers" not in base.report["outerLns"]

@@ -381,3 +381,23 @@ Local best-of-20: 3 / 6 / [7,0,1,2067.8].
 | 300 s | 0 / 7 / [0,0,0,1669.9] | 0 / 5 / [0,0,0,1366.7] | 0 / 5 / [0,0,0,1443.7] |
 
 At 300 s CP-SAT reaches 0 errors on 3/3 seeds; at 120 s it still leaves 0-2 under-target EM PGY-1s, and seed 43 trades 0 errors for 5 coverage misses. Use 300 s (Long Solve) for a final block. `--dump` now records each error's synthetic `residentId`.
+
+## Opt-in knob bench (2026-11-11, PicklePower, branch feat/gen-trials-1111)
+
+120 s, seeds 42/43/44, both fixtures, local hint = fixed-seed local result. Each cell is errors / blocking warns / quality. Baseline is `auto`. W/L is the per-seed lexicographic result against `auto`, summed over both fixtures.
+
+| Variant | realScale errors (mean) | Staggered errors (mean) | Staggered blocking (mean) | W/L vs auto |
+|---|---|---|---|---|
+| auto (K=2 at 16 threads) | 3.33 | 0.67 | 8.0 | baseline |
+| k1w16 (`portfolio:1, numWorkers:16`) | 3.67 | 0.67 | 8.67 | 4W / 2L |
+| tiersAll (`outerLns.tiers:"all"`) | 4.0 | 1.67 | 6.67 | 2W / 4L |
+| early4 (`stallEarlySeconds:4`) | 3.67 | 1.0 | 7.67 | worse; coverage misses 1-12 |
+| early4split (+ `stageSplit [0.25,0,0.45,0.1,0.2]`) | 3.67 | 0 | 10.33 | worse; coverage misses up to 85 |
+
+Decisions: no default changes. All the knobs stay opt-in.
+- `k1w16`: 4W/2L is within seed noise.
+- `tiersAll`: adds errors on Staggered.
+- Early stall: frees up time, but the time goes to stages that then miss coverage.
+- Shortlist: picked index 0 twice in 30 runs. It stays.
+
+`report.stages` timing is now always available for later tuning.

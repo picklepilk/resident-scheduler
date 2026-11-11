@@ -4,9 +4,47 @@
 
 // Guards against Invalid Date (isNaN getTime) — toISOString() throws RangeError on those,
 // which without this guard propagates up through every date-math caller as an unhandled crash.
-export function toDateStr(d) { return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10); }
-export function parseDate(s) { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
-export function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+// PERF: these three are called millions of times per generateScheduleBest (profile: ~54% of self
+// time, mostly Date construction in local-tz and toISOString). Results are memoized by input
+// (string / epoch ms); every call still returns a FRESH Date, so callers that mutate the result
+// (setDate etc.) cannot corrupt the cache. Caches are bounded (cleared wholesale past CACHE_MAX).
+const CACHE_MAX = 50000;
+const _toDateStrCache = new Map();   // epoch ms -> 'YYYY-MM-DD' | null
+const _parseDateCache = new Map();   // 'YYYY-MM-DD' -> epoch ms (NaN for invalid)
+const _addDaysCache = new Map();     // n -> Map<epoch ms, epoch ms>
+export function toDateStr(d) {
+  const t = d.getTime();
+  let v = _toDateStrCache.get(t);
+  if (v === undefined) {
+    v = isNaN(t) ? null : d.toISOString().slice(0, 10);
+    if (_toDateStrCache.size >= CACHE_MAX) _toDateStrCache.clear();
+    _toDateStrCache.set(t, v);
+  }
+  return v;
+}
+export function parseDate(s) {
+  if (typeof s !== 'string') { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); }
+  let ms = _parseDateCache.get(s);
+  if (ms === undefined) {
+    const [y,m,d] = s.split('-').map(Number);
+    ms = new Date(y, m-1, d).getTime();
+    if (_parseDateCache.size >= CACHE_MAX) _parseDateCache.clear();
+    _parseDateCache.set(s, ms);
+  }
+  return new Date(ms);
+}
+export function addDays(d, n) {
+  const t = d.getTime();
+  let byN = _addDaysCache.get(n);
+  if (byN === undefined) { byN = new Map(); _addDaysCache.set(n, byN); }
+  let ms = byN.get(t);
+  if (ms === undefined) {
+    const r = new Date(d); r.setDate(r.getDate() + n); ms = r.getTime();
+    if (byN.size >= CACHE_MAX) byN.clear();
+    byN.set(t, ms);
+  }
+  return new Date(ms);
+}
 
 // 'YYYY-MM-DD' -> whole days since the Unix epoch (UTC, so DST-proof); null for anything else.
 export function isoDayNumber(iso) {

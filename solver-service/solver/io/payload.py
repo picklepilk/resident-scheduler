@@ -102,6 +102,9 @@ class Config:
     # Stall stop: end a stage after this many seconds with no improving incumbent. None -> solver
     # default (max(30, 0.2 * stage budget)); 0 -> off.
     stall_seconds: Optional[float] = None
+    # Opt-in (None = off): ERRORS and BLOCKING stages also stop after this many seconds without a
+    # strictly better incumbent, and their unused time rolls forward to the next stage.
+    stall_early_seconds: Optional[float] = None
     # Keep up to N distinct best pass-1 schedules in report.shortlist (0 = off).
     shortlist_size: int = 0
     # "solve" (default) or "score": price payload.hint exactly (every x fixed), no search.
@@ -505,6 +508,7 @@ def parse_payload(raw: dict) -> Payload:
             outer_lns=parse_outer_lns(config_raw.get("outerLns")),
             deadline_seconds=min(_finite_seconds(config_raw["deadlineSeconds"], "deadlineSeconds"), MAX_TIME_SECONDS_CAP + DEADLINE_GRACE_CAP_SECONDS) if config_raw.get("deadlineSeconds") is not None else None,
             stall_seconds=_finite_seconds(config_raw["stallSeconds"], "stallSeconds") if config_raw.get("stallSeconds") is not None else None,
+            stall_early_seconds=(lambda v: v if v > 0 else None)(_finite_seconds(config_raw["stallEarlySeconds"], "stallEarlySeconds")) if config_raw.get("stallEarlySeconds") is not None else None,
             shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
             mode="score" if config_raw.get("mode") == "score" else "solve",
             implied_cliques=bool(config_raw.get("impliedCliques", False)),

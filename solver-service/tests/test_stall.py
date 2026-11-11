@@ -6,7 +6,7 @@ import threading
 import time
 
 from solver.io.payload import parse_payload
-from solver.solve import solve
+from solver.solve import _STAGE_NAMES, solve
 from solver.stall import StallStop, stall_threshold
 from tests.helpers import load_fixture
 
@@ -89,3 +89,40 @@ def test_stall_off_has_no_entries():
     res = solve(parse_payload(_raw(stallSeconds=0, outerLns={"enabled": False})))
     assert res.status in ("OPTIMAL", "FEASIBLE")
     assert res.report["stall"] == []
+
+
+# --- config.stallEarlySeconds (opt-in) and report.stages ---
+
+def test_stall_early_parse_default_off():
+    assert parse_payload(_raw()).config.stall_early_seconds is None
+    assert parse_payload(_raw(stallEarlySeconds=4)).config.stall_early_seconds == 4.0
+    assert parse_payload(_raw(stallEarlySeconds=0)).config.stall_early_seconds is None
+
+
+def test_report_stages_shape_always_present():
+    res = solve(parse_payload(_raw(outerLns={"enabled": False})))
+    stages = res.report["stages"]
+    assert [s["name"] for s in stages] == list(_STAGE_NAMES)
+    for s in stages:
+        assert set(s) >= {"name", "seconds", "status", "objective"}
+        assert s["seconds"] >= 0 and s["status"] in ("OPTIMAL", "FEASIBLE", "EMPTY")
+
+
+def test_stall_early_applies_threshold_to_errors_and_blocking_only(monkeypatch):
+    import solver.solve as S
+    seen = []
+    real = S.StallStop
+
+    class Spy(real):
+        def __init__(self, solver, threshold, *a, **k):
+            seen.append(threshold)
+            super().__init__(solver, threshold, *a, **k)
+
+    monkeypatch.setattr(S, "StallStop", Spy)
+    solve(parse_payload(_raw(outerLns={"enabled": False}, stallSeconds=0)))
+    assert all(t == 0 for t in seen)  # flag absent: ERRORS/BLOCKING untouched
+    seen.clear()
+    res = solve(parse_payload(_raw(outerLns={"enabled": False}, stallSeconds=0, stallEarlySeconds=0.5)))
+    assert res.status in ("OPTIMAL", "FEASIBLE")
+    early = [s for s in res.report["stages"] if s["name"] in ("tier1_errors", "tier2_blockingWarns") and s["status"] != "EMPTY"]
+    assert seen.count(0.5) == len(early)

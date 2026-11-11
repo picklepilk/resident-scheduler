@@ -37,6 +37,7 @@ NEIGHBORHOODS = ("window", "residents", "shiftWindow", "worstTerms")
 
 DEFAULT_FRACTION = 0.5
 DEFAULT_SUB_SOLVE_SECONDS = 5.0
+LNS_TIER_SCALE = 1_000_000  # tiers="all" objective: primary * scale + later tiers (see run_outer_lns)
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class OuterLnsConfig:
     enabled: bool = True
     fraction: float = DEFAULT_FRACTION
     sub_solve_seconds: float = DEFAULT_SUB_SOLVE_SECONDS
+    tiers: str = "quality"  # "quality" (default) | "all" -- see run_outer_lns
+
 
 
 def parse_outer_lns(raw) -> OuterLnsConfig:
@@ -65,6 +68,7 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         enabled=raw.get("enabled") is not False,
         fraction=_num("fraction", DEFAULT_FRACTION, 0.05, 0.9),
         sub_solve_seconds=_num("subSolveSeconds", DEFAULT_SUB_SOLVE_SECONDS, 0.5, 120.0),
+        tiers="all" if raw.get("tiers") == "all" else "quality",
     )
 
 
@@ -197,6 +201,7 @@ def run_outer_lns(
     progress=None,
     cancel_event=None,
     proven_optimal: bool = False,
+    tiers: str = "quality",
 ):
     """Improve `solver`'s incumbent until `deadline` (a `time.time()` value). Returns `(solver, report)`:
     `solver` is the CpSolver holding the best solution (the input one if nothing was accepted) and `report`
@@ -204,6 +209,18 @@ def run_outer_lns(
 
     `configure_solver()` -> a fresh CpSolver with the payload's shared params (solve._configure_solver, passed
     in to avoid an import cycle). `stage_names` is solve._STAGE_NAMES; `quality_name` the last/optimized tier.
+
+    `tiers="all"` (opt-in, `config.outerLns.tiers`): the default minimizes the quality tier only, so a coverage
+    (RANK) or rest (REST) miss left by the staged ladder can never improve here. In "all" mode only the tiers
+    BEFORE the first still-open one are held `<=` incumbent; the primary is the first of `stage_names[2:]`
+    (RANK, REST, QUALITY -- everything after ERRORS/BLOCKING) that is non-zero at the incumbent, bounded `<=`
+    incumbent too, and the objective is `LNS_TIER_SCALE * primary + sum(later tiers)`. LATER tiers are NOT
+    bounded: a sub-solve may trade them for a primary gain, which the (always lexicographic over all five
+    tiers) accept test treats as a strict improvement. Scale 1_000_000 (= solve._TIEBREAK_MULTIPLIER): primary
+    stage values are ~1e3..1e7 so the product stays below ~1e14, far from int64; the scale is not a strict
+    dominance guarantee (a later-tier swing > 1e6 can outweigh one primary unit) but the lexicographic accept
+    test makes that harmless. `proven_optimal` is ignored in this mode (it only proves the quality tier given
+    earlier tiers, which may themselves be unproven) unless RANK/REST/QUALITY are all already zero.
     """
     model = build_result.model
     store = build_result.store
@@ -225,21 +242,39 @@ def run_outer_lns(
         "endObjective": start_obj,
         "seconds": 0.0,
     }
-    if proven_optimal:
+    all_mode = tiers == "all"
+    tail = [n for n in stage_names if n in stage_names[2:]]  # RANK, REST, QUALITY (everything after ERRORS/BLOCKING)
+    primary = quality_name
+    if all_mode:
+        primary = next((n for n in tail if incumbent_tiers[n] > 0 and not isinstance(objective.stage_exprs[n], int)), quality_name)
+        report["tiers"] = "all"
+        report["primaryTier"] = primary
+        report["startTiers"] = dict(incumbent_tiers)
+    skip_proven = proven_optimal and not (all_mode and any(incumbent_tiers[n] > 0 for n in tail))
+    if skip_proven:
         # The last staged solve minimized exactly the quality tier under all earlier bounds and proved it.
         report["skipped"] = "staged solve proved optimal"
         return solver, report
     if isinstance(quality_expr, int) or not store.x:
-        report["skipped"] = "empty quality tier" if isinstance(quality_expr, int) else "no variables"
-        return solver, report
+        if not (all_mode and not isinstance(objective.stage_exprs[primary], int) and store.x):
+            report["skipped"] = "empty quality tier" if isinstance(quality_expr, int) else "no variables"
+            return solver, report
 
     # Earlier tiers can never get worse: hard bounds at the incumbent's value (redundant with the bounds
     # `_solve_staged` already added, but also covers the hint-fallback path where none were added).
-    for n in stage_names:
-        if n == quality_name or isinstance(objective.stage_exprs[n], int):
-            continue
-        model.add(objective.stage_exprs[n] <= incumbent_tiers[n])
-    model.minimize(quality_expr)
+    if all_mode:
+        pi = list(stage_names).index(primary)
+        for n in stage_names[: pi + 1]:
+            if not isinstance(objective.stage_exprs[n], int):
+                model.add(objective.stage_exprs[n] <= incumbent_tiers[n])
+        later = sum((objective.stage_exprs[n] for n in stage_names[pi + 1:]), start=0)
+        model.minimize(objective.stage_exprs[primary] if isinstance(later, int) and later == 0 else LNS_TIER_SCALE * objective.stage_exprs[primary] + later)
+    else:
+        for n in stage_names:
+            if n == quality_name or isinstance(objective.stage_exprs[n], int):
+                continue
+            model.add(objective.stage_exprs[n] <= incumbent_tiers[n])
+        model.minimize(quality_expr)
     sub = model.clone()
 
     incumbent_solver = solver
@@ -290,6 +325,8 @@ def run_outer_lns(
         status = slv.solve(sub)
         status_name = slv.status_name(status)
         accepted = False
+        if all_mode and status_name == "MODEL_INVALID":
+            break  # objective overflow / invalid scaling: stop rather than spin (never expected, see LNS_TIER_SCALE)
         if status_name in ("OPTIMAL", "FEASIBLE"):
             new_tiers = _tier_values(slv)
             new_ord = tuple(new_tiers[n] for n in stage_names)
@@ -309,5 +346,7 @@ def run_outer_lns(
 
     report["iterations"] = iteration
     report["endObjective"] = incumbent_tiers[quality_name]
+    if all_mode:
+        report["endTiers"] = dict(incumbent_tiers)
     report["seconds"] = round(time.time() - t_start, 2)
     return incumbent_solver, report
