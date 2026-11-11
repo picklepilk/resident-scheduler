@@ -71,7 +71,7 @@ const cleanName = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 
 // document.xml string -> { tablesTotal, tables:[{pgy, heading, hasMM, rows:[{name,lecture,mm,jc,failures}]}] }.
 // Exported separately so tests can feed raw XML.
-export function parseAcademicXml(xml) {
+function parseAcademicXml(xml) {
   const body = String(xml ?? '');
   const tokenRe = /<w:tbl(?:\s[^>]*)?>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*[^/>])?>[\s\S]*?<\/w:p>/g;
   let lastHeading = null;
@@ -132,7 +132,7 @@ export function fileHash(bytes) {
 }
 
 // Start year of the academic year an ISO date falls in (July 1 starts the year).
-export function ayStartYearOf(iso) {
+function ayStartYearOf(iso) {
   const y = Number(iso.slice(0, 4)), mo = Number(iso.slice(5, 7));
   return mo >= 7 ? y : y - 1;
 }

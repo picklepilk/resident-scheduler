@@ -3,11 +3,11 @@ import { useLayoutEffect, useState } from 'react';
 /** Wall-clock budget (Date.now, not a frame count — a throttled/background
  *  tab shouldn't wait forever) for `document.querySelector` retries before
  *  giving up and reporting `'missing'`. */
-export const ACQUIRE_TIMEOUT_MS = 2500;
+const ACQUIRE_TIMEOUT_MS = 2500;
 
 /** Consecutive unchanged rAF measurements before the tracking loop parks
  *  itself. Resize/scroll/ResizeObserver still re-arm a fresh short burst. */
-export const SETTLE_FRAMES = 3;
+const SETTLE_FRAMES = 3;
 
 // Dev-only duplicate-target guard: warn at most once per key, ever, so a
 // step that legitimately re-polls a duplicated anchor doesn't spam the

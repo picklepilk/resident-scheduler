@@ -12,7 +12,7 @@
 // see below).
 export const SIGN_OUT_PRESERVE_KEYS = ['res_dark_mode', 'res_ui_prefs', 'res_whats_new_seen'];
 
-// Clears every res_* key (both the nine LS_BACKUP_KEYS and their res_demo_* demo-sandbox mirrors)
+// Clears every res_* key (both the ten LS_BACKUP_KEYS and their res_demo_* demo-sandbox mirrors)
 // except the device-local prefs above. res_demo_mode is deliberately CLEARED, not preserved: unlike
 // the other three, it isn't a per-viewer display preference — it's "was this device mid-demo" state
 // tied to demo data that sign-out is wiping anyway. Leaving it 'true' would drop the next sign-in

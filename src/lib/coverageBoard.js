@@ -42,12 +42,3 @@ export function buildHeatmapRows(activeShifts) {
     .filter(g => g.shifts.length > 0);
 }
 
-// One heatmap cell's data for (dateStr, shiftId), or null when the shift structurally doesn't run
-// that date -- computeCoverageByDate's perShift map already omits it then (shiftCoverageForDate's
-// SHIFT_DOW guard), so this never re-derives shiftActiveOnDow itself; a null here IS "blank cell".
-export function heatmapCell(coverageByDate, dateStr, shiftId) {
-  const info = coverageByDate?.[dateStr]?.perShift?.[shiftId];
-  if (!info) return null;
-  const { count, min, max } = info;
-  return { count, min, max, status: coverageCellStatus(info) };
-}

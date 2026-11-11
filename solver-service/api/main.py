@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse
 
 from api.auth import AuthResult
 from api.concurrency import solve_slot
-from api.concurrency import solve_slot
 from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from solver.runner import runner_info

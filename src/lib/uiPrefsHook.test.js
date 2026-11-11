@@ -172,6 +172,25 @@ describe('useUiPrefs — cloud save actually fires', () => {
   });
 });
 
+describe('useUiPrefs — failed cloud load does not overwrite the cloud copy', () => {
+  it('never saves local prefs when the mount-time load returned an error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    __mock.state.selectImpl = () => Promise.resolve({ data: null, error: { message: 'boom' } });
+    const { getApi } = mountHook(VIEWER);
+    await flushMicrotasks();
+
+    act(() => {
+      getApi().setShowUnscheduled(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+
+    expect(__mock.updateCalls.length).toBe(0);
+    warn.mockRestore();
+  });
+});
+
 describe('useUiPrefs — edits made before the cloud load resolves are not lost', () => {
   it('keeps a pre-load local edit instead of letting the load overwrite it, and flushes it to the cloud', async () => {
     let resolveLoad;

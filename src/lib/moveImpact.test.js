@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { issueIdentity, netNewIssues, capRows } from './moveImpact.js';
+import { netNewIssues, capRows } from './moveImpact.js';
+import { ackKeyFor } from './issueAcks.js';
 
 const iss = (o) => ({ level: 'error', rule: 'r', residentId: 'a', dateStr: '2026-07-01', shiftId: 'POD-D', message: 'm', ...o });
 
 describe('moveImpact', () => {
   it('identity ignores whitespace/case in message', () => {
-    expect(issueIdentity(iss({ message: ' Foo  Bar ' }))).toBe(issueIdentity(iss({ message: 'foo bar' })));
+    expect(ackKeyFor(iss({ message: ' Foo  Bar ' }))).toBe(ackKeyFor(iss({ message: 'foo bar' })));
   });
   it('returns only issues absent before', () => {
     const a = iss({}), b = iss({ dateStr: '2026-07-02' });

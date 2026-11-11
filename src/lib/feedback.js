@@ -1,9 +1,8 @@
 // Pure helpers for the shared `public.feedback` table (EM Scheduling Supabase project, migration
 // round11_feedback_rich_shape). Kept free of supabase/React imports so they are unit-testable;
 // ResidentScheduler.jsx's submitFeedback/listMyFeedback wrap these around sbFetch.
-export const FEEDBACK_APP = 'resident-scheduler';
+const FEEDBACK_APP = 'resident-scheduler';
 export const FEEDBACK_MESSAGE_MAX = 4000; // table check: char_length(message) between 1 and 4000
-export const FEEDBACK_TYPE_IDS = ['bug', 'crash', 'idea'];
 
 // Row for POST /feedback. Never sets `status` (RLS insert policy requires the 'new' default).
 // Returns null when there is nothing valid to send (no user, or empty message).

@@ -20,6 +20,20 @@ const CHIEF_EMAIL = Deno.env.get('CHIEF_EMAIL')!;
 const WEBHOOK_SECRET = Deno.env.get('WEBHOOK_SECRET')!;
 const FROM_EMAIL = 'requests@resend.dev'; // replace with a verified sending domain once set up in Resend
 
+// Constant-time secret check: hash both sides to equal length, then compare without early exit.
+async function secretMatches(supplied: string | null, expected: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(supplied ?? '')),
+    crypto.subtle.digest('SHA-256', enc.encode(expected)),
+  ]);
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
 async function sendEmail(to: string, subject: string, text: string) {
   try {
     await fetch('https://api.resend.com/emails', {
@@ -33,7 +47,7 @@ async function sendEmail(to: string, subject: string, text: string) {
 }
 
 Deno.serve(async (req) => {
-  if (req.headers.get('x-webhook-secret') !== WEBHOOK_SECRET) {
+  if (!(await secretMatches(req.headers.get('x-webhook-secret'), WEBHOOK_SECRET))) {
     return new Response('unauthorized', { status: 401 });
   }
   const payload = await req.json();
@@ -52,7 +66,7 @@ Deno.serve(async (req) => {
     // The Edge Function doesn't have the resident's email directly on this row — look it up via
     // the profiles table (service-role key, bypasses RLS, since this runs server-side).
     const profileRes = await fetch(
-      `${Deno.env.get('SUPABASE_URL')}/rest/v1/profiles?resident_id=eq.${record.resident_id}&select=email`,
+      `${Deno.env.get('SUPABASE_URL')}/rest/v1/profiles?resident_id=eq.${encodeURIComponent(record.resident_id)}&select=email`,
       { headers: { apikey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` } }
     );
     const profiles = await profileRes.json();

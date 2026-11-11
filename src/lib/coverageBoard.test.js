@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { coverageCellStatus, buildHeatmapRows, heatmapCell } from './coverageBoard.js';
+import { coverageCellStatus, buildHeatmapRows } from './coverageBoard.js';
 
 describe('coverageCellStatus', () => {
   it('reads empty when nothing required and nothing filled', () => {
@@ -42,23 +42,5 @@ describe('buildHeatmapRows', () => {
   });
   it('handles an empty input', () => {
     expect(buildHeatmapRows([])).toEqual([]);
-  });
-});
-
-describe('heatmapCell', () => {
-  // Shaped exactly like computeCoverageByDate's own return value (ResidentScheduler.jsx) so this
-  // documents/tests the equality contract: the heatmap reads the SAME numbers, never re-derives them.
-  const coverageByDate = {
-    '2026-11-02': { perShift: { 'POD-D': { count: 1, min: 2, max: 2 }, 'POD-E': { count: 2, min: 2, max: 2 } } },
-  };
-  it('passes count/min/max through unchanged and attaches a status', () => {
-    expect(heatmapCell(coverageByDate, '2026-11-02', 'POD-D')).toEqual({ count: 1, min: 2, max: 2, status: 'below' });
-    expect(heatmapCell(coverageByDate, '2026-11-02', 'POD-E')).toEqual({ count: 2, min: 2, max: 2, status: 'atMin' });
-  });
-  it('returns null for a shift absent on that date (structurally not running, e.g. TRAUMA-D/N off-window)', () => {
-    expect(heatmapCell(coverageByDate, '2026-11-02', 'TRAUMA-D')).toBeNull();
-  });
-  it('returns null for a date absent from coverageByDate entirely', () => {
-    expect(heatmapCell(coverageByDate, '2099-01-01', 'POD-D')).toBeNull();
   });
 });

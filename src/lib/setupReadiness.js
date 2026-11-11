@@ -4,8 +4,8 @@
 //
 // gap: { id, severity:'blocking'|'advisory', label, detail, fixTarget:{tab, section?}, suppresses:[string] }
 
-export const PRESSURE_LIGHT = 0.60;
-export const PRESSURE_MODERATE = 0.85;
+const PRESSURE_LIGHT = 0.60;
+const PRESSURE_MODERATE = 0.85;
 
 export function pressureLevel(ratio) {
   if (!Number.isFinite(ratio)) return null;

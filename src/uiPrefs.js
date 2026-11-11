@@ -8,7 +8,7 @@
 //
 // Storage posture mirrors `res_dark_mode` (see ResidentScheduler.jsx's LS_BACKUP_KEYS comment):
 // this is a device/viewer display preference, not chief scheduling data, so it is NOT one of the
-// nine `LS_BACKUP_KEYS` slots and never rides through Settings backup/restore or the hand-rolled
+// ten `LS_BACKUP_KEYS` slots and never rides through Settings backup/restore or the hand-rolled
 // `res_state` cloud sync. It is also NOT wrapped by the Demo Sandbox's `physKey` — same reasoning
 // as `res_dark_mode`: a viewer's own UI layout preference has nothing to do with which sandbox
 // they're currently poking at.
@@ -16,7 +16,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, us
 import { supabase, AUTH_ENABLED } from './supabaseClient.js';
 import { DEFAULT_UI_PREFS, normalizeUiPrefs, clampGridZoom, clampGridColExtra, GRID_GROUP_MODES } from './lib/uiPrefs.js';
 
-export const UI_PREFS_KEY = 'res_ui_prefs';
+const UI_PREFS_KEY = 'res_ui_prefs';
 export { normalizeUiPrefs } from './lib/uiPrefs.js';
 
 function readDeviceLocal() {
@@ -76,8 +76,14 @@ export function useUiPrefs(viewer) {
     cloudLoadedRef.current = false;
     editedDuringLoadRef.current = false;
     (async () => {
-      const { data } = await supabase.from('profiles').select('ui_prefs').eq('id', viewer.userId).maybeSingle();
+      const { data, error } = await supabase.from('profiles').select('ui_prefs').eq('id', viewer.userId).maybeSingle();
       if (cancelled) return;
+      if (error) {
+        // Load failed: leave cloudLoadedRef false so the save effect never PATCHes this device's
+        // (possibly default) prefs over the cloud copy we could not read.
+        console.warn('uiPrefs: cloud load failed', error);
+        return;
+      }
       if (data?.ui_prefs != null && !editedDuringLoadRef.current) setPrefs(normalizeUiPrefs(data.ui_prefs));
       cloudLoadedRef.current = true;
       if (editedDuringLoadRef.current) {

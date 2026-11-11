@@ -248,7 +248,7 @@ def _assigned_count_for_cap(payload: Payload, schedule: dict, resident_id: str, 
         return count(lambda sid: payload.shifts[sid].area == "TRAUMA")
     if rule == "jcCap":
         return count(
-            lambda sid: timing.overlaps_hour_window(payload.shifts[sid], 18, 21),
+            lambda sid: timing.overlaps_hour_window(payload.shifts[sid], payload.jc_window_start_h, payload.jc_window_end_h),
             lambda d: d in payload.jc_dates,
         )
     if rule == "bamcWedNight":
@@ -350,7 +350,14 @@ def payload_to_raw(payload: Payload) -> dict:
     solver/io/payload.py just iterates whatever container it's given (dict,
     list, set all work). Used ONLY by verification re-solves to build an
     edited copy of the original request.
+
+    Prefers the original request dict kept on the Payload (parse_payload sets it): the field-by-field
+    rebuild below omits many inputs (asNeeded, hint, truePrimary, JC window, objectiveMode, ...), so a
+    re-solve on it checks a looser problem than the one the caller submitted. The rebuild remains only
+    for a Payload constructed by hand without a raw dict.
     """
+    if payload.raw:
+        return copy.deepcopy(payload.raw)
     return {
         "version": payload.version,
         "config": {

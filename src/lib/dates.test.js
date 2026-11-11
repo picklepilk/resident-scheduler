@@ -128,3 +128,16 @@ describe('ayWindowFor', () => {
     expect(ayWindowFor(undefined)).toBeNull();
   });
 });
+
+describe('isoDayNumber', () => {
+  it('counts whole UTC days since the epoch', async () => {
+    const { isoDayNumber } = await import('./dates.js');
+    expect(isoDayNumber('1970-01-01')).toBe(0);
+    expect(isoDayNumber('1970-01-03')).toBe(2);
+    expect(isoDayNumber('2026-03-09') - isoDayNumber('2026-03-08')).toBe(1); // across US DST start
+  });
+  it('is null for non-ISO input', async () => {
+    const { isoDayNumber } = await import('./dates.js');
+    for (const v of [null, undefined, '', '2026-3-9', '2026-03-09T00:00', 'x']) expect(isoDayNumber(v)).toBeNull();
+  });
+});

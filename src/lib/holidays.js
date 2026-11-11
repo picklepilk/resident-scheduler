@@ -134,10 +134,6 @@ export function holidayDateSet(ayConf) {
   return set;
 }
 
-export function isHolidayDate(dateStr, ayConf) {
-  return holidayDateSet(ayConf).has(dateStr);
-}
-
 // Holidays with at least one date inside [startStr, endStr] inclusive, each carrying only the
 // `dates` that actually fall in range — a holiday straddling a block boundary reports just its
 // in-block half, so the Validation card never claims coverage of a date this block doesn't own.

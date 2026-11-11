@@ -19,7 +19,7 @@ import { getFirstTuesdaysInRange } from './journalClub.js';
 
 export const RULE_KEYS = { FIRST_FRIDAY: 'firstFriday', WELLNESS: 'wellnessWednesday', JOURNAL_CLUB: 'journalClub' };
 
-export const RULE_LABELS = {
+const RULE_LABELS = {
   firstFriday: 'First Friday',
   wellnessWednesday: 'Wellness Wednesday',
   journalClub: 'Journal Club',

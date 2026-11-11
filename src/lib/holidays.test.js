@@ -12,7 +12,6 @@ import {
   resolveHolidays,
   expandHolidayDates,
   holidayDateSet,
-  isHolidayDate,
   holidaysInRange,
   holidayDatesInRange,
   countHolidayShifts,
@@ -42,7 +41,6 @@ describe('strict no-op on empty config', () => {
       expect(holidayDateSet(conf).size).toBe(0);
       expect(holidayDatesInRange('2026-11-01', '2027-01-31', conf)).toEqual([]);
       expect(holidaysInRange('2026-11-01', '2027-01-31', conf)).toEqual([]);
-      expect(isHolidayDate('2026-12-25', conf)).toBe(false);
     });
   }
 

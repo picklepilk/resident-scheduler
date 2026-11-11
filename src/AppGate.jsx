@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase, AUTH_ENABLED, ROLE } from './supabaseClient';
 import LoginScreen from './residentRequests/LoginScreen';
 import ResidentPicker from './residentRequests/ResidentPicker';
 import RequestForm from './residentRequests/RequestForm';
 import RequestList from './residentRequests/RequestList';
 import ResidentScheduler from './ResidentScheduler';
+import { nextProfile } from './lib/profileState.js';
 
 // Dark mode is an override stylesheet keyed on a `.dark` ancestor (see index.css), and
 // ResidentScheduler puts that class on its own root div. Everything AppGate renders instead of
@@ -98,6 +99,7 @@ function AuthMisconfigured() {
 // even if it reaches the API directly (migrate_block_pending_account_access.sql).
 export default function AppGate() {
   const [session, setSession] = useState(undefined); // undefined = not checked yet, null = signed out
+  const lastUserIdRef = useRef(null);
   const [profile, setProfile] = useState(undefined); // undefined = not fetched, null = no row yet
   const [refreshKey, setRefreshKey] = useState(0);
   const [recovering, setRecovering] = useState(false); // opened a password-reset link
@@ -114,6 +116,11 @@ export default function AppGate() {
 
   useEffect(() => {
     if (!session) return;
+    // A different account must not inherit the previous account's profile while its own loads.
+    if (lastUserIdRef.current !== session.user.id) {
+      lastUserIdRef.current = session.user.id;
+      setProfile(undefined);
+    }
     let cancelled = false;
     (async () => {
       // Upsert FIRST, then read — deliberately sequential, not concurrent. Firing both at once
@@ -124,9 +131,9 @@ export default function AppGate() {
       await supabase
         .from('profiles')
         .upsert({ id: session.user.id, email: session.user.email }, { onConflict: 'id', ignoreDuplicates: true });
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('profiles').select('role, resident_id').eq('id', session.user.id).maybeSingle();
-      if (!cancelled) setProfile(data);
+      if (!cancelled) setProfile(prev => nextProfile(prev, data, error));
     })();
     return () => { cancelled = true; };
   }, [session]);

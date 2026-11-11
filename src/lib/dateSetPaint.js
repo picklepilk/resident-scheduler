@@ -1,16 +1,8 @@
 // Pure helpers behind TimeOffModal's calendar-paint interaction (ResidentScheduler.jsx) — factored
 // out so the click/drag commit logic is unit-testable without mounting the component, same
-// reasoning as calendarGrid.js's month-grid math. Both functions operate on a sorted, deduped
+// reasoning as calendarGrid.js's month-grid math. These functions operate on a sorted, deduped
 // ISO-date-string array — the shape `approvedDatesOff`/`vacationDates`/`jeopardyDates` already use
 // (see DateListEditor's own Add/remove, which this matches: sorted, no duplicates).
-
-// Toggles a single date: removes it if present, adds it (re-sorted) if absent. Used for a plain
-// click (a drag whose start and end are the same day collapses to this exact case too — see
-// applyDateRangePaint below, which callers use uniformly for both).
-export function toggleDateInList(dates, ds) {
-  const list = dates || [];
-  return list.includes(ds) ? list.filter(d => d !== ds) : [...list, ds].sort();
-}
 
 // Whether painting `ds` should ADD or REMOVE it, decided from the date the drag STARTED on — so a
 // drag is never ambiguous (mirrors the schedule grid's own lock-paint gesture: the target value is

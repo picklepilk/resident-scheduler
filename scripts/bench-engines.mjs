@@ -3,7 +3,7 @@
 // Run through vite-node (the app's big file is JSX/ESM and cannot be imported by plain node):
 //   npx vite-node scripts/bench-engines.mjs -- <backup.json> [--block <id>] [--url <solverUrl>]
 //                                             [--budgets 45,120,300] [--portfolio K]
-//                                             [--variants v.json] [--seeds N]
+//                                             [--variants v.json] [--seeds N] [--dump <dir>]
 // --variants: JSON array of {name, config}; each config is merged into the solver config (A/B of
 // solver flags). --seeds N runs each variant with randomSeed 42..42+N-1. Local result computed once.
 //   npx vite-node scripts/bench-engines.mjs -- --fixture realScale [--url ...] [--budgets ...]
@@ -16,7 +16,8 @@
 // arbitrates with pickEngineResult. A Modal-style durable backend answers /solve with 400 use_jobs;
 // the bench does not do submit-then-poll, so point --url at a local/Fly solver for it.
 //
-// REAL DATA SAFETY (public repo): a backup path inside the repo is refused unless git ignores it.
+// REAL DATA SAFETY (public repo): a backup path (and a --dump directory) inside the repo is refused
+// unless git ignores it.
 // Put real backups in `bench-input/` (gitignored) or outside the repo.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,7 +48,7 @@ function parseArgs(argv) {
     else if (t === '--fixture') a.fixture = rest[++i];
     else if (t === '--variants') a.variants = JSON.parse(fs.readFileSync(rest[++i], 'utf-8'));
     else if (t === '--seeds') a.seeds = Math.max(1, Number(rest[++i]) || 1);
-    else if (t === '--dump') a.dump = rest[++i];
+    else if (t === '--dump') a.dump = refuseUntrackedRepoPath(rest[++i]);
     else if (t.startsWith('--')) throw new Error(`unknown flag ${t}`);
     else a.file = t;
   }

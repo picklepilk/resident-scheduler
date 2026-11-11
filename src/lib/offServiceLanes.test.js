@@ -1,15 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { laneBar, laneBoundaries, serviceTone, servicesPresent, stintCount, stintLabel, hasSeparateStints } from './offServiceLanes.js';
+import { laneBar, serviceTone, servicesPresent, stintCount, stintLabel, hasSeparateStints } from './offServiceLanes.js';
 
 const blocks = [
   { start: '2026-07-01', end: '2026-07-28' }, // 28 days
   { start: '2026-07-29', end: '2026-08-25' },
   { start: '2026-08-26', end: '2026-09-22' },
 ];
-
-describe('laneBoundaries', () => {
-  it('returns n+1 edges', () => expect(laneBoundaries(3, 100)).toEqual([0, 100, 200, 300]));
-});
 
 describe('laneBar', () => {
   it('aligned window spans whole blocks with no mid caps', () => {

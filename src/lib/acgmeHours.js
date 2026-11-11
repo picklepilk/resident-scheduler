@@ -38,7 +38,6 @@ export const JC_DURATION_H = JC_WINDOW_END_H - JC_WINDOW_START_H; // 3h
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WINDOW_DAYS = 7;
-const WINDOW_MS = WINDOW_DAYS * DAY_MS;
 
 // Merges the current block's schedule row with the previous block's TAIL row (prevBlockTailSchedules'
 // shape in ResidentScheduler.jsx) into one {dateStr: shiftId} lookup — a rolling 7-day window can

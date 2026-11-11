@@ -10,17 +10,9 @@
 // "not synced with our blocks" signal.
 
 import { CAT_MAP } from './parse.js';
+import { isoDayNumber } from './dates.js';
 
-const DAY_MS = 86_400_000;
-const dayNum = iso => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
-  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY_MS : null;
-};
-
-/** Block-boundary x positions: n+1 entries (0, cw, 2cw ...). */
-export function laneBoundaries(blockCount, cellWidth) {
-  return Array.from({ length: Math.max(0, blockCount) + 1 }, (_, i) => i * cellWidth);
-}
+const dayNum = isoDayNumber;
 
 /**
  * @param blocks [{start,end}] sorted ascending (ISO inclusive)

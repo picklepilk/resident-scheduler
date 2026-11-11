@@ -14,11 +14,11 @@
  *  never be dimmed by the tour scrim — enforced geometrically: the scrim's
  *  top edge never goes above y=20 (mirrors Epic's own SCRIM_TOP, which
  *  protected its synthetic-data banner the same way). */
-export const SCRIM_TOP = 20;
+const SCRIM_TOP = 20;
 export const SPOTLIGHT_PAD = 6;
 export const CARD_W = 380;
 export const CARD_H_FALLBACK = 260;
-export const CARD_GAP = 16;
+const CARD_GAP = 16;
 
 /**
  * Pure. Given the target element's rect, the viewport size, and an optional
@@ -90,7 +90,7 @@ export function inflate(rect, amount) {
 }
 
 /** The card's rect if placed in the given viewport corner, inset by CARD_GAP. */
-export function cornerBox(corner, card, vp) {
+function cornerBox(corner, card, vp) {
   switch (corner) {
     case 'bottom-right':
       return {
@@ -126,7 +126,7 @@ export function cornerBox(corner, card, vp) {
 }
 
 /** Standard 2D rectangle intersection area; 0 if disjoint. */
-export function overlapArea(a, b) {
+function overlapArea(a, b) {
   const left = Math.max(a.left, b.left);
   const right = Math.min(a.left + a.width, b.left + b.width);
   const top = Math.max(a.top, b.top);

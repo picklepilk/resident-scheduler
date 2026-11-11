@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { fetchBlocksForLookup, groupByBlock } from './blockLookup';
+import { createLatestGuard } from '../lib/latestGuard.js';
 
 const STATUS_STYLE = {
   pending:   'bg-amber-100 text-amber-700',
@@ -23,18 +24,30 @@ export default function RequestList({ residentId, refreshKey, blocks: blocksProp
   const [requests, setRequests] = useState([]);
   const [blocks, setBlocks] = useState(blocksProp || []);
   const [error, setError] = useState(null);
+  // RequestsTab reuses one instance while the selected resident changes, so a slow earlier
+  // response must not overwrite a newer one.
+  const loadGuardRef = useRef(null);
+  if (!loadGuardRef.current) loadGuardRef.current = createLatestGuard();
 
   async function load() {
+    const isLatest = loadGuardRef.current.next();
     if (blocksProp) {
-      const { data } = await supabase.from('day_off_requests').select('id, resident_id, dates, reason, status, decision_note, submitted_at').eq('resident_id', residentId).order('submitted_at', { ascending: false });
+      const { data, error: loadError } = await supabase.from('day_off_requests').select('id, resident_id, dates, reason, status, decision_note, submitted_at').eq('resident_id', residentId).order('submitted_at', { ascending: false });
+      if (!isLatest()) return;
+      // On failure keep the previous list instead of claiming "No requests submitted yet".
+      if (loadError) { setError(loadError.message); return; }
+      setError(null);
       setRequests(data || []);
       setBlocks(blocksProp);
       return;
     }
-    const [{ data }, blockData] = await Promise.all([
+    const [{ data, error: loadError }, blockData] = await Promise.all([
       supabase.from('day_off_requests').select('id, resident_id, dates, reason, status, decision_note, submitted_at').eq('resident_id', residentId).order('submitted_at', { ascending: false }),
       fetchBlocksForLookup(),
     ]);
+    if (!isLatest()) return;
+    if (loadError) { setError(loadError.message); return; }
+    setError(null);
     setRequests(data || []);
     setBlocks(blockData);
   }
@@ -51,6 +64,7 @@ export default function RequestList({ residentId, refreshKey, blocks: blocksProp
   }
 
   if (requests.length === 0) {
+    if (error) return <p className="text-xs text-red-600" data-tour="resident-request-list">{error}</p>;
     return <p className="text-sm text-gray-400" data-tour="resident-request-list">No requests submitted yet.</p>;
   }
 

@@ -11,12 +11,8 @@
 // otherwise make SOLVER_ENABLED falsely truthy, and every solve attempt would fetch
 // "%VITE_SOLVER_URL%/solve" (a same-origin relative URL that resolves to something that isn't the
 // solver) instead of cleanly falling back to the built-in JS generator.
-export const isUnresolvedToken = v => typeof v === 'string' && v.startsWith('%') && v.endsWith('%');
-
-const readGlobal = key => {
-  const raw = (typeof globalThis !== 'undefined' && globalThis[key]) || '';
-  return isUnresolvedToken(raw) ? '' : raw;
-};
+import { isUnresolvedToken, readGlobal } from './envGlobal.js';
+export { isUnresolvedToken };
 
 // Exported (rather than inlined into SOLVER_ENABLED) so callers/tests can read the resolved URL
 // directly — e.g. to build the exact `${url}/solve` endpoint themselves, or to assert it's empty
@@ -56,27 +52,37 @@ export async function solveRemote(payload, { timeoutMs = 120000, accessToken = n
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = { 'Content-Type': 'application/json' };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-  let res;
+  // The timeout covers the response BODY too, not just the headers: a server that sends headers
+  // and then stalls would otherwise leave res.json() waiting forever (the timer was cleared as soon
+  // as fetch() resolved).
   try {
-    res = await fetch(`${target}/solve`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
-    throw new Error(`Solver request failed: ${e?.message || e}`);
+    let res;
+    try {
+      res = await fetch(`${target}/solve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
+      throw new Error(`Solver request failed: ${e?.message || e}`);
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try { detail = await res.text(); } catch { /* best-effort only — a body-read failure shouldn't mask the real status error */ }
+      throw new Error(`Solver returned ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
+    }
+    try {
+      return await res.json();
+    } catch (e) {
+      if (e?.name === 'AbortError') throw new Error(`Solver request timed out after ${timeoutMs}ms`);
+      throw e;
+    }
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    let detail = '';
-    try { detail = await res.text(); } catch { /* best-effort only — a body-read failure shouldn't mask the real status error */ }
-    throw new Error(`Solver returned ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
-  }
-  return res.json();
 }
 
 // ─── "Run the optimizer on this computer" ──────────────────────────────────────────────────────
@@ -126,7 +132,7 @@ export function resolveSolverTarget({ preference, localHealthy }) {
 // anything else (missing, legacy, hand-edited) reads as 'cloud', the long-standing default.
 // Legacy 'remote:<slug>' / 'pc:<slug>' (the removed PR #5 remote-target picker ids) map to
 // 'pool:<Name>' when a `pool` entry's name slugifies to that slug, else 'cloud'.
-export const slugifySolverName = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const slugifySolverName = n => String(n).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 export function normalizeSolverTarget(v, { pool = [] } = {}) {
   if (typeof v === 'string' && v.startsWith('pool:') && v.slice(5).trim()) return v; // manual pool machine
   if (typeof v === 'string') {
@@ -148,6 +154,16 @@ const healthCache = new Map(); // url -> { mode, host, preferJobs, defaultBudget
 // synchronous (non-job) solve runs, since that path never produces progress ticks.
 const runnerCache = new Map();
 export const getCachedRunner = url => runnerCache.get(url) ?? null;
+// The optional SOLVER_HOST_KIND hints a /health body may carry; absent = null/false/null.
+export function parseHealthHints(json) {
+  const budget = Number(json?.defaultBudgetSeconds);
+  return {
+    host: typeof json?.host === 'string' && json.host ? json.host : null,
+    preferJobs: json?.preferJobs === true,
+    defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+  };
+}
+
 // Full /health read: { mode: 'durable'|'memory', host: string|null, preferJobs: bool,
 // defaultBudgetSeconds: number|null } or null when unreachable. `host`/`preferJobs`/
 // `defaultBudgetSeconds` are optional server hints (SOLVER_HOST_KIND=pi|pc); absent = Fly/Modal.
@@ -161,12 +177,9 @@ export async function probeSolverHealth(url, { timeoutMs = 20000, fresh = false 
     const res = await fetch(`${url}/health`, { signal: controller.signal });
     if (!res.ok) return null;
     const json = await res.json();
-    const budget = Number(json?.defaultBudgetSeconds);
     const info = {
       mode: json?.jobs === 'durable' ? 'durable' : 'memory',
-      host: typeof json?.host === 'string' && json.host ? json.host : null,
-      preferJobs: json?.preferJobs === true,
-      defaultBudgetSeconds: Number.isFinite(budget) && budget > 0 ? budget : null,
+      ...parseHealthHints(json),
     };
     healthCache.set(url, info);
     if (json?.runner) runnerCache.set(url, json.runner);
