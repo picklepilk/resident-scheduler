@@ -75,7 +75,7 @@ import { laneBar, serviceTone, servicesPresent, stintLabel, hasSeparateStints } 
 import { netNewIssues, capRows } from './lib/moveImpact.js';
 import { clearScheduleFields } from './lib/clearSchedule.js';
 import { summarizeAsNeeded } from './lib/asNeededSummary.js';
-import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackKeyFor, isAckable } from './lib/issueAcks.js';
+import { partitionAcked, addAcks, removeAcks, normalizeAcks, pruneAcks, ackEntryFor, isAckable } from './lib/issueAcks.js';
 import { groupPanelIssues, labelForIssue, issueJumpTarget, issueKey, groupIssuesByKind, classifyCellIssues } from './lib/reviewPanel.js';
 import { violatingCells, keptCellsForMode } from './lib/keptCellViolations.js';
 import { findGiveCandidates, findSwapCandidates, findAssignOptions } from './lib/cellAlternatives.js';
@@ -4321,7 +4321,7 @@ function eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appS
 // the same (date, shift). Shared by the trauma single-resident rule and the no-two-interns rule so
 // the grouping/reporting scaffold can't drift between them. `message(e, entries, names)` builds the
 // per-resident text.
-function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, shiftFilter, message, level }) {
+function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, shiftFilter, message, level, rule }) {
   const byDateShift = {};
   for (const resident of allResidents) {
     if (rowFilter && !rowFilter(resident)) continue;
@@ -4336,7 +4336,7 @@ function pushSharedShiftViolations(issues, allResidents, schedule, { rowFilter, 
     const names = entries.map(e => `${e.resident.firstName} ${e.resident.lastName}`).join(', ');
     for (const e of entries) {
       issues.push({ residentId: e.resident.id, name: `${e.resident.firstName} ${e.resident.lastName}`,
-        dateStr: e.ds, shiftId: e.sid, message: message(e, entries, names), level });
+        dateStr: e.ds, shiftId: e.sid, message: message(e, entries, names), level, ...(rule ? { rule } : {}) });
     }
   }
 }
@@ -4740,7 +4740,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           // `${residentId}_${dateStr}`), and this issue has never lit up a single cell there. Reusing
           // dateStr would start doing that — a real behavior change to the grid — where anchorDate is
           // inert everywhere except the review panel's own jump target resolution.
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, anchorDate: runStart,
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, anchorDate: runStart, rule: 'nightStintIsolated',
             message: `Isolated night stint of ${runLen} (${formatDisplayDate(runStart)}–${formatDisplayDate(blockDates[runEndIdx])}) — aim for ${NIGHT_RULES.minRun}-${NIGHT_RULES.idealRun} in a row`, level: 'warn' });
         // Trauma-night-within-run rules (chief-directed): at most 2 TRAUMA-N per contiguous night
         // run (hard). Trauma-night POSITION within a run is no longer
@@ -4781,7 +4781,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         // not a hard block: the generator still never produces one on its own.
         const runCount = nightRunSegments(rs).length;
         if (runCount === 2)
-          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null,
+          issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightStintPair',
             message: `2 separate night stints this block — acceptable only if necessary, prefer clustering into one run`, level: 'warn' });
         else if (runCount > 2)
           issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'nightStintCount',
@@ -4808,10 +4808,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       const cov = getCoverageFor(shift.id, coverage, dsDow, conf12);
       const count = countsByDateShift[`${ds}__${shift.id}`] || 0;
       if (cov.min > 0 && count < cov.min)
-        issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
+        issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'coverageBelowMin',
           message: `Below minimum staffing: ${count}/${cov.min} on ${shift.label} (${formatDisplayDate(ds)})`, level: 'warn' });
       else if (count > cov.max)
-        issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id,
+        issues.push({ residentId: null, name: null, dateStr: ds, shiftId: shift.id, rule: 'coverageAboveMax',
           message: `Above maximum staffing: ${count}/${cov.max} on ${shift.label} (${formatDisplayDate(ds)})`, level: 'warn' });
     }
   }
@@ -4903,7 +4903,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     for (const pgy of [1, 2, 3]) {
       const hasPresenter = allResidents.some(r => r.category === 'EM_HOME' && r.pgy === pgy && (r.jcPresentDates || []).includes(jcDate));
       if (!hasPresenter)
-        issues.push({ residentId: null, name: null, dateStr: jcDate, shiftId: null,
+        issues.push({ residentId: null, name: null, dateStr: jcDate, shiftId: null, rule: 'jcPresenterMissing',
           message: `No EM Home PGY-${pgy} marked as Journal Club presenter for ${formatDisplayDate(jcDate)}`, level: 'warn' });
     }
   }
@@ -4922,6 +4922,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
     rowFilter: isEmIntern,
     message: (e, entries, names) => `${entries.length} interns on ${e.sid} (${names}) — avoid pairing two interns on the same shift`,
     level: 'warn',
+    rule: 'internPairing',
   });
 
   // Hand overrides (2026-10-18): a violation covered by a confirmed block.handOverrides entry for
@@ -7253,7 +7254,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Never TRAUMA-D/N (hard-clamped to 1 everywhere else — see getCoverageFor's own TRAUMA_SOLO_IDS
     // clamp) and never a shift whose max is 0 that date (this alone also excludes every 12h id
     // outside its own chief-defined window — see twelveHourAllows/getCoverageFor). validateAll
-    // already reports count > max as a plain warn with no `rule` id (`Above maximum staffing`), so
+    // already reports count > max as a plain warn (rule `coverageAboveMax`, tier info), so
     // it is neither export-blocking nor counted in errorCount/blockingWarnCount — recorded here in
     // report.overstaffed for the report card to surface explicitly.
     function overstaffFor(r) {
@@ -21677,7 +21678,7 @@ function IssueRow({ issue, tone, onJumpToCell, onJumpToRow, ack }) {
       </button>
       {ack && isAckable(issue) && (
         <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-          {ack.acked && ack.acked[ackKeyFor(issue)]?.note && <span className="italic truncate" title={ack.acked[ackKeyFor(issue)].note}>{ack.acked[ackKeyFor(issue)].note}</span>}
+          {ackEntryFor(ack.acked, issue)?.note && <span className="italic truncate" title={ackEntryFor(ack.acked, issue).note}>{ackEntryFor(ack.acked, issue).note}</span>}
           <button type="button" className="ml-auto hover:text-primary underline shrink-0"
             onClick={() => (ack.onAck ? ack.onAck([issue]) : ack.onUnack([issue]))}>
             {ack.onAck ? 'Acknowledge' : 'Un-acknowledge'}

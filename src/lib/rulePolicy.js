@@ -102,6 +102,19 @@ export const RULE_POLICY = {
   // Chief rule 2026-10-31: a 3rd core EM body on POD D/E/N is the last resort (off-service preferred). Plain info warn.
   podThirdBody: { tier: 'info', label: 'POD shift has 3 core EM residents (off-service preferred for the 3rd body)' },
   asNeededException: { tier: 'info', label: 'Rule broken as needed to fill a coverage minimum' },
+  // 2026-11-11: validateAll's remaining plain soft warns got ids (they were pushed with none, so
+  // grouping/acks keyed on message text). 'info' for the same reason as seniorEmCountComposition
+  // above: `level: 'warn'` stays hardcoded at each push site, never in EXPORT_BLOCKING_RULE_IDS or
+  // countBlockingWarns, so no export gate, ranking or generator behaviour changes. Labels double as
+  // review-panel group labels (ISSUE_RULE_LABELS), so the night-stint ones keep the old group names.
+  // Coverage rows still group per shift (groupKeyForIssue checks coverageDirection first).
+  // issueAcks.js LEGACY_RULELESS_IDS keeps acks saved before the ids existed.
+  nightStintIsolated: { tier: 'info', label: 'Isolated night stints' },
+  nightStintPair: { tier: 'info', label: 'Multiple night stints' },
+  coverageBelowMin: { tier: 'info', label: 'Shift below minimum staffing' },
+  coverageAboveMax: { tier: 'info', label: 'Shift above maximum staffing' },
+  internPairing: { tier: 'info', label: 'Two interns on the same shift' },
+  jcPresenterMissing: { tier: 'info', label: 'No Journal Club presenter marked for a PGY' },
 };
 
 // 2026-10-18 chief decision: every 'program' rule plus rotationEligibility (tiered 'acgme' for

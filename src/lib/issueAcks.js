@@ -15,6 +15,27 @@ export function ackKeyFor(issue) {
   ].join('|');
 }
 
+// Rule ids added 2026-11-11 to warns that used to carry none. An ack saved before then was keyed
+// with rule '' — still honor it, so existing acknowledgements don't silently lapse.
+export const LEGACY_RULELESS_IDS = new Set(['nightStintIsolated', 'nightStintPair', 'coverageBelowMin', 'coverageAboveMax', 'internPairing', 'jcPresenterMissing']);
+
+// Every key an ack for this issue may be stored under: the current key, plus the pre-id key.
+function ackKeysFor(issue) {
+  const k = ackKeyFor(issue);
+  return issue && LEGACY_RULELESS_IDS.has(issue.rule) ? [k, ackKeyFor({ ...issue, rule: '' })] : [k];
+}
+
+// The stored ack entry for an issue (current or legacy key), or undefined.
+export function ackEntryFor(acks, issue) {
+  if (!acks || typeof acks !== 'object') return undefined;
+  for (const k of ackKeysFor(issue)) if (acks[k]) return acks[k];
+  return undefined;
+}
+
+function ackFor(issue, a) {
+  return ackEntryFor(a, issue);
+}
+
 export function isAckable(issue) {
   return !!issue && issue.level !== 'error' && !issue.overridden;
 }
@@ -36,7 +57,7 @@ export function partitionAcked(issues, acks) {
   const active = [];
   const acked = [];
   for (const i of Array.isArray(issues) ? issues : []) {
-    (isAckable(i) && a[ackKeyFor(i)] ? acked : active).push(i);
+    (isAckable(i) && ackFor(i, a) ? acked : active).push(i);
   }
   return { active, acked };
 }
@@ -55,13 +76,13 @@ export function addAcks(acks, issues, { at, by = '', note = '' } = {}) {
 
 export function removeAcks(acks, issues) {
   const out = { ...normalizeAcks(acks) };
-  for (const i of Array.isArray(issues) ? issues : []) delete out[ackKeyFor(i)];
+  for (const i of Array.isArray(issues) ? issues : []) for (const k of ackKeysFor(i)) delete out[k];
   return out;
 }
 
 // Drops acks whose issue is no longer present.
 export function pruneAcks(acks, issues) {
-  const live = new Set((Array.isArray(issues) ? issues : []).map(ackKeyFor));
+  const live = new Set((Array.isArray(issues) ? issues : []).flatMap(ackKeysFor));
   const out = {};
   for (const [k, v] of Object.entries(normalizeAcks(acks))) if (live.has(k)) out[k] = v;
   return out;

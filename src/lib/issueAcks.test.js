@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ackKeyFor, isAckable, partitionAcked, addAcks, removeAcks, pruneAcks, normalizeAcks } from './issueAcks.js';
+import { ackKeyFor, isAckable, partitionAcked, addAcks, removeAcks, pruneAcks, normalizeAcks, ackEntryFor } from './issueAcks.js';
 
 const w = (o = {}) => ({ level: 'warn', rule: 'x', residentId: 'r1', dateStr: '2026-07-01', shiftId: 'POD-D', message: 'Isolated night stint of 3 (Wed 1/5-Fri 1/7)', ...o });
 const e = () => ({ level: 'error', rule: 'y', residentId: 'r1', message: 'bad' });
@@ -44,5 +44,24 @@ describe('issueAcks', () => {
     expect(normalizeAcks(null)).toEqual({});
     expect(normalizeAcks([1])).toEqual({});
     expect(normalizeAcks({ a: 5, b: { note: 3 } })).toEqual({ b: { at: '', by: '', note: '' } });
+  });
+});
+
+describe('legacy rule-less acks (rule ids added 2026-11-11)', () => {
+  const issue = { rule: 'nightStintIsolated', residentId: 'r1', dateStr: null, anchorDate: '2026-07-07', shiftId: null, level: 'warn', message: 'Isolated night stint of 2 (Tue 7/7–Wed 7/8) — aim for 5-6 in a row' };
+  const legacyKey = ackKeyFor({ ...issue, rule: '' });
+  const acks = { [legacyKey]: { at: 't', by: 'chief', note: 'ok' } };
+
+  it('an ack saved without a rule id still acknowledges the issue', () => {
+    expect(partitionAcked([issue], acks).acked).toEqual([issue]);
+    expect(ackEntryFor(acks, issue)?.note).toBe('ok');
+  });
+  it('pruneAcks keeps and removeAcks drops the legacy key', () => {
+    expect(Object.keys(pruneAcks(acks, [issue]))).toEqual([legacyKey]);
+    expect(removeAcks(acks, [issue])).toEqual({});
+  });
+  it('ids outside the legacy set never match a rule-less key', () => {
+    const other = { ...issue, rule: 'postNightRest' };
+    expect(partitionAcked([other], { [ackKeyFor({ ...other, rule: '' })]: { at: 't' } }).acked).toEqual([]);
   });
 });

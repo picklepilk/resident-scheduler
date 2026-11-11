@@ -71,7 +71,8 @@ export const GROUP_MESSAGE_LABELS = {
 };
 
 // Coverage-miss/coverage-max messages (validateAll's block-level "one issue per date+shift" scan)
-// carry no `rule` id, so without special handling they'd fall through to the generic normalized
+// carry the shared ids `coverageBelowMin`/`coverageAboveMax` (since 2026-11-11), so without special handling
+// they'd collapse into one group per id, or (before the ids) fall through to the generic normalized
 // template ("Below minimum staffing: # on Trauma Day") for EVERY shift, which drops the "TRAUMA-D
 // vs TRAUMA-N vs POD-D" distinction (the message's *human* shift LABEL, e.g. "Trauma Day", is left
 // untouched by normalizeIssueMessage, but the group should read as "Trauma Day below minimum", not
