@@ -7314,10 +7314,24 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     fillPhase = null;
   }
-  if (diagnosticsOnly && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
+  if ((diagnosticsOnly || truePrimaryOnlyMode) && Array.isArray(seedUnfilled)) report.unfilled = seedUnfilled.map(u => ({ ...u }));
   if (repair === true && !diagnosticsOnly) repairPass();
   else if (repair === 'truePrimaryOnly') preferTruePrimaryPass();
   else if (repair === 'truePrimaryLift') underTargetLiftPass();
+  // truePrimaryOnlyMode skipped the fill passes, so `report.unfilled` is only what the caller seeded
+  // (the incoming winner's list): drop rows the pass above happened to close (the lift can top up a
+  // slot below min), exactly like repairPass re-derives it. Same entries, same shape, no new rows.
+  if (truePrimaryOnlyMode && report.unfilled.length) {
+    const short = new Map();
+    report.unfilled = report.unfilled.filter(u => {
+      const key = `${u.shiftId}|${u.dateStr}`;
+      let left = short.get(key);
+      if (left === undefined) left = minFor(u.shiftId, u.dateStr) - filledCount(u.shiftId, u.dateStr);
+      if (left <= 0) { short.set(key, 0); return false; }
+      short.set(key, left - 1);
+      return true;
+    });
+  }
   if (repair === true && !diagnosticsOnly) lateAsNeededSweep(); // after repair only: attempts stay exception-free, the winner gets the last resort
 
   // R5 (2026-09-27 chief decision): rebuild report.podSubstitutes from the FINAL schedule (post-
@@ -8813,6 +8827,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
       // Operates on the already-generated schedule: clearFirst (Clear & Regenerate) must not wipe it.
       clearFirst: false,
       keptCellsOverride: trueKeptCells,
+      seedUnfilled: best.result.report.unfilled || [],
     });
     if (fixAttempt.report.repairs.length) { // Phase 3b actually found and fixed something
       const fixedResult = {
@@ -8857,6 +8872,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
           repair: 'truePrimaryLift',
           clearFirst: false,
           keptCellsOverride: trueKeptCells,
+          seedUnfilled: best.result.report.unfilled || [],
         });
         if (liftAttempt.report.repairs.length) {
           const liftedResult = {
