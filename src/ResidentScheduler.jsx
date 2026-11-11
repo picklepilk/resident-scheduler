@@ -6620,7 +6620,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       assignCell(best.id, shift.id, u.dateStr);
       report.filled++;
     }
-    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+    pruneUnfilled();
   }
   // streakCache is only valid within a single day's pass (see fillDayPass) — every call here
   // resets it first, since repair jumps between arbitrary dates, not one day at a time.
@@ -6727,6 +6727,20 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   function minFor(sid, ds) {
     const dow = parseDate(ds).getDay();
     return getCoverageFor(sid, coverage, dow, conf12For(ds)).min;
+  }
+  // Re-derive report.unfilled from the schedule after any pass that may fill slots: keep at most
+  // (min - filled) rows per shift/date, first rows first. A plain `filled < min` filter kept BOTH rows
+  // of a min-2 slot after one of them was filled (report said 2 holes, schedule had 1).
+  function pruneUnfilled() {
+    const short = new Map();
+    report.unfilled = report.unfilled.filter(u => {
+      const key = `${u.shiftId}|${u.dateStr}`;
+      let left = short.get(key);
+      if (left === undefined) left = minFor(u.shiftId, u.dateStr) - filledCount(u.shiftId, u.dateStr);
+      if (left <= 0) { short.set(key, 0); return false; }
+      short.set(key, left - 1);
+      return true;
+    });
   }
   // Narrows a clean candidate pool by the same hard seniority-composition requirement
   // fillDayPass enforces for BOTH FLEX and POD (AY26/27 chief-directed, both hard now — see
@@ -6852,7 +6866,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // report arrays are never authoritative after mutation (a row fixed as a side effect of a
     // DIFFERENT slot's repair must also drop here, not just the one repairUnfilledSlot directly
     // targeted).
-    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+    pruneUnfilled();
 
     // Phase 2 — rest compromises. Swap the violator out for a clean candidate if one exists now
     // (same shift/date, one out one in — coverage count is unchanged, no min-check needed).
@@ -7070,7 +7084,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     }
     // Same re-derivation Phase 1 does: a row fixed as a side effect of a different slot's chain
     // must drop here too, so never trust the array itself after mutation.
-    report.unfilled = report.unfilled.filter(u => filledCount(u.shiftId, u.dateStr) < minFor(u.shiftId, u.dateStr));
+    pruneUnfilled();
 
     underTargetLiftPass();
   }
@@ -7340,15 +7354,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // (the incoming winner's list): drop rows the pass above happened to close (the lift can top up a
   // slot below min), exactly like repairPass re-derives it. Same entries, same shape, no new rows.
   if (truePrimaryOnlyMode && report.unfilled.length) {
-    const short = new Map();
-    report.unfilled = report.unfilled.filter(u => {
-      const key = `${u.shiftId}|${u.dateStr}`;
-      let left = short.get(key);
-      if (left === undefined) left = minFor(u.shiftId, u.dateStr) - filledCount(u.shiftId, u.dateStr);
-      if (left <= 0) { short.set(key, 0); return false; }
-      short.set(key, left - 1);
-      return true;
-    });
+    pruneUnfilled();
   }
   if (repair === true && !diagnosticsOnly) lateAsNeededSweep(); // after repair only: attempts stay exception-free, the winner gets the last resort
 

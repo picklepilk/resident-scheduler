@@ -39,6 +39,14 @@ function unfilledCounts(report) {
 const SEEDS = [1003]; // seed 1003 lands on a truePrimary fix+lift winner for both realScale shapes
 
 describe('generateScheduleBest report consistency', () => {
+  it('report.unfilled matches holes on a non-fix winner with a partly filled min-2 slot (staggered seed 1001)', async () => {
+    // Seed 1001 / staggered once listed POD-N 2026-08-02 twice (slots 0 and 1) while only one was short:
+    // the old `filled < min` filter kept every row of a still-short slot. pruneUnfilled keeps min - filled.
+    const args = makeRealScaleFixture({ staggerSplit: true });
+    const res = generateScheduleBest(args, { attempts: 20, lnsIters: 40, baseSeed: 1001 });
+    expect([...unfilledCounts(res.report)].sort()).toEqual([...holeCounts(args, res.schedule)].sort());
+  });
+
   it('report.unfilled matches the final schedule holes (realScale)', async () => {
     let sawTruePrimary = false;
     for (const staggerSplit of [false, true]) {
@@ -46,7 +54,7 @@ describe('generateScheduleBest report consistency', () => {
         await new Promise(r => setImmediate(r));
         const args = makeRealScaleFixture({ staggerSplit });
         const res = generateScheduleBest(args, { attempts: 20, lnsIters: 40, baseSeed });
-        if (!res.report.truePrimaryFixApplied) continue; // non-fix winners have a separate, pre-existing off-by-one on some seeds
+        if (!res.report.truePrimaryFixApplied) continue; // non-fix winners: covered by the seed-1001 test above
         sawTruePrimary = true;
         expect([...unfilledCounts(res.report)].sort()).toEqual([...holeCounts(args, res.schedule)].sort());
       }
