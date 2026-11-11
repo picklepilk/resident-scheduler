@@ -58,6 +58,7 @@ import {
   assertWriteTargetRowId, makePlaygroundMeta, shapePlaygroundListRow, filterOwnPlaygrounds,
   findMatchingRealBlock, summarizePromoteDiff, promoteBlockSchedule,
 } from './lib/playgrounds.js';
+import { readPending, writePending, clearPending, decideMountOverlay, localDiffersFromCloud } from './lib/pendingSync.js';
 import { composeCoverage, bucketLabel } from './lib/coverageComposition.js';
 import { appendImportLog, normalizeImportLog, stampNewEntries, sourcesFor } from './lib/importLog.js';
 import { parseAcademicDocx, summarizeParsed, fileHash } from './lib/academicSchedule.js';
@@ -26234,6 +26235,19 @@ export default function ResidentScheduler({ viewer } = {}) {
     res_tab_order:             [tabOrder, setTabOrder],
     res_import_log:            [importLog, setImportLog],
   };
+  // Latest synced values as of the last render: lets an async save tell "state still equals what I
+  // just saved" from "edited while the save was in flight" (see confirmCloudSaved).
+  const latestSyncRef = useRef([]);
+  latestSyncRef.current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+  // Row this mount reads/writes; keys the persisted "local edits not yet confirmed in the cloud"
+  // marker (src/lib/pendingSync.js). Set when a local edit diverges from the cloud baseline, cleared
+  // only when a cloud save is confirmed (or the cloud copy is deliberately taken), so a reload or
+  // crash before the debounced save lands no longer lets the mount overlay discard the edit.
+  const syncRowKey = demoMode ? activeRowId : RES_STATE_ROW_ID;
+  function confirmCloudSaved(rowId, savedValues, version) {
+    if (latestSyncRef.current.every((v, i) => v === savedValues[i])) clearPending(rowId);
+    else writePending(rowId, { baseVersion: version });
+  }
 
   // On mount: each useLocalStorage's lazy initializer has already loaded its localStorage value
   // synchronously (instant, no network) before this runs. If cloud sync is configured, overlay
@@ -26259,6 +26273,28 @@ export default function ResidentScheduler({ viewer } = {}) {
       if (row && row.data) {
         const d = row.data;
         if (demoMode && d[PLAYGROUND_META_KEY]) playgroundMetaRef.current = d[PLAYGROUND_META_KEY];
+        // Local edits never confirmed in the cloud (reload/crash/offline before the debounced save):
+        // never silently replace them. See decideMountOverlay.
+        const marker = readPending(syncRowKey);
+        const localByKey = {};
+        LS_BACKUP_KEYS.forEach(k => { localByKey[k] = syncBindings[k][0]; });
+        const decision = decideMountOverlay({
+          marker,
+          cloud: { status: 'ok', version: row.version },
+          localDiffers: marker ? localDiffersFromCloud(localByKey, d, LS_BACKUP_KEYS) : false,
+        });
+        if (decision === 'keep-local' || decision === 'ask') {
+          // Skip the overlay. Baseline = the cloud copy, so the normal versioned save pushes local
+          // (keep-local: cloud unchanged since our base) or waits behind the conflict dialog (ask).
+          cloudBaselineRef.current = {
+            values: LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : undefined)),
+            version: row.version,
+          };
+          if (decision === 'ask') setConflict({ rowId: syncRowKey, remote: row, email: null, unsyncedLocal: true });
+          setDbReady(true); setDbStatus('idle');
+          return;
+        }
+        if (marker) clearPending(syncRowKey); // local equals cloud, or nothing differs: marker is stale
         LS_BACKUP_KEYS.forEach(k => { if (d[k] != null) syncBindings[k][1](d[k]); });
         // Baseline = the document now in sync with the cloud (applied value where present, else
         // the local value we left untouched) — so the save effect below won't re-upload what we
@@ -26362,6 +26398,7 @@ export default function ResidentScheduler({ viewer } = {}) {
         return;
       }
       cloudBaselineRef.current = { values: current, version: row.version };
+      confirmCloudSaved(rowId, current, row.version);
       setDbStatus('idle');
     } catch (e) {
       setDbError(e.message); setDbStatus('error');
@@ -26404,8 +26441,9 @@ export default function ResidentScheduler({ viewer } = {}) {
       values: LS_BACKUP_KEYS.map(k => (d[k] != null ? d[k] : syncBindings[k][0])),
       version: remote.version,
     };
+    clearPending(cloudConflict.rowId);
     setConflict(null);
-    showToast("Loaded the other admin's version.", 'amber');
+    showToast(cloudConflict.unsyncedLocal ? 'Loaded the cloud copy.' : "Loaded the other admin's version.", 'amber');
   }
 
   // "Overwrite with mine": re-save against the version we JUST confirmed (not the stale baseline
@@ -26424,9 +26462,11 @@ export default function ResidentScheduler({ viewer } = {}) {
         await openConflict(rowId);
         return;
       }
-      cloudBaselineRef.current = { values: LS_BACKUP_KEYS.map(k => syncBindings[k][0]), version: row.version };
+      const savedValues = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+      cloudBaselineRef.current = { values: savedValues, version: row.version };
+      confirmCloudSaved(rowId, savedValues, row.version);
       setConflict(null);
-      showToast('Your version saved over theirs.', 'green');
+      showToast(cloudConflict.unsyncedLocal ? 'Your edits saved to the cloud.' : 'Your version saved over theirs.', 'green');
     } catch (e) {
       showToast('Could not overwrite — try again: ' + e.message, 'red');
     }
@@ -26440,6 +26480,19 @@ export default function ResidentScheduler({ viewer } = {}) {
     downloadBackupBlob(doc, demoMode);
     showToast('Backup downloaded.', 'green');
   }
+
+  // Persist the "unconfirmed local edits" marker as soon as local state diverges from the cloud
+  // baseline (also after a failed mount load, where dbReady stays false but edits still happen).
+  useEffect(() => {
+    if (!SUPABASE_ENABLED) return;
+    const base = cloudBaselineRef.current;
+    if (dbReady) {
+      const current = LS_BACKUP_KEYS.map(k => syncBindings[k][0]);
+      if (base && current.every((v, i) => v === base.values[i])) return;
+    } else if (dbStatus !== 'error') return; // still loading: the overlay may be about to replace this
+    if (!readPending(syncRowKey)) writePending(syncRowKey, { baseVersion: base ? base.version : null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emRoster, eligOverrides, blocksHistory, block, ayData, appSettings, dayRules, coverage, tabOrder, importLog, dbReady, dbStatus]);
 
   useEffect(() => {
     if (!dbReady || !SUPABASE_ENABLED) return;
@@ -26543,6 +26596,23 @@ export default function ResidentScheduler({ viewer } = {}) {
     }
     if (savePromiseRef.current) await savePromiseRef.current;
   }
+
+  // Best-effort extra (the persisted marker is the actual protection): when the tab is hidden or
+  // closing, fire a still-waiting debounced save now instead of letting the timer die with the page.
+  const flushOnHideRef = useRef(null);
+  flushOnHideRef.current = () => {
+    if (!saveTimerRef.current || !SUPABASE_ENABLED || !dbReady || syncSuspended) return;
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+    startCloudSave();
+  };
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === 'hidden') flushOnHideRef.current?.(); };
+    const onPageHide = () => flushOnHideRef.current?.();
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onPageHide);
+    return () => { document.removeEventListener('visibilitychange', onHide); window.removeEventListener('pagehide', onPageHide); };
+  }, []);
 
   // ─── SIGN-OUT HYGIENE (shared-workstation) ───────────────────────────────────────────────────
   // Clears this device's res_*/res_demo_* localStorage on sign-out so the next person to sit down
@@ -27931,19 +28001,26 @@ export default function ResidentScheduler({ viewer } = {}) {
           admin saved first. No onClose/backdrop dismiss on purpose: one of the three actions below
           must be taken before autosave can resume (saveCloudNow short-circuits while this is up). */}
       {cloudConflict && (
-        <ConfirmDialog icon={AlertTriangle} tone="warn" title="Another admin saved changes"
+        <ConfirmDialog icon={AlertTriangle} tone="warn" title={cloudConflict.unsyncedLocal ? 'Unsynced edits on this device' : 'Another admin saved changes'}
           actions={
             <>
               <Button variant="secondary" size="sm" onClick={conflictDownloadMine}>Download my copy as JSON backup</Button>
-              <Button variant="secondary" size="sm" onClick={conflictReloadTheirs}>Reload theirs</Button>
-              <Button variant="danger" size="sm" onClick={conflictOverwriteMine}>Overwrite with mine</Button>
+              <Button variant="secondary" size="sm" onClick={conflictReloadTheirs}>{cloudConflict.unsyncedLocal ? 'Take the cloud copy' : 'Reload theirs'}</Button>
+              <Button variant="danger" size="sm" onClick={conflictOverwriteMine}>{cloudConflict.unsyncedLocal ? 'Keep my edits' : 'Overwrite with mine'}</Button>
             </>
           }>
+          {cloudConflict.unsyncedLocal ? (
+          <p>
+            This device has edits that were never saved to the cloud, and the cloud copy has changed since (or this device cannot tell).
+            Nothing has been overwritten yet. Keep the edits on this device (they replace the cloud copy) or take the cloud copy (the unsaved edits here are discarded). Download a backup first if unsure.
+          </p>
+          ) : (
           <p>
             {cloudConflict.email ? <>Saved by <span className="font-medium text-foreground">{cloudConflict.email}</span></> : 'Saved by another admin'}
             {cloudConflict.remote?.updated_at && <> at {new Date(cloudConflict.remote.updated_at).toLocaleString()}</>}
             , after this device last synced. Your own edits since then are still here (nothing is lost yet) — pick how to proceed:
           </p>
+          )}
           <ul className="list-disc pl-5 mt-2 space-y-1 text-xs">
             <li><strong>Reload theirs</strong> — discard your unsaved edits, take their version.</li>
             <li><strong>Overwrite with mine</strong> — your version replaces theirs in the cloud.</li>
