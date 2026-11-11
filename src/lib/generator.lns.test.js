@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 // B1: time-budgeted attempts + LNS ruin-and-recreate post-pass of generateScheduleBest.
 import { describe, it, expect } from 'vitest';
-import { generateScheduleBest, generateScheduleBestAsync, replayLns, replayNightMerge, validateAll, hasFallbackComposition } from '../ResidentScheduler.jsx';
+import { generateScheduleBest, generateScheduleBestAsync, replayLns, replayNightMerge, replayHoleRepair, validateAll, hasFallbackComposition } from '../ResidentScheduler.jsx';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 const errorsOf = (fx, schedule) => validateAll(
@@ -33,7 +33,7 @@ describe('generateScheduleBest — LNS', () => {
     // ordinary non-empty cells in block.schedule, so the same original-kept-cells guard covers them).
     const block = { ...fx.block, schedule: { [rid]: Object.fromEntries(manual) }, lockedCells: { [rid]: { [manual[0][0]]: true } } };
     const args = { ...fx, block };
-    const opts = { attempts: 3, baseSeed: 77 };
+    const opts = { attempts: 3, baseSeed: 77, holeRepair: false };
     const pre = generateScheduleBest(args, { ...opts, lnsIters: 0 });
     const a = generateScheduleBest(args, { ...opts, lnsIters: 12 });
     const b = generateScheduleBest(args, { ...opts, lnsIters: 12 });
@@ -101,4 +101,40 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
     const r = generateScheduleBest({ ...fx, block: stale, clearFirst: true }, { attempts: 2, baseSeed: 9, lnsIters: 5 });
     expect(r.report.replay.lns.iters).toBe(5);
   });
+});
+
+describe('generateScheduleBest — post-LNS hole repair + hole-directed LNS replay', () => {
+  it('replay (pre-LNS -> LNS -> night-merge -> hole repair) reproduces the final schedule', async () => {
+    const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
+    const fx = makeRealScaleFixture();
+    const opts = { attempts: 20, baseSeed: 1000, holeRepair: false };
+    const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
+    const full = await generateScheduleBestAsync({ ...fx }, { ...opts, holeRepair: true, lnsIters: 40, lnsHoleDirected: true });
+    expect(full.report.replay.lns).toEqual({ seed: expect.any(Number), iters: 40, holeDirected: true });
+    let cur = replayLns(fx, pre, full.report.replay.lns);
+    cur = replayNightMerge(fx, cur);
+    if (full.report.replay.holeRepair) cur = replayHoleRepair(fx, cur, full.report.replay.holeRepair);
+    expect(cur.schedule).toEqual(full.schedule);
+    // Never worse than the same run without the new steps (errors first).
+    expect(errorsOf(fx, full.schedule)).toBeLessThanOrEqual(errorsOf(fx, pre.schedule));
+    // Absent flags -> old behaviour and recipe shape.
+    const plain = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 5 });
+    expect(plain.report.replay.holeRepair).toBeNull();
+    expect(plain.report.replay.lns.holeDirected).toBeUndefined();
+  }, 240000);
+
+  it('hole repair alone is replayable', async () => {
+    const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
+    const fx = makeRealScaleFixture();
+    const opts = { attempts: 20, baseSeed: 1000 };
+    const noHr = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 10, holeRepair: false });
+    const hr = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 10, holeRepair: true });
+    // Same pipeline up to the last step, so the hole-repair replay starts from the plain run's schedule.
+    if (hr.report.replay.holeRepair) {
+      const replayed = replayHoleRepair(fx, noHr, hr.report.replay.holeRepair);
+      expect(replayed.schedule).toEqual(hr.schedule);
+    } else {
+      expect(hr.schedule).toEqual(noHr.schedule);
+    }
+  }, 240000);
 });
