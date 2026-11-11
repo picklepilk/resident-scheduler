@@ -211,7 +211,7 @@ def _cap_recommendation(payload: Payload, schedule: dict, v: dict):
         return None
 
     if rule == "targetCeiling":
-        current = resident.target
+        current = resident.caps.target_ceiling if resident.caps.target_ceiling is not None else resident.target
         if current is None or assigned <= current:
             return None
         text = templates.TARGET_RAISE_TEMPLATE.format(resident=resident_id, current=current, new_value=assigned)

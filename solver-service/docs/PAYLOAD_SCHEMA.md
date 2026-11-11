@@ -1496,10 +1496,10 @@ Program decision: some scheduling rules are "the goal, but break as needed to fi
 
 ## 2026-10-30 chief-rules changes (JS payload + solver in lockstep)
 
-- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more, so `emPgy3ResidentIds` is always sent **empty** and `flexPgy3Fallback` is inert (weight key kept in `config/default_weights.json` because the model and tests still read it; `podPgy2Fallback` is unchanged).
+- **FLEX senior composition**: `seniorPrimary[FLEX-*]` now lists EM Home PGY-2 **and** PGY-3 (JS `SENIOR_COMPOSITION.FLEX.primaries = [2,3]`). FLEX has no fallback PGY / Wellness substitute any more. (Superseded 2026-11-06: see below, `emPgy3ResidentIds` is sent again.)
 - **`traumaMidRun` removed**: weight key, `add_trauma_mid_run_terms` and its objective call are gone (trauma-night position in a run is no longer a rule). Hard cap (rule 43) and `traumaSecondInRun` are unchanged.
 - **Final-Sunday overnight rule removed**: no `finalSundayUnconfirmed` preference is emitted and `eligible` no longer strips night shifts on the final Sunday.
-- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday stays min 1 / max 2.
+- **POD coverage**: `coverage[POD-D|POD-E|POD-N][date].max` is 3 every day (min stays 2); POD-D on Wednesday is min 1 / max 3 (chief 2026-11-06; was max 2).
 
 **Extended 2026-10-30:** the same `asNeeded` list now also carries off-service weekday/shift-time restrictions (FM/IM/Neuro/Anes/Psych/Podiatry fullBlockDays, onlyDays and dayTypeRestrictions) and Peds/EM PGY-2 TRAUMA-N. No schema or solver change: the cells are produced by `getAsNeededShifts` and handled exactly as above. `coverage['MT-D'][<Wednesday>]` is now `{min:0,max:1}` and only EM_BAMC residents carry MT-D on Wednesdays in `eligible`; Trauma/Peds interns' peds-half `eligible` includes PED-S (no separate split filter in Python).
 
@@ -1509,7 +1509,7 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
 
 - **Nights per block:** target 6, hard max 12. `residents[].caps.nights` = **6** (the soft target) and NEW optional `residents[].caps.nightsMax` = **12** (hard). Parse: `ResidentCaps.nights_max`. Constraint: `circadian.py` `_add_night_cap` enforces `sum(nights) <= nightsMax` (hard, `nightCap` family, pass-2 relaxable as before); objective: `_add_night_excess_term` adds `excess >= sum(nights) - nights` and charges `asNeededUse.perUnit` (20000) per excess night in `TIER_RANK` (same tier as an as-needed cell; JS mirror = one `asNeededException` unit per night above 6, `FAIRNESS_AXIS_WEIGHTS.asNeededUse` 40). Night-exempt residents are skipped. The "only to fill a coverage minimum" restriction is economic (20000 per unit vs. at most 5000/10000 per unit of target deficit, and optional headroom has no reward), not a structural link like the cell case.
 - **Old solver safety:** `caps.nights` stays 6 for old builds that ignore `nightsMax`, where it is still a HARD cap => stricter than or equal to the new rule, never looser. A new solver given an old payload (no `nightsMax`) treats `nights` as the hard cap and adds no excess term.
-- **BAMC Thursday day / Wednesday night:** the cells ship in the existing `asNeeded` list (the BAMC `bamc_thu_day` / `bamc_wed_night` gates are `asNeeded`; Thursday evening/night are ordinary `eligible`). NEW optional `caps.bamcGrExceptions` = **1**: `count_caps.py` `_add_bamc_gr_exceptions` caps (Wednesday night cells + Thursday DAY cells) combined at that value, sharing the `bamcWedNight` enforcement literal. `caps.bamcWedNights` (1, Wednesday nights only) is still sent for old builds. Old solvers ignore `asNeeded`, so they simply never use the Thursday-day/Wednesday-night cells (stricter).
+- **BAMC Wednesday night (changed 2026-11-06):** Thursday DAY is now a hard eligibility strip (BAMC's own Grand Rounds): those cells appear in neither `eligible` nor `asNeeded`. Only the `bamc_wed_night` gate stays `asNeeded` (Thursday evening/night are ordinary `eligible`). `caps.bamcGrExceptions` = **1** keeps its field name but now caps Wednesday NIGHT cells only (`count_caps.py` `_add_bamc_gr_exceptions`, sharing the `bamcWedNight` enforcement literal); `caps.bamcWedNights` (1) is the same count, still sent for old builds. Old solvers ignore `asNeeded`, so they never use the Wednesday-night cells (stricter).
 - **Validation:** `validate.py` checks the night hard cap against `nightsMax` when present and the combined BAMC cap.
 - **JS side:** `NIGHT_RULES.targetPerBlock` 6 / `maxPerBlock` 12; generator uses the 6-night target in every pool and spends nights 7..12 plus the BAMC cells only in `lateAsNeededSweep` (after fill + repair, MIN slots still unfilled).
 - **Tests:** `tests/test_count_as_needed.py`; JS `src/lib/countAsNeeded.test.js`.
@@ -1617,3 +1617,18 @@ Response additions (all additive, `report` is a plain dict):
 Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
 
 Not ported (tried and rejected there or here): hand-written symmetry breaking (em: stalled 7/7 runs), `repair_hint` with staged re-solves (native CHECK crash), assumption literals for LNS fixing (weak presolve).
+
+## Payback allowance: `caps.targetCeiling` (2026-11-06)
+
+Optional per-resident `caps.targetCeiling` (int). When present it replaces `target` as the hard shift-count
+ceiling (rule 31 `targetCeiling`, `validate.py`); `target` itself (deficit/fairness) is unchanged. JS sends it only
+when the chief set a per-block `paybackAllowance` N > 0 on the resident (ceiling = target + N). Absent/null = ceiling is `target`.
+Note `pedsMixMax` now has an `override`-tier `RULE_POLICY` entry on the JS side (chief decision 2026-11-06: more than
+12 peds shifts is acknowledge-before-export); the solver cap itself is unchanged.
+
+## 2026-11-06 chief rules: Wednesday POD-D + FLEX senior preference
+
+- **POD-D Wednesday coverage** is `min 1 / max 3` (`DOW_COVERAGE_OVERRIDE`, direct replacement; was max 2). It flows through `coverage[POD-D][date]` as usual; nothing solver-side changed for it.
+- **FLEX PGY-2 preferred over PGY-3**: `emPgy3ResidentIds` is again sent (EM Home PGY-3 ids) so the existing `flexPgy3Fallback` (QUALITY tier, 250/assignment) charges a PGY-3 on any FLEX shift, and `truePrimary[FLEX-*]` now lists PGY-2 only (`SENIOR_COMPOSITION.preferred`), so `seniorTruePrimary` charges a PGY-3-only FLEX shift while a PGY-2 was eligible. A PGY-3 still satisfies the hard `seniorPrimary[FLEX-*]` rule; PGY-2 is only preferred. Do not re-empty the list.
+- **`wedPodBamcBody`** (`solver/model/pod_wed_bamc.py`, `perUnit` 150, QUALITY tier): per Wednesday POD-D date with at least one BAMC resident (`cohort` starting `EM_BAMC`) able to work it, charges 1 unit when no BAMC resident is on the shift. Independent of staffing, so it cannot favour leaving a minimum empty. Weight 0/absent disables it. Tests: `tests/test_pod_wed_bamc.py`.
+- **`neuroTueThuNight`** (`solver/model/avoid_night_dow.py`, `perUnit` 150, QUALITY tier; chief 2026-11-06): soft preference that Neurology PGY-1 avoid Tuesday/Thursday NIGHT shifts. Charges 1 unit per assignment of a resident whose `cohort` is a key of `AVOID_NIGHT_DOW` (currently `NEURO_1`, weekdays Tue/Thu) to any shift whose payload `shifts[*].type` is `night` (12h night ids included). No new payload field: the cohort is the JS `eligKey`, and the map is mirrored from `AVOID_NIGHT_DOW` in `src/ResidentScheduler.jsx` (change both together). Never forbids; a coverage minimum can still use these residents. Weight 0/absent disables it. Tests: `tests/test_avoid_night_dow.py`, `src/lib/neuroNightPref.test.js`.

@@ -26,6 +26,7 @@ export function computeSetupGaps(input = {}) {
     block = {}, missingSpecialDayLists = [], unmigrated = false, missingRuleDates = [], jcGaps = [],
     holidaysConfigured = true, ayLabel = '', conferenceDatesAbsent = false,
     residentIssues = [], pendingResidentCount = 0, offServiceNoRanges = [], supplyDemand = null,
+    traumaSplitShortfalls = [],
   } = input;
   const gaps = [];
   // Default BLOCKING (the rule/resident silently does not work); holidays, conferences and pending requests
@@ -101,6 +102,12 @@ export function computeSetupGaps(input = {}) {
       id: `offServiceRanges:${n.id || n.name}`, label: `${n.name}: no availability ranges`,
       detail: `Off-service resident ${n.name} uses date-range availability but has no ranges -- they will never be scheduled (Off-Service tab)`,
       fixTarget: { tab: 'offservice' }, suppresses: ['Off-service availability'],
+    });
+  }
+  for (const t of traumaSplitShortfalls) {
+    add({
+      id: `traumaSplit:${t.blockType}`, severity: 'advisory', label: `Trauma Day capacity (${t.start} to ${t.end})`,
+      detail: t.message, fixTarget: { tab: 'em' }, suppresses: ['Trauma half target for some interns'],
     });
   }
   let pressure = null;
