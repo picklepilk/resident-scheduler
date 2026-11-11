@@ -80,6 +80,27 @@ def _jwt_secret() -> str:
     return os.environ.get("SUPABASE_JWT_SECRET", "")
 
 
+def validate_startup_config() -> None:
+    """Refuse to start on Fly with auth off or unverifiable. Called at import of api.main.
+
+    Only active when FLY_APP_NAME is set (Fly injects it); local dev, tests, Pi/Windows
+    and Modal runs are unaffected. Reads env live. Raises RuntimeError with a clear message.
+    """
+    if not os.environ.get("FLY_APP_NAME", "").strip():
+        return
+    mode = _auth_mode()
+    if mode != "supabase":
+        raise RuntimeError(
+            "Refusing to start on Fly with auth off: set SOLVER_AUTH_MODE=supabase "
+            "(fly secrets set SOLVER_AUTH_MODE=supabase SUPABASE_URL=https://<ref>.supabase.co)."
+        )
+    if not _supabase_url() and not _jwt_secret():
+        raise RuntimeError(
+            "SOLVER_AUTH_MODE=supabase on Fly but no way to verify tokens: set SUPABASE_URL "
+            "(asymmetric/JWKS tokens) and/or SUPABASE_JWT_SECRET (legacy HS256)."
+        )
+
+
 def _allowed_emails() -> Optional[set]:
     """Lower-cased allowlist from env SOLVER_ALLOWED_EMAILS (comma-separated), or None when
     unset/blank (= no restriction)."""

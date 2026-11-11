@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.auth import AuthResult
+from api.auth import AuthResult, validate_startup_config
 from api.concurrency import solve_slot
 from api.jobs import jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
@@ -35,6 +35,9 @@ try:
     ORTOOLS_VERSION = _pkg_version("ortools")
 except Exception:  # pragma: no cover -- package metadata should always exist
     ORTOOLS_VERSION = "unknown"
+
+# Fail fast if deployed on Fly without auth (see api/auth.py).
+validate_startup_config()
 
 app = FastAPI(title="resident-scheduler-solver", version="1")
 

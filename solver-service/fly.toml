@@ -11,6 +11,8 @@ primary_region = "iad"
 [build]
 
 [env]
+  # Auth is NOT set here: SOLVER_AUTH_MODE=supabase + SUPABASE_URL are Fly secrets. The service
+  # refuses to start on Fly without them (api/auth.py validate_startup_config).
   # Browser origins allowed to call this service (api/main.py's CORSMiddleware allowlist) — the
   # deployed scheduler app plus local dev servers. Never "*": one specific frontend is the only
   # intended caller.
