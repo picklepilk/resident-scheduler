@@ -8394,7 +8394,6 @@ const ATTEMPT_BUDGET_SHARE_WITH_LNS = 0.55;
 const LNS_MIN_WINDOW = 3;
 const LNS_WINDOW_SPREAD = 3; // window = 3..5 days
 const LNS_UNFILLED_FOCUS = 0.2;
-const LNS_HOLE_FOCUS = 0.5; // hole-directed LNS (opt-in): share of iterations aimed at a coverage hole
 const LNS_UNDERTARGET_FOCUS = 0.65;
 // Slice of the under-target band (taken from its top end) re-aimed at night fragmentation: windows
 // centred on the gap between a resident's separate night runs / around a standalone single night.
@@ -8506,7 +8505,7 @@ function holeRepairPass({ args, genCtx, current, rulePriority, trueKeptCells, se
 
 // Generator of progress objects; returns { current, ran, accepted }. `current` = { result, score }.
 // ran counts executed iterations (the replay count); a time cap only ever shortens it.
-function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, seed, iters, timeMs = 0, holeDirected = false }) {
+function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, seed, iters, timeMs = 0 }) {
   const dates = getBlockDates(args.block.startDate, args.block.endDate);
   const n = dates.length;
   const idxOf = new Map(dates.map((ds, i) => [ds, i]));
@@ -8519,9 +8518,6 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
   const hasFallback = res => hasFallbackComposition(res.schedule, args.allResidents, args.block, args.appSettings || {}, args.ayConf || {});
   let curFallback = hasFallback(cur.result);
   const startedMs = Date.now();
-  // Hole-directed neighbourhood (2026-11-11, opt-in): holes are recomputed from the schedule whenever the
-  // incumbent changes; a hole iteration also frees one eligible resident's non-kept cells within +-6 days.
-  let holes = null, holesFor = null;
   while (ran < iters && n > 0) {
     if (deadline && Date.now() >= deadline) break;
     ran++;
@@ -8529,28 +8525,8 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
     const d1 = rng(), d2 = rng(), d3 = rng(), d4 = rng(), d5 = rng();
     const rep = cur.result.report;
     const unf = rep.unfilled || [], ut = rep.underTarget || [];
-    let center, nightWin = null, nightK = 0, holeX = null;
-    if (holeDirected) {
-      if (holesFor !== cur) { holes = scheduleHoles(args, genCtx, cur.result.schedule).filter(h => !h.structural); holesFor = cur; }
-    }
-    if (holeDirected && holes.length && d1 < LNS_HOLE_FOCUS) {
-      const h = holes[Math.floor(d2 * holes.length)];
-      center = idxOf.get(h.dateStr);
-      const S = SHIFT_MAP[h.shiftId];
-      const cands = args.allResidents.filter(r => {
-        if (cur.result.schedule[r.id]?.[h.dateStr] === h.shiftId) return false;
-        if (trueKeptCells.has(`${r.id}|${h.dateStr}`) || locked[r.id]?.[h.dateStr]) return false;
-        if (!genCtx.eligCache[r.id]?.[h.dateStr]?.has(h.shiftId)) return false;
-        return true;
-      });
-      // Composition (POD/FLEX seniority): X must qualify unless someone qualifying already works S that day.
-      const comp = S && SENIOR_COMPOSITION[S.area] && !seniorCompositionExempt(S, h.dateStr);
-      const ayc = withCustomSeniorWellness(args.ayConf || {}, args.allResidents, args.appSettings || {});
-      const satisfies = r => compositionSatisfies(S.area, r, h.dateStr, args.block.startDate, args.appSettings || {}, ayc);
-      const covered = comp && args.allResidents.some(r => cur.result.schedule[r.id]?.[h.dateStr] === h.shiftId && satisfies(r));
-      const pool = comp && !covered ? cands.filter(satisfies) : cands;
-      if (pool.length) holeX = { r: pool[Math.floor(d3 * pool.length)], hole: h };
-    } else if (unf.length && d1 < LNS_UNFILLED_FOCUS) {
+    let center, nightWin = null, nightK = 0;
+    if (unf.length && d1 < LNS_UNFILLED_FOCUS) {
       center = idxOf.get(unf[Math.floor(d2 * unf.length)].dateStr);
     } else if (d1 >= LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS - LNS_NIGHT_FOCUS && d1 < LNS_UNFILLED_FOCUS + LNS_UNDERTARGET_FOCUS && (nightWin = nightFragmentWindow(cur.result.schedule, dates, args.allResidents, d2, d3))) {
       // Night-merge focus (2026-10-28): window spans the gap between a fragmented resident's runs.
@@ -8570,20 +8546,10 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
 
     const schedule = {};
     let cleared = 0;
-    const clearedDates = new Set(windowDates);
-    const xDates = holeX ? dates.slice(Math.max(0, idxOf.get(holeX.hole.dateStr) - 6), idxOf.get(holeX.hole.dateStr) + 7) : [];
-    for (const ds of xDates) clearedDates.add(ds);
     for (const r of args.allResidents) {
       const row = { ...(cur.result.schedule[r.id] || {}) };
       for (const ds of windowDates) {
         if (row[ds] && !trueKeptCells.has(`${r.id}|${ds}`) && !locked[r.id]?.[ds]) { delete row[ds]; cleared++; }
-      }
-      if (holeX && holeX.r.id === r.id) {
-        for (const ds of xDates) {
-          if (row[ds] && !trueKeptCells.has(`${r.id}|${ds}`) && !locked[r.id]?.[ds]) { delete row[ds]; cleared++; }
-        }
-        row[holeX.hole.dateStr] = holeX.hole.shiftId; // pre-placed: a kept cell for this refill
-        cleared++;
       }
       schedule[r.id] = row;
     }
@@ -8593,7 +8559,7 @@ function* lnsPassSteps({ args, genCtx, current, rulePriority, trueKeptCells, see
         block: { ...args.block, schedule }, rng: mulberry32(subSeed), repair: false,
       });
       if (res) {
-        const merged = { schedule: res.schedule, report: mergeLnsReport(rep, res.report, clearedDates) };
+        const merged = { schedule: res.schedule, report: mergeLnsReport(rep, res.report, new Set(windowDates)) };
         const score = scoreGenerationResult(merged, args, rulePriority);
         if (betterQuality(score, cur.score)) {
           const candFallback = curFallback ? true : hasFallback(merged);
@@ -8744,8 +8710,6 @@ export function replayNightMerge(args, result) {
 // PRE-LNS schedule; reproduce the final one with `replayLns(args, preLnsResult, report.replay.lns)`
 // (exported below; it drives the same lnsPassSteps from the same start score). `iters` is the count
 // of iterations that actually ran (a time cap only shortens it), so replay needs no time cap.
-// Hole-directed LNS (opt-in `lnsHoleDirected`, default OFF: lost the A/B 2026-11-11): `report.replay.lns.holeDirected` is true and replayLns
-// honours it (same rng stream, holes recomputed from the schedule, so replay is exact).
 // Post-LNS hole repair (default ON, `holeRepair:false` disables; 2026-11-11): when `report.replay.holeRepair` is non-null
 // ({seed}), a LAST step follows night-merge-after-LNS: `replayHoleRepair(args, schedule, holeRepair)`
 // (generateSchedule repair:'holes', rng mulberry32(seed), keptCellsOverride = originalKeptCells).
@@ -8783,7 +8747,7 @@ export function replayLns(args, preLns, lns) {
   });
   const it = lnsPassSteps({
     args, genCtx, current: { result: preLns, score: scoreGenerationResult(preLns, args, rulePriority) },
-    rulePriority, trueKeptCells: originalKeptCells(args), seed: lns.seed, iters: lns.iters, holeDirected: !!lns.holeDirected,
+    rulePriority, trueKeptCells: originalKeptCells(args), seed: lns.seed, iters: lns.iters,
   });
   let r;
   do { r = it.next(); } while (!r.done);
@@ -8823,7 +8787,7 @@ function originalKeptCells(args) {
 
 // Step generator behind generateScheduleBest/Async. Yields progress objects
 // ({phase:'attempt',done,total} | {phase:'repair',done,total} | {phase:'finalize'}) and returns the result.
-function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3, timeBudgetMs = 0, lnsIters = 0, lnsTimeMs = 0, alternates = 3, holeRepair = true, lnsHoleDirected = false } = {}) {
+function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = true, repairCandidates = 3, timeBudgetMs = 0, lnsIters = 0, lnsTimeMs = 0, alternates = 3, holeRepair = true } = {}) {
   const startedAt = Date.now();
   const resolvedBaseSeed = (baseSeed ?? Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
@@ -9032,12 +8996,12 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
     if (timeBudgetMs <= 0 || lnsCapMs > 0) {
       const lnsIt = lnsPassSteps({
         args, genCtx, current: best, rulePriority, trueKeptCells: originalKeptCells(args),
-        seed: lnsSeed, iters: lnsIters, timeMs: lnsCapMs, holeDirected: lnsHoleDirected,
+        seed: lnsSeed, iters: lnsIters, timeMs: lnsCapMs,
       });
       let st = lnsIt.next();
       while (!st.done) { yield st.value; st = lnsIt.next(); }
       best = st.value.current;
-      lnsInfo = { seed: lnsSeed, iters: st.value.ran, accepted: st.value.accepted, holeDirected: lnsHoleDirected };
+      lnsInfo = { seed: lnsSeed, iters: st.value.ran, accepted: st.value.accepted };
     }
   }
 
@@ -9092,7 +9056,7 @@ function* generateScheduleBestSteps(args, { attempts = 20, baseSeed, repair = tr
   // required to reproduce this exact schedule.
   // `repair` is true only when the repaired run was adopted: an unrepaired winner replays with
   // repair:false (a repair:true replay would mutate it into a different schedule).
-  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, truePrimaryLift: !!best.result.report.truePrimaryLiftApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters, ...(lnsInfo.holeDirected ? { holeDirected: true } : {}) } : null, holeRepair: holeRepairInfo };
+  best.result.report.replay = { seed: best.seed, truePrimaryOnly: !!best.result.report.truePrimaryFixApplied, truePrimaryLift: !!best.result.report.truePrimaryLiftApplied, repair: !!best.repaired, lns: lnsInfo && lnsInfo.iters > 0 ? { seed: lnsInfo.seed, iters: lnsInfo.iters } : null, holeRepair: holeRepairInfo };
   if (lnsInfo) best.result.report.lnsAccepted = lnsInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeAccepted = nightMergeInfo.accepted;
   if (nightMergeInfo) best.result.report.nightMergeEvals = nightMergeInfo.evals;

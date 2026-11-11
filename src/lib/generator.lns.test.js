@@ -103,14 +103,14 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
   });
 });
 
-describe('generateScheduleBest — post-LNS hole repair + hole-directed LNS replay', () => {
+describe('generateScheduleBest — post-LNS hole repair replay', () => {
   it('replay (pre-LNS -> LNS -> night-merge -> hole repair) reproduces the final schedule', async () => {
     const { makeRealScaleFixture } = await import('./__fixtures__/realScale.js');
     const fx = makeRealScaleFixture();
     const opts = { attempts: 20, baseSeed: 1000, holeRepair: false };
     const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
-    const full = await generateScheduleBestAsync({ ...fx }, { ...opts, holeRepair: true, lnsIters: 40, lnsHoleDirected: true });
-    expect(full.report.replay.lns).toEqual({ seed: expect.any(Number), iters: 40, holeDirected: true });
+    const full = await generateScheduleBestAsync({ ...fx }, { ...opts, holeRepair: true, lnsIters: 40 });
+    expect(full.report.replay.lns).toEqual({ seed: expect.any(Number), iters: 40 });
     let cur = replayLns(fx, pre, full.report.replay.lns);
     cur = replayNightMerge(fx, cur);
     if (full.report.replay.holeRepair) cur = replayHoleRepair(fx, cur, full.report.replay.holeRepair);
@@ -120,7 +120,6 @@ describe('generateScheduleBest — post-LNS hole repair + hole-directed LNS repl
     // Absent flags -> old behaviour and recipe shape.
     const plain = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 5 });
     expect(plain.report.replay.holeRepair).toBeNull();
-    expect(plain.report.replay.lns.holeDirected).toBeUndefined();
   }, 240000);
 
   it('hole repair alone is replayable', async () => {
