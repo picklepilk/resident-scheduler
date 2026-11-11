@@ -1480,7 +1480,7 @@ Optional "stick close to the starting schedule" penalty. Motivation: warm-starte
 
 ## Portfolio auto default (2026-10-30)
 
-`config.portfolio` absent no longer means 1: the service picks K=2 when the effective worker count (`_num_workers`, honoring `config.numWorkers` and `SOLVER_NUM_WORKERS`) is >= 12 (`AUTO_PORTFOLIO_MIN_WORKERS`), else K=1. An explicit value (1..8, including 1) always wins. Auto-picked K=2 sets `report.portfolio.auto = true`. Basis: one run each on a real 58-resident block, 16 cores, 300 s budget: K=1 -> 1 open coverage slot, quality 1010; K=2 -> 0 open slots, quality 984 (best); K=4 -> 1 open slot, 995.
+**Superseded 2026-11-11: auto is off (`AUTO_PORTFOLIO_MIN_WORKERS = None`), absent `config.portfolio` = K=1 again; 7W/2L for K=1×16 vs K=2 on realScale fixtures with outer LNS on. Original rule, kept for history:** `config.portfolio` absent no longer means 1: the service picks K=2 when the effective worker count (`_num_workers`, honoring `config.numWorkers` and `SOLVER_NUM_WORKERS`) is >= 12 (`AUTO_PORTFOLIO_MIN_WORKERS`), else K=1. An explicit value (1..8, including 1) always wins. Auto-picked K=2 sets `report.portfolio.auto = true`. Basis: one run each on a real 58-resident block, 16 cores, 300 s budget: K=1 -> 1 open coverage slot, quality 1010; K=2 -> 0 open slots, quality 984 (best); K=4 -> 1 open slot, 995.
 
 ## asNeeded cells (2026-10-30)
 
@@ -1646,5 +1646,5 @@ Always-on additive report field: `report.stages = [{name, seconds, status, objec
 (`tier1_errors`, `tier2_blockingWarns`, `tier3_qualityRank`, `tier3b_restAfterCoverage`, `tier4_quality`); `status` is the CP-SAT status or
 `"EMPTY"` (stage has no terms, skipped); `objective` = the stage's own expression value at its final incumbent; `seconds` includes a QUALITY stall re-seed. Empty list in `objectiveMode: "weighted"`. LNS counts stay in `report.outerLns.{iterations, accepted}`.
 
-Portfolio resolution (unchanged): `resolve_portfolio_k` returns an explicit `config.portfolio` (clamped 1..8) else 2 when `_num_workers >= 12`, else 1.
+Portfolio resolution (unchanged): `resolve_portfolio_k` returns an explicit `config.portfolio` (clamped 1..8) else 1 (auto off since 2026-11-11; with the threshold set, 2 when `_num_workers >= 12`).
 `portfolio: 1` runs `_solve_single` with `_num_workers` = `numWorkers` clamped to `os.cpu_count()` (absent/0 -> `SOLVER_NUM_WORKERS` env, else all cores), so `{"portfolio":1,"numWorkers":16}` is one 16-worker run on a >=16-core host.

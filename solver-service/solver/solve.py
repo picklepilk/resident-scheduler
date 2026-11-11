@@ -877,13 +877,18 @@ def _result_rank_key(result: SolveResult) -> tuple:
     return (2, ())
 
 
-AUTO_PORTFOLIO_MIN_WORKERS = 12  # absent config.portfolio: K=2 at/above this many workers (2026-10-30 benchmark)
+# Absent config.portfolio: K=2 at/above this many workers; None = auto off (always K=1).
+# 2026-10-30 set 12 (one real-block run); 2026-11-11 turned it off: with outer LNS default-on,
+# K=1 x 16 workers beat auto K=2 7W/2L on realScale fixtures at 120 s + 300 s (PERF_NOTES).
+AUTO_PORTFOLIO_MIN_WORKERS = None
 
 
 def resolve_portfolio_k(config_portfolio, workers: int) -> int:
-    """Explicit `config.portfolio` (any value, incl. 1) wins; absent -> 2 with >= 12 workers, else 1."""
+    """Explicit `config.portfolio` (any value, incl. 1) wins; absent -> 2 at >= AUTO_PORTFOLIO_MIN_WORKERS, else 1."""
     if config_portfolio is not None:
         return config_portfolio
+    if AUTO_PORTFOLIO_MIN_WORKERS is None:
+        return 1
     return 2 if workers >= AUTO_PORTFOLIO_MIN_WORKERS else 1
 
 

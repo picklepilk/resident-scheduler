@@ -401,3 +401,13 @@ Decisions: no default changes. All the knobs stay opt-in.
 - Shortlist: picked index 0 twice in 30 runs. It stays.
 
 `report.stages` timing is now always available for later tuning.
+
+### 300 s follow-up (2026-11-11, realScaleStaggered, seeds 42/43/44)
+
+| Variant | Seed 42 | Seed 43 | Seed 44 |
+|---|---|---|---|
+| auto (K=2) | 0 / 7 / [0,0,0,1691.3] | 0 / 5 / [0,0,0,2455.3] | 0 / 7 / [0,0,0,1631.3] |
+| k1w16 | 0 / 5 / [0,0,0,1472.8] | 0 / 5 / [0,0,0,1636.0] | 0 / 5 / [0,0,0,1434.0] |
+| tiersAll | 0 / 7 / [0,0,0,1400.8] | 0 / 6 / [0,0,0,1528.0] | 0 / 6 / [0,0,0,1446.7] |
+
+`k1w16` goes 3W/0L at 300 s and 7W/2L across both budgets, so **auto portfolio is now off** (`AUTO_PORTFOLIO_MIN_WORKERS = None`, absent `config.portfolio` = K=1). The 2026-10-30 K=2 basis was one real-block run made before outer LNS was default-on. `tiersAll` goes 2W/1L at 300 s and 4W/5L overall, so it stays opt-in.
