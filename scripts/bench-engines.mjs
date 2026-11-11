@@ -4,6 +4,12 @@
 //   npx vite-node scripts/bench-engines.mjs -- <backup.json> [--block <id>] [--url <solverUrl>]
 //                                             [--budgets 45,120,300] [--portfolio K]
 //                                             [--variants v.json] [--seeds N] [--dump <dir>]
+//                                             [--local-seeds N] [--local-opts '{"attempts":20,"lnsIters":40}']
+// --local-seeds N: run the local engine N times at FIXED baseSeeds 1000..1000+N-1 (generateScheduleBest
+// otherwise draws a random baseSeed per call, so a single local run is noise) and print the per-seed
+// rows plus the mean. Default N=1 (baseSeed 1000). The solver hint is the first seed's result.
+// --local-opts: generateScheduleBest options (default {"attempts":20}). Keep timeBudgetMs/lnsTimeMs out of
+// A/B runs: time caps make results depend on CPU load. lnsIters alone is deterministic.
 // --variants: JSON array of {name, config}; each config is merged into the solver config (A/B of
 // solver flags). --seeds N runs each variant with randomSeed 42..42+N-1. Local result computed once.
 //   npx vite-node scripts/bench-engines.mjs -- --fixture realScale|realScaleStaggered [--url ...] [--budgets ...]
@@ -37,7 +43,7 @@ if (typeof globalThis.localStorage === 'undefined') {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseArgs(argv) {
-  const a = { budgets: [45], file: null, block: null, url: null, portfolio: null, fixture: null, variants: null, seeds: 1 };
+  const a = { budgets: [45], file: null, block: null, url: null, portfolio: null, fixture: null, variants: null, seeds: 1, localSeeds: 1, localOpts: { attempts: 20 } };
   const rest = argv.filter(x => x !== '--');
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i];
@@ -48,6 +54,8 @@ function parseArgs(argv) {
     else if (t === '--fixture') a.fixture = rest[++i];
     else if (t === '--variants') a.variants = JSON.parse(fs.readFileSync(rest[++i], 'utf-8'));
     else if (t === '--seeds') a.seeds = Math.max(1, Number(rest[++i]) || 1);
+    else if (t === '--local-seeds') a.localSeeds = Math.max(1, Number(rest[++i]) || 1);
+    else if (t === '--local-opts') a.localOpts = JSON.parse(rest[++i]);
     else if (t === '--dump') a.dump = refuseUntrackedRepoPath(rest[++i]);
     else if (t.startsWith('--')) throw new Error(`unknown flag ${t}`);
     else a.file = t;
@@ -118,11 +126,24 @@ async function main() {
   const solveArgs = { ...baseArgs };
 
   console.log(`bench-engines: ${label}`);
-  const t0 = Date.now();
-  const localRes = generateScheduleBest(solveArgs, { attempts: 20 });
-  if (!localRes) throw new Error('block has no valid date range');
-  const localWall = (Date.now() - t0) / 1000;
-  const localCmp = pickEngineResult(null, localRes, solveArgs).engineComparison.local;
+  const LOCAL_SEED0 = 1000;
+  const localRuns = [];
+  for (let k = 0; k < args.localSeeds; k++) {
+    const t0 = Date.now();
+    const res = generateScheduleBest(solveArgs, { ...args.localOpts, baseSeed: LOCAL_SEED0 + k });
+    if (!res) throw new Error('block has no valid date range');
+    const wall = (Date.now() - t0) / 1000;
+    const cmp = pickEngineResult(null, res, solveArgs).engineComparison.local;
+    localRuns.push({ res, wall, cmp });
+    console.log(JSON.stringify({ local: true, baseSeed: LOCAL_SEED0 + k, wall: Number(wall.toFixed(1)), cmp, unfilled: res.report?.unfilled?.length ?? null, lns: res.report?.replay?.lns ?? null }));
+  }
+  if (localRuns.length > 1) {
+    const mean = f => localRuns.reduce((t, r) => t + f(r.cmp), 0) / localRuns.length;
+    const q = i => mean(c => c.qualityVector[i]);
+    console.log(JSON.stringify({ localMean: true, seeds: localRuns.length, wall: Number((localRuns.reduce((t, r) => t + r.wall, 0) / localRuns.length).toFixed(1)),
+      errors: mean(c => c.errorCount), blockWarn: mean(c => c.blockingWarnCount), quality: [q(0), q(1), q(2), q(3)].map(v => Number(v.toFixed(2))) }));
+  }
+  const { res: localRes, wall: localWall, cmp: localCmp } = localRuns[0];
   // --dump <dir>: one JSON per run with the schedule and its error-level validateAll issues (diagnosis only).
   const dump = (name, schedule, extra = {}) => {
     if (!args.dump) return;
@@ -134,7 +155,7 @@ async function main() {
   };
   dump('local', localRes.schedule);
 
-  const rows = [{ engine: 'local', budget: '-', wall: localWall, status: 'best-of-20', cmp: localCmp, winner: '-' }];
+  const rows = [{ engine: 'local', budget: '-', wall: localWall, status: `seed ${LOCAL_SEED0}`, cmp: localCmp, winner: '-' }];
   if (args.url) {
     const variants = args.variants || [{ name: 'cpsat', config: {} }];
     for (const budget of args.budgets) for (const v of variants) for (let si = 0; si < args.seeds; si++) {
