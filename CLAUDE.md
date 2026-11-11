@@ -6,7 +6,7 @@ EM residency shift scheduler (UH Emergency Medicine). Builds/validates resident 
 
 ## Commands
 ```bash
-npm test          # vitest, ~950 tests. 2 skips = SOLVER_PARITY-gated files (need Python)
+npm test          # vitest, ~1900 tests. 5 skipped files = solver/env-gated (SOLVER_PARITY etc., need Python)
 npx vitest run src/lib/qgenda.test.js        # single file
 ```
 - Slow host (Raspberry Pi): `TEST_TIME_SCALE=3 npm test` multiplies `vitest.config.js` test/hook timeouts and the harness perf CPU cap (8000 ms) by 3. Default 1; junk/<1 ignored.
