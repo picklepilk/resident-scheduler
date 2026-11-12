@@ -93,3 +93,16 @@ describe('generateScheduleBest report consistency', () => {
     console.log('restCompromises checked:', total);
   });
 });
+
+describe('report.unfilled recount across seeds', () => {
+  it('matches a recount from the final schedule vs coverage min (seeds 1001 and 1003, both shapes)', async () => {
+    for (const staggerSplit of [false, true]) {
+      for (const baseSeed of [1001, 1003]) {
+        await new Promise(r => setImmediate(r));
+        const args = makeRealScaleFixture({ staggerSplit });
+        const res = generateScheduleBest(args, { attempts: 20, lnsIters: 40, baseSeed });
+        expect([...unfilledCounts(res.report)].sort(), `staggerSplit=${staggerSplit} seed=${baseSeed}`).toEqual([...holeCounts(args, res.schedule)].sort());
+      }
+    }
+  }, 300000);
+});
