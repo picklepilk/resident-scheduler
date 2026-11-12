@@ -81,6 +81,8 @@ token verification even starts.
 
 ### Fly secrets (set by hand, not run here)
 
+**Startup guard:** when `FLY_APP_NAME` is set (i.e. on Fly), the service refuses to start unless `SOLVER_AUTH_MODE=supabase` and at least one of `SUPABASE_URL` / `SUPABASE_JWT_SECRET` is set. There is no override. Non-Fly runs are unchanged. `SOLVER_ALLOWED_EMAILS` (comma-separated) is an optional extra allowlist and is not required to start.
+
 ```bash
 fly secrets set SOLVER_AUTH_MODE=supabase
 fly secrets set SUPABASE_URL=https://<project-ref>.supabase.co
