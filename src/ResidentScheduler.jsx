@@ -3576,6 +3576,16 @@ const CHANGELOG = [
       'Locked cells show their lock status only — unlock first to edit.',
     ],
   },
+  // Non-interrupting insert (second position, CHANGELOG[0] unchanged; see the comments below).
+  {
+    id: '2026-11-11-unsynced-edits-kept',
+    date: '2026-11-11',
+    title: 'Edits survive a reload before they sync',
+    items: [
+      'If you reload or lose connection right after an edit, the change on this device is no longer silently replaced by the cloud copy.',
+      'If the cloud copy also changed, you are asked whether to **Keep my edits** or **Take the cloud copy**, with a backup download offered first.',
+    ],
+  },
   // Same non-interrupting insert as the entry below (see its own comment) — second position, not
   // first, so CHANGELOG[0] stays exactly as it was and no banner re-interrupts anyone who already
   // dismissed it; this still shows up in the full What's New archive tab.
