@@ -57,3 +57,71 @@ Verbatim detail moved out of `CLAUDE.md` to keep it short. The rules themselves 
 
 ## Eligibility overrides history
 The old wholesale-list format made later-added shift ids invisible forever (shipped as a real silent ACEP outage — 12h shifts unassignable under old rotation overrides, which `LEGACY_*` can't reach since it's keyed `CATEGORY_PGY` and rotation keys are `CATEGORY_PGY__ROTATION`).
+
+## Sections moved from CLAUDE.md 2026-11-13
+
+Full pre-trim text of the CLAUDE.md sections, moved verbatim when CLAUDE.md was cut under 60 lines. CLAUDE.md keeps the headline rules and cites each heading below.
+
+### Commands, layout, stack (moved from CLAUDE.md 2026-11-13)
+
+**Evicted detail (war stories, measurements, rationale): `CLAUDE-Archive.md`. Supporting mechanics: `docs/claude-reference.md` (cited as "ref: <section>") and `docs/claude-detail.md`. Every rule here is load-bearing — consult both before relaxing one.**
+
+## Commands
+```bash
+npm test          # vitest, ~1900 tests. 5 skipped files = solver/env-gated (SOLVER_PARITY etc., need Python)
+npx vitest run src/lib/qgenda.test.js        # single file
+```
+- Slow host (Pi): `TEST_TIME_SCALE=3 npm test` multiplies `vitest.config.js` test/hook timeouts and harness perf CPU cap (8000 ms) by 3. Default 1; junk/<1 ignored.
+- No ESLint. `ResidentScheduler.jsx` UI/tabs untested — verify via `npm run dev` + generate/export a sample. Generator core tested via named exports (`generateSchedule`, `generateScheduleBest`, `validateAll`, `getEligibleShifts`, `buildQualityInput`, `useMonthPager`).
+- Quality baselines: `UPDATE_QUALITY_BASELINE=1 npm test` regenerates `qualityBaseline.<variant>.json` (refuses worse unless `FORCE_QUALITY_BASELINE=1`). One file per variant — **don't recombine** (shared file clobbers under parallel update). Run baseline files ONE AT A TIME when investigating timing. Heavy multi-seed tests must be `async` and `await new Promise(r => setImmediate(r))` per seed (`Timeout calling "onTaskUpdate"` = worker >60s without a macrotask, NOT CPU contention). `vitest.config.js` sets 120s timeouts (work in `beforeAll`). (ref: Test and quality baselines)
+- Solver parity: `SOLVER_PARITY=1 npx vitest run src/lib/solverParity.test.js` (bash) or `$env:SOLVER_PARITY=1; ...` (PowerShell). No npm script — no `cross-env`, `VAR=1` scripts no-op under Windows cmd.
+- Netlify deploys master. Site: residentscheduling.netlify.app.
+- Supabase SQL: `npx supabase db query --linked -f <file>` (CLI not on PATH). `--linked` follows `supabase/.temp/`, NOT the dashboard's selected project — a migration once hit the wrong sibling project that way.
+
+## Layout & stack
+- Public GitHub repo `picklepilk/resident-scheduler`. **Never commit real resident names, rosters, or email addresses** — real data enters via import features into localStorage only. Allowlist emails/bootstrap SQL are typed into the SQL editor; committed `supabase/*.sql` carry placeholders only. `.gitignore` covers `*-resume.txt` transcripts — keep those entries.
+- `xlsx` from SheetJS CDN tarball (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` in package.json), **never `npm install xlsx`** (registry build frozen at 0.18.5, unpatched CVEs).
+- `jspdf-autotable@3.8.4`: `import 'jspdf-autotable'` + `doc.autoTable({...})`, never `autoTable(doc, {...})` (interop broken; `npm run build` doesn't catch it).
+- **Almost all scheduling logic lives in `src/ResidentScheduler.jsx` (~8,300+ lines).** Grep `// ─── SECTION ───` markers or function names, not line numbers. Grep before assuming any helper unused — no module boundaries.
+- `src/lib/*` modules are pure and **may never import `ResidentScheduler.jsx`**.
+- Auth/day-off-request surface: `main.jsx` (`/requests` → `ResidentRequestsApp`, else `AppGate`), `AppGate.jsx`, `supabaseClient.js`, `RequestsTab.jsx`, `residentRequests/*`. **Nothing under `residentRequests/` imports `ResidentScheduler.jsx`** — it fetches its own slice via the `resident_block_lookup()` RPC (never `res_state` directly).
+- Sibling `../em-scheduler`: check its CLAUDE.md for prior fixes before re-deriving scheduling/export/matching patterns.
+- **TDZ hazard**: module-level `const` referencing a later `const` throws at page load; `npm run build` won't catch it. `RULE_NOTES` prose deliberately hardcodes numbers duplicating `NIGHT_RULES`/`JC_MAX_PER_AY`/`TRAUMA_PEDS_SPLIT` for this reason — change one, update matching prose.
+
+### Persistence, cloud sync, auth, RLS (moved from CLAUDE.md 2026-11-13)
+
+## Persistence, cloud sync, playgrounds
+- New optional per-block snapshot field → add to `OPTIONAL_SNAPSHOT_FIELDS` in `src/lib/snapshotCompare.js`, else old snapshots read dirty.
+- `useLocalStorage` backs `res_*` keys. Nine ride `LS_BACKUP_KEYS`; Settings backup/restore AND cloud sync derive from it. **A new `res_*` key must be added to `LS_BACKUP_KEYS` + `syncBindings`** (forgetting `syncBindings` throws; forgetting the list is silent loss).
+- Device-local, deliberately excluded: `res_dark_mode`, `res_demo_mode`, `res_whats_new_seen`, `res_ui_prefs` (`gridZoom`/`gridColExtra`/`gridGroupBy` need no own key).
+- Everything read from backup/cloud/localStorage is untrusted shape — guard like `reconcileTabOrder` (`Array.isArray`), `normalizeCoverageEntry` (legacy single-number → `{min,max}`), `offRequestEntryFor`.
+- Cloud sync (`// ─── SUPABASE SYNC ───`): hand-rolled PostgREST `sbFetch`; supabase-js only for `getAccessToken()`. Real doc = `res_state` row `id:'main'`, whole doc as jsonb. (ref: Cloud sync)
+- **`res_state` RLS is admin-only** (`migrate_res_state_admin_only.sql` — DEPLOY ORDER: client ships before migration, else admins lock themselves out). `sbFetch` `Authorization` = caller's session JWT via `getAccessTokenBounded()`; anon key only when genuinely no session or `AUTH_ENABLED` false — a timeout must NOT fall back to anon while `AUTH_ENABLED`. **Never send the anon key as `Authorization` for this table again** (confirmed data-exposure gap). Residents read via `resident_block_lookup()` (`src/residentRequests/blockLookup.js`).
+- **Versioning + audit history, NOT last-write-wins** (`migrate_res_state_history.sql` — DEPLOY ORDER is the OPPOSITE: migration FIRST, client second). `version`/`updated_by`/`updated_at` set ONLY by triggers, never client-supplied. `res_state_history` is trigger-written, admin-select-only. `migrate_res_state_history_delete.sql` (run after it) adds `res_state_archive_history_delete` AFTER DELETE so Settings "Clear all" is archived too.
+- Cloud saves are versioned and race-safe (`sbSaveStateVersioned`/`sbSaveStateExplicit`), `dbReady` gates all cloud writes, `row == null` is ambiguous, playgrounds use `physKey()`; mount migrations gate on `dbReady`. Detail: `docs/claude-detail.md` "Persistence: race-safe saves, dbReady, version history, playgrounds".
+- Jeopardy/sick-call ledger lives in `appSettings.jeopardyLog`, **NOT its own `res_*` key — load-bearing**. Don't promote it.
+
+## Auth, roles, RLS
+- `AUTH_ENABLED` (`src/supabaseClient.js`): missing env → dev falls through unauthenticated; **production build fails closed** (`AuthMisconfigured`). Keep the asymmetry.
+- Roles `pending` → `resident` → `admin` (no 'chief'; stray `'chief'` should be `'admin'`).
+- **RLS is the security boundary; UI gates are convenience.** `is_admin()` SECURITY DEFINER helper exists because an inline profiles subquery inside a profiles policy recurses — don't inline it. Column-level rules live in four BEFORE triggers; self-promotion impossible by construction. Every resident-facing policy must fold `role <> 'pending'` in. (ref: Auth detail)
+- Admin email allowlist: promotion keys off `auth.jwt()->>'email'`, **never `new.email`** (client-controlled); zero-argument membership check (no enumeration oracle). (ref: Auth detail)
+- `resident_block_lookup()` (SECURITY DEFINER, `set search_path = ''`, every reference schema-qualified): the one sanctioned non-admin read of `res_state`. Gated on `role <> 'pending'`; hand-picked jsonb only. Don't widen its return shape without re-checking it excludes per-block `schedule` payloads.
+- `supabase/*.sql` run by hand: `day_off_requests.sql` = fresh-install baseline; `migrate_*.sql` = deltas. Schema change = update baseline AND add migrate file.
+
+### Imports, UI, rule defaults, editing (moved from CLAUDE.md 2026-11-13)
+
+## Imports & exports
+Contracts in `imports-exports` skill (`.claude/skills/imports-exports/SKILL.md`) — invoke before editing any import/export path. All three exports route through `requestExport`/`exportConfirm`.
+
+## UI conventions
+- **Dark mode**: `.dark` override sheet in `index.css`, NOT Tailwind `dark:`; wrapped in `@media screen` (print stays light). Exemptions: ref: UI detail. Auth/requests surfaces need same treatment.
+- `DAY_MARKERS` table only (never alpha tints), zoom via CSS `zoom` never `transform: scale`, block peek read-only, one `clearScheduleFields`. Detail: `docs/claude-detail.md` "UI conventions: markers, grid, locking, block peek, clear schedule".
+
+## Rule-default migration (required whenever defaults change)
+`getEffectiveDayRules`/`getEffectiveEligibility` replace defaults WHOLESALE with chief overrides — an override equal to a superseded default masks the fix forever. **When correcting `DEFAULT_DAY_RULES`/`BASE_ELIGIBILITY`: push the old shape onto that key's array in `LEGACY_DAY_RULE_DEFAULTS`/`LEGACY_ELIGIBILITY_DEFAULTS`** (one snapshot per correction) — the mount prune (gated on `dbReady`) drops overrides deep-equal to ANY snapshot; genuinely customized overrides get an amber review badge (`DAY_RULE_DEFAULTS_CHANGED`).
+- `res_eligibility_overrides` stores `{added, removed}`; don't simplify back to a list; migration order is load-bearing. Detail: `docs/claude-detail.md` "Eligibility overrides are a DIFF".
+- `stripPedGuardedShifts` runs AFTER resolution — PED guards beat any override.
+
+## When editing
+- `npm test` for lib/generator changes; `npm run dev` + sample generation for UI. Per-addition touchpoints (each stated above): new shift, new marker, new `res_*` key, rule-default correction, candidatePool-only exclusion, new `getEligibleShifts` call site (`ctx = {blockStart: block.startDate, ...}`).
