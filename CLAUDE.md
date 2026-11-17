@@ -49,3 +49,10 @@ EM residency shift scheduler (UH Emergency Medicine). Builds/validates resident 
 - Dark mode: `.dark` sheet in `index.css`, NOT Tailwind `dark:`, inside `@media screen`. `DAY_MARKERS` only (no alpha tints); zoom via CSS `zoom` never `transform: scale`; block peek read-only; one `clearScheduleFields` (det "UI conventions: markers, grid, locking, block peek, clear schedule").
 - **Correcting `DEFAULT_DAY_RULES`/`BASE_ELIGIBILITY`: push the old shape onto that key's array in `LEGACY_DAY_RULE_DEFAULTS`/`LEGACY_ELIGIBILITY_DEFAULTS`** (overrides replace defaults WHOLESALE; an override equal to a superseded default masks the fix). `res_eligibility_overrides` is `{added, removed}` (det "Eligibility overrides are a DIFF"); `stripPedGuardedShifts` runs AFTER resolution.
 - `npm test` for lib/generator changes; `npm run dev` + sample generation for UI. Per-addition touchpoints: new shift, marker, `res_*` key, rule-default correction, candidatePool-only exclusion, new `getEligibleShifts` call site (`ctx = {blockStart: block.startDate, ...}`).
+
+
+## Design (Triage)
+Design: follow TRIAGE.md. This app is Resident Scheduler; --signal = #155E75 (Rs monogram).
+- Tokens live in src/index.css (Triage block + `.tri-*` classes at the end); fonts self-hosted in public/fonts (Archivo, IBM Plex).
+- Shift-category colours, status colours and the RS outline stay. AN badge / Exceptions panel = warn, Review chip = info, via `.tri-an-chip` / `.tri-exceptions` / `.tri-review-chip`.
+- Visual only. Dark mode: navy-900 bands, signal only in small doses.

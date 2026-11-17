@@ -14,6 +14,7 @@ export default {
         // signature chrome accent — never a status color.
         omaha: 'hsl(var(--omaha) / <alpha-value>)',
         navy: 'hsl(var(--navy) / <alpha-value>)',
+        signal: 'var(--signal)',
         controlled: 'hsl(var(--controlled) / <alpha-value>)',
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
@@ -53,6 +54,9 @@ export default {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
+        // Triage: cards 18px, controls 12px (radius token), pills stay full.
+        xl: '18px',
+        '2xl': '18px',
       },
     },
   },

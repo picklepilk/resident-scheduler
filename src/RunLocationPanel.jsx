@@ -10,7 +10,7 @@ export default function RunLocationPanel({ stage, claim, runner, jobsMode }) {
   const opt = stage === 'solver' ? describeRunLocation({ claim, runner, jobsMode }) : null;
   const load = opt?.runner ? loadFraction(opt.runner) : null;
   const node = (active, tone, title, detail) => (
-    <div className={`flex-1 min-w-0 rounded-md border px-2 py-1.5 ${active ? 'border-primary bg-primary/10' : 'border-border bg-muted/40 opacity-60'}`}>
+    <div className={`tri-node flex-1 min-w-0 px-2 py-1.5 ${active ? 'tri-node--active' : 'tri-node--idle'}`}>
       <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
         <span className={`inline-block h-2 w-2 flex-none rounded-full ${tone} ${active ? 'animate-pulse motion-reduce:animate-none' : ''}`}/>
         <span className="truncate">{title}</span>

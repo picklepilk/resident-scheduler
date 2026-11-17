@@ -1,14 +1,5 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import '@fontsource/barlow/400.css';
-import '@fontsource/barlow/500.css';
-import '@fontsource/barlow/600.css';
-import '@fontsource/barlow/700.css';
-import '@fontsource/barlow-condensed/600.css';
-import '@fontsource/barlow-condensed/700.css';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/600.css';
-import '@fontsource/jetbrains-mono/700.css';
 import './index.css';
 import { submitFeedback, SUPABASE_ENABLED } from './ResidentScheduler';
 import ResidentRequestsApp from './residentRequests/ResidentRequestsApp';
@@ -36,7 +27,7 @@ class ErrorBoundary extends React.Component {
             right back to this screen, use "Reset view & reload" below instead.
           </p>
           <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16, fontFamily: 'monospace' }}>{String(this.state.error?.message || this.state.error)}</p>
-          <button onClick={() => window.location.reload()} style={{ background: '#0057B8', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+          <button onClick={() => window.location.reload()} style={{ background: '#155E75', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
             Reload
           </button>
           <button onClick={() => { localStorage.removeItem('res_tab_order'); localStorage.removeItem('res_demo_tab_order'); window.location.reload(); }}

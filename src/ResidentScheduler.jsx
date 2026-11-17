@@ -1052,7 +1052,7 @@ const DAY_MARKERS = {
   OVERRIDE: { label: '!', chip: 'bg-amber-100 text-amber-800', onShift: 'bg-white text-amber-700 ring-1 ring-amber-500', dark: 'bg-white/15 text-amber-300', title: 'Hand override - shift placed despite a program rule (confirmed by the chief)' },
   // As-needed exception (2026-10-30): the cell is an as-needed rule broken to fill a coverage minimum
   // (`asNeededException` warn). Rose corner badge, bottom-right; derived live from cell issues.
-  AS_NEEDED: { label: 'AN', chip: 'bg-rose-100 text-rose-700', onShift: 'bg-white text-rose-700 ring-1 ring-rose-500', dark: 'bg-white/15 text-rose-300', title: 'As-needed exception - a goal rule broken to fill a coverage minimum' },
+  AS_NEEDED: { label: 'AN', chip: 'tri-an-chip', onShift: 'bg-white text-amber-800 ring-1 ring-amber-600', dark: 'bg-white/15 text-amber-300', title: 'As-needed exception - a goal rule broken to fill a coverage minimum' },
 };
 
 // RequestsTab.jsx's ApprovalQueue.decide() stamps the resident/admin explanation for an approved
@@ -17216,8 +17216,8 @@ function EnginePicker({ value, onChange, solverAllowed, compact = false, canPick
           return (
             <button key={v} type="button" role="radio" aria-checked={on} disabled={disabled}
               onClick={() => onChange(v)} title={d}
-              className={`flex flex-col items-start rounded-lg border-2 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${compact ? 'px-2 py-1' : 'px-3 py-2'} ${on ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-purple-300 bg-white'}`}>
-              <span className={`${compact ? 'text-[11px]' : 'text-xs'} font-bold flex items-center gap-1.5 ${on ? 'text-purple-700' : 'text-gray-700'}`}>
+              className={`tri-pick flex flex-col items-start text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${compact ? 'px-2 py-1' : 'px-3 py-2'}`}>
+              <span className={`tri-pick__label ${compact ? 'text-[11px]' : 'text-xs'} font-bold flex items-center gap-1.5 ${on ? '' : 'text-gray-700'}`}>
                 {dot && <span className={`inline-block w-2 h-2 rounded-full ${dot}`} aria-hidden="true"/>}
                 {l}
               </span>
@@ -18775,7 +18775,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                   <span className="text-xs text-gray-400">PGY-{res.pgy}</span>
                   {needsManualReview(res) && (
                     <span title={manualReviewTooltip(res)} data-testid="manual-review-badge"
-                      className="text-[10px] px-1 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 whitespace-nowrap">Review</span>
+                      className="text-[10px] px-1 py-0.5 rounded-full font-medium tri-review-chip whitespace-nowrap">Review</span>
                   )}
                   {res.blockType && res.category!=='PEDS' && (
                     <span className="text-xs text-gray-300">· {BLOCK_TYPE_MAP[res.blockType]?.label||res.blockType}</span>
@@ -21051,7 +21051,7 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
           const reviewList = (allResidents || []).filter(needsManualReview);
           if (!reviewList.length) return null;
           return (
-            <p className="text-xs text-amber-700" title={reviewList.map(r => `${r.lastName}, ${r.firstName} (${manualReviewLabel(r)})`).join('; ')}>
+            <p className="text-xs text-foreground" title={reviewList.map(r => `${r.lastName}, ${r.firstName} (${manualReviewLabel(r)})`).join('; ')}>
               EM/EMS and EM/TOX residents to review by hand: {reviewList.length}
             </p>
           );
@@ -21059,16 +21059,16 @@ function GenerationReportCard({ report, appSettings, blockStart, allResidents, c
 
         {asNeededSummary.total > 0 && (
           <ReportSubsection compact={compact} title="Exceptions taken (as needed)" count={asNeededSummary.total}>
-          <div className="border border-rose-200 bg-rose-50/60 rounded-lg p-3">
-            <span className="text-xs font-semibold text-rose-700">Exceptions taken (as needed) — {asNeededSummary.total}</span>
-            <p className="text-[11px] text-gray-500 mt-0.5">Goal rules broken only to fill a coverage minimum.</p>
+          <div className="tri-exceptions p-3">
+            <span className="text-xs font-semibold tri-exceptions__title">Exceptions taken (as needed) — {asNeededSummary.total}</span>
+            <p className="text-[11px] tri-exceptions__muted mt-0.5">Goal rules broken only to fill a coverage minimum.</p>
             <ul className="mt-1 space-y-0.5">
-              {asNeededSummary.byLabel.map(l=>(<li key={l.label} className="text-xs text-gray-600">{l.label} — {l.count}</li>))}
+              {asNeededSummary.byLabel.map(l=>(<li key={l.label} className="text-xs">{l.label} — {l.count}</li>))}
             </ul>
-            <ul className="mt-2 space-y-0.5 border-t border-rose-200 pt-1.5">
+            <ul className="mt-2 space-y-0.5 border-t tri-exceptions__rule pt-1.5">
               {asNeededSummary.byResident.map(r=>(
-                <li key={r.residentId} className="text-xs text-gray-600">
-                  {r.name} — {r.count} <span className="text-gray-400">({Object.entries(r.labels).map(([k,n])=>`${k}${n>1?` x${n}`:''}`).join(', ')})</span>
+                <li key={r.residentId} className="text-xs">
+                  {r.name} — {r.count} <span className="tri-exceptions__muted">({Object.entries(r.labels).map(([k,n])=>`${k}${n>1?` x${n}`:''}`).join(', ')})</span>
                 </li>
               ))}
             </ul>
@@ -27778,16 +27778,14 @@ export default function ResidentScheduler({ viewer } = {}) {
     <UiPrefsProvider value={uiPrefsApi}>
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
       {/* Header */}
-      <header className="bg-card border-b border-border shrink-0 no-print relative z-50">
+      <header className="tri-topbar shrink-0 no-print relative z-50">
         <div className="px-5 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
             <button onClick={()=>setNavOpen(o=>!o)} title="Menu" aria-label="Toggle navigation"
               className="md:hidden p-2 -ml-1 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors flex-none">
               <Menu size={18}/>
             </button>
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/80 flex items-center justify-center text-white flex-none">
-              <CalendarDays size={18}/>
-            </div>
+            <div className="tri-appicon" aria-hidden="true">Rs</div>
             <div className="flex flex-col min-w-0">
               {/* Mobile fix: hidden below sm — at ~400px width there isn't room for both this
                   eyebrow line and the block name + Not-saved pill without them overlapping, and the
