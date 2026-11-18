@@ -76,6 +76,9 @@ export const RULE_POLICY = {
   approvedDayOff: { tier: 'override', label: 'Shift scheduled on an approved day off' },
   pedsMixMax: { tier: 'override', label: 'Peds/EM PGY-2 with more than 12 peds shifts this block' },
   pedNightSwingOwnerGuard: { tier: 'override', label: "Peds night/swing shift given to a non-owner category" },
+  // 2026-11-18 (configurable, appSettings.noSundayNightBeforeRotations): overnight on the block's final Sunday
+  // for an EM Home resident starting a selected rotation next block. Hand-placeable behind an ack.
+  finalSundayOvernight: { tier: 'override', label: 'Final-Sunday overnight before starting a rotation that forbids it' },
 
   // ─── Tier: info ───────────────────────────────────────────────────────────
   // R5 (2026-09-27 chief decision): "During those rare instances [PGY-3s at conference or on
@@ -93,6 +96,8 @@ export const RULE_POLICY = {
   // only tier whose severityFor() output matches that on both surfaces, so adding these ids changes
   // no export-blocking count or generator scoring. See CLAUDE.md's fix-plan note on this pair.
   seniorEmCountComposition: { tier: 'info', label: 'POD/FLEX shift short of its chief-directed EM headcount' },
+  // Next block not entered, so the final-Sunday overnight rule cannot be checked: plain non-blocking warn.
+  finalSundayNextBlockUnknown: { tier: 'info', label: 'Final-Sunday overnight with next block not entered' },
   seniorPgyGating: { tier: 'info', label: 'Junior PGY covered a slot a senior PGY already filled (chief-directed gating)' },
   // Program decision 2026-10-30: a day-rule gate flagged `asNeeded` ("the goal, but break as needed to
   // fill the schedule") was broken to staff a coverage MINIMUM (getAsNeededShifts, validateAll). 'info'

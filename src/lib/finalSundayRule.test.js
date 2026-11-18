@@ -7,7 +7,9 @@
 // ResidentScheduler.jsx under jsdom, same pattern as grRestRules.test.js/generator.harness.test.js
 // (verified import-safe there already).
 import { describe, it, expect } from 'vitest';
-import { getEligibleShifts, validateAll, nextBlockRotationFor, finalSundayOf } from '../ResidentScheduler.jsx';
+import { getEligibleShifts, validateAll, nextBlockRotationFor, finalSundayOf, eligibilityBlockReasons, noSundayNightBeforeList } from '../ResidentScheduler.jsx';
+import { isNightShiftId } from './shifts.js';
+import { OVERRIDE_TIER_RULE_IDS } from './rulePolicy.js';
 import { makeFixture } from './__fixtures__/syntheticRoster.js';
 
 // syntheticRoster's fixed block window: 2026-07-06 (Mon) .. 2026-08-02 (Sun) — the block's own
@@ -94,35 +96,94 @@ describe('nextBlockRotationFor', () => {
   });
 });
 
-// 2026-10-30 (chief + PD): the final-Sunday overnight RULE was REMOVED. EM Home residents may start
-// a night shift on the block's final Sunday regardless of where they rotate next block. The
-// finalSundayOf/nextBlockRotationFor helpers above stay as inert, still-tested utilities.
-describe('final-Sunday night start is ALLOWED (rule removed 2026-10-30)', () => {
-  it.each([
-    ['continuing EM', [nextSnapshot('EM')]],
-    ['moving to a non-schedulable rotation', [nextSnapshot('METRO')]],
-    ['absent from next block', [nextSnapshot(null)]],
-    ['next block unknown', []],
-  ])('getEligibleShifts keeps night eligibility on the final Sunday (%s)', (_label, history) => {
+// Re-enabled 2026-11-18 (program decision, configurable): an EM Home resident who STARTS a selected
+// rotation next block may not work an overnight on the block's final Sunday.
+function ctxFor(fixture, papa, history, extra = {}) {
+  return {
+    blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY,
+    nextRotation: nextBlockRotationFor(papa, fixture.block, history), ...extra,
+  };
+}
+const elig = (papa, ds, ctx, appSettings = {}) => getEligibleShifts(papa, ds, {}, {}, appSettings, {}, ctx);
+
+describe('final-Sunday overnight rule (configurable, 2026-11-18)', () => {
+  it('strips every night shift on the final Sunday when next block = EM/EMS', () => {
     const { fixture, papa } = papaFixture();
-    const nextRotation = nextBlockRotationFor(papa, fixture.block, history);
-    const elig = getEligibleShifts(papa, FINAL_SUNDAY, {}, {}, {}, {}, {
-      blockStart: fixture.block.startDate, finalSunday: FINAL_SUNDAY, nextRotation,
-    });
-    expect(elig).toContain('TRAUMA-N');
+    const list = elig(papa, FINAL_SUNDAY, ctxFor(fixture, papa, [nextSnapshot('EM_EMS')]));
+    expect(list).not.toContain('TRAUMA-N');
+    expect(list.some(isNightShiftId)).toBe(false);
   });
 
-  it.each([
-    ['moving off EM', [nextSnapshot('METRO')]],
-    ['next block not imported', []],
-  ])('validateAll raises no final-Sunday issue for an overnight on the final Sunday (%s)', (_label, history) => {
+  it('keeps night eligibility when next block = EM (not selected)', () => {
+    const { fixture, papa } = papaFixture();
+    expect(elig(papa, FINAL_SUNDAY, ctxFor(fixture, papa, [nextSnapshot('EM')]))).toContain('TRAUMA-N');
+  });
+
+  it('does not strip on a non-final Sunday', () => {
+    const { fixture, papa } = papaFixture();
+    expect(elig(papa, NON_FINAL_SUNDAY, ctxFor(fixture, papa, [nextSnapshot('EM_EMS')]))).toContain('TRAUMA-N');
+  });
+
+  it('custom empty list disables the rule; saved list replaces the default; bad shape falls back', () => {
+    const { fixture, papa } = papaFixture();
+    const ctx = ctxFor(fixture, papa, [nextSnapshot('EM_EMS')]);
+    expect(elig(papa, FINAL_SUNDAY, ctx, { noSundayNightBeforeRotations: [] })).toContain('TRAUMA-N');
+    expect(elig(papa, FINAL_SUNDAY, ctx, { noSundayNightBeforeRotations: ['EM_TOX'] })).toContain('TRAUMA-N');
+    expect(elig(papa, FINAL_SUNDAY, ctx, { noSundayNightBeforeRotations: ['EM_EMS'] })).not.toContain('TRAUMA-N');
+    expect(noSundayNightBeforeList({ noSundayNightBeforeRotations: 'nope' })).toContain('EM_EMS');
+    expect(noSundayNightBeforeList({ noSundayNightBeforeRotations: ['EM_EMS', 'BOGUS', 'EM_EMS', 7] })).toEqual(['EM_EMS']);
+    expect(noSundayNightBeforeList({})).toEqual(expect.arrayContaining(['EM_EMS', 'EM_TOX', 'METRO', '9ICU']));
+    expect(noSundayNightBeforeList({})).not.toContain('EM');
+  });
+
+  it('unknown next block does not strip', () => {
+    const { fixture, papa } = papaFixture();
+    expect(elig(papa, FINAL_SUNDAY, ctxFor(fixture, papa, []))).toContain('TRAUMA-N');
+  });
+
+  it('non-EM_HOME residents are unaffected', () => {
+    const { fixture, papa } = papaFixture();
+    const other = { ...papa, category: 'BAMC' };
+    const ctx = ctxFor(fixture, papa, [nextSnapshot('EM_EMS')]);
+    expect(getEligibleShifts(other, FINAL_SUNDAY, {}, {}, {}, {}, ctx)).toEqual(
+      getEligibleShifts(other, FINAL_SUNDAY, {}, {}, {}, {}, { ...ctx, finalSunday: null }));
+  });
+
+  it('eligibilityBlockReasons names the override-tier rule and next rotation', () => {
+    const { fixture, papa } = papaFixture();
+    const reason = eligibilityBlockReasons(papa, FINAL_SUNDAY, 'TRAUMA-N', { ...ctxFor(fixture, papa, [nextSnapshot('METRO')]) });
+    expect(reason).toMatchObject({ rule: 'finalSundayOvernight', tier: 'override', nextLabel: 'Metro' });
+  });
+
+  it('validateAll raises an override-tier finalSundayOvernight issue for a hand-placed night when next = METRO', () => {
     const { fixture, papa } = papaFixture();
     const schedule = { [papa.id]: { [FINAL_SUNDAY]: 'TRAUMA-N' } };
-    const issues = validateAll(
-      fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
-      fixture.appSettings, fixture.dayRules, fixture.coverage, history, fixture.ayConf
-    );
+    const issues = validateAll(fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+      fixture.appSettings, fixture.dayRules, fixture.coverage, [nextSnapshot('METRO')], fixture.ayConf);
+    const hit = issues.find(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY && i.rule === 'finalSundayOvernight');
+    expect(hit).toBeTruthy();
+    expect(hit.message).toContain('Metro');
+    expect(OVERRIDE_TIER_RULE_IDS).toContain('finalSundayOvernight');
+  });
+
+  it('validateAll only warns (no strip, no ack issue) when the next block is not entered', () => {
+    const { fixture, papa } = papaFixture();
+    const schedule = { [papa.id]: { [FINAL_SUNDAY]: 'TRAUMA-N' } };
+    const issues = validateAll(fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+      fixture.appSettings, fixture.dayRules, fixture.coverage, [], fixture.ayConf);
+    const mine = issues.filter(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY);
+    expect(mine.some(i => i.rule === 'finalSundayOvernight')).toBe(false);
+    const warn = mine.find(i => i.rule === 'finalSundayNextBlockUnknown');
+    expect(warn).toMatchObject({ level: 'warn' });
+    expect(warn.message).toMatch(/^Next block not entered; check whether /);
+  });
+
+  it('no issue when next block = EM', () => {
+    const { fixture, papa } = papaFixture();
+    const schedule = { [papa.id]: { [FINAL_SUNDAY]: 'TRAUMA-N' } };
+    const issues = validateAll(fixture.allResidents, schedule, fixture.block, fixture.eligOverrides,
+      fixture.appSettings, fixture.dayRules, fixture.coverage, [nextSnapshot('EM')], fixture.ayConf);
     expect(issues.some(i => i.residentId === papa.id && i.dateStr === FINAL_SUNDAY
-      && (i.rule === 'finalSundayOvernight' || /Final-Sunday overnight|next block not imported/.test(i.message)))).toBe(false);
+      && /finalSunday/.test(i.rule || ''))).toBe(false);
   });
 });

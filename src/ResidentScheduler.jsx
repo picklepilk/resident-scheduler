@@ -150,6 +150,16 @@ const BLOCK_TYPES_EM = [
 ];
 const BLOCK_TYPE_MAP = Object.fromEntries(BLOCK_TYPES_EM.map(b => [b.id, b]));
 const TRAUMA_BLOCKS = ['PEDS_TRAUMA', 'TRAUMA_PEDS'];
+// Final-Sunday overnight rule (re-enabled 2026-11-18, configurable): next-block rotations that forbid an
+// overnight on the current block's final Sunday. Default = every non-schedulable rotation + EM/EMS + EM/TOX.
+// Inlined ids (not derived from BLOCK_TYPES_EM) so a later-declared const can never hit the TDZ.
+const NO_SUNDAY_NIGHT_BEFORE_DEFAULT = ['EM_EMS', 'EM_TOX', 'METRO', 'ELECTIVE', 'ADMIN', 'BAPTIST', 'MICU', 'ORTHO_VAC', 'ANES_VAC', 'NICU', 'PICU', 'OB_VAC', '9ICU'];
+// Untrusted shape: a saved array (even empty) wins, filtered to known ids; missing/non-array -> default.
+export function noSundayNightBeforeList(appSettings) {
+  const v = appSettings?.noSundayNightBeforeRotations;
+  if (!Array.isArray(v)) return NO_SUNDAY_NIGHT_BEFORE_DEFAULT;
+  return v.filter((id, i) => typeof id === 'string' && BLOCK_TYPE_MAP[id] && v.indexOf(id) === i);
+}
 
 // Block types shown in the rotation dropdown per PGY level (EM Home only)
 export const EM_HOME_BLOCK_TYPES_BY_PGY = {
@@ -927,7 +937,9 @@ const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (
 // instead of stranding them sleepless at the start of a different service. Enforced (hard) once
 // the next block's rotations are known (saved/imported); Validation warns instead of blocking
 // when the next block hasn't been saved yet, since the app genuinely can't tell.
-// FINAL_SUNDAY_RULE_NOTE REMOVED 2026-10-30 (chief + PD): EM Home residents may start a night shift on the block's final Sunday.
+// Final-Sunday overnight, re-enabled 2026-11-18 as a CONFIGURABLE rule (removed 2026-10-30). Prose hardcodes the
+// default list of appSettings.noSundayNightBeforeRotations (NO_SUNDAY_NIGHT_BEFORE_DEFAULT) - keep them in sync (TDZ: no const refs).
+const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight (program decision 2026-11-18): an EM Home resident who starts a selected rotation next block may not work an overnight shift (any night shift, incl. Trauma/Peds nights and 12h nights) on the block\'s own final Sunday. The chief picks the triggering rotations on the Rules tab (setting "No overnight on the final Sunday before starting"); default = EM/EMS, EM/TOX and every non-schedulable rotation (Metro, Elective, Admin, Baptist, MICU, Ortho/VAC, ANES/VAC, NICU, PICU, OB/VAC, 9ICU). Generator and solver never place one; a hand placement needs acknowledgement before export. If the next block has not been entered, Validation only warns.';
 // ED_WEEKLY_CAP_H/TOTAL_WEEKLY_CAP_H/GR_START_H/GR_END_H are IMPORTED from lib/acgmeHours.js (see
 // the top-of-file imports) rather than declared here, so — unlike SEVEN_DAY_RULE_NOTE/
 // CIRCADIAN_RULE_NOTE above, which hardcode NIGHT_RULES/JC_MAX_PER_AY's numbers to dodge the TDZ a
@@ -943,7 +955,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total. Sat/Sun/Mon (no Monday night) preferred; other days only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception).' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -953,7 +965,7 @@ const RULE_NOTES = {
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
       { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue instead. Enforced.' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -961,7 +973,7 @@ const RULE_NOTES = {
       { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
       { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
@@ -2524,12 +2536,13 @@ function prevBlockTailSchedules(block, blocksHistory = []) {
   return result;
 }
 
-// ─── Final-Sunday helpers (RULE REMOVED 2026-10-30) ─────────────────────────────────────
-// The final-Sunday overnight RULE no longer exists (chief + PD: EM Home may start a night on the block's
-// final Sunday): nothing in getEligibleShifts/generator/validateAll/cellViolations/solver payload
-// enforces or warns about it. finalSundayOf/findNextBlockSnapshot/nextBlockRotationFor and the
-// ctx.finalSunday/ctx.nextRotation plumbing remain as inert helpers (still exported/tested); delete
-// together if ever fully retired. Original description follows.
+// ─── Final-Sunday helpers (rule removed 2026-10-30, RE-ENABLED 2026-11-18 configurable) ───────
+// Program decision 2026-11-18: an EM Home resident who starts a SELECTED rotation next block may not work
+// an overnight on this block's final Sunday (appSettings.noSundayNightBeforeRotations, default in
+// NO_SUNDAY_NIGHT_BEFORE_DEFAULT; the chief picks per rotation on the Rules tab). Wired through
+// getEligibleShifts (strip, so generator + solver payload inherit it), eligibilityBlockReasons
+// (override-tier 'finalSundayOvernight'), validateAll/cellViolations ('finalSundayNextBlockUnknown' warn).
+// The old "continuingEM" trigger is gone (helper return shape kept). Original 2026-10 description:
 // A resident may work an overnight (type:'night') shift on the block's FINAL Sunday only if they
 // continue on a schedulable EM rotation next block (the night run can roll onward). Anyone
 // rotating to a different service must not work that final-Sunday overnight — no starting a new
@@ -2576,6 +2589,18 @@ function nextRotationFromSnapshot(resident, snap) {
 }
 export function nextBlockRotationFor(resident, block, blocksHistory = []) {
   return nextRotationFromSnapshot(resident, findNextBlockSnapshot(block, blocksHistory));
+}
+// Re-enabled 2026-11-18 (configurable, see noSundayNightBeforeList): true when `dateStr` is the block's
+// final Sunday, the resident is EM Home, and the KNOWN next-block rotation is one of the selected ones.
+export function finalSundayBlocks(resident, dateStr, ctx = {}, appSettings = {}) {
+  if (!ctx.finalSunday || dateStr !== ctx.finalSunday || resident?.category !== 'EM_HOME') return false;
+  const nr = ctx.nextRotation;
+  return !!(nr?.known && nr.blockType && noSundayNightBeforeList(appSettings).includes(nr.blockType));
+}
+// Next block not entered: an EM Home overnight on the final Sunday can't be checked (warn only).
+export function finalSundayUnknown(resident, dateStr, sid, ctx = {}) {
+  return !!(ctx.finalSunday && dateStr === ctx.finalSunday && resident?.category === 'EM_HOME'
+    && isNightShiftId(sid) && ctx.nextRotation && !ctx.nextRotation.known);
 }
 
 // ─── Half-block Peds/Trauma split (TRAUMA_PEDS / PEDS_TRAUMA rotations) ────
@@ -3578,6 +3603,16 @@ const CHANGELOG = [
   },
   // Non-interrupting insert (second position, CHANGELOG[0] unchanged; see the comments below).
   {
+    id: '2026-11-18-final-sunday-overnight',
+    date: '2026-11-18',
+    title: 'No overnight on the final Sunday before certain rotations',
+    items: [
+      'EM Home residents who start a selected rotation next block are no longer given an overnight on this block\'s final Sunday.',
+      'Pick which rotations trigger it on the **Rules** tab under **No overnight on the final Sunday before starting** (default: EM/EMS, EM/TOX and all non-schedulable rotations).',
+      'A hand-placed one needs acknowledgement before export; if the next block isn\'t entered yet, Validation just warns.',
+    ],
+  },
+  {
     id: '2026-11-11-unsynced-edits-kept',
     date: '2026-11-11',
     title: 'Edits survive a reload before they sync',
@@ -4130,8 +4165,14 @@ export function getEligibleShifts(resident, dateStr, specialDays = {}, eligOverr
   const conf12 = ctx.twelveHourState || twelveHourStateFor(dateStr, ctx.ayConf || {});
   eligible = eligible.filter(s => twelveHourAllows(s, conf12));
 
-  // (Final-Sunday overnight strip REMOVED 2026-10-30, chief + PD: EM Home residents may start a night
-  // on the block's final Sunday. ctx.finalSunday/ctx.nextRotation are now ignored here.)
+  // 9. Final-Sunday overnight (program decision 2026-11-18, configurable via
+  // appSettings.noSundayNightBeforeRotations): an EM Home resident who STARTS a selected rotation next
+  // block may not work an overnight on this block's final Sunday. Stripped for every caller (generator,
+  // solver payload, picker) like pedNightSwingOwnerGuard; a hand placement goes through the override-tier
+  // 'finalSundayOvernight' ack (eligibilityBlockReasons). Unknown next block never strips (validateAll warns).
+  if (finalSundayBlocks(resident, dateStr, ctx, appSettings)) {
+    eligible = eligible.filter(s => !isNightShiftId(s));
+  }
 
   return eligible;
 }
@@ -4289,6 +4330,8 @@ export function eligibilityBlockReasons(resident, dateStr, shiftId, ctx = {}) {
   if (wwOrdinal != null && isWellnessWednesdayFor(resident, dateStr, ctx.dayRules, appSettings, ctx.ayConf)) return { rule: 'wellnessWednesday', tier: 'override', label: RULE_POLICY.wellnessWednesday.label };
   if ((resident.grLectureDates || []).includes(toDateStr(addDays(parseDate(dateStr), 1))) && ['eve', 'night'].includes(type))
     return { rule: 'grLectureEveNight', tier: 'program', label: RULE_POLICY.grLectureEveNight.label };
+  if (isNightShiftId(shiftId) && finalSundayBlocks(resident, dateStr, ctx, appSettings))
+    return { rule: 'finalSundayOvernight', tier: 'override', label: RULE_POLICY.finalSundayOvernight.label, nextLabel: BLOCK_TYPE_MAP[ctx.nextRotation.blockType]?.label || ctx.nextRotation.blockType };
   return { rule: 'rotationEligibility', tier: 'acgme', label: RULE_POLICY.rotationEligibility.label };
 }
 
@@ -4317,6 +4360,8 @@ function eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appS
       return 'Trauma Day — only for residents on a Trauma/Peds or Peds/Trauma rotation (fixed rule)';
     case 'academicChiefTueEveNight':
       return 'Academic Chief — no Tuesday evening/night shifts';
+    case 'finalSundayOvernight':
+      return `Final-Sunday overnight — resident starts ${reason.nextLabel || 'a selected rotation'} next block (Rules tab: "No overnight on the final Sunday before starting")`;
     case 'rotationEligibility':
       if (resident.category === 'EM_HOME' && dow === 3 && SHIFT_MAP[sid]?.type === 'day')
         return 'GR Wednesday — EM Home has no day shifts (evenings/nights OK)';
@@ -4442,6 +4487,10 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, message: msg,
           level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
           ...(reason?.rule ? { rule: reason.rule } : {}) });
+      }
+      if (finalSundayUnknown(resident, ds, sid, vCtx)) {
+        issues.push({ residentId: resident.id, name, dateStr: ds, shiftId: sid, rule: 'finalSundayNextBlockUnknown', level: 'warn',
+          message: `Next block not entered; check whether ${name} starts a rotation that forbids a Sunday overnight` });
       }
     }
     const target = getShiftTarget(resident, appSettings);
@@ -16468,6 +16517,26 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
         </label>
       </SectionCard>
 
+      <SectionCard title="Final-Sunday Overnight" subtitle="EM Home residents starting a selected rotation next block get no overnight shift on this block's final Sunday (generator and solver never place one; a hand placement needs acknowledgement).">
+        <div className="text-xs font-semibold text-gray-700 mb-2">No overnight on the final Sunday before starting:</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {BLOCK_TYPES_EM.map(bt => {
+            const checked = noSundayNightBeforeList(appSettings).includes(bt.id);
+            return (
+              <label key={bt.id} className={`text-xs px-2 py-1 rounded-lg border font-medium cursor-pointer select-none flex items-center gap-1.5 ${checked ? 'bg-red-50 border-red-300 text-red-700' : 'bg-white border-gray-200 text-gray-500'}`}>
+                <input type="checkbox" className="rounded" checked={checked}
+                  onChange={e => setAppSettings(p => {
+                    const cur = noSundayNightBeforeList(p);
+                    return { ...p, noSundayNightBeforeRotations: e.target.checked ? [...cur, bt.id] : cur.filter(id => id !== bt.id) };
+                  })}/>
+                {bt.label}
+              </label>
+            );
+          })}
+        </div>
+        <div className="text-xs text-gray-400 mt-2">If the next block has not been entered, Validation warns instead.</div>
+      </SectionCard>
+
       <SectionCard title="Peds/Trauma Split" subtitle="TRAUMA_PEDS/PEDS_TRAUMA's peds half is PED-D/PED-E only by default (see the block-type note above) — this opts a single additional shift into that half.">
         <label className="flex items-start gap-2.5 cursor-pointer select-none">
           <input type="checkbox" checked={appSettings.allowSplitPedsNights ?? true}
@@ -16710,6 +16779,9 @@ export function cellViolations(resident, dateStr, sid, block, eligOverrides, app
     vs.push({ message: eligibilityReasonMessage(reason, resident, dateStr, sid, dayRules, appSettings),
       level: reason?.rule ? severityFor(reason.rule, 'validator') : 'error',
       ...(reason?.rule ? { rule: reason.rule } : {}) });
+  }
+  if (finalSundayUnknown(resident, dateStr, sid, eligCtx)) {
+    vs.push({ message: `Next block not entered; check whether ${resident.firstName} ${resident.lastName} starts a rotation that forbids a Sunday overnight`, level: 'warn', rule: 'finalSundayNextBlockUnknown' });
   }
   // 2. Jeopardy call conflict (policy 'warn'; 'block' already empties the eligible list). Hard
   // error, matching validateAll — the picker/drag-drop "Assign Anyway" override path still works
