@@ -151,9 +151,10 @@ const BLOCK_TYPES_EM = [
 const BLOCK_TYPE_MAP = Object.fromEntries(BLOCK_TYPES_EM.map(b => [b.id, b]));
 const TRAUMA_BLOCKS = ['PEDS_TRAUMA', 'TRAUMA_PEDS'];
 // Final-Sunday overnight rule (re-enabled 2026-11-18, configurable): next-block rotations that forbid an
-// overnight on the current block's final Sunday. Default = every non-schedulable rotation + EM/EMS + EM/TOX.
+// overnight on the current block's final Sunday. Default = chief's pick 2026-11-19 (rules page q-sunday-rot):
+// EM/EMS, EM/TOX, US/EM, Trauma/Peds, Peds/Trauma + every non-schedulable rotation.
 // Inlined ids (not derived from BLOCK_TYPES_EM) so a later-declared const can never hit the TDZ.
-const NO_SUNDAY_NIGHT_BEFORE_DEFAULT = ['EM_EMS', 'EM_TOX', 'METRO', 'ELECTIVE', 'ADMIN', 'BAPTIST', 'MICU', 'ORTHO_VAC', 'ANES_VAC', 'NICU', 'PICU', 'OB_VAC', '9ICU'];
+const NO_SUNDAY_NIGHT_BEFORE_DEFAULT = ['EM_EMS', 'EM_TOX', 'US_EM', 'TRAUMA_PEDS', 'PEDS_TRAUMA', 'METRO', 'ELECTIVE', 'ADMIN', 'BAPTIST', 'MICU', 'ORTHO_VAC', 'ANES_VAC', 'NICU', 'PICU', 'OB_VAC', '9ICU'];
 // Untrusted shape: a saved array (even empty) wins, filtered to known ids; missing/non-array -> default.
 export function noSundayNightBeforeList(appSettings) {
   const v = appSettings?.noSundayNightBeforeRotations;
@@ -939,7 +940,7 @@ const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (
 // when the next block hasn't been saved yet, since the app genuinely can't tell.
 // Final-Sunday overnight, re-enabled 2026-11-18 as a CONFIGURABLE rule (removed 2026-10-30). Prose hardcodes the
 // default list of appSettings.noSundayNightBeforeRotations (NO_SUNDAY_NIGHT_BEFORE_DEFAULT) - keep them in sync (TDZ: no const refs).
-const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight (program decision 2026-11-18): an EM Home resident who starts a selected rotation next block may not work an overnight shift (any night shift, incl. Trauma/Peds nights and 12h nights) on the block\'s own final Sunday. The chief picks the triggering rotations on the Rules tab (setting "No overnight on the final Sunday before starting"); default = EM/EMS, EM/TOX and every non-schedulable rotation (Metro, Elective, Admin, Baptist, MICU, Ortho/VAC, ANES/VAC, NICU, PICU, OB/VAC, 9ICU). Generator and solver never place one; a hand placement needs acknowledgement before export. If the next block has not been entered, Validation only warns.';
+const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight (program decision 2026-11-18): an EM Home resident who starts a selected rotation next block may not work an overnight shift (any night shift, incl. Trauma/Peds nights and 12h nights) on the block\'s own final Sunday. The chief picks the triggering rotations on the Rules tab (setting "No overnight on the final Sunday before starting"); default (chief, 2026-11-19) = EM/EMS, EM/TOX, US/EM, Trauma/Peds, Peds/Trauma and every non-schedulable rotation (Metro, Elective, Admin, Baptist, MICU, Ortho/VAC, ANES/VAC, NICU, PICU, OB/VAC, 9ICU). Generator and solver never place one; a hand placement needs acknowledgement before export. If the next block has not been entered, Validation only warns.';
 // ED_WEEKLY_CAP_H/TOTAL_WEEKLY_CAP_H/GR_START_H/GR_END_H are IMPORTED from lib/acgmeHours.js (see
 // the top-of-file imports) rather than declared here, so — unlike SEVEN_DAY_RULE_NOTE/
 // CIRCADIAN_RULE_NOTE above, which hardcode NIGHT_RULES/JC_MAX_PER_AY's numbers to dodge the TDZ a
@@ -3608,7 +3609,7 @@ const CHANGELOG = [
     title: 'No overnight on the final Sunday before certain rotations',
     items: [
       'EM Home residents who start a selected rotation next block are no longer given an overnight on this block\'s final Sunday.',
-      'Pick which rotations trigger it on the **Rules** tab under **No overnight on the final Sunday before starting** (default: EM/EMS, EM/TOX and all non-schedulable rotations).',
+      'Pick which rotations trigger it on the **Rules** tab under **No overnight on the final Sunday before starting** (default: EM/EMS, EM/TOX, US/EM, Trauma/Peds, Peds/Trauma and all non-schedulable rotations).',
       'A hand-placed one needs acknowledgement before export; if the next block isn\'t entered yet, Validation just warns.',
     ],
   },

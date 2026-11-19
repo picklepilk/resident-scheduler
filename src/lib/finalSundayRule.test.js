@@ -132,7 +132,8 @@ describe('final-Sunday overnight rule (configurable, 2026-11-18)', () => {
     expect(elig(papa, FINAL_SUNDAY, ctx, { noSundayNightBeforeRotations: ['EM_EMS'] })).not.toContain('TRAUMA-N');
     expect(noSundayNightBeforeList({ noSundayNightBeforeRotations: 'nope' })).toContain('EM_EMS');
     expect(noSundayNightBeforeList({ noSundayNightBeforeRotations: ['EM_EMS', 'BOGUS', 'EM_EMS', 7] })).toEqual(['EM_EMS']);
-    expect(noSundayNightBeforeList({})).toEqual(expect.arrayContaining(['EM_EMS', 'EM_TOX', 'METRO', '9ICU']));
+    expect(noSundayNightBeforeList({})).toEqual(expect.arrayContaining(['EM_EMS', 'EM_TOX', 'US_EM', 'TRAUMA_PEDS', 'PEDS_TRAUMA', 'METRO', '9ICU']));
+    expect(noSundayNightBeforeList({})).toHaveLength(16);
     expect(noSundayNightBeforeList({})).not.toContain('EM');
   });
 
