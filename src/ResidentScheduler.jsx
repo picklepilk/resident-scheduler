@@ -211,24 +211,28 @@ const BASE_ELIGIBILITY = {
   FM_1:       ['POD-D','POD-E','POD-N','PED-D','PED-E','PED-N','PED-S','FLEX-N','POD-D12','POD-N12','PED-D12'],
   // FM-3: PED Night only, Mon/Tue/Wed — still the only category/PGY exclusively eligible for
   // PED-N-FM those three days; EM Home covers the separate PED-N id Thu-Sun (see BASE_ELIGIBILITY
-  // comment above). PED-N12 dropped deliberately: it's the 12h variant of PED-N's (EM) 19:00-07:00
-  // timing, never FM-3's own 23:00-08:00 window — FM-3 was never really eligible for it. Accepted
-  // tradeoff: if the chief ever defines a mode:'replace' PED 12-hour window, twelveHourAllows strips
-  // PED-N-FM (not a TWELVE_HOUR_IDS member) and FM-3 has zero eligibility those dates.
-  FM_3:       ['PED-N-FM'],
+  // comment above). PED-N12 added 2026-11-19 (chief answer "Let them work the 12-hour shifts",
+  // rules page q-12h-elig): during a chief-defined mode:'replace' PED 12-hour window
+  // twelveHourAllows strips PED-N-FM (not a TWELVE_HOUR_IDS member), which left FM-3 with nothing.
+  // PED-N12 is the 12h stand-in. FM-3's DEFAULT_DAY_RULES onlyDays [1,2,3] gate applies to every
+  // shift id, so PED-N12 stays Mon/Tue/Wed only. PED-N12 is the PED year-round opt-in id (always
+  // passes twelveHourAllows, coverage default 0/0), so outside a window it is only ever staffed
+  // if the chief opts PED-N12 coverage in.
+  FM_3:       ['PED-N-FM','PED-N12'],
   // IM: POD + FLEX, no Peds/MT/Trauma
   IM_2:       ['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
   // Off-service (Neuro/Anes/Psych/Pod): POD + FLEX-D, plus FLEX-N (chief-directed, 2026-08-22) —
   // a second night area besides POD-N so a resident wanting nights isn't forced into an isolated
-  // single-night run by PED-N/MT-N's 1-body/night cap. FLEX-D stays day-only (no FLEX-E) —
-  // deliberately no FLEX-12h ids added (chief's conservative default, unchanged); no PED ids
-  // either since none of these keys have PED eligibility at all. Accepted tradeoff: during a
-  // chief-defined mode:'replace' FLEX 12-hour window, twelveHourAllows strips FLEX-N for these
-  // residents on those dates (same posture already documented for FM_3/PED-N-FM above).
-  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
-  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
-  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
-  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12'],
+  // single-night run by PED-N/MT-N's 1-body/night cap. FLEX-D stays day-only (no FLEX-E); no PED
+  // ids since none of these keys have PED eligibility at all. FLEX-D12/FLEX-N12 added 2026-11-19
+  // (chief answer "Let them work the 12-hour shifts", rules page q-12h-elig): during a chief-defined
+  // mode:'replace' FLEX 12-hour window twelveHourAllows strips FLEX-D/FLEX-N, so these residents
+  // work the 12h ids instead. 12h ids only exist inside windows (twelveHourAllows), so normal days
+  // are unchanged.
+  NEURO_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
+  ANES_1:     ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
+  PSYCH_1:    ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
+  POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
 };
 
 // Chief-editable day-of-week / block-type scheduling rules — see the Scheduling Rules tab.
@@ -879,15 +883,16 @@ const LEGACY_ELIGIBILITY_DEFAULTS = {
   // array — this entry only fires for a stale JSON backup / un-upgraded device's cloud row / a
   // hand-edited localStorage value that skipped the migration. The real mechanism is
   // renameDiffShiftIds, not this list.
-  FM_3:    [['PED-N'], ['PED-N','PED-N12']],
+  FM_3:    [['PED-N'], ['PED-N','PED-N12'], ['PED-N-FM']],
   IM_2:    [['POD-D','POD-E','POD-N','FLEX-D','FLEX-E','FLEX-N']],
   // Pre-FLEX-N shape (FLEX-D only, no FLEX-N) — the live default immediately before these four
   // off-service keys gained a second night area (chief-directed, 2026-08-22 — see
-  // BASE_ELIGIBILITY.NEURO_1/ANES_1/PSYCH_1/POD_1).
-  NEURO_1: [['POD-D','POD-E','POD-N','FLEX-D']],
-  ANES_1:  [['POD-D','POD-E','POD-N','FLEX-D']],
-  PSYCH_1: [['POD-D','POD-E','POD-N','FLEX-D']],
-  POD_1:   [['POD-D','POD-E','POD-N','FLEX-D']],
+  // BASE_ELIGIBILITY.NEURO_1/ANES_1/PSYCH_1/POD_1). Second entry = shape before FLEX-D12/FLEX-N12
+  // were added (chief 2026-11-19).
+  NEURO_1: [['POD-D','POD-E','POD-N','FLEX-D'], ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12']],
+  ANES_1:  [['POD-D','POD-E','POD-N','FLEX-D'], ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12']],
+  PSYCH_1: [['POD-D','POD-E','POD-N','FLEX-D'], ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12']],
+  POD_1:   [['POD-D','POD-E','POD-N','FLEX-D'], ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12']],
 };
 // Row keys whose DEFAULT_DAY_RULES or BASE_ELIGIBILITY changed in this pass — used to flag a
 // chief's genuinely-customized override for review (it was written against an old default).
@@ -1001,14 +1006,14 @@ const RULE_NOTES = {
     specialNotes: ['Weekday limits (no Wed/Thu, no Tue night) are AS NEEDED: broken only to fill a coverage minimum nothing else can, flagged as an exception.', 'PED-D/PED-E eligible as fill-in PRN (no emphasis on Peds) — generator keeps them mostly on POD and discourages peds further past a soft ~1/3-of-target ceiling; Validation warns if exceeded.', 'Has PED-N (19:00-04:00, all 7 nights) and PED-S (11:00-20:00, all 7 days) eligibility (chief-directed). Coverage stays min 0/max 1 (best-effort, not required).'],
   },
   FM_3: {
-    specialNotes: ['Mon/Tue/Wed-only availability is AS NEEDED: other days only to fill a coverage minimum (flagged).', 'FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, FM-1, and Peds PGY-2/3 may optionally cover the separate PED-N shift (19:00-04:00), which now runs all 7 nights, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.'],
+    specialNotes: ['Mon/Tue/Wed-only availability is AS NEEDED: other days only to fill a coverage minimum (flagged).', 'FM-3 ONLY works Peds nights, its own PED-N-FM shift (23:00-08:00), Mon/Tue/Wed — exclusively FM-3\'s those three days program-wide (EM Home, BAMC PGY-1, FM-1, and Peds PGY-2/3 may optionally cover the separate PED-N shift (19:00-04:00), which now runs all 7 nights, min coverage 0, EM Home PGY-1s soft-deprioritized there — see EM Home notes). Gaps Mon/Tue/Wed, or any day with no FM-3 on the block, are expected.', 'On a Peds day under a chief-defined 12-hour REPLACE window PED-N-FM is suppressed; FM-3 may then work PED Night 12h (PED-N12), still Mon/Tue/Wed only (chief 2026-11-19).'],
   },
   IM_2: {
     specialNotes: ['Code Blue days: off night before + day of — set by chief on the Dashboard tab. (Hard.)', 'Tuesday day-only / Wednesday night-only are AS NEEDED: broken only to fill a coverage minimum (flagged).'],
     tbdItems: ['CCU nights detection (currently manual checkbox on resident)'],
   },
   NEURO_1: {
-    specialNotes: ['No Wednesday/Friday shifts is AS NEEDED: broken only to fill a coverage minimum (flagged).'],
+    specialNotes: ['No Wednesday/Friday shifts is AS NEEDED: broken only to fill a coverage minimum (flagged).', 'Off-service residents (Neuro/Anes/Psych/Podiatry) may work FLEX Day 12h / FLEX Night 12h on days a chief-defined 12-hour REPLACE window suppresses the regular FLEX shifts (chief 2026-11-19).'],
     softPrefs: ['Avoid Tuesday/Thursday night shifts when possible (soft preference; applied by the solver polish, generator weight currently 0; never blocks a coverage minimum).'],
     tbdItems: ['Confirm eligible shift list with rotation director'],
   },

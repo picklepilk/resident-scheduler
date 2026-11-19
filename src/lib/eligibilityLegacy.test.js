@@ -81,17 +81,18 @@ describe('legacy eligibility overrides vs. later-added shift ids', () => {
   });
 
   it('does not grant a 12h shift the current BASE_ELIGIBILITY never gave that category', () => {
-    // NEURO_1 is eligible for FLEX-D but NOT for FLEX-D12 in the live defaults. A naive
-    // "9h implies 12h" rule would hand it out.
-    const f = acepFixture({ NEURO_1: ['POD-D','POD-E','POD-N','FLEX-D'] });
-    const neuro = f.allResidents.find(r => r.category === 'NEURO' && r.pgy === 1);
-    if (!neuro) return; // variant has no neuro resident — nothing to assert
+    // PEDS_2 is eligible for PED-N but NOT for PED-N12 in the live defaults (only PED-D12). A naive
+    // "9h implies 12h" rule would hand it out. (Was NEURO_1/FLEX-D12 until the chief added the
+    // off-service FLEX 12h ids, 2026-11-19.)
+    const f = acepFixture({ PEDS_2: ['PED-D','PED-E','PED-N','PED-S'] });
+    const peds = f.allResidents.find(r => r.category === 'PEDS' && r.pgy === 2);
+    if (!peds) return; // variant has no peds resident — nothing to assert
     const elig = getEligibleShifts(
-      neuro, f._conf.dates[0], f.block.specialDays || {}, f.eligOverrides,
+      peds, f._conf.dates[0], f.block.specialDays || {}, f.eligOverrides,
       f.appSettings, f.dayRules, { blockStart: f.block.startDate, ayConf: f.ayConf },
     );
-    expect(elig).not.toContain('FLEX-D12');
-    expect(elig).toContain('POD-D12');
+    expect(elig).not.toContain('PED-N12');
+    expect(elig).toContain('PED-D12');
   });
 });
 
