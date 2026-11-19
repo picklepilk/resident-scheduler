@@ -61,10 +61,10 @@ describe('generateScheduleBest — true-primary fix under Clear & Regenerate', (
     const fx = makeRealScaleFixture();
     // seed chosen because the fix fires (re-picked 2026-10-31 after the chief-rules merge + late sweep:
     // seeds 3/7/8/11/12 fire it, seed 1 no longer does; re-picked again after the POD-3rd-body stage + PED-N-first
-    // optional sweep: seeds 1/6/8/10/11/12 fire it, 3 and 7 no longer do; re-picked again after weekend-off optional-pass protection: seeds 1/5/8/11/12 fire it, 6 no longer does).
-    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 1 });
+    // optional sweep: seeds 1/6/8/10/11/12 fire it, 3 and 7 no longer do; re-picked again after weekend-off optional-pass protection: seeds 1/5/8/11/12 fire it, 6 no longer does; re-picked again 2026-11-19 after the 12h off-service/FM-3 eligibility change: seeds 6/7/11/12 fire it, 1 no longer does).
+    const fresh = await generateScheduleBestAsync({ ...fx, block: { ...fx.block, schedule: {} } }, { attempts: 20, baseSeed: 6 });
     expect(fresh.report.truePrimaryFixApplied).toBe(true);
-    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 1 });
+    const cleared = await generateScheduleBestAsync({ ...fx, clearFirst: true }, { attempts: 20, baseSeed: 6 });
     expect(cleared.report.truePrimaryFixApplied).toBe(true);
     expect(cleared.schedule).toEqual(fresh.schedule);
   }, 120000);
@@ -76,7 +76,9 @@ describe('generateScheduleBest — LNS acceptance and guards', () => {
     const fx = makeRealScaleFixture();
     // seed 8 (was 7): since the late as-needed sweep may use at-target residents, seed 7 reaches 0 unfilled on
     // realScale before LNS, leaving LNS nothing to improve (lnsAccepted 0 at 60 and 200 iters); seed 8 still has holes.
-    const opts = { attempts: 20, baseSeed: 8 };
+    // Re-picked 2026-11-19 (8 -> 5) after the 12h off-service/FM-3 eligibility change: seed 8 now reaches 5 unfilled
+    // with lnsAccepted 0 at 60 iters; seeds 3/5/6/9 accept (5 chosen).
+    const opts = { attempts: 20, baseSeed: 5 };
     const pre = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 0 });
     const post = await generateScheduleBestAsync({ ...fx }, { ...opts, lnsIters: 60 });
     expect(post.report.lnsAccepted).toBeGreaterThan(0);
