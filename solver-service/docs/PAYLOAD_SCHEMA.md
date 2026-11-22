@@ -109,7 +109,7 @@ only solves.**
   reads the already-resolved per-date hour number, never recomputes the window itself.
 - `residents[].offDates: [date]` (**NEW**) -- vacation + approved days off within the block +-1 day (the JS
   `workShape` off-adjacency input). Consumed only by `workShape.offAdjacencyCost`. Optional, defaults to `[]`.
-- `weights.workShape.areaChurnCost` / `pairRunCost` / `offAdjacencyCost` (**NEW**, default 25 each = JS unit 1 x 0.5
+- `weights.workShape.areaChurnCost` / `pairRunCost` / `offAdjacencyCost` (**NEW**, default 25 each (areaChurnCost 12 since 2026-11-22, see "Shift variety") = JS unit 1 x 0.5
   coefficient x 50 scale; absent = 0): interior-run area change between consecutive worked days, interior 2-day
   runs, and a worked day adjacent to an off date. Mirror `scheduleQuality.js` `workShapePenalty`. Prior-tail
   days are ignored for these three (as in JS). `fairness.*` spread is now an L1 deviation from the cohort mean
@@ -1655,3 +1655,15 @@ Portfolio resolution (unchanged): `resolve_portfolio_k` returns an explicit `con
 Owner decision: over-fills (a shift staffed above max, the solver's overstaff +1) stay ALLOWED but must COUNT.
 - App: pickEngineResult compares [errorCount, blockingWarnCount, aboveMaxCount, ...qualityVector] (betterQuality(a, b, {aboveMax: true}); scoreGenerationResult returns aboveMaxCount = validateAll coverageAboveMax issues). Engine arbitration only: the generator ladder (best-of-N, LNS, repair) is unchanged, so its target-beats-a-+1-top-up policy and SCORE_WEIGHTS (no 5th slot) are untouched. engineComparison.solver/local.aboveMaxCount is reported.
 - Solver: overstaffCoverage already sits in TIER_RANK (coverage-first; TIER_REST rest-first), strictly above TIER_QUALITY, so no weight change was needed for the ordering. report.overstaffed slots must equal validateAll coverageAboveMax slots and report.unfilled slots its coverageBelowMin slots (asserted in src/lib/solverParity.test.js, SOLVER_PARITY=1).
+
+## Shift variety (2026-11-22)
+
+Owner decision 2026-11-22: add a soft "Shift variety" rule (JS `src/lib/variety.js`, Rules tab card, `appSettings.varietyRule = {enabled, maxSameShiftRun (default 3), pairStackDays (default 4)}`).
+Measured on the real Block 6 (cleared, 300 s): solver schedules had mean longest same-shift-id run ~3.9 days vs built-in ~3.1 and chief ~3.2.
+
+- **Payload (additive, optional):** `settings.variety = {maxSameShiftRun, pairStackDays}`; either value `0`/absent turns that term off (a payload without the field solves exactly as before). The app sends `0/0` when the rule is disabled. Pair stacking uses `emResidentIds`.
+- **Weights (QUALITY tier, tier 4; JS FAIRNESS_AXIS_WEIGHTS x50):** `varietyRun.perUnit` 150 (JS `varietyRunExcess` 3), `pairStack.perUnit` 50 (JS `pairStackExcess` 1). They live in the existing last slot, never a new tier, so they cannot outrank coverage, rest or seniority.
+- **Run excess** (`objective._add_variety_terms`): per resident, per NON-night shift id, a run of L consecutive dates costs `max(0, L - N)`, which equals the number of windows of N+1 consecutive dates that are all that shift id. One bool per window, `w >= sum(window) - N`, minimised. Night ids are skipped: NIGHT_RULES already governs night runs (consolidated 5-6) and a variety cap would fight that.
+- **Pair stacking:** per pair of EM residents and AREA, co-occurrence days on a NON-night shift of that area beyond M. Size control: only pair+area combinations where both residents have a var in that area on more than M shared dates exist; one-sided linearisation `p >= A_a + A_b - 1` (A = sum of the resident's non-night vars in the area that day) plus `excess >= sum(p) - M`. No AND channelling constraints.
+- **Area churn reduced:** `workShape.areaChurnCost` 25 -> 12. JS caps the continuity reward (`AREA_CHURN_FREE_AFTER` = 3: leaving an area after 3+ days in it is free); the solver approximates that by halving the per-change cost, because an exact "streak >= 3" waiver would need 3-day AND literals per resident-day. Documented drift, not asserted equal.
+- **Report:** `report.variety = {runExcess, pairExcess}`, computed independently from the extracted schedule (`solver/report/variety.py`) and asserted equal to the JS `validateAll` units (`shiftVarietyRun`, `pairStacking`) in the env-gated `src/lib/solverParity.test.js`. Tests: `tests/test_variety_terms.py`.

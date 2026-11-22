@@ -389,7 +389,8 @@ def payload_to_raw(payload: Payload) -> dict:
             for p in payload.preferences
         ],
         "rulePriority": list(payload.rule_priority),
-        "settings": {"enforceRest": payload.settings.enforce_rest, "enforceWeekendOff": payload.settings.enforce_weekend_off},
+        "settings": {"enforceRest": payload.settings.enforce_rest, "enforceWeekendOff": payload.settings.enforce_weekend_off,
+                     "variety": {"maxSameShiftRun": payload.settings.variety_max_run, "pairStackDays": payload.settings.variety_pair_days}},
     }
 
 

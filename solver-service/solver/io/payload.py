@@ -214,10 +214,23 @@ class Preference:
     tag: str
 
 
+def _variety_int(raw, key: str) -> int:
+    # Lenient: anything not a positive int (missing, bad type) means "off" (0); capped at 60.
+    try:
+        n = int((raw or {}).get(key, 0) or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return max(0, min(n, 60))
+
+
 @dataclass(frozen=True)
 class Settings:
     enforce_rest: bool = True
     enforce_weekend_off: bool = True
+    # Shift variety (2026-11-22): max consecutive days on one NON-night shift id / max shared same-area days
+    # per EM resident pair before the tier-4 penalty starts. 0 = term off (absent payload field = off).
+    variety_max_run: int = 0
+    variety_pair_days: int = 0
 
 
 @dataclass
@@ -518,6 +531,8 @@ def parse_payload(raw: dict) -> Payload:
         settings = Settings(
             enforce_rest=bool(settings_raw.get("enforceRest", True)),
             enforce_weekend_off=bool(settings_raw.get("enforceWeekendOff", True)),
+            variety_max_run=_variety_int(settings_raw.get("variety"), "maxSameShiftRun"),
+            variety_pair_days=_variety_int(settings_raw.get("variety"), "pairStackDays"),
         )
         residents = _parse_residents(raw.get("residents", []))
         as_needed = _parse_as_needed(raw.get("asNeeded", []) or [])

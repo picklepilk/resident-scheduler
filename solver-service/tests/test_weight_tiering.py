@@ -115,11 +115,13 @@ def _anti_fill_sum(weights: dict) -> int:
     # podThirdBodyCore only charges a core body BEYOND the first two POD bodies (an optional top-up,
     # never a coverage minimum), so it cannot prefer leaving a minimum slot empty: excluded here.
     ped_night_swing = weights["pedNightOverSwing"]["perUnit"]
+    # shift variety (2026-11-22): one assignment sits in up to 4 run windows (N=3) and raises at most ~10 pair excesses
+    variety = 4 * weights["varietyRun"]["perUnit"] + 10 * weights["pairStack"]["perUnit"]
     return (
         isolated_night + night_fragment + work + fairness + weekend_off + intern_pair + dow
         + trauma_second + night_alt + second_rest
         + pod_em_comp + flex_em_comp + pod_pgy2_fallback + flex_pgy3_fallback
-        + senior_true_primary + ped_night_swing
+        + senior_true_primary + ped_night_swing + variety
     )
 
 

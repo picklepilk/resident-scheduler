@@ -28,6 +28,8 @@ const em = get('res_em_roster', []).map(r => { const a = block.emBlockAssignment
 const off = (block.offServiceResidents || []).map(r => { const wd = offServiceWindowTargetDelta(r, block, history); return wd == null ? r : { ...r, targetDelta: (Number(r.targetDelta) || 0) + wd }; });
 const ayData = get('res_ay_data', {});
 const A = { allResidents: [...em, ...off], block, coverage: get('res_coverage', {}), eligOverrides: get('res_eligibility_overrides', {}), appSettings: get('res_app_settings', {}), dayRules: get('res_day_rules', {}), blocksHistory: history, ayConf: ayData[block.academicYear] || {} };
+const { computeQualityMetrics, computeQualityVector, FAIRNESS_AXIS_WEIGHTS } = await import('../src/lib/scheduleQuality.js');
+const { varietyStats, normalizeVarietyRule } = await import('../src/lib/variety.js');
 const dates = []; for (let t = new Date(block.startDate + 'T00:00:00Z'); t <= new Date(block.endDate + 'T00:00:00Z'); t = new Date(+t + 864e5)) dates.push(t.toISOString().slice(0, 10));
 const mean = a => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
 function measure(schedule) {
@@ -54,7 +56,14 @@ function measure(schedule) {
   for (const ids of Object.values(byDA)) { ids.sort(); for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) { const k = ids[i] + '|' + ids[j]; pair[k] = (pair[k] || 0) + 1; } }
   const pv = Object.values(pair).sort((a, b) => b - a);
   const total = Object.values(schedule).reduce((s, r) => s + Object.values(r).filter(Boolean).length, 0);
-  return { shifts: total, errors, below, above, slotsTotal: atMinTotal, slotsAtMin: cellsAtMin, slotsOverMin: cellsOverMin, surplusOverMin, runMax: Math.max(...sameRun), runMean: +mean(sameRun).toFixed(2), areaMax: +Math.max(...topShare).toFixed(2), areaMean: +mean(topShare).toFixed(2), streakMax: Math.max(...streak), pairTop: pv[0] || 0, pairTop5: pv.slice(0, 5).join('/'), pairsGe5: pv.filter(x => x >= 5).length };
+  const vrule = normalizeVarietyRule(A.appSettings);
+  const vs = varietyStats({ schedule, dates, residents: A.allResidents, pairResidentIds: A.allResidents.filter(r => r.category === 'EM_HOME' || r.category === 'EM_BAMC').map(r => r.id), rule: vrule });
+  const qin = app.buildQualityInput({ schedule, report: {}, allResidents: A.allResidents, block, appSettings: A.appSettings, eligOverrides: A.eligOverrides, blocksHistory: A.blocksHistory, ayConf: A.ayConf });
+  const qm = computeQualityMetrics({ ...qin, dates, coverage: A.coverage, seniorGapCount: 0, restCompromiseCount: issues.filter(i => i.rule === 'postNightRest').length, asNeededCount: 0 });
+  const fairness = computeQualityVector(qm, ['coverageMin', 'seniorComposition', 'postNightRest'])[3];
+  // fairnessExVariety: slot 3 without the two variety axes, so master and branch compare on the SAME axes
+  const fairnessExVariety = fairness - FAIRNESS_AXIS_WEIGHTS.varietyRunExcess * qm.varietyRunExcess - FAIRNESS_AXIS_WEIGHTS.pairStackExcess * qm.pairStackExcess;
+  return { runExcess: vs.runExcess, pairExcess: vs.pairExcess, fairnessExVariety: +fairnessExVariety.toFixed(1), shifts: total, errors, below, above, slotsTotal: atMinTotal, slotsAtMin: cellsAtMin, slotsOverMin: cellsOverMin, surplusOverMin, runMax: Math.max(...sameRun), runMean: +mean(sameRun).toFixed(2), areaMax: +Math.max(...topShare).toFixed(2), areaMean: +mean(topShare).toFixed(2), streakMax: Math.max(...streak), pairTop: pv[0] || 0, pairTop5: pv.slice(0, 5).join('/'), pairsGe5: pv.filter(x => x >= 5).length };
 }
 const rows = srcs.map(([name, f]) => ({ name, ...measure(f === 'block' ? block.schedule : JSON.parse(fs.readFileSync(f, 'utf-8')).schedule) }));
 const keys = Object.keys(rows[0]).filter(k => k !== 'name');

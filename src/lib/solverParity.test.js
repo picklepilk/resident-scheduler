@@ -102,6 +102,12 @@ const PYTHON = process.platform === 'win32'
       const pyAbove = new Set((json.report?.overstaffed || []).map(o => slotKey(o.dateStr, o.shiftId)));
       expect([...pyBelow].sort()).toEqual([...jsBelow].sort());
       expect([...pyAbove].sort()).toEqual([...jsAbove].sort());
+
+      // Shift-variety parity (2026-11-22): the solver report's independently computed run-excess / pair-excess
+      // counts must equal the JS validateAll units (shiftVarietyRun / pairStacking).
+      const jsRun = issues.filter(i => i.rule === 'shiftVarietyRun').reduce((n, i) => n + i.units, 0);
+      const jsPair = issues.filter(i => i.rule === 'pairStacking').reduce((n, i) => n + i.units, 0);
+      expect(json.report?.variety).toEqual({ runExcess: jsRun, pairExcess: jsPair });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

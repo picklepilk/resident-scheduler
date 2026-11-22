@@ -118,6 +118,9 @@ export const RULE_POLICY = {
   nightStintPair: { tier: 'info', label: 'Multiple night stints' },
   coverageBelowMin: { tier: 'info', label: 'Shift below minimum staffing' },
   coverageAboveMax: { tier: 'info', label: 'Shift above maximum staffing' },
+  // Shift variety (2026-11-22, lib/variety.js): plain info warns; best-of-N prices them in the quality vector's last slot.
+  shiftVarietyRun: { tier: 'info', label: 'Same shift many days in a row' },
+  pairStacking: { tier: 'info', label: 'Same pair working the same area repeatedly' },
   internPairing: { tier: 'info', label: 'Two interns on the same shift' },
   jcPresenterMissing: { tier: 'info', label: 'No Journal Club presenter marked for a PGY' },
 };

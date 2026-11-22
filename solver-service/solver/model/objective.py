@@ -890,6 +890,78 @@ def _add_area_spread_term(model, payload: Payload, store: VarStore, group: TermG
         group.add(coef, excess)
 
 
+# ---- rule 37d: shift variety (2026-11-22) ----
+#
+# Mirrors src/lib/variety.js (JS FAIRNESS_AXIS_WEIGHTS varietyRunExcess 3 / pairStackExcess 1; x50 scale ->
+# `varietyRun.perUnit` 150, `pairStack.perUnit` 50). Both terms are no-ops unless the payload sends
+# settings.variety (maxSameShiftRun / pairStackDays > 0).
+#
+# Run excess: per resident per NON-night shift id, a run of L consecutive days costs max(0, L-N). That is
+# exactly the number of windows of N+1 consecutive dates that are all on the shift, so one bool per
+# window (`w >= sum(window) - N`, minimised) prices it exactly. Night ids are skipped (NIGHT_RULES governs).
+#
+# Pair stacking: per pair of EM residents (payload.em_resident_ids) per area, co-occurrence days on a
+# NON-night shift of that area beyond M. `p[d] >= A_a[d] + A_b[d] - 1` (one-sided, minimised) and
+# `excess >= sum(p) - M`. Model size is kept sane by creating a pair+area only when both residents have at
+# least M+1 dates on which both own a var in that area, and by one-sided linearisation (no AND channelling).
+def _add_variety_terms(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    n_run = payload.settings.variety_max_run
+    n_pair = payload.settings.variety_pair_days
+    dates = payload.block.dates
+    D = len(dates)
+    run_coef = int(weights.get("varietyRun", {}).get("perUnit", 0))
+    pair_coef = int(weights.get("pairStack", {}).get("perUnit", 0))
+
+    if n_run > 0 and run_coef and D > n_run:
+        for resident in payload.residents:
+            per_sid: dict = {}
+            for i, d in enumerate(dates):
+                for sid, var in store.by_resident_date.get((resident.id, d), []):
+                    shift = payload.shifts.get(sid)
+                    if shift is None or shift.is_night:
+                        continue
+                    per_sid.setdefault(sid, {})[i] = var
+            for sid, by_day in per_sid.items():
+                for start in range(0, D - n_run):
+                    window = [by_day.get(start + k) for k in range(n_run + 1)]
+                    if any(v is None for v in window):
+                        continue
+                    w = model.new_bool_var(f"varietyRun[{resident.id},{sid},{start}]")
+                    model.add(w >= sum(window) - n_run)
+                    group.add(run_coef, w)
+
+    if n_pair > 0 and pair_coef:
+        em_ids = [r.id for r in payload.residents if r.id in payload.em_resident_ids]
+        # area -> resident -> day index -> linear expr (sum of that resident's non-night vars in the area)
+        area_day: dict = {}
+        for rid in em_ids:
+            for i, d in enumerate(dates):
+                by_area: dict = {}
+                for sid, var in store.by_resident_date.get((rid, d), []):
+                    shift = payload.shifts.get(sid)
+                    if shift is None or shift.is_night or not shift.area:
+                        continue
+                    by_area.setdefault(shift.area, []).append(var)
+                for area, vs in by_area.items():
+                    area_day.setdefault(area, {}).setdefault(rid, {})[i] = sum(vs)
+        for area, per_res in area_day.items():
+            rids = sorted(per_res)
+            for x in range(len(rids)):
+                for y in range(x + 1, len(rids)):
+                    a, b = rids[x], rids[y]
+                    shared = [i for i in per_res[a] if i in per_res[b]]
+                    if len(shared) <= n_pair:
+                        continue
+                    ps = []
+                    for i in shared:
+                        p = model.new_bool_var(f"pairStack[{a},{b},{area},{i}]")
+                        model.add(p >= per_res[a][i] + per_res[b][i] - 1)
+                        ps.append(p)
+                    ex = model.new_int_var(0, len(shared) - n_pair, f"pairStackEx[{a},{b},{area}]")
+                    model.add(ex >= sum(ps) - n_pair)
+                    group.add(pair_coef, ex)
+
+
 # ---- rule 37c: shortNightStint (2026-10-30) ----
 #
 # Mirrors the validateAll warning "Isolated night stint of N -- aim for minRun-idealRun in a
@@ -1100,6 +1172,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_night_fragment_term(model, payload, store, tier_quality, weights)
     _add_work_shape_term(model, payload, store, tier_quality, weights)
     _add_area_spread_term(model, payload, store, tier_quality, weights)
+    _add_variety_terms(model, payload, store, tier_quality, weights)
     _add_short_night_stint_term(model, payload, store, tier_quality, weights)
     _add_band8_terms(model, payload, store, tier_quality, weights)
     _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)

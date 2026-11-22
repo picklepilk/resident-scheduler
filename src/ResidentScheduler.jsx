@@ -36,6 +36,7 @@ import { resolveHolidays, defaultUsHolidays, holidayDateSet, holidayDatesInRange
 import { resolveEligibilityList, eligibilityDiff, normalizeEligibilityOverride, isEligibilityDiffEmpty } from './lib/eligibilityOverrides.js';
 import { splitCsvLine, splitName, matchCategory, parseRosterText, parseDateRangeInAY, CATEGORIES, CAT_MAP, normalizeToken, DATE_RANGE_RE } from './lib/parse.js';
 import { stripNameSuffix, nameTokenSet, tokensIntersect, matchRosterByName } from './lib/nameMatch.js';
+import { normalizeVarietyRule, varietyStats, DEFAULT_VARIETY_RULE, VARIETY_MAX_VALUE } from './lib/variety.js';
 import { computeQualityMetrics, computeQualityVector, betterQuality, nightRunsOf, nightFragmentationCost } from './lib/scheduleQuality.js';
 import { buildLastGenerated, sinceGenerateRows, revertRows } from './lib/sinceGenerate.js';
 import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetterThanBaseline } from './lib/optimizerSweep.js';
@@ -949,6 +950,7 @@ const PED_N_EM_HOME_NOTE = 'Peds Night: FM-3 works the separate PED-N-FM shift (
 // when the next block hasn't been saved yet, since the app genuinely can't tell.
 // Final-Sunday overnight, re-enabled 2026-11-18 as a CONFIGURABLE rule (removed 2026-10-30). Prose hardcodes the
 // default list of appSettings.noSundayNightBeforeRotations (NO_SUNDAY_NIGHT_BEFORE_DEFAULT) - keep them in sync (TDZ: no const refs).
+const VARIETY_RULE_NOTE = 'Shift variety (owner decision 2026-11-22, soft, Rules tab): a day beyond 3 in a row on the SAME non-night shift id is penalised, and so is each shared same-area day beyond 4 for a pair of EM residents in a block. Both limits are editable (Rules tab, Shift Variety card; defaults 3 and 4). Night ids are exempt (the night rules already govern night runs); area churn is rewarded only up to 3 days in one area. Scored in the existing last quality-vector slot (never a new slot), warned as shiftVarietyRun / pairStacking, never export-blocking.';
 const FINAL_SUNDAY_RULE_NOTE = 'Final-Sunday overnight (program decision 2026-11-18): an EM Home resident who starts a selected rotation next block may not work an overnight shift (any night shift, incl. Trauma/Peds nights and 12h nights) on the block\'s own final Sunday. The chief picks the triggering rotations on the Rules tab (setting "No overnight on the final Sunday before starting"); default (chief, 2026-11-19) = EM/EMS, EM/TOX, US/EM, Trauma/Peds, Peds/Trauma and every non-schedulable rotation (Metro, Elective, Admin, Baptist, MICU, Ortho/VAC, ANES/VAC, NICU, PICU, OB/VAC, 9ICU). Generator and solver never place one; a hand placement needs acknowledgement before export. If the next block has not been entered, Validation only warns.';
 // ED_WEEKLY_CAP_H/TOTAL_WEEKLY_CAP_H/GR_START_H/GR_END_H are IMPORTED from lib/acgmeHours.js (see
 // the top-of-file imports) rather than declared here, so — unlike SEVEN_DAY_RULE_NOTE/
@@ -965,7 +967,7 @@ const RULE_NOTES = {
       { ids: ['US_EM'], note: '5 EM shifts total. Sat/Sun/Mon (no Monday night) preferred; other days only AS NEEDED to fill a coverage minimum (flagged as an as-needed exception).' },
       { ids: ['EM_RES_VAC'], note: '13 shifts total. Enforced.' },
     ],
-    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Midtrack evenings/nights Mon/Tue: interns may work them normally (the old avoid-Mon/Tue gate was removed 2026-10-30).', 'Midtrack Day on a Wednesday: BAMC only (min 0 / max 1) - EM Home never works it.', 'Trauma Day: PGY-1s on Trauma/Peds or Peds/Trauma only (fixed). Enforced.', SEVEN_DAY_RULE_NOTE, VARIETY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_2: {
     blockTypeNotes: [
@@ -975,7 +977,7 @@ const RULE_NOTES = {
       { ids: ['EM_EMS'], note: 'Weekday window swaps 2026-08-01 (chief-directed): before that date, EM/EMS covers Mon/Tue; from that date on, EM/EMS covers Thu/Fri instead. Enforced.' },
       { ids: ['EM_TOX'], note: 'Weekday window swaps 2026-08-01: before that date, EM/TOX covers Thu/Fri; from that date on, EM/TOX covers Mon/Tue instead. Enforced.' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights, Fri/Sat/Sun/Mon window) — Trauma Day is PGY-1-only now (chief-directed AY26/27), PGY-2 is no longer eligible for it. Enforced.', 'PED Swing (PED-S, 11:00-20:00) now runs all 7 days and is no longer confined to EM/TOX or EM/EMS — every EM Home PGY, BAMC, FM-1, and Peds PGY-2/3 are eligible (chief-confirmed against live QGenda).', SEVEN_DAY_RULE_NOTE, VARIETY_RULE_NOTE, CIRCADIAN_RULE_NOTE, SENIOR_COMPOSITION_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
   },
   EM_HOME_3: {
     blockTypeNotes: [
@@ -983,7 +985,7 @@ const RULE_NOTES = {
       { ids: ['METRO'], note: 'Self-pick 12 Metro shifts + 8 on-call days; chief does not schedule (rotation marked non-schedulable).' },
       { ids: ['ADMIN'], note: 'On-call only (4 teaching + 4 other); no regular ED shifts (rotation marked non-schedulable).' },
     ],
-    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
+    specialNotes: ['Trauma: TRAUMA-N only (nights), same window as PGY-2 — Trauma Day is PGY-1-only now (chief-directed AY26/27). Enforced.', SEVEN_DAY_RULE_NOTE, VARIETY_RULE_NOTE, CIRCADIAN_RULE_NOTE, JC_RULE_NOTE, GR_LECTURE_RULE_NOTE, CHIEF_ROLE_NOTE, PED_N_EM_HOME_NOTE, FINAL_SUNDAY_RULE_NOTE, ACGME_HOURS_RULE_NOTE],
     softPrefs: ['Try to give Sunday off before ICU rotations'],
   },
   EM_BAMC_1: {
@@ -994,7 +996,7 @@ const RULE_NOTES = {
       'Defaults to the "EM" rotation when no rotation is set (fixes BAMC residents added via the Off-Service tab, which never assigns one) — so BAMC residents are schedulable by default.',
       'Soft generator nudge: prefer Flex/POD/Peds day shifts, especially Wednesday, over other placements.',
       'Has PED-N eligibility (chief-directed) — all 7 nights, same as EM Home. Coverage stays min 0/max 1 (best-effort, not required).',
-      SEVEN_DAY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, ACGME_HOURS_RULE_NOTE,
+      SEVEN_DAY_RULE_NOTE, VARIETY_RULE_NOTE, CIRCADIAN_RULE_NOTE, GR_LECTURE_RULE_NOTE, ACGME_HOURS_RULE_NOTE,
     ],
   },
   // Peds is now PGY-2/PGY-3 only (chief-directed AY26/27 restructure) — PEDS_1 is gone; existing
@@ -3236,6 +3238,10 @@ const DEFAULT_APP_SETTINGS = {
   // up" into its own key later without re-solving that problem.
   jeopardyLog: [],
   ruleDatesMigrated: false, // one-time marker: materialized the formerly-derived First Friday / Wellness Wednesday / Journal Club dates into ayData (lib/ruleDates.js); lives here so it round-trips with the data it describes
+  // Shift-variety soft rule (2026-11-22): penalise > maxSameShiftRun consecutive days on the same NON-night
+  // shift id and > pairStackDays shared same-area days for an EM resident pair. Lives in res_app_settings (no
+  // new res_* key); read via normalizeVarietyRule so an old backup without it behaves as the defaults.
+  varietyRule: DEFAULT_VARIETY_RULE,
   allowSplitPedsNights: true, // let a TRAUMA_PEDS/PEDS_TRAUMA EM Home PGY-1 work PED-N (9h only,
                                 // never PED-N12) during their PEDS half — see step 5 of
                                 // getEligibleShifts. Default flipped ON (chief hand-schedules 5-6
@@ -3609,6 +3615,17 @@ const CHANGELOG = [
       'A filled cell offers **Give to** or **Swap with** another resident, one click to apply.',
       'An empty cell offers **Assign**, showing eligible residents who most need the shift.',
       'Locked cells show their lock status only — unlock first to edit.',
+    ],
+  },
+  // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-22-shift-variety',
+    date: '2026-11-22',
+    title: 'More shift variety',
+    items: [
+      'New soft rule **Shift Variety** (Rules tab): schedules now avoid the **same shift more than 3 days in a row** and **the same two EM residents working the same area together more than 4 days** in a block. Both numbers are editable.',
+      'It is a preference only: it never outranks coverage, rest or seniority and never blocks export. Each run and pair shows under **Issues > Warnings**.',
+      'Night shifts are left to the night rules (one consolidated run of 5-6). The generator and the optimizer both use it, and area continuity is no longer rewarded past 3 days in one area.',
     ],
   },
   // Layout change entry: same non-interrupting insert as the one below.
@@ -4894,6 +4911,22 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       countsByDateShift[k] = (countsByDateShift[k] || 0) + 1;
     }
   }
+  // Shift-variety soft rule (2026-11-22, lib/variety.js): plain info-tier warns, never export-blocking.
+  {
+    const vRule = normalizeVarietyRule(appSettings);
+    if (vRule.enabled) {
+      const vs = varietyStats({ schedule, dates: blockDates, residents: allResidents, pairResidentIds: allResidents.filter(isEmResident).map(r => r.id), rule: vRule });
+      const nameOf = id => { const r = allResidents.find(x => x.id === id); return r ? `${r.firstName} ${r.lastName}` : id; };
+      const span = ds => ds.length > 1 ? `${formatDisplayDate(ds[0])}–${formatDisplayDate(ds[ds.length - 1])}` : formatDisplayDate(ds[0]);
+      for (const run of vs.runs)
+        issues.push({ residentId: run.residentId, name: nameOf(run.residentId), dateStr: run.dates[0], shiftId: run.shiftId, rule: 'shiftVarietyRun', units: run.excess, measured: run.dates.length,
+          message: `${nameOf(run.residentId)}: ${run.dates.length} days in a row on ${run.shiftId} (${span(run.dates)}) — variety goal is ${vRule.maxSameShiftRun}`, level: 'warn' });
+      for (const p of vs.pairs)
+        issues.push({ residentId: p.a, name: nameOf(p.a), dateStr: p.dates[0], shiftId: null, rule: 'pairStacking', units: p.excess, measured: p.dates.length,
+          message: `${nameOf(p.a)} and ${nameOf(p.b)} both worked ${p.area} on ${p.dates.length} days (${p.dates.map(formatDisplayDate).join(', ')}) — variety goal is ${vRule.pairStackDays}`, level: 'warn' });
+    }
+  }
+
   for (const ds of blockDates) {
     const dsDow = parseDate(ds).getDay();
     const conf12 = twelveHourStateFor(ds, ayConf || {});
@@ -8179,6 +8212,8 @@ export function buildSolverPayload({ allResidents, block, coverage = {}, eligOve
       // rather than reading a stale appSettings.enforceRest:false from an old backup.
       enforceRest: true,
       enforceWeekendOff: appSettings.enforceWeekendOff !== false,
+      // Shift-variety soft rule: solver mirrors lib/variety.js (maxSameShiftRun 0 = off).
+      variety: (v => v.enabled ? { maxSameShiftRun: v.maxSameShiftRun, pairStackDays: v.pairStackDays } : { maxSameShiftRun: 0, pairStackDays: 0 })(normalizeVarietyRule(appSettings)),
     },
     traumaNightShiftIds,
     pedsNightShiftIds,
@@ -8405,6 +8440,9 @@ export function buildQualityInput({ schedule, report, allResidents, block, appSe
     // permanently disagrees with the generator it is scoring. Passed rather than imported for the
     // same circular-import reason as maxConsecutiveWorkDays above.
     ayConf,
+    // Shift-variety soft rule (lib/variety.js); pair stacking limited to EM residents like the solver.
+    variety: normalizeVarietyRule(appSettings),
+    pairResidentIds: allResidents.filter(isEmResident).map(r => r.id),
   };
 }
 
@@ -16543,6 +16581,38 @@ function RulesTab({ allResidents, block, eligOverrides, appSettings, setAppSetti
               })}
               {!isDefault && (
                 <button onClick={() => setAppSettings(p => ({ ...p, rulePriority: [...DEFAULT_RULE_PRIORITY] }))}
+                  className="text-xs text-gray-400 hover:text-primary flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
+              )}
+            </div>
+          );
+        })()}
+      </SectionCard>
+
+      <SectionCard title="Shift Variety" subtitle="Soft preference (never blocks export, never outranks coverage, rest or seniority): avoid the same shift many days running and the same two people stacked together day after day.">
+        {(() => {
+          const v = normalizeVarietyRule(appSettings);
+          const upd = patch => setAppSettings(p => ({ ...p, varietyRule: { ...normalizeVarietyRule(p), ...patch } }));
+          const numInput = (field, label) => (
+            <label className="flex items-center justify-between gap-3 text-xs text-gray-700">
+              <span>{label}</span>
+              <input type="number" min="1" max={VARIETY_MAX_VALUE} value={v[field]} disabled={!v.enabled}
+                onChange={e => upd({ [field]: Math.min(VARIETY_MAX_VALUE, Math.max(1, Math.floor(Number(e.target.value)) || DEFAULT_VARIETY_RULE[field])) })}
+                className="w-14 text-xs border border-gray-200 rounded-lg px-1.5 py-1 text-center focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40"/>
+            </label>
+          );
+          return (
+            <div className="space-y-2">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input type="checkbox" checked={v.enabled} onChange={e => upd({ enabled: e.target.checked })} className="rounded mt-0.5"/>
+                <span>
+                  <span className="block text-xs font-semibold text-gray-700">Prefer shift variety</span>
+                  <span className="block text-xs text-gray-400">Generator and optimizer score it; Issues &gt; Warnings lists each run and pair. Night shifts are exempt from the run limit and pair count: night runs are governed by the night rules (consolidated 5-6 nights).</span>
+                </span>
+              </label>
+              {numInput('maxSameShiftRun', 'Most days in a row on the same shift (each extra day is penalised)')}
+              {numInput('pairStackDays', 'Most days two EM residents may work the same area together in a block (each extra is penalised)')}
+              {(v.maxSameShiftRun !== DEFAULT_VARIETY_RULE.maxSameShiftRun || v.pairStackDays !== DEFAULT_VARIETY_RULE.pairStackDays) && (
+                <button onClick={() => upd({ maxSameShiftRun: DEFAULT_VARIETY_RULE.maxSameShiftRun, pairStackDays: DEFAULT_VARIETY_RULE.pairStackDays })}
                   className="text-xs text-gray-400 hover:text-primary flex items-center gap-1"><RefreshCw size={11}/> Reset to default</button>
               )}
             </div>

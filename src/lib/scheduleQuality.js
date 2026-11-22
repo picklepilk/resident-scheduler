@@ -14,6 +14,12 @@
 import { SHIFT_MAP, shiftActiveOnDow, isNightShiftId } from './shifts.js';
 import { parseDate, addDays, toDateStr } from './dates.js';
 import { getCoverageFor, twelveHourStateFor } from './coverage.js';
+import { varietyStats } from './variety.js';
+
+// Area-churn continuity is only rewarded up to this many days in one area (2026-11-22 variety rule):
+// leaving an area after >= AREA_CHURN_FREE_AFTER days costs nothing, so continuity stops pushing
+// long identical runs. Mirrored (approximately) by the solver's lowered workShape.areaChurnCost.
+export const AREA_CHURN_FREE_AFTER = 3;
 
 // Share of a resident's worked block that may sit in a single shift AREA before areaSpread starts
 // charging. 0.5 is deliberately generous rather than tight: POD and FLEX each carry roughly a
@@ -159,6 +165,10 @@ export function computeQualityMetrics({
   // ResidentScheduler.jsx (that file imports lib/* the other direction — circular). Defaulted so
   // an older/among-tests caller that omits it still produces a finite workShapePenalty.
   maxConsecutiveWorkDays = 6,
+  // Shift-variety soft rule (lib/variety.js): normalized rule {enabled,maxSameShiftRun,pairStackDays} and the
+  // resident ids that take part in pair stacking (EM residents, same set the solver uses). Omitted = no-op.
+  variety = null,
+  pairResidentIds = null,
   // AY-to-date carryover (Phase 2). `ayPriorTotals` maps residentId -> {nights, weekendDates,
   // holidays, assigned, blocks} accumulated over PUBLISHED earlier blocks in the same academic
   // year. A resident with no history is ABSENT from the map, never present-with-zeros — see the
@@ -468,10 +478,15 @@ export function computeQualityMetrics({
     // is easier than POD/PED/FLEX on rotation. Only counted WITHIN a run (consecutive dates), so a
     // day off between assignments resets it and costs nothing.
     for (const run of interior) {
+      let streak = 1;
       for (let k = run.start; k < run.end; k++) {
         const a = SHIFT_MAP[rs[dates[k]]]?.area;
         const b = SHIFT_MAP[rs[dates[k + 1]]]?.area;
-        if (a && b && a !== b) workShapePenalty += 1;
+        if (a && b && a !== b) {
+          // Continuity reward is capped: leaving after AREA_CHURN_FREE_AFTER+ days in one area is free.
+          if (streak < AREA_CHURN_FREE_AFTER) workShapePenalty += 1;
+          streak = 1;
+        } else streak++;
       }
     }
 
@@ -490,6 +505,10 @@ export function computeQualityMetrics({
       if (offDates.has(prev) || offDates.has(next)) workShapePenalty += 1;
     }
   }
+
+  const vs = variety?.enabled
+    ? varietyStats({ schedule, dates, residents, pairResidentIds, rule: variety })
+    : { runExcess: 0, pairExcess: 0 };
 
   return {
     coverageMiss,
@@ -512,6 +531,8 @@ export function computeQualityMetrics({
     nightShapePenalty,
     workShapePenalty,
     areaSpread,
+    varietyRunExcess: vs.runExcess,
+    pairStackExcess: vs.pairExcess,
     traumaRunPenalty,
     secondRestDayPenalty,
     asNeededUse: asNeededCount,
@@ -538,6 +559,12 @@ export const FAIRNESS_AXIS_WEIGHTS = {
   nightShapePenalty: 1,
   workShapePenalty: 0.5,
   areaSpread: 2,
+  // Shift-variety soft rule (2026-11-22, lib/variety.js). Same existing slot (never a 5th): a run-excess
+  // DAY costs 3 (more than one areaSpread unit, less than a deficitSpread unit of 10 or an as-needed use of
+  // 40); a pair-stacking excess co-occurrence costs 1 (far more of them exist, so a larger weight would let
+  // pair-spreading dominate the slot). Solver mirror x50: varietyRun 150, pairStack 50.
+  varietyRunExcess: 3,
+  pairStackExcess: 1,
   traumaRunPenalty: 2,
   secondRestDayPenalty: 1,
   // Program decision 2026-10-30 (as-needed rules): one count per validateAll `asNeededException` warn
