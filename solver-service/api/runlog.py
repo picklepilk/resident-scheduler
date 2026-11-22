@@ -33,17 +33,41 @@ def _scalars(d) -> Optional[dict]:
     return {k: v for k, v in d.items() if isinstance(v, _SCALARS)}
 
 
+def _effective_workers(payload) -> Optional[int]:
+    try:
+        from solver.solve import _num_workers  # lazy: keep runlog import-light
+
+        return int(_num_workers(payload))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stage_seconds(report) -> Optional[dict]:
+    """{stageName: seconds} from report.stages (per lexicographic stage wall time, presolve included)."""
+    stages = report.get("stages")
+    if not isinstance(stages, list):
+        return None
+    out = {}
+    for s in stages:
+        if isinstance(s, dict) and isinstance(s.get("seconds"), (int, float)) and s.get("name"):
+            out[str(s["name"])] = round(float(s["seconds"]), 2)
+    return out or None
+
+
 def build_record(payload, result, wall_seconds: float, source: str = "solve") -> dict:
     cfg = payload.config
     report = getattr(result, "report", None) or {}
     portfolio = report.get("portfolio") if isinstance(report.get("portfolio"), dict) else None
     stall = report.get("stall")
+    stage_seconds = _stage_seconds(report)
+    setup = round(max(0.0, float(wall_seconds) - sum(stage_seconds.values())), 2) if stage_seconds else None
     return {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": source,
         "host": os.environ.get("SOLVER_HOST_KIND") or socket.gethostname(),
         "cpuCount": os.cpu_count() or 1,
         "numWorkers": cfg.num_workers,
+        "effectiveWorkers": _effective_workers(payload),
         "maxTimeSeconds": cfg.max_time_seconds,
         "deadlineSeconds": cfg.deadline_seconds,
         "portfolioK": (portfolio or {}).get("k", cfg.portfolio),
@@ -60,6 +84,8 @@ def build_record(payload, result, wall_seconds: float, source: str = "solve") ->
         "status": getattr(result, "status", None),
         "resultMode": getattr(result, "mode", None),
         "wallSeconds": round(float(wall_seconds), 2),
+        "stageSeconds": stage_seconds,
+        "setupSeconds": setup,
         "tiers": getattr(result, "tiers", None),
         "objective": getattr(result, "objective_value", None),
         "deadline": _scalars(report.get("deadline")),

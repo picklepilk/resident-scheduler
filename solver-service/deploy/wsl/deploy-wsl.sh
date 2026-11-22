@@ -26,7 +26,7 @@ case $TARGET in all) HOSTS="picklepower picklebook" ;; *) HOSTS=$TARGET ;; esac
 git fetch -q
 COMMIT=$(git rev-parse --short "$REF")
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-git archive --format=tar "$REF" solver-service > "$TMP/rs-solver-deploy.tar"
+git -c core.autocrlf=false archive --format=tar "$REF" solver-service > "$TMP/rs-solver-deploy.tar"
 echo "[deploy] $REF = $COMMIT, tar $(wc -c < "$TMP/rs-solver-deploy.tar") bytes"
 
 # WSL-side helper (runs inside Ubuntu): swap keeping the previous copy, pip only if requirements changed.
@@ -95,7 +95,12 @@ deploy_host() {
   D=$(run "$h" wsl.exe -d Ubuntu -e cat /home/amade/rs-solver-live/DEPLOYED_COMMIT | tr -cd '0-9a-f')
   echo "[$h] commit=$COMMIT wsl=$D oldpid=[$OLD] newpid=[$NEW] $H"
   [ "$D" = "$COMMIT" ] || { echo "[$h] FAIL WSL copy is $D, expected $COMMIT"; return 1; }
-  [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] || { echo "[$h] FAIL no new solver pid"; return 1; }
+  if [ -z "$NEW" ] || [ "$NEW" = "$OLD" ]; then
+    case $H in
+      *start-solver-wsl.ps1*) echo "[$h] FAIL no new solver pid"; return 1 ;;
+      *) echo "[$h] WSL copy updated; task still on Windows launcher, run switch-solver.ps1 -To wsl"; return 0 ;;
+    esac
+  fi
   case $H in *health=DOWN*) echo "[$h] FAIL unhealthy"; return 1 ;; esac
 }
 

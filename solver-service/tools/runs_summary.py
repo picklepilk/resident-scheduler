@@ -34,14 +34,24 @@ def main(argv=None) -> int:
                 except (ValueError, AttributeError):
                     continue
                 groups.setdefault(key, []).append(r)
-    print(f"{'host':<14}{'budget':>7} {'flags':<34}{'k':<6}{'n':>4}{'med_wall':>10}{'max_wall':>10}{'optimal':>8}{'dl_hit':>7}")
+    print(f"{'host':<14}{'budget':>7} {'flags':<34}{'k':<6}{'n':>4}{'med_wall':>10}{'max_wall':>10}{'optimal':>8}{'dl_hit':>7}{'workers':>8}{'med_setup':>10}  med_stage_seconds")
     for (host, budget, flags, k), rs in sorted(groups.items()):
         walls = [r["wallSeconds"] for r in rs if isinstance(r.get("wallSeconds"), (int, float))]
         opt = sum(1 for r in rs if r.get("status") == "OPTIMAL")
         hit = sum(1 for r in rs if (r.get("deadline") or {}).get("hit"))
         med = f"{statistics.median(walls):.1f}" if walls else "-"
         mx = f"{max(walls):.1f}" if walls else "-"
-        print(f"{host:<14}{budget:>7} {flags:<34}{k:<6}{len(rs):>4}{med:>10}{mx:>10}{opt:>8}{hit:>7}")
+        ws = sorted({r["effectiveWorkers"] for r in rs if isinstance(r.get("effectiveWorkers"), int)})
+        wtxt = "/".join(map(str, ws)) or "-"
+        setups = [r["setupSeconds"] for r in rs if isinstance(r.get("setupSeconds"), (int, float))]
+        stxt = f"{statistics.median(setups):.1f}" if setups else "-"
+        per: dict = {}
+        for r in rs:
+            for n, v in (r.get("stageSeconds") or {}).items():
+                if isinstance(v, (int, float)):
+                    per.setdefault(n, []).append(v)
+        ptxt = " ".join(f"{n}={statistics.median(v):.1f}" for n, v in per.items()) or "-"
+        print(f"{host:<14}{budget:>7} {flags:<34}{k:<6}{len(rs):>4}{med:>10}{mx:>10}{opt:>8}{hit:>7}{wtxt:>8}{stxt:>10}  {ptxt}")
     return 0
 
 

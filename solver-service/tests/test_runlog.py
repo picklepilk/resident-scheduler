@@ -50,3 +50,32 @@ def test_write_failure_is_swallowed(monkeypatch, tmp_path):
     blocker.write_text("x")
     monkeypatch.setenv("SOLVER_RUNLOG_DIR", str(blocker / "sub"))  # parent is a file -> mkdir fails
     assert TestClient(app).post("/solve", json=_body()).status_code == 200
+
+
+def test_record_has_effective_workers_and_stage_seconds(monkeypatch, tmp_path):
+    monkeypatch.setenv("SOLVER_RUNLOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("SOLVER_NUM_WORKERS", "3")
+    body = _body()
+    body.setdefault("config", {})["numWorkers"] = 0
+    assert TestClient(app).post("/solve", json=body).status_code == 200
+    rec = json.loads((tmp_path / "logs" / "runs.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rec["numWorkers"] == 0
+    assert rec["effectiveWorkers"] == 3
+    assert isinstance(rec["stageSeconds"], dict) and rec["stageSeconds"]
+    assert all(isinstance(v, (int, float)) for v in rec["stageSeconds"].values())
+    assert rec["setupSeconds"] >= 0
+
+
+def test_runs_summary_prints_new_fields(tmp_path, capsys):
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import runs_summary
+
+    f = tmp_path / "runs.jsonl"
+    f.write_text(json.dumps({"host": "h", "maxTimeSeconds": 10, "flags": {}, "portfolioK": 1, "wallSeconds": 5.0,
+                             "effectiveWorkers": 8, "setupSeconds": 1.2, "stageSeconds": {"rank": 2.0}}) + "\n")
+    assert runs_summary.main([str(f)]) == 0
+    out = capsys.readouterr().out
+    assert "workers" in out and "rank=2.0" in out and "1.2" in out
