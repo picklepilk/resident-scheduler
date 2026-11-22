@@ -30,3 +30,13 @@ The task runs only while the user is logged in. An in-memory job dies if the PC 
 ## App side (owner action)
 - Netlify env `VITE_SOLVER_POOL`: `PicklePower=https://picklepower.<tailnet>.ts.net:10000,PickleBook=https://picklebook.<tailnet>.ts.net:10000,Pi=https://picklehub.<tailnet>.ts.net:10000`. Order = Auto order. Redeploy.
 - Add each origin to `netlify.toml` CSP `connect-src`.
+
+## Hosting via WSL (optional, faster)
+Same CP-SAT work runs ~2x faster under Linux than the Windows build (measured on PicklePower for EM Scheduler, 2026-11-20: presolve 59 s vs 123 s). WSL forwards 127.0.0.1 to Windows, so Funnel :10000 keeps proxying `127.0.0.1:8766` unchanged; the listener shows as `wslrelay`.
+
+- Layout inside WSL (Ubuntu): venv `~/rs-venv` (`python3 -m venv --without-pip` + `get-pip.py`, because ensurepip is missing; then `pip install -r requirements.txt`), code `~/rs-solver-live/solver-service` with `~/rs-solver-live/DEPLOYED_COMMIT`, previous copy `~/rs-solver-live.prev`, env `~/.config/resident-solver/solver.env`, log and runlog under `~/.local/share/resident-solver/`.
+- `deploy/wsl/run-solver.sh`: on every start copies `%APPDATA%\resident-solver\solver.env` (CR stripped, chmod 600), overrides `SOLVER_RUNLOG_DIR` (the Windows path is invalid in Linux), applies the same refusal guards as `start-solver.ps1`, then `exec uvicorn api.main:app --host 127.0.0.1 --port ${PORT:-8766}`. Test solver on a spare port: `RS_TEST_NOAUTH=1 PORT=8791 sh run-solver.sh` (auth off, accepted only on 8791-8794).
+- `deploy/windows/start-solver-wsl.ps1`: task entry; exits 0 if 8766 already answers, else keeps `wsl.exe -d Ubuntu` in the foreground (task tracks it) and logs to `%LOCALAPPDATA%\resident-solver\solver.log`.
+- `deploy/windows/switch-solver.ps1 -To windows|wsl [-Force]`: repoints the `ResidentSolver` task action, refuses when `/health` says `busy:true`, kills only the uvicorn with `--port 8766` (never by process name, never 8767), restarts the task, prints `/health`. Revert = `-To windows`.
+- `deploy/wsl/deploy-wsl.sh [--ref origin/master] [--force] picklepower|picklebook|all`: run from Git Bash at the repo root. `git archive` of `solver-service`, swap into `~/rs-solver-live` (keeps `.prev`, pip only if requirements changed), mirror to `%LOCALAPPDATA%\resident-solver`, `pkill -9 -f port.8766` (after the busy check), task relaunches, confirms a new pid and `/health`. Skips a busy host unless `--force`. picklebook goes via `ssh picklebook` with helper files scp'd to its home (no inline quoting through cmd). Rollback: rerun with an older `--ref`, or `switch-solver.ps1 -To windows`.
+- First time per host: build `~/rs-venv`, deploy once, then `switch-solver.ps1 -To wsl` from `%LOCALAPPDATA%\resident-solver\solver-service\deploy\windows`.
