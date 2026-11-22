@@ -13,7 +13,7 @@
     64.8,
     0,
     0,
-    1740.111515851549
+    1804.0115158515491
   ],
   "axes": {
     "underTargetTotal": 24.4,
@@ -22,8 +22,10 @@
     "nightSpread": 1.9057969850804042,
     "weekendSpread": 1.3331460568703426,
     "nightShapePenalty": 142,
-    "workShapePenalty": 270,
+    "workShapePenalty": 256.6,
     "areaSpread": 49.2,
+    "varietyRunExcess": 19.8,
+    "pairStackExcess": 11.2,
     "traumaRunPenalty": 0.8,
     "secondRestDayPenalty": 9,
     "asNeededUse": 32.2

@@ -8,23 +8,25 @@
   "structuralErrors": 0,
   "underTargetErrors": 14,
   "quality": [
-    15.333333333333334,
+    13,
     0,
     0,
-    1881.0355253344442
+    1960.1220787164066
   ],
   "axes": {
-    "underTargetTotal": 200.33333333333334,
-    "deficitSpread": 0.0804787445393831,
+    "underTargetTotal": 199,
+    "deficitSpread": 0.0838351025825733,
     "holidaySpread": 0,
-    "nightSpread": 1.1623567436707132,
-    "weekendSpread": 0.939149356756495,
-    "nightShapePenalty": 373.3333333333333,
-    "workShapePenalty": 782.3333333333334,
-    "areaSpread": 110.66666666666667,
-    "traumaRunPenalty": 1.3333333333333333,
-    "secondRestDayPenalty": 13.666666666666666,
-    "asNeededUse": 11.666666666666666
+    "nightSpread": 1.2613757542950654,
+    "weekendSpread": 0.9705349578692961,
+    "nightShapePenalty": 376,
+    "workShapePenalty": 784.3333333333334,
+    "areaSpread": 105,
+    "varietyRunExcess": 13.333333333333334,
+    "pairStackExcess": 10,
+    "traumaRunPenalty": 1,
+    "secondRestDayPenalty": 13,
+    "asNeededUse": 12.666666666666666
   },
-  "unfilled": 0
+  "unfilled": 13
 }
