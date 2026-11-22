@@ -91,6 +91,17 @@ const PYTHON = process.platform === 'win32'
         console.error('Structural validateAll errors on solver output:', structural.slice(0, 10));
       }
       expect(structuralErrorCount(issues)).toBe(0);
+
+      // Coverage parity (2026-11-22): the solver's own report must agree with validateAll on which
+      // (shift,date) slots are below min / above max, so the over-fill the solver may buy (+1 over max)
+      // and any hole are the SAME facts the app arbitration counts (pickEngineResult ENGINE_CMP).
+      const slotKey = (d, s) => `${d}|${s}`;
+      const jsBelow = new Set(issues.filter(i => i.rule === 'coverageBelowMin').map(i => slotKey(i.dateStr, i.shiftId)));
+      const jsAbove = new Set(issues.filter(i => i.rule === 'coverageAboveMax').map(i => slotKey(i.dateStr, i.shiftId)));
+      const pyBelow = new Set((json.report?.unfilled || []).map(u => slotKey(u.dateStr, u.shiftId)));
+      const pyAbove = new Set((json.report?.overstaffed || []).map(o => slotKey(o.dateStr, o.shiftId)));
+      expect([...pyBelow].sort()).toEqual([...jsBelow].sort());
+      expect([...pyAbove].sort()).toEqual([...jsAbove].sort());
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

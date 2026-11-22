@@ -1648,3 +1648,10 @@ Always-on additive report field: `report.stages = [{name, seconds, status, objec
 
 Portfolio resolution (unchanged): `resolve_portfolio_k` returns an explicit `config.portfolio` (clamped 1..8) else 1 (auto off since 2026-11-11; with the threshold set, 2 when `_num_workers >= 12`).
 `portfolio: 1` runs `_solve_single` with `_num_workers` = `numWorkers` clamped to `os.cpu_count()` (absent/0 -> `SOLVER_NUM_WORKERS` env, else all cores), so `{"portfolio":1,"numWorkers":16}` is one 16-worker run on a >=16-core host.
+
+
+## Over-max staffing counts in arbitration (2026-11-22)
+
+Owner decision: over-fills (a shift staffed above max, the solver's overstaff +1) stay ALLOWED but must COUNT.
+- App: pickEngineResult compares [errorCount, blockingWarnCount, aboveMaxCount, ...qualityVector] (betterQuality(a, b, {aboveMax: true}); scoreGenerationResult returns aboveMaxCount = validateAll coverageAboveMax issues). Engine arbitration only: the generator ladder (best-of-N, LNS, repair) is unchanged, so its target-beats-a-+1-top-up policy and SCORE_WEIGHTS (no 5th slot) are untouched. engineComparison.solver/local.aboveMaxCount is reported.
+- Solver: overstaffCoverage already sits in TIER_RANK (coverage-first; TIER_REST rest-first), strictly above TIER_QUALITY, so no weight change was needed for the ordering. report.overstaffed slots must equal validateAll coverageAboveMax slots and report.unfilled slots its coverageBelowMin slots (asserted in src/lib/solverParity.test.js, SOLVER_PARITY=1).

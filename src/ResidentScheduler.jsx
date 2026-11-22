@@ -8488,7 +8488,9 @@ function scoreGenerationResult(res, args, rulePriority) {
     restCompromiseCount,
     asNeededCount: countAsNeededExceptions(issues),
   });
-  return { errorCount, blockingWarnCount, qualityVector: computeQualityVector(metrics, rulePriority) };
+  // aboveMaxCount: engine arbitration only (see betterQuality opts.aboveMax); the generator ladder ignores it.
+  const aboveMaxCount = issues.filter(i => i.rule === 'coverageAboveMax').length;
+  return { errorCount, blockingWarnCount, aboveMaxCount, qualityVector: computeQualityVector(metrics, rulePriority) };
 }
 
 // ─── LNS RUIN-AND-RECREATE (B1) ───
@@ -9246,6 +9248,8 @@ export function countRelaxedCapBreaches(solverRes) {
   return f.violations.filter(v => v && SOLVER_RELAXED_NONBLOCKING_FAMILIES.includes(v.rule)).length;
 }
 
+// Engine arbitration also counts over-max staffing (after blocking warnings, before the quality vector).
+const ENGINE_CMP = { aboveMax: true };
 export function pickEngineResult(solverRes, localRes, args) {
   const rulePriority = normalizeRulePriority(args.appSettings?.rulePriority);
   // Solver candidates: the winner first, then shortlist entries (index 0..n-1). The raw shortlist is
@@ -9267,7 +9271,7 @@ export function pickEngineResult(solverRes, localRes, args) {
   if (solverScore) {
     shortlist.forEach((cand, idx) => {
       const cs = decorate(cand, scoreGenerationResult(cand, args, rulePriority));
-      if (betterQuality(cs, solverScore)) { // strictly: the winner keeps ties
+      if (betterQuality(cs, solverScore, ENGINE_CMP)) { // strictly: the winner keeps ties
         solverScore = cs;
         solverPick = { schedule: cand.schedule, report: { ...cand.report, shortlistIndex: idx } };
         shortlistIndex = idx;
@@ -9277,7 +9281,7 @@ export function pickEngineResult(solverRes, localRes, args) {
   const localScore = localRes ? scoreGenerationResult(localRes, args, rulePriority) : null;
 
   const toComparison = score => score
-    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, qualityVector: score.qualityVector, ...(score.solverMode ? { solverMode: score.solverMode } : {}) }
+    ? { errorCount: score.errorCount, blockingWarnCount: score.blockingWarnCount, aboveMaxCount: score.aboveMaxCount ?? 0, qualityVector: score.qualityVector, ...(score.solverMode ? { solverMode: score.solverMode } : {}) }
     : null;
   const shortlistInfo = shortlist.length ? { shortlistSize: shortlist.length, shortlistIndex } : {};
 
@@ -9289,7 +9293,7 @@ export function pickEngineResult(solverRes, localRes, args) {
     return { result: solverPick, winner: 'cpsat', engineComparison: { winner: 'cpsat', solver: toComparison(solverScore), local: null, ...shortlistInfo } };
   }
 
-  const solverStrictlyBetter = betterQuality(solverScore, localScore);
+  const solverStrictlyBetter = betterQuality(solverScore, localScore, ENGINE_CMP);
   const winner = solverStrictlyBetter ? 'cpsat' : 'local';
   return {
     result: solverStrictlyBetter ? solverPick : localRes,
