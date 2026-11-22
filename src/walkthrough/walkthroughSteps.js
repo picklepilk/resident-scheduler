@@ -71,7 +71,7 @@ export const WALKTHROUGH_STEPS = [
     route: 'schedule',
   },
   {
-    title: 'Scheduling Rules — coverage targets',
+    title: 'Rules — coverage targets',
     headline: 'Set how many residents each shift needs before you generate.',
     bullets: [
       'e.g. POD Day needs at least 2, up to 3 any day.',
@@ -82,7 +82,7 @@ export const WALKTHROUGH_STEPS = [
     roles: ['admin'],
   },
   {
-    title: 'Violations — the generation report',
+    title: 'Validation — the generation report',
     headline: 'Every coverage gap and rule conflict lands here after you generate.',
     bullets: [
       'e.g. an unfilled slot shows why — nobody eligible, or rest-blocked.',

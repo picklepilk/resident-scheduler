@@ -1,7 +1,8 @@
 // ResidentScheduler.jsx — v0.3
 // EM Residency Scheduler · UH Emergency Medicine
 
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef, useContext } from 'react';
+import { createPortal } from 'react-dom';
 import UpdateBanner from './UpdateBanner.jsx';
 import {
   Plus, Minus, Trash2, AlertTriangle, Calendar, Users, Settings as SettingsIcon,
@@ -238,7 +239,7 @@ const BASE_ELIGIBILITY = {
   POD_1:      ['POD-D','POD-E','POD-N','FLEX-D','FLEX-N','POD-D12','POD-N12','FLEX-D12','FLEX-N12'],
 };
 
-// Chief-editable day-of-week / block-type scheduling rules — see the Scheduling Rules tab.
+// Chief-editable day-of-week / block-type scheduling rules — see the Rules tab.
 // Per CATEGORY_PGY key. Chief edits are stored as overrides (state `dayRules`, same
 // override-precedence idiom as `eligOverrides`) and merged over these defaults in
 // getEffectiveDayRules(). A reserved 'TRAUMA_BLOCKS' key (string[] of block-type ids) may
@@ -921,7 +922,7 @@ function deepEqualNormalized(a, b) { return JSON.stringify(normalizeForCompare(a
 // Hand-maintained prose that doesn't fit the structured DEFAULT_DAY_RULES schema — supplementary
 // context only (shift-count math, workflow advice, unresolved TBDs). Day-of-week/block-type rules
 // themselves are enforced AND described entirely from DEFAULT_DAY_RULES/dayRules — see
-// describeDayRules()/describeShiftGates() in the Scheduling Rules tab, so they can't drift from
+// describeDayRules()/describeShiftGates() in the Rules tab, so they can't drift from
 // what's actually enforced the way static text could.
 const SEVEN_DAY_RULE_NOTE = 'Max 6 consecutive work days (ACGME 1-in-7) — a day counts as worked only if a clinical shift is assigned that date (chief decision 2026-10-15: a Grand Rounds weekday or Journal Club presenting date with no shift assigned no longer counts, even for a BAMC resident coming straight off nights). Counted across the block boundary using the previous saved block. Completing a maxed 6-day run also triggers a hard 24h-rest requirement before the next shift, measured from the last worked shift\'s end. Enforced by the generator, the manual picker/drag-drop, and Validation.';
 // Note: these hardcode the same numbers as NIGHT_RULES/JC_MAX_PER_AY (declared later in the file)
@@ -3608,6 +3609,19 @@ const CHANGELOG = [
       'A filled cell offers **Give to** or **Swap with** another resident, one click to apply.',
       'An empty cell offers **Assign**, showing eligible residents who most need the shift.',
       'Locked cells show their lock status only — unlock first to edit.',
+    ],
+  },
+  // Layout change entry: same non-interrupting insert as the one below.
+  {
+    id: '2026-11-22-student-layout',
+    date: '2026-11-22',
+    title: 'Same layout as the student scheduler',
+    items: [
+      'The top bar now has a **block chip** ("Open: <block>") that opens the block switcher, with **Save Block**, **Export**, a **More** menu and the **Generate** button beside it.',
+      '**Generate** is a split button: the arrow holds Clear & Regenerate, Regenerate unlocked, Regenerate range, Clear schedule, Fix violations, What-if sweep and **Optimize**.',
+      'The Playground, notification bell, dark mode and Sign out moved into **More**.',
+      'On the Schedule tab, **Issues (N err · N warn)** opens the right-hand drawer with **Errors** and **Warnings**; Full screen, Lock Mode, Undo and Redo sit on the row below the view picker.',
+      'Sidebar: **Validation** (was Violations) and **Rules** (was Scheduling Rules) plus Shift Matrix are under **Setup**; User Guide, What\'s New and Settings are pinned to the bottom.',
     ],
   },
   // Non-interrupting insert (second position, CHANGELOG[0] unchanged; see the comments below).
@@ -7503,7 +7517,7 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
   // targetDelta buy-down or a coverage change.
   //
   // `blockedBy` names which rule, and `openSlots` says how many candidate placements were examined,
-  // so the Violations tab can say "3 open slots, all blocked by the 24h rest rule" instead of just
+  // so the Validation tab can say "3 open slots, all blocked by the 24h rest rule" instead of just
   // "17/19". Reasons come from candidatePool's own vocabulary (KNOWN_UNFILLED_REASONS) rather than a
   // second hand-written list, so the two can't drift.
   //
@@ -10588,9 +10602,9 @@ function ToastHistoryPanel({ history, onClear }) {
 }
 
 // Segmented-control tab switcher for sub-views within a tab (e.g. Schedule's Grid/By Resident).
-function SubTabs({ value, onChange, options }) {
+function SubTabs({ value, onChange, options, className = 'mb-4' }) {
   return (
-    <div className="inline-flex flex-wrap max-w-full items-center gap-1 p-1 bg-gray-200/70 rounded-lg mb-4">
+    <div className={`inline-flex flex-wrap max-w-full items-center gap-1 p-1 bg-gray-200/70 rounded-lg ${className}`}>
       {options.map(o => {
         const Ic = o.icon;
         const active = value === o.id;
@@ -17386,6 +17400,12 @@ function EngineComparisonCard({ comparison: c, appSettings, canOpenSolver, onOpe
 // ─── SCHEDULE GRID ────────────────────────────────────────────────────────────
 
 const NOOP_UPDATE = () => {};
+// Header slots for the Generate split button (student-app parity, 2026-11-22). The button lives in the
+// app header but its handlers/state are ScheduleGrid's own, so ScheduleGrid portals the button into
+// `button` and its dropdown into `menu` (a fixed-position host outside the header so the topbar's
+// light-on-navy colour remaps never touch the menu). Null until the header mounts the slots.
+const GenSlotContext = React.createContext({ button: null, menu: null });
+
 function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer, readOnly = false }) {
   // readOnly (peek view of a non-active block): every mutator is a no-op even if some path is missed
   // below; the visible edit controls are also hidden/disabled at their own sites.
@@ -17564,6 +17584,9 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const [optimizeProbe, setOptimizeProbe] = useState(null);     // {pool:[{name,online,busy,defaultBudgetSeconds}], local:null|obj} while the menu is open
   const [optimizeCompare, setOptimizeCompare] = useState(null); // {machineName, rows, diff, remainingErrors, schedule, baseSchedule}
   const optimizeMenuRef = useRef(null);
+  const genMenuPanelRef = useRef(null);
+  const [genMenuPos, setGenMenuPos] = useState(null);
+  const genSlots = useContext(GenSlotContext);
   // 'builtin' (Settings → Optimizer) is meaningless for Optimize: treat it as Auto.
   const optimizeTarget = solverRunTarget === 'builtin' ? 'cloud' : solverRunTarget;
   const canPickMachine = canPickSolverMachine(viewer?.email);
@@ -17575,9 +17598,16 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       checkLocalSolverHealth().catch(() => null),
       (canPickMachine && SOLVER_POOL_ENABLED) ? probePool().catch(() => []) : Promise.resolve([]),
     ]).then(([local, pool]) => { if (!cancelled) setOptimizeProbe({ local, pool }); });
-    const onDown = e => { if (optimizeMenuRef.current && !optimizeMenuRef.current.contains(e.target)) setOptimizeMenuOpen(false); };
+    const onDown = e => {
+      if (optimizeMenuRef.current?.contains(e.target) || genMenuPanelRef.current?.contains(e.target)) return;
+      setOptimizeMenuOpen(false);
+    };
+    const onKey = e => { if (e.key === 'Escape') setOptimizeMenuOpen(false); };
+    const onResize = () => setOptimizeMenuOpen(false);
     document.addEventListener('mousedown', onDown);
-    return () => { cancelled = true; document.removeEventListener('mousedown', onDown); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
+    return () => { cancelled = true; document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); };
   }, [optimizeMenuOpen, canPickMachine]);
   // Menu machine list: This computer (when its solver answers) + pool machines (picker accounts only).
   const optimizeMachines = [
@@ -18027,6 +18057,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const panelIssues = useMemo(
     () => groupPanelIssues(issues || [], EXPORT_BLOCKING_RULE_IDS),
     [issues]
+  );
+  const issuesActiveWarnCount = useMemo(
+    () => partitionAcked(panelIssues.orderedWarns, block.issueAcks).active.length,
+    [panelIssues.orderedWarns, block.issueAcks]
   );
   const handOverrideList = useMemo(
     () => listHandOverrides(block.handOverrides, sched, Object.fromEntries(allResidents.map(r => [r.id, r]))),
@@ -18543,7 +18577,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       const genBlock = clearFirst ? { ...block, schedule: {} } : { ...block, schedule: overrideSchedule || block.schedule };
       const res = await generateViaSolverOrLocal(genBlock, clearFirst);
       if (!res) { showToast('Set block dates first', 'red'); return; }
-      if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
+      if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Rules tab', 'red'); return; }
       updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
@@ -18554,14 +18588,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       let msg = res.engineUsed === 'cpsat'
         ? (u === 0
             ? `Generated with optimizer — all ${res.report.totalSlots} coverage slots filled`
-            : `Generated with optimizer — filled ${res.report.filled} shifts, ${u} slots unfilled, see the Violations tab for details`)
+            : `Generated with optimizer — filled ${res.report.filled} shifts, ${u} slots unfilled, see the Validation tab for details`)
         : (u === 0
             ? `Schedule generated — all ${res.report.totalSlots} coverage slots filled`
-            : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+            : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Validation tab for details`);
       if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
-      if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
+      if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Validation tab';
       if (rc > 0) msg += ` (${rc} shift${rc !== 1 ? 's' : ''} filled with <24h post-night rest — reorder Soft Rule Priority to change this)`;
       if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better' || rc > 0) ? 'amber' : (u === 0 ? 'green' : 'amber'));
@@ -18604,21 +18638,21 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       const genBlock = { ...block, schedule: workingSchedule };
       const res = await generateViaSolverOrLocal(genBlock, false);
       if (!res) { showToast('Set block dates first', 'red'); return; }
-      if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Scheduling Rules tab', 'red'); return; }
+      if (res.report.totalSlots === 0) { showToast('Coverage is 0 for every shift — set coverage on the Rules tab', 'red'); return; }
       updateBlockTracked(b => ({ ...b, schedule: res.schedule, lastGenerated: buildLastGenerated({ schedule: res.schedule, engine: res.engineLabel || res.engineUsed || 'local' }), generatedWithGaps: gapStampNow(), generationReport: { ...res.report, generatedBy: { userId: viewer?.userId ?? null, email: viewer?.email ?? null } }, issueAcks: {} }), null, { kind: 'generate', note: res.engineUsed || 'local' });
       setSolverAlt(res.unshippedSolver ? { generatedAt: res.report.generatedAt, ...res.unshippedSolver } : null);
       const u = res.report.unfilled.length;
       let msg = res.engineUsed === 'cpsat'
         ? (u === 0
             ? `Regenerated with optimizer — all ${res.report.totalSlots} coverage slots filled`
-            : `Regenerated with optimizer — filled ${res.report.filled} shifts, ${u} slots unfilled, see the Violations tab for details`)
+            : `Regenerated with optimizer — filled ${res.report.filled} shifts, ${u} slots unfilled, see the Validation tab for details`)
         : (u === 0
             ? `Regenerated — all ${res.report.totalSlots} coverage slots filled`
-            : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Violations tab for details`);
+            : `Filled ${res.report.filled} shifts — ${u} slots unfilled, see the Validation tab for details`);
       if (res.engineUsed === 'skipped-overrides') msg += ` — ${res.skippedOverrideCount} hand override${res.skippedOverrideCount !== 1 ? 's' : ''} present — optimizer skipped, used built-in engine (clear overrides to use the optimizer)`;
       if (res.engineUsed === 'fallback') msg += ' (optimizer unavailable — used built-in generator)';
       if (res.engineUsed === 'local-better') msg += ' (kept the built-in engine\'s schedule — it scored better than the optimizer\'s)';
-      if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Violations tab';
+      if (res.relaxed) msg += ' — some rules had to be relaxed to find a schedule, review the Validation tab';
       if (res.engineLabel) msg += ` — Engine: ${res.engineLabel}`;
       showToast(msg, (res.relaxed || res.engineUsed === 'fallback' || res.engineUsed === 'skipped-overrides' || res.engineUsed === 'local-better') ? 'amber' : (u === 0 ? 'green' : 'amber'));
     } finally {
@@ -19005,6 +19039,82 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 
   return (
     <div ref={gridWrapRef} className={fullscreen ? 'fixed inset-0 z-[60] bg-background p-3 flex flex-col no-print' : undefined}>
+      {/* Generate split button -> header slot; its dropdown -> fixed menu host (see GenSlotContext). */}
+      {!readOnly && genSlots.button && createPortal(
+        <span className="relative inline-flex tri-gen" ref={optimizeMenuRef}>
+          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)}
+            className="rounded-r-none"
+            title="Builds the schedule with the built-in engine: fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
+            {totalAssigned > 0 ? 'Regenerate' : 'Generate'}
+          </Button>
+          <Button variant="primary" size="sm" className="rounded-l-none border-l border-white/30 px-1.5"
+            aria-haspopup="menu" aria-expanded={optimizeMenuOpen} aria-label="More generate options" title="More generate options"
+            onClick={e => {
+              if (!optimizeMenuOpen) {
+                const r = e.currentTarget.parentElement.getBoundingClientRect();
+                setGenMenuPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+              }
+              setOptimizeMenuOpen(o => !o);
+            }}>
+            <ChevronDown size={13}/>
+          </Button>
+        </span>, genSlots.button)}
+      {!readOnly && genSlots.menu && optimizeMenuOpen && genMenuPos && createPortal(
+        <div ref={genMenuPanelRef} role="menu" aria-label="Generate options" data-testid="generate-menu"
+          style={{ position: 'fixed', top: genMenuPos.top, right: genMenuPos.right, width: 'min(18rem, calc(100vw - 16px))', maxHeight: 'calc(100vh - 5rem)', overflowY: 'auto' }}
+          className="z-[55] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg py-1 no-print">
+          {[
+            { key: 'cr', icon: RefreshCw, label: 'Clear & Regenerate', danger: true, onClick: () => setConfirmRegen(true),
+              title: 'Empties the whole block, then regenerates it.' },
+            { key: 'ru', icon: Unlock, label: 'Regenerate unlocked', danger: true, onClick: requestRegenUnlocked,
+              title: 'Clears every unlocked cell and regenerates it — locked cells are left untouched.' },
+          ].map(it => (
+            <button key={it.key} type="button" role="menuitem" title={it.title}
+              onClick={() => { setOptimizeMenuOpen(false); it.onClick(); }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:bg-accent text-popover-foreground">
+              <it.icon size={13} className="shrink-0"/>{it.label}
+            </button>
+          ))}
+          <div className="px-3 py-2 border-t border-border">
+            <div className="text-xs font-medium text-popover-foreground mb-1">Regenerate range&hellip;</div>
+            <div className="flex items-center gap-1">
+              <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)} aria-label="Range start"
+                className="min-w-0 flex-1 text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white text-gray-800"/>
+              <span className="text-xs text-gray-400">&ndash;</span>
+              <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)} aria-label="Range end"
+                className="min-w-0 flex-1 text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white text-gray-800"/>
+              <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={() => { setOptimizeMenuOpen(false); requestRegenRange(); }}
+                title="Clears unlocked cells within this date range and regenerates them — locked cells and cells outside the range are left untouched.">
+                Go
+              </Button>
+            </div>
+          </div>
+          {[
+            { key: 'cs', icon: Trash2, label: 'Clear schedule', danger: true, onClick: () => setConfirmClear(true),
+              title: 'Empties assignments without regenerating — choose everything, unlocked cells only, or a date range.' },
+            { key: 'fv', icon: Wrench, label: `Fix violations${violatingSummary.fixable.length > 0 ? ` (${violatingSummary.fixable.length})` : ''}`, danger: true,
+              disabled: violatingSummary.fixable.length === 0, onClick: requestFixViolations,
+              title: violatingSummary.fixable.length
+                ? `Clears ${violatingSummary.fixable.length} unlocked assignment${violatingSummary.fixable.length !== 1 ? 's' : ''} that already break a hard rule, then refills the holes${violatingSummary.locked.length ? ` (${violatingSummary.locked.length} more are locked — unlock them first)` : ''}.`
+                : violatingSummary.locked.length
+                ? `${violatingSummary.locked.length} locked cell${violatingSummary.locked.length !== 1 ? 's' : ''} break a hard rule — unlock to fix.`
+                : 'No unlocked assignments currently break a hard rule.' },
+            { key: 'sw', icon: Sparkles, label: 'What-if sweep', disabled: totalAssigned === 0, onClick: requestSweep,
+              title: 'Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.' },
+          ].map(it => (
+            <button key={it.key} type="button" role="menuitem" title={it.title} disabled={it.disabled}
+              onClick={() => { setOptimizeMenuOpen(false); it.onClick(); }}
+              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:bg-accent disabled:opacity-40 disabled:cursor-not-allowed ${it.key === 'cs' ? 'border-t border-border ' : ''}${it.danger ? 'text-destructive' : 'text-popover-foreground'}`}>
+              <it.icon size={13} className="shrink-0"/>{it.label}
+            </button>
+          ))}
+          <OptimizeMenuSection machines={optimizeMachines} machine={optimizeMachineValue} onMachineChange={onOptimizeMachineChange}
+            budget={optimizeBudget} onBudgetChange={setOptimizeBudget} budgetMinutes={optimizeBudgetMinutes}
+            disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
+              : longSolveJob?.jobId ? 'An optimize run is already in progress.'
+              : totalAssigned === 0 ? 'Generate a schedule first.' : ''}
+            running={longSolveSubmitting} onOptimize={requestOptimize}/>
+        </div>, genSlots.menu)}
       {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
           promotion (60), below the toast (200); see the DAY_MARKERS z-ladder note in CLAUDE.md. */}
       {genActive && (
@@ -19070,95 +19180,6 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       )}
       <IncompleteSetupBanner block={block} liveGaps={liveSetup ? liveSetup.gaps : []} onFix={onNavigateFix}
         onRegenerate={readOnly ? undefined : () => setConfirmRegen(true)}/>
-      {/* Generate actions */}
-      <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
-        <span className="font-mono text-[11px] text-muted-foreground">
-          <strong className="text-foreground/80">{schedulableCount}</strong> of {allResidents.length} residents scheduling · <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
-          {block.generationReport && <> · last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
-        </span>
-        <span className="flex items-center gap-2 flex-wrap">
-          {!readOnly && <>
-          <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
-          <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
-          <Button id="generate-schedule-btn" variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)}
-            title="Builds the schedule with the built-in engine: fills empty coverage slots using the scheduling rules. Existing assignments (manual or generated) are never overwritten.">
-            Generate Schedule
-          </Button>
-          {/* Generate menu: Optimize = improve the CURRENT schedule on a solver machine, reviewed
-              before anything is applied (requestOptimize / reviewOptimize). */}
-          <span className="relative" ref={optimizeMenuRef}>
-            <Button variant="secondary" size="sm" icon={Clock} onClick={() => setOptimizeMenuOpen(o => !o)}
-              aria-haspopup="true" aria-expanded={optimizeMenuOpen} title="Optimize the current schedule on a solver machine">
-              Optimize ▾
-            </Button>
-            {optimizeMenuOpen && (
-              <div className="absolute z-20 top-full mt-1 right-0 bg-card border border-border rounded-lg shadow-lg w-72">
-                <OptimizeMenuSection machines={optimizeMachines} machine={optimizeMachineValue} onMachineChange={onOptimizeMachineChange}
-                  budget={optimizeBudget} onBudgetChange={setOptimizeBudget} budgetMinutes={optimizeBudgetMinutes}
-                  disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
-                    : longSolveJob?.jobId ? 'An optimize run is already in progress.'
-                    : totalAssigned === 0 ? 'Generate a schedule first.' : ''}
-                  running={longSolveSubmitting} onOptimize={requestOptimize}/>
-              </div>
-            )}
-          </span>
-          <span className="self-stretch w-px bg-border mx-1" aria-hidden="true"/>
-          <Button variant="dangerOutline" size="sm" icon={Trash2} onClick={()=>setConfirmClear(true)}
-            title="Empties assignments without regenerating — choose everything, unlocked cells only, or a date range.">
-            Clear Schedule
-          </Button>
-          <span className="self-stretch w-px bg-border mx-1" aria-hidden="true"/>
-          <Button variant="secondary" size="sm" icon={Sparkles} onClick={requestSweep} disabled={totalAssigned === 0}
-            title="Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.">
-            What-If Sweep
-          </Button>
-          <Button variant="dangerOutline" size="sm" icon={Wrench} onClick={requestFixViolations}
-            disabled={violatingSummary.fixable.length === 0}
-            title={violatingSummary.fixable.length
-              ? `Clears ${violatingSummary.fixable.length} unlocked assignment${violatingSummary.fixable.length !== 1 ? 's' : ''} that already break a hard rule, then refills the holes${violatingSummary.locked.length ? ` (${violatingSummary.locked.length} more are locked — unlock them first)` : ''}.`
-              : violatingSummary.locked.length
-              ? `${violatingSummary.locked.length} locked cell${violatingSummary.locked.length !== 1 ? 's' : ''} break a hard rule — unlock to fix.`
-              : 'No unlocked assignments currently break a hard rule.'}>
-            Fix Violations{violatingSummary.fixable.length > 0 ? ` (${violatingSummary.fixable.length})` : ''}
-          </Button>
-          <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={()=>setConfirmRegen(true)}>
-            Clear &amp; Regenerate
-          </Button>
-          <Button variant="dangerOutline" size="sm" icon={Unlock} onClick={requestRegenUnlocked}
-            title="Clears every unlocked cell and regenerates it — locked cells are left untouched.">
-            Regenerate Unlocked
-          </Button>
-          <span className="flex items-center gap-1 text-xs text-muted-foreground font-mono" title="Cells currently locked">
-            <Lock size={11}/> {lockedCount} locked
-          </span>
-          {lockedCount>0 && !readOnly && <Button variant="ghost" size="sm" onClick={()=>setConfirmUnlockAll(true)} title="Unlock every locked cell in the block">Unlock all</Button>}
-          <span className="flex items-center gap-1">
-            <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)}
-              className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
-            <span className="text-xs text-gray-400">–</span>
-            <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)}
-              className="text-xs border border-gray-300 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary bg-white" />
-            <Button variant="dangerOutline" size="sm" icon={RefreshCw} onClick={requestRegenRange}
-              title="Clears unlocked cells within this date range and regenerates them — locked cells and cells outside the range are left untouched.">
-              Regenerate Range
-            </Button>
-          </span>
-          </>}
-          {readOnly && <span className="text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-800">Read-only</span>}
-          <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
-            title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
-            {fullscreen?'Exit Full Screen':'Full Screen'}
-          </Button>
-          {/* P2: the one control that opens/closes the review panel on EVERY screen width — the
-              desktop sidebar also gets its own collapse arrow (see below), but a mobile/tablet
-              viewer has no sidebar to click on, so this toolbar button is the only affordance there. */}
-          <Button variant={reviewPanelOpen?'primary':'ghost'} size="sm" icon={ClipboardList} onClick={()=>setReviewPanelOpen(o=>!o)}
-            title={reviewPanelOpen?'Hide review panel':'Show review panel — errors, warnings, and generation notes'}>
-            Review{panelIssues.mustFix.length>0?` (${panelIssues.mustFix.length})`:''}
-          </Button>
-        </span>
-      </div>
-
       {/* P2: review panel sits BESIDE this whole column on desktop (its own flex sibling below,
           outside every overflow-auto scroll container in here — including the grid's own, per
           CLAUDE.md's sticky-axis rule) and as a full-width section UNDER it on narrow screens
@@ -19166,12 +19187,48 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           state — no separate mobile-only state to drift). No CSS transform anywhere in this. */}
       <div className="flex gap-4 items-start">
       <div className="flex-1 min-w-0">
-      <div className="no-print">
-      <SubTabs value={view} onChange={setView} options={[
-        {id:'grid', label:'Grid', icon:Table2},
-        {id:'resident', label:'By Resident', icon:Users},
-        {id:'calendar', label:'Calendar', icon:CalendarDays},
-      ]}/>
+      {/* Student-app layout: row 1 = view picker + Issues toggle; row 2 = Full screen on the left,
+          lock/undo/redo on the right. Generate/Regenerate/Optimize live in the header split button. */}
+      <div className="no-print flex items-center justify-between gap-2 mb-2 flex-wrap">
+        <SubTabs className="" value={view} onChange={setView} options={[
+          {id:'grid', label:'Grid', icon:Table2},
+          {id:'resident', label:'By Resident', icon:Users},
+          {id:'calendar', label:'Calendar', icon:CalendarDays},
+        ]}/>
+        <Button variant={reviewPanelOpen?'primary':'secondary'} size="sm" icon={ClipboardList} onClick={()=>setReviewPanelOpen(o=>!o)}
+          aria-pressed={!!reviewPanelOpen} data-testid="issues-toggle"
+          title={reviewPanelOpen?'Hide the Issues drawer':'Show the Issues drawer — errors, warnings, and generation notes'}>
+          Issues ({panelIssues.mustFix.length} err &middot; {issuesActiveWarnCount} warn)
+        </Button>
+      </div>
+      <div className="no-print flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <span className="flex items-center gap-3 flex-wrap">
+          <Button variant="ghost" size="sm" icon={fullscreen?Minimize2:Maximize2} onClick={()=>setFullscreen(f=>!f)}
+            title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
+            {fullscreen?'Exit Full Screen':'Full screen'}
+          </Button>
+          <span className="hidden md:inline font-mono text-[11px] text-muted-foreground">
+            <strong className="text-foreground/80">{schedulableCount}</strong> of {allResidents.length} residents scheduling &middot; <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
+            {block.generationReport && <> &middot; last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
+          </span>
+        </span>
+        <span className="flex items-center gap-2 flex-wrap">
+          {readOnly && <span className="text-[11px] font-semibold px-2 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-800">Read-only</span>}
+          {!readOnly && <>
+          {view==='grid' && (
+            <Button variant={lockMode?'primary':'ghost'} size="sm" icon={lockMode?Lock:Unlock} onClick={()=>setLockMode(m=>!m)}
+              title={lockMode?'Exit lock-paint mode':'Click, or click-and-drag across assigned cells, to lock/unlock them'}>
+              {lockMode?'Exit Lock Mode':'Lock Mode'}
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" icon={Undo2} onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)"/>
+          <Button variant="ghost" size="sm" icon={Redo2} onClick={onRedo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z / Ctrl+Y)"/>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground font-mono" title="Cells currently locked">
+            <Lock size={11}/> {lockedCount} locked
+          </span>
+          {lockedCount>0 && <Button variant="ghost" size="sm" onClick={()=>setConfirmUnlockAll(true)} title="Unlock every locked cell in the block">Unlock all</Button>}
+          </>}
+        </span>
       </div>
 
       {/* Row grouping. A SECOND SubTabs rather than more of the category filter pills below,
@@ -19244,10 +19301,6 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       {view==='grid' && (
         <div className="no-print flex items-center gap-2 mb-3 flex-wrap">
           {!readOnly && <>
-          <Button variant={lockMode?'primary':'ghost'} size="sm" icon={lockMode?Lock:Unlock} onClick={()=>setLockMode(m=>!m)}
-            title={lockMode?'Exit lock-paint mode':'Click, or click-and-drag across assigned cells, to lock/unlock them'}>
-            {lockMode?'Exit Lock Mode':'Lock Mode'}
-          </Button>
           <Button variant="ghost" size="sm" onClick={lockAllAssigned} title="Lock every currently assigned cell in the block">
             Lock all assigned
           </Button>
@@ -19321,7 +19374,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             <div>
               <p className="text-xs font-bold uppercase tracking-wide text-amber-800">Best effort — rules relaxed</p>
               <p className="text-xs text-amber-700 mt-0.5">
-                {n} rule violation{n!==1?'s':''} were accepted to produce this schedule — see the Violations tab.
+                {n} rule violation{n!==1?'s':''} were accepted to produce this schedule — see the Validation tab.
               </p>
             </div>
           </div>
@@ -19344,7 +19397,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           {!readOnly && <Button variant="primary" icon={Wand2} onClick={() => requestGenerate(false)}>
             Generate Schedule
           </Button>}
-          {!readOnly && <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Scheduling Rules tab.</p>}
+          {!readOnly && <p className="text-xs text-gray-400 mt-2.5">…or click any cell below to assign manually. Coverage per shift is set on the Rules tab.</p>}
         </div>
       )}
 
@@ -19706,7 +19759,7 @@ function ReadinessWarningPanel({ messages, gaps, pressure, onFix }) {
   );
 }
 
-const SETUP_TAB_LABELS = { dashboard: 'Dashboard', em: 'EM Residents', offservice: 'Off-Service', requests: 'Requests', rules: 'Scheduling Rules', schedule: 'Schedule' };
+const SETUP_TAB_LABELS = { dashboard: 'Dashboard', em: 'EM Residents', offservice: 'Off-Service', requests: 'Requests', rules: 'Rules', schedule: 'Schedule' };
 
 // Gap rows shared by the pre-Generate modal, the incomplete-setup banner, and the Dashboard strip.
 function SetupGapRows({ gaps, onFix }) {
@@ -20791,7 +20844,7 @@ function FeasibilityReportCard({ feasibility, allResidents }) {
 
 // P2 (review panel) — GenerationReportCard's "Generation notes" section, collapsed to a one-line
 // count that expands IN PLACE. `compact=false` (ValidationTab's usage, unchanged) returns `children`
-// untouched — zero markup difference from before this prop existed, so the Violations tab keeps
+// untouched — zero markup difference from before this prop existed, so the Validation tab keeps
 // rendering the exact same full card. `compact=true` (the review panel's usage) wraps the SAME
 // existing per-section markup behind a toggle, rather than duplicating it, so the two surfaces can
 // never drift on what a section actually says — only how much of it shows by default.
@@ -21178,7 +21231,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
             <ChevronLeft size={16}/> Cell inspector
           </button>
         ) : (
-          <span className="text-sm font-semibold text-foreground">Review</span>
+          <span className="text-sm font-semibold text-foreground">Issues</span>
         )}
         <div className="flex items-center gap-1 shrink-0">
           {/* "Cover a sick call" lives here rather than as its own toolbar button or a per-cell
@@ -21194,7 +21247,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
             </button>
           )}
           {onClose && (
-            <button type="button" onClick={onClose} title="Collapse review panel"
+            <button type="button" onClick={onClose} title="Close the Issues drawer"
               className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
               <ChevronRight size={16}/>
             </button>
@@ -21213,7 +21266,7 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
               directly so "N errors to fix" always lands somewhere visible, not just "panel opened". */}
           <h3 id="review-panel-must-fix" tabIndex={-1}
             className="text-xs font-bold uppercase tracking-wide text-destructive mb-1.5">
-            Must fix ({mustFix.length})
+            Errors ({mustFix.length})
           </h3>
           {mustFix.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No hard errors.</p>
@@ -21231,12 +21284,12 @@ function ReviewPanel({ panelIssues, report, appSettings, blockStart, allResident
         <section>
           <button type="button" onClick={()=>setWarnsOpen(o=>!o)}
             className="w-full flex items-center justify-between gap-2 text-xs font-bold uppercase tracking-wide text-amber-600 mb-1.5">
-            <span>Should look at ({orderedWarns.length})</span>
+            <span>Warnings ({orderedWarns.length})</span>
             <ChevronDown size={12} className={`shrink-0 transition-transform ${warnsOpen?'rotate-180':''}`}/>
           </button>
           {warnsOpen && (
             warnGroups.length === 0 ? (
-              <p className="text-xs text-muted-foreground italic">Nothing else to review.</p>
+              <p className="text-xs text-muted-foreground italic">No warnings.</p>
             ) : (
               <ul className="space-y-1">
                 {warnGroups.map(g => renderIssueOrGroup(g, 'warn', onJumpToCell, onJumpToRow, canAck ? { onAck: list => onAckIssues(list, ''), onBulkAck: (list, label) => { setBulkNote(''); setBulkAck({ list, label }); } } : null))}
@@ -21846,7 +21899,7 @@ function describeWhatIfChange(change, nameById) {
   return 'Unknown change';
 }
 
-// "What-if staffing" simulator — chief decision support, placed on the Violations tab right below
+// "What-if staffing" simulator — chief decision support, placed on the Validation tab right below
 // the Generation Report card (not the Coverage tab): both of this card's core questions — how many
 // unfilled MINIMUM slots close, and who is still under target afterward — are exactly what the
 // Generation Report/ValidationTab already surface for the REAL schedule, so putting the
@@ -23877,7 +23930,7 @@ function UserGuideTab({ onNavigate }) {
           <li><strong>Dashboard</strong> — click <strong>New Block</strong> and set a name and start date.</li>
           <li><strong>EM Residents / Off-Service</strong> — set each resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong>). Enter days off, vacation, and jeopardy dates.</li>
           <li><strong>Dashboard</strong> — enter this block's special days (Code Blue, procedure, US days) before scheduling.</li>
-          <li><strong>Scheduling Rules</strong> — set how many residents each shift needs, then click <strong>Generate Schedule</strong> on the <strong>Schedule</strong> tab.</li>
+          <li><strong>Rules</strong> — set how many residents each shift needs, then click <strong>Generate Schedule</strong> on the <strong>Schedule</strong> tab.</li>
           <li><strong>Schedule</strong> — review the result, or click any cell to assign or change a shift by hand.</li>
           <li><strong>Violations</strong> — fix any remaining errors or warnings before finalizing.</li>
           <li><strong>Dashboard</strong> — click <strong>Save Block</strong>, then <strong>Export</strong> → <strong>QGenda CSV…</strong> to send it to QGenda.</li>
@@ -23913,12 +23966,12 @@ function UserGuideTab({ onNavigate }) {
         <ul className="list-disc space-y-1">
           <li>Click any cell to toggle. Changed rows show <span className="text-primary">✎</span> and a per-row reset.</li>
           <li><strong>Per-rotation rules:</strong> expand an EM Home row (▸) to set an override for one rotation, like EMS, without changing the rest.</li>
-          <li>Day-of-week rules (GR Wednesday, EMS Mon/Tue, etc.) aren't edited here — see the <strong>Scheduling Rules</strong> tab.</li>
+          <li>Day-of-week rules (GR Wednesday, EMS Mon/Tue, etc.) aren't edited here — see the <strong>Rules</strong> tab.</li>
         </ul>
       </GuideSection>}
 
       {show('generate') && <GuideSection {...sec('generate')}>
-        <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Scheduling Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot with the built-in engine. Then use the <strong>Optimize</strong> menu to improve the current schedule on a solver machine: pick the machine and time, wait for the progress pill, and <strong>Review</strong> the comparison. Nothing changes until you <strong>Accept</strong> (one undo step); only cells you locked stay pinned.</p>
+        <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot with the built-in engine. Then use the <strong>Optimize</strong> menu to improve the current schedule on a solver machine: pick the machine and time, wait for the progress pill, and <strong>Review</strong> the comparison. Nothing changes until you <strong>Accept</strong> (one undo step); only cells you locked stay pinned.</p>
         <ul className="list-disc space-y-1">
           <li>The generator only assigns shifts a resident can legally work — it respects eligibility, days off, jeopardy, rest rules, and the max-6-consecutive-days rule.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — it only fills what's still empty. Run it again anytime after manual edits.</li>
@@ -23977,7 +24030,7 @@ function UserGuideTab({ onNavigate }) {
       {show('rules') && <GuideSection {...sec('rules')}>
         <p>After <strong>Generate Schedule</strong>, a <strong>Generation Report</strong> appears at the top of the <strong>Violations</strong> tab: which slots weren't filled, why, and what to change.</p>
         <p>Below that, the <strong>Violations list</strong> groups every must-fix error and review warning by resident. Exporting a CSV with unresolved errors asks you to confirm first.</p>
-        <p>The <strong>Scheduling Rules</strong> tab is where each residency/PGY type's day-of-week rules and the <strong>Daily Shift Coverage</strong> grid live — edit them directly, no code changes needed.</p>
+        <p>The <strong>Rules</strong> tab is where each residency/PGY type's day-of-week rules and the <strong>Daily Shift Coverage</strong> grid live — edit them directly, no code changes needed.</p>
       </GuideSection>}
 
       {show('export') && <GuideSection {...sec('export')}>
@@ -24002,7 +24055,7 @@ function UserGuideTab({ onNavigate }) {
 
       {show('faq') && <GuideSection {...sec('faq')}>
         <ul className="list-disc space-y-2">
-          <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day. Check the <strong>Shift Matrix</strong> and <strong>Scheduling Rules</strong> tabs.</li>
+          <li><strong>Why is a cell gray?</strong> That resident has no eligible shifts that day. Check the <strong>Shift Matrix</strong> and <strong>Rules</strong> tabs.</li>
           <li><strong>Why can't I assign a shift I know is fine?</strong> The picker only offers legal shifts. Use <strong>"Assign Anyway"</strong> to override — it gets flagged in Violations so you can track it.</li>
           <li><strong>My schedule disappeared on another computer.</strong> Data stays in this browser only. Use <strong>Settings → Export backup</strong> on one computer and <strong>Import</strong> on the other.</li>
           <li><strong>The Export button is missing.</strong> It appears once the current block has a start date (<strong>Dashboard</strong> tab).</li>
@@ -25301,21 +25354,23 @@ function JeopardyTab({ block, updateBlock, allResidents, showToast }) {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
+// `group`: 'setup' renders under a "Setup" heading, 'util' is pinned to the sidebar bottom (student-app
+// layout parity). Grouping is presentation only: ids and the saved per-viewer order are untouched.
 const TABS = [
   { id: 'dashboard',  label: 'Dashboard',     icon: LayoutDashboard },
   { id: 'em',         label: 'EM Residents',  icon: Stethoscope, blockScoped: true },
   { id: 'offservice', label: 'Off-Service',   icon: Users, blockScoped: true },
-  { id: 'matrix',     label: 'Shift Matrix',  icon: Table2, global: true },
+  { id: 'matrix',     label: 'Shift Matrix',  icon: Table2, global: true, group: 'setup' },
   { id: 'schedule',   label: 'Schedule',      icon: Calendar, blockScoped: true },
-  { id: 'rules',      label: 'Scheduling Rules', icon: BookOpen, global: true },
-  { id: 'validation', label: 'Violations',    icon: AlertTriangle, blockScoped: true },
+  { id: 'rules',      label: 'Rules',         icon: BookOpen, global: true, group: 'setup' },
+  { id: 'validation', label: 'Validation',    icon: AlertTriangle, blockScoped: true },
   { id: 'coverage',   label: 'Coverage',      icon: Activity, blockScoped: true },
   { id: 'jeopardy',   label: 'Jeopardy',      icon: Shield, blockScoped: true },
   { id: 'requests',   label: 'Requests',      icon: Inbox },
-  { id: 'settings',   label: 'Settings',      icon: SettingsIcon, global: true },
+  { id: 'settings',   label: 'Settings',      icon: SettingsIcon, global: true, group: 'util' },
   { id: 'feedback',   label: 'Feedback',      icon: MessageSquare },
-  { id: 'whatsnew',   label: "What's New",    icon: Sparkles },
-  { id: 'guide',      label: 'User Guide',    icon: HelpCircle },
+  { id: 'whatsnew',   label: "What's New",    icon: Sparkles, group: 'util' },
+  { id: 'guide',      label: 'User Guide',    icon: HelpCircle, group: 'util' },
 ];
 
 // Tabs whose content is scoped to whichever block is currently open — shown BlockContextBar so the
@@ -25368,6 +25423,9 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   // must still be visibly selected, not hidden behind a collapsed disclosure.
   const overflowSet = useMemo(() => new Set(prefs.tabOverflow), [prefs.tabOverflow]);
   const mainTabs = orderedTabs.filter(t => !overflowSet.has(t.id));
+  const navTabs = mainTabs.filter(t => !t.group);
+  const setupTabs = mainTabs.filter(t => t.group === 'setup');
+  const utilTabs = mainTabs.filter(t => t.group === 'util');
   const otherTabs = orderedTabs.filter(t => overflowSet.has(t.id));
   const activeInOther = otherTabs.some(t => t.id === tab);
   const [otherOpenState, setOtherOpenState] = useState(false);
@@ -25456,8 +25514,14 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
         </div>
       )}
       <nav className="flex flex-col gap-0.5 px-2">
-        {mainTabs.map(renderTabButton)}
+        {navTabs.map(renderTabButton)}
       </nav>
+      {setupTabs.length > 0 && (
+        <nav className="flex flex-col gap-0.5 px-2 mt-2" aria-label="Setup" data-testid="sidebar-setup">
+          <p className="font-display text-[10px] font-semibold text-white/50 uppercase tracking-wide px-2.5 pt-1 pb-0.5">Setup</p>
+          {setupTabs.map(renderTabButton)}
+        </nav>
+      )}
 
       {otherTabs.length > 0 && (
         <div className="mt-1 px-2">
@@ -25500,8 +25564,15 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
         </div>
       </div>
 
+      {/* Utility cluster pinned to the bottom (User Guide, What's New, Settings) */}
+      {utilTabs.length > 0 && (
+        <nav className="mt-auto flex flex-col gap-0.5 px-2 py-2 border-t border-white/10" aria-label="Utilities" data-testid="sidebar-utility">
+          {utilTabs.map(renderTabButton)}
+        </nav>
+      )}
+
       {/* Sidebar footer */}
-      <div className="mt-auto px-3 py-3 border-t border-white/10">
+      <div className={`${utilTabs.length > 0 ? '' : 'mt-auto '}px-3 py-3 border-t border-white/10`}>
         <div className="text-xs text-white/60 space-y-0.5">
           <p className="font-medium text-white/70">{emResidentCount} EM residents</p>
           <p>{offServiceCount} off-service this block</p>
@@ -25513,10 +25584,6 @@ function SidebarNav({ tab, setTab, tabOrder, setTabOrder, issueCounts, hasSchedu
   );
 }
 
-// Slim banner shown above the main content on block-scoped tabs (see BLOCK_SCOPED_TABS) — the
-// chief can jump straight to EM Residents/Schedule/etc. from a deep link or leftover tab state
-// without first passing through the Dashboard, so this is the one place block identity stays
-// visible on every one of those tabs.
 // One rail item. 'done' renders a check + muted label (nothing to click — it already happened).
 // 'pending' renders a muted label (not reachable yet). 'current' is the ONE primary button in the
 // whole rail — the single next action the chief needs, styled like every other primary CTA in the
@@ -25681,9 +25748,10 @@ function PeekBanner({ peekBlock, liveBlock, onMakeActive, onBack, sticky = false
   );
 }
 
-function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount, published, hasSnapshot, onSave, onSwitch, blocksHistory, onPickBlock, onGoToGenerate, onGoToErrors, onPublish, onExport, peekBlock }) {
-  // In-place switcher: the live block's AY blocks; picking one keeps the current tab (loadBlock's
-  // save-first guard still applies), the last item is the old "go to the Dashboard" behaviour.
+// Header block chip ("Open: <name> · <dates> · <AY>") — replaces the old BlockContextBar. Opens the
+// in-place block switcher: the live block's AY blocks (picking one keeps the current tab; loadBlock's
+// save-first guard still applies) and a last "All blocks on Dashboard" item.
+function BlockChip({ block, peekBlock, blocksHistory, onPickBlock, onAllBlocks }) {
   const switchItems = useMemo(() => {
     const rows = buildRailBlocks({ blocksHistory, liveBlock: block, ay: block.academicYear });
     const items = rows.map((r, i) => ({
@@ -25692,32 +25760,22 @@ function BlockContextBar({ viewer, block, blockSaveState, hasReport, errorCount,
       onClick: () => onPickBlock(r.snap),
     }));
     if (items.length) items.push({ separator: true });
-    items.push({ key: '__all', label: 'All blocks on Dashboard', onClick: onSwitch });
+    items.push({ key: '__all', label: 'All blocks on Dashboard', onClick: onAllBlocks });
     return items;
-  }, [blocksHistory, block, onPickBlock, onSwitch, peekBlock]);
+  }, [blocksHistory, block, onPickBlock, onAllBlocks, peekBlock]);
+  const shown = peekBlock || block;
+  const dates = shown.startDate && shown.endDate ? `${prettyDate(shown.startDate)} → ${prettyDate(shown.endDate)}` : 'No dates set';
   return (
-    <div className="bg-primary/5 border-b border-border px-5 py-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs no-print">
-      <div className="flex items-center gap-2 min-w-0 shrink-0">
-        <CalendarDays size={14} className="text-primary shrink-0"/>
-        <span className="font-medium text-foreground truncate">{peekBlock ? `Active: ${block.name || 'Untitled block'} · viewing ${peekBlock.name || 'another block'} read-only` : `Editing: ${block.name || 'Untitled block'}`}</span>
-        <span className="hidden sm:inline text-muted-foreground">
-          {block.startDate && block.endDate ? `${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}` : 'No dates set'} · {block.academicYear}
-        </span>
-        <SaveStatePill state={blockSaveState}/>
-        <LastEditedLine log={block.activityLog} viewer={viewer}/>
-      </div>
-
-      {!peekBlock && <BlockStepsRow block={block} hasReport={hasReport} errorCount={errorCount} published={published}
-        hasSnapshot={hasSnapshot} handlers={{ onGoToGenerate, onGoToErrors, onPublish, onExport, onSave }}/>}
-
-      <div className="ml-auto flex items-center gap-2">
-        {!peekBlock && <Button variant="primary" size="sm" onClick={onSave} disabled={blockSaveState==='saved'}>Save Block</Button>}
-        <PopMenu items={switchItems} triggerLabel="Switch block" triggerTitle={`Switch block within ${block.academicYear || 'this academic year'}`}
-          triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.ghost} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
-          Switch block <ChevronDown size={13}/>
-        </PopMenu>
-      </div>
-    </div>
+    <PopMenu items={switchItems} triggerLabel="Switch block"
+      triggerTitle={`${peekBlock ? `Viewing ${peekBlock.name || 'another block'} read-only (active: ${block.name || 'Untitled block'})` : `Open: ${block.name || 'Untitled block'}`} — switch block within ${block.academicYear || 'this academic year'}`}
+      triggerClassName={`inline-flex items-center gap-1.5 min-w-0 max-w-[11rem] sm:max-w-[26rem] rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
+      <CalendarDays size={13} className="shrink-0"/>
+      <span className="truncate min-w-0" data-testid="block-chip">
+        {peekBlock ? 'Viewing' : 'Open'}: {shown.name || 'Untitled block'}
+        <span className="hidden lg:inline"> · {dates} · {shown.academicYear}</span>
+      </span>
+      <ChevronDown size={12} className="shrink-0"/>
+    </PopMenu>
   );
 }
 
@@ -26022,6 +26080,10 @@ export default function ResidentScheduler({ viewer } = {}) {
   const [pdfPicker, setPdfPicker] = useState(false);
   const [qgendaPicker, setQgendaPicker] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  // Header hosts for ScheduleGrid's Generate split button + dropdown (see GenSlotContext).
+  const [genSlotButton, setGenSlotButton] = useState(null);
+  const [genSlotMenu, setGenSlotMenu] = useState(null);
+  const genSlots = useMemo(() => ({ button: genSlotButton, menu: genSlotMenu }), [genSlotButton, genSlotMenu]);
   const [publishConfirm, setPublishConfirm] = useState(false); // block status rail's "Publish" step
 
   // ─── PLAYGROUNDS ──────────────────────────────────────────────────────────
@@ -27739,84 +27801,33 @@ export default function ResidentScheduler({ viewer } = {}) {
   return (
     <WalkthroughRoot session={viewer?.session} role={viewer?.role || 'admin'} setActiveTab={setTab}>
     <UiPrefsProvider value={uiPrefsApi}>
+    <GenSlotContext.Provider value={genSlots}>
     <div className={`h-screen flex flex-col bg-gray-100 overflow-hidden ${darkMode ? 'dark' : ''}`}>
-      {/* Header */}
+      {/* Header (student-app layout, 2026-11-22): tile + title on the left; right cluster = sync status,
+          block chip (opens the block switcher), Save Block, Export, More, Generate split button. */}
       <header className="tri-topbar shrink-0 no-print relative z-50">
-        <div className="px-5 py-3 flex items-center justify-between gap-4">
+        <div className="px-3 sm:px-5 py-3 flex items-center justify-between gap-2 sm:gap-4">
           <div className="flex items-center gap-2.5 min-w-0">
             <button onClick={()=>setNavOpen(o=>!o)} title="Menu" aria-label="Toggle navigation"
               className="md:hidden p-2 -ml-1 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors flex-none">
               <Menu size={18}/>
             </button>
             <div className="tri-appicon" aria-hidden="true">Rs</div>
-            <div className="flex flex-col min-w-0">
-              {/* Mobile fix: hidden below sm — at ~400px width there isn't room for both this
-                  eyebrow line and the block name + Not-saved pill without them overlapping, and the
-                  block status rail (BlockContextBar, on every block-scoped tab) already repeats the
-                  block name, so nothing is lost. */}
-              <p className="hidden sm:block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">EM Residency Scheduler</p>
-              <div className="flex items-center gap-2 min-w-0">
-                {/* Mobile fix: `truncate` on a flex child does nothing without `min-w-0` on that
-                    SAME element — without it the child refuses to shrink below its full-text
-                    intrinsic width in a flex row, which is what was pushing the "Not saved yet"
-                    pill into (or past) the title at narrow widths. */}
-                <h1 className="text-base font-semibold text-foreground truncate min-w-0">{block.name || 'Untitled block'}</h1>
-                {/* Mobile fix: hidden below sm — BlockContextBar's own SaveStatePill already covers
-                    this on every block-scoped tab; the header's copy is a nice-to-have on wider
-                    screens, not something 400px width has room for right next to a truncated title. */}
-                <span className="hidden sm:inline shrink-0"><SaveStatePill state={blockSaveState}/></span>
-                <span className="hidden lg:inline text-xs text-muted-foreground shrink-0">
-                  {block.startDate&&block.endDate?`${prettyDate(block.startDate)} → ${prettyDate(block.endDate)}`:'No dates set'} · {block.academicYear}
-                </span>
-              </div>
+            <div className="hidden sm:flex flex-col min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground leading-none truncate">UH Emergency Medicine</p>
+              <h1 className="text-base font-semibold text-foreground truncate min-w-0">Resident Scheduler</h1>
             </div>
           </div>
-          {block.startDate && (
-            <div className="hidden md:flex flex-1 max-w-xs">
-              <BlockProgressBar block={block}/>
-            </div>
-          )}
-          <div className="flex items-center gap-2 flex-none">
-            <span className="hidden lg:inline text-xs text-gray-400">{allResidents.length} residents</span>
-            {viewer?.email && (
-              <span title={`Signed in as ${viewer.email}`}
-                className="hidden sm:inline max-w-[12rem] truncate text-xs text-gray-500 bg-gray-100 rounded-full px-2.5 py-1">
-                {viewer.email}
-              </span>
-            )}
-            <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
-            {!demoMode && (
-              <button onClick={openPlaygroundManager} title="Playground — your own disposable copy to practice in, separate from every other admin's"
-                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-                <FlaskConical size={16}/>
-              </button>
-            )}
-            {/* Toast history bell (P4 UI polish): a toast auto-dismisses after 5s with no way to
-                re-read it. Same dropdown convention as the Export menu just below in the JSX
-                (fixed-inset-0 click-catcher + absolute panel) — see ToastHistoryPanel. */}
-            <div className="relative">
-              <button onClick={()=>setToastHistoryOpen(o=>!o)} title="Notification history"
-                aria-label="Notification history" aria-haspopup="menu" aria-expanded={toastHistoryOpen}
-                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-                <Bell size={16}/>
-              </button>
-              {toastHistoryOpen && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={()=>setToastHistoryOpen(false)}/>
-                  <ToastHistoryPanel history={toastHistory}
-                    onClear={()=>setToastHistory(clearToastHistory())}/>
-                </>
-              )}
-            </div>
-            <button onClick={()=>setDarkMode(d=>!d)} title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-              {darkMode ? <Sun size={16}/> : <Moon size={16}/>}
-            </button>
-            {AUTH_ENABLED && (
-              <button onClick={()=>requestSignOut()} title="Sign out" aria-label="Sign out"
-                className="p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-                <LogOut size={16}/>
-              </button>
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 justify-end">
+            <span className="hidden sm:inline-flex items-center gap-1.5 flex-none">
+              <AutosaveIndicator state={saveState} cloudEnabled={SUPABASE_ENABLED} dbStatus={dbStatus} dbError={dbError}/>
+              <SaveStatePill state={blockSaveState}/>
+            </span>
+            <BlockChip block={block} peekBlock={peekBlock} blocksHistory={blocksHistory}
+              onPickBlock={peekOrOpenBlock} onAllBlocks={()=>setTab('dashboard')}/>
+            {BLOCK_SCOPED_TABS.has(tab) && !peekBlock && (
+              <Button variant="secondary" size="sm" onClick={saveBlock} disabled={blockSaveState==='saved'}
+                title="Save this block to the block list">Save Block</Button>
             )}
             {/* Export stays reachable at every width — below sm the text label collapses so only
                 the icon (with its title/aria-label) remains, keeping 375px from overflowing. */}
@@ -27859,9 +27870,38 @@ export default function ResidentScheduler({ viewer } = {}) {
                 )}
               </div>
             )}
+            {/* More: playground, notification history, dark mode, sign out. The toast history panel
+                keeps the old click-catcher + absolute panel convention, anchored under this wrapper. */}
+            <div className="relative">
+              <PopMenu triggerLabel="More" triggerTitle="More — playground, notifications, dark mode, sign out"
+                triggerClassName={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+                items={[
+                  ...(viewer?.email ? [{ key: 'who', label: viewer.email, disabled: true }, { separator: true }] : []),
+                  ...(!demoMode ? [{ key: 'pg', icon: FlaskConical, label: 'Playground…', onClick: openPlaygroundManager }] : []),
+                  { key: 'bell', icon: Bell, label: 'Notification history', onClick: () => setToastHistoryOpen(true) },
+                  { key: 'dark', icon: darkMode ? Sun : Moon, label: darkMode ? 'Switch to light mode' : 'Switch to dark mode', onClick: () => setDarkMode(d => !d) },
+                  ...(AUTH_ENABLED ? [{ separator: true }, { key: 'out', icon: LogOut, label: 'Sign out', danger: true, onClick: () => requestSignOut() }] : []),
+                ]}>
+                <MoreHorizontal size={14}/> <span className="hidden sm:inline">More</span>
+              </PopMenu>
+              {toastHistoryOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={()=>setToastHistoryOpen(false)}/>
+                  <ToastHistoryPanel history={toastHistory}
+                    onClear={()=>setToastHistory(clearToastHistory())}/>
+                </>
+              )}
+            </div>
+            {/* Generate split button. On the Schedule tab ScheduleGrid portals its own button (same
+                handlers) into this slot; on other block tabs the plain button jumps to Schedule. */}
+            {BLOCK_SCOPED_TABS.has(tab) && !peekBlock && (tab === 'schedule'
+              ? <span ref={setGenSlotButton} className="inline-flex items-center tri-gen"/>
+              : <span className="tri-gen"><Button variant="primary" size="sm" icon={Wand2} onClick={goToGenerateStep}
+                  title="Go to the Schedule tab to generate">Generate</Button></span>)}
           </div>
         </div>
       </header>
+      <div ref={setGenSlotMenu}/>
       <UpdateBanner flush={flushPendingCloudSave} blocked={!!cloudConflict}/>
 
       {demoMode && (
@@ -28045,16 +28085,6 @@ export default function ResidentScheduler({ viewer } = {}) {
         </div>
       )}
 
-      {BLOCK_SCOPED_TABS.has(tab) && (
-        <BlockContextBar viewer={viewer} block={block} blockSaveState={blockSaveState}
-          hasReport={!!block.generationReport} errorCount={issueCounts.errors}
-          published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
-          onSave={saveBlock} onSwitch={()=>setTab('dashboard')}
-          blocksHistory={blocksHistory} onPickBlock={peekOrOpenBlock} peekBlock={peekBlock}
-          onGoToGenerate={goToGenerateStep} onGoToErrors={goToErrorsStep}
-          onPublish={requestPublishStep} onExport={goToExportStep}/>
-      )}
-
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Backdrop for the below-md sidebar drawer. md:hidden so it can never intercept clicks
@@ -28103,6 +28133,14 @@ export default function ResidentScheduler({ viewer } = {}) {
                 blockSaveState="saved" ayConf={peekAyConf} issues={peekIssues} liveSetup={null} onNavigateFix={navigateToFix}
                 sickCallRequest={null} onConsumeSickCallRequest={NOOP_UPDATE} demoMode={demoMode} solverRunTarget={solverRunTarget}
                 setSolverRunTarget={NOOP_UPDATE} viewer={viewer}/>
+            </div>
+          )}
+          {tab==='schedule' && !peekBlock && (
+            <div className="no-print mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+              <BlockStepsRow block={block} hasReport={!!block.generationReport} errorCount={issueCounts.errors}
+                published={!!matchingSnap?.published} hasSnapshot={!!matchingSnap}
+                handlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep, onSave: saveBlock }}/>
+              <LastEditedLine log={block.activityLog} viewer={viewer}/>
             </div>
           )}
           {tab==='schedule' && !peekBlock && (
@@ -28186,7 +28224,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               {[
                 pendingErrorCount() > 0 ? `${pendingErrorCount()} error${pendingErrorCount()!==1?'s':''} (ineligible shifts, approved-day-off conflicts, or rest violations)` : null,
                 pendingRestWarnCount() > 0 ? `${pendingRestWarnCount()} shift${pendingRestWarnCount()!==1?'s':''} with under 24h post-night rest` : null,
-              ].filter(Boolean).join(' and ')} — see the Violations tab.
+              ].filter(Boolean).join(' and ')} — see the Validation tab.
               {issueCounts.ackedBlocking > 0 && ` (${issueCounts.ackedBlocking} of the rest warning${issueCounts.ackedBlocking!==1?'s':''} acknowledged, but still export-blocking.)`}
             </p>
           )}
@@ -28277,6 +28315,7 @@ export default function ResidentScheduler({ viewer } = {}) {
       {SUPABASE_ENABLED && <FeedbackWidget page={tab} showToast={showToast}/>}
       <Toast toast={toast} onClose={()=>setToast(null)}/>
     </div>
+    </GenSlotContext.Provider>
     </UiPrefsProvider>
     </WalkthroughRoot>
   );

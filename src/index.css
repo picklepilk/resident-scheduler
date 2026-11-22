@@ -450,6 +450,14 @@ body {
 .tri-topbar .text-amber-600, .tri-topbar .text-amber-700, .tri-topbar .text-amber-800 { color: #F9A77E; }
 .tri-topbar .bg-card, .tri-topbar .bg-white { color: hsl(var(--foreground)); }
 .tri-topbar [role="menu"] { color: hsl(var(--popover-foreground)); }
+/* Menus opened from the header (More, block switcher, Export) sit on a popover surface, not navy:
+   undo the light-on-navy remaps for their contents. */
+.tri-topbar [role="menu"] .hover\:bg-accent:hover { background-color: hsl(var(--accent)); }
+.tri-topbar [role="menu"] .border-border { border-color: hsl(var(--border)); }
+.tri-topbar [role="menu"] .text-muted-foreground { color: hsl(var(--muted-foreground)); }
+/* Generate split button in the header: signal-tinted primary on navy, dark label for contrast. */
+.tri-topbar .tri-gen .bg-primary { background-color: #7FC6D9; color: hsl(var(--navy)); }
+.tri-topbar .tri-gen .bg-primary:hover { background-color: #9AD4E3; }
 .tri-appicon { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; flex: none;
   border-radius: 12px; background: var(--signal); color: #fff; font: 800 14px var(--font-display); letter-spacing: -0.01em; }
 @media screen {
