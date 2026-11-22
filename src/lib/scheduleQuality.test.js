@@ -1036,3 +1036,21 @@ describe('computeQualityVector — areaSpread weighting', () => {
   });
 });
 
+
+describe('betterQuality — engine arbitration over-max slot (opts.aboveMax)', () => {
+  const clean = { errorCount: 0, blockingWarnCount: 0, aboveMaxCount: 0, qualityVector: [0, 0, 0, 900] };
+  const over = { errorCount: 0, blockingWarnCount: 0, aboveMaxCount: 3, qualityVector: [0, 0, 0, 500] };
+  it('is ignored by default (generator ladder unchanged)', () => {
+    expect(betterQuality(over, clean)).toBe(true);
+    expect(betterQuality(clean, over)).toBe(false);
+  });
+  it('an over-filled schedule loses to a clean one even with a better quality tail', () => {
+    expect(betterQuality(clean, over, { aboveMax: true })).toBe(true);
+    expect(betterQuality(over, clean, { aboveMax: true })).toBe(false);
+  });
+  it('errors and blocking warnings still outrank it; equal counts fall through to the vector', () => {
+    const errs = { ...clean, errorCount: 1 };
+    expect(betterQuality(over, errs, { aboveMax: true })).toBe(true);
+    expect(betterQuality({ ...clean, qualityVector: [0, 0, 0, 100] }, clean, { aboveMax: true })).toBe(true);
+  });
+});

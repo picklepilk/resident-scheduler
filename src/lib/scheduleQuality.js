@@ -621,8 +621,15 @@ export function compareVectors(a, b) {
 // score can buy down), export-blocking warnings second, the quality tuple last. Equal on all
 // three is NOT better (strict improvement only — see Step 6/7's repair-acceptance gate, which
 // relies on ties keeping the pre-repair result).
-export function betterQuality(a, b) {
-  const av = [a.errorCount, a.blockingWarnCount, ...a.qualityVector];
-  const bv = [b.errorCount, b.blockingWarnCount, ...b.qualityVector];
+//
+// `opts.aboveMax` (ENGINE ARBITRATION only, pickEngineResult): inserts `aboveMaxCount` (validateAll
+// `coverageAboveMax` issues, a warn that is NOT export-blocking) between blockingWarnCount and the
+// quality vector, so an over-filled schedule loses to an otherwise-equal clean one. Not a 5th
+// SCORE_WEIGHTS slot and off by default: the generator's own ladder (best-of-N, LNS, repair) keeps
+// its policy that a resident's target beats a +1 over-max top-up.
+export function betterQuality(a, b, opts) {
+  const mid = opts?.aboveMax;
+  const av = [a.errorCount, a.blockingWarnCount, ...(mid ? [a.aboveMaxCount ?? 0] : []), ...a.qualityVector];
+  const bv = [b.errorCount, b.blockingWarnCount, ...(mid ? [b.aboveMaxCount ?? 0] : []), ...b.qualityVector];
   return compareVectors(av, bv) < 0;
 }
