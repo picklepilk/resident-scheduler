@@ -1,0 +1,20 @@
+# systemd USER unit on picklehub: ssh tunnel to the Mac Studio's resident solver (Mac 127.0.0.1:8766
+# to picklehub 127.0.0.1:8769), published on picklehub's Funnel at /rs-mac:
+#   sudo tailscale funnel --bg --https=10000 --set-path /rs-mac http://127.0.0.1:8769
+# Replace USER@MAC_IP with the Mac's login and tailnet IP. The key is restricted on the Mac to
+# forwarding 127.0.0.1:8766 only (see ../../DEPLOY-MAC.md).
+# Install: cp to ~/.config/systemd/user/ ; systemctl --user daemon-reload && systemctl --user enable --now rs-solver-mac-relay
+[Unit]
+Description=Tunnel to the Mac Studio resident solver (Funnel path /rs-mac)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -i %h/.ssh/rs_mac_relay -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8769:127.0.0.1:8766 USER@MAC_IP
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target
