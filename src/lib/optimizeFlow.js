@@ -37,6 +37,13 @@ export function diffSchedules(before, after) {
 const QUALITY_LABELS = ['Coverage misses', 'Senior gaps', 'Rest compromises', 'Fairness + shape'];
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+// Display helper: integers print as-is, other numbers round to 1 decimal (no trailing .0 artifacts).
+export function formatQualityValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '0';
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+}
+
 export function compareQuality(beforeSummary, afterSummary) {
   const b = beforeSummary || {}, a = afterSummary || {};
   const mk = (key, label, bv, av) => ({ key, label, before: num(bv), after: num(av), better: num(av) < num(bv) ? true : num(av) > num(bv) ? false : null });

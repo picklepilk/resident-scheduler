@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { diffSchedules, compareQuality, isStrictImprovement, pickFewestChanges, optimizeBudgetOptions, budgetSeconds, lockedCellsForOptimize } from './optimizeFlow.js';
+import { formatQualityValue, diffSchedules, compareQuality, isStrictImprovement, pickFewestChanges, optimizeBudgetOptions, budgetSeconds, lockedCellsForOptimize } from './optimizeFlow.js';
 
 const S = (e, w, lo, hi, q = []) => ({ errors: e, blockingWarnings: w, belowMin: lo, aboveMax: hi, quality: q });
 
@@ -111,5 +111,14 @@ describe('lockedCellsForOptimize', () => {
   it('handles missing', () => {
     expect(lockedCellsForOptimize({})).toEqual([]);
     expect(lockedCellsForOptimize(null)).toEqual([]);
+  });
+});
+
+describe('formatQualityValue', () => {
+  it('keeps integers, rounds floats to 1 decimal', () => {
+    expect(formatQualityValue(7)).toBe('7');
+    expect(formatQualityValue(1576.7114289939698)).toBe('1576.7');
+    expect(formatQualityValue(2.04)).toBe('2');
+    expect(formatQualityValue(NaN)).toBe('0');
   });
 });

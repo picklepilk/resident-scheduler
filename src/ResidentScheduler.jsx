@@ -19137,8 +19137,6 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                   <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out motion-reduce:transition-none" style={{ width: pct + '%' }}/>
                 </div>
                 {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
-                <RunLocationPanel stage={genProgress?.phase === 'solver' ? 'solver' : genProgress?.phase === 'local' ? 'builtin' : 'idle'}
-                  claim={genProgress?.claim || (solverRunTarget === 'local' ? 'this-computer' : 'cloud')} runner={genProgress?.runner} jobsMode={genProgress?.jobsMode}/>
               </>);
             })()}
             <div className="text-xs text-muted-foreground font-mono tabular-nums">{genElapsedSec}s elapsed</div>
@@ -19211,6 +19209,12 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             title={fullscreen?'Exit full screen (Esc)':'Full screen'}>
             {fullscreen?'Exit Full Screen':'Full screen'}
           </Button>
+          {fullscreen && !readOnly && (
+            <Button variant="primary" size="sm" icon={Wand2} onClick={() => requestGenerate(false)} data-testid="fullscreen-generate"
+              title="Builds the schedule with the built-in engine. Existing assignments are never overwritten.">
+              {totalAssigned > 0 ? 'Regenerate' : 'Generate'}
+            </Button>
+          )}
           <span className="hidden md:inline font-mono text-[11px] text-muted-foreground">
             <strong className="text-foreground/80">{schedulableCount}</strong> of {allResidents.length} residents scheduling &middot; <strong className="text-foreground/80">{totalAssigned}</strong> shifts assigned
             {block.generationReport && <> &middot; last generated {new Date(block.generationReport.generatedAt).toLocaleString()}</>}
@@ -25772,10 +25776,11 @@ function BlockChip({ block, peekBlock, blocksHistory, onPickBlock, onAllBlocks }
   return (
     <PopMenu items={switchItems} triggerLabel="Switch block"
       triggerTitle={`${peekBlock ? `Viewing ${peekBlock.name || 'another block'} read-only (active: ${block.name || 'Untitled block'})` : `Open: ${block.name || 'Untitled block'}`} — switch block within ${block.academicYear || 'this academic year'}`}
-      triggerClassName={`inline-flex items-center gap-1.5 min-w-0 max-w-[11rem] sm:max-w-[26rem] rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
+      triggerClassName={`inline-flex items-center gap-1.5 min-w-0 min-w-[6rem] max-w-[11rem] sm:max-w-[26rem] rounded-lg font-medium transition-colors ${BUTTON_VARIANTS.secondary} ${BUTTON_SIZES.sm} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}>
       <CalendarDays size={13} className="shrink-0"/>
       <span className="truncate min-w-0" data-testid="block-chip">
-        {peekBlock ? 'Viewing' : 'Open'}: {shown.name || 'Untitled block'}
+        <span className="sm:hidden">{shown.name || 'Untitled block'}</span>
+        <span className="hidden sm:inline">{peekBlock ? 'Viewing' : 'Open'}: {shown.name || 'Untitled block'}</span>
         <span className="hidden lg:inline"> · {dates} · {shown.academicYear}</span>
       </span>
       <ChevronDown size={12} className="shrink-0"/>
@@ -27831,7 +27836,8 @@ export default function ResidentScheduler({ viewer } = {}) {
               onPickBlock={peekOrOpenBlock} onAllBlocks={()=>setTab('dashboard')}/>
             {BLOCK_SCOPED_TABS.has(tab) && !peekBlock && (
               <Button variant="secondary" size="sm" onClick={saveBlock} disabled={blockSaveState==='saved'}
-                title="Save this block to the block list">Save Block</Button>
+                title="Save this block to the block list" aria-label="Save Block" className="whitespace-nowrap flex-none">
+                <Save size={13} className="sm:hidden"/><span className="hidden sm:inline">Save Block</span></Button>
             )}
             {/* Export stays reachable at every width — below sm the text label collapses so only
                 the icon (with its title/aria-label) remains, keeping 375px from overflowing. */}

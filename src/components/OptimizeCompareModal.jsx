@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { formatQualityValue } from '../lib/optimizeFlow.js';
 
 // Before/after compare for "Optimize on a solver machine". Presentational only: the parent computes
 // rows (compareQuality) and diff (diffSchedules) from src/lib/optimizeFlow.js. Markup mirrors the
@@ -84,9 +85,9 @@ export default function OptimizeCompareModal({ open, machineName, rows = [], dif
               {rows.map(r => (
                 <tr key={r.key} data-better={String(r.better)} className="border-t border-gray-100">
                   <td className="py-1 text-gray-700">{r.label}</td>
-                  <td className="py-1 text-right tabular-nums text-gray-700">{r.before}</td>
+                  <td className="py-1 text-right tabular-nums text-gray-700">{formatQualityValue(r.before)}</td>
                   <td className={`py-1 text-right tabular-nums ${toneClass(r.better)}`}>
-                    {r.after}{r.better === true ? ' ✓' : r.better === false ? ' ✗' : ''}
+                    {formatQualityValue(r.after)}{r.better === true ? ' ✓' : r.better === false ? ' ✗' : ''}
                   </td>
                 </tr>
               ))}
