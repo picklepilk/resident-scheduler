@@ -2,8 +2,9 @@
 # deploy-wsl.sh [--ref origin/master] [--force] picklepower|picklebook|all
 # Run from Git Bash on PicklePower, at the resident-scheduler repo root. Ships `solver-service/` at REF
 # into the WSL solver on each host (~/rs-solver-live/solver-service, previous copy kept as
-# ~/rs-solver-live.prev), mirrors it to %LOCALAPPDATA%\resident-solver on the host (so
-# switch-solver.ps1 / start-solver-wsl.ps1 exist where the ResidentSolver task points), restarts the
+# ~/rs-solver-live.prev), copies ONLY deploy/windows/*.ps1 into %LOCALAPPDATA%\resident-solver
+# (so switch-solver.ps1 / start-solver-wsl.ps1 exist where the ResidentSolver task points; the
+# Windows build's code stays last known-good for `switch-solver.ps1 -To windows`), restarts the
 # WSL uvicorn on 8766 and checks /health + new pid. Skips a host whose /health says busy:true unless
 # --force. Rollback: rerun with --ref <older>, or `switch-solver.ps1 -To windows`.
 # picklebook = ssh alias (Windows, cmd shell, home C:/Users/amade): only simple args cross ssh; helper
@@ -52,7 +53,7 @@ $d = Join-Path $env:LOCALAPPDATA 'resident-solver'
 if ($Mode -eq 'extract') {
   New-Item -ItemType Directory -Force $d | Out-Null
   # Windows tar explicitly: from Git Bash, PATH finds GNU tar first, which reads 'C:' as a remote host.
-  & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf (Join-Path $HOME 'rs-solver-deploy.tar') -C $d
+  & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf (Join-Path $HOME 'rs-solver-deploy.tar') -C $d solver-service/deploy/windows
 } elseif ($Mode -eq 'start') {
   Start-ScheduledTask ResidentSolver
 } elseif ($Mode -eq 'clean') {
