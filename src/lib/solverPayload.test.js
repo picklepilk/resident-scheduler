@@ -238,6 +238,22 @@ describe('buildSolverPayload', () => {
     expect(defaultPayload.config.maxTimeSeconds).toBe(120);
   });
 
+  describe('optimizeExisting (Optimize flow)', () => {
+    it('sends the whole current grid as hint and pins only user-locked cells', () => {
+      const fixture = makeFixture('standard');
+      const schedule = { syn_alpha: { '2026-07-06': 'POD-D', '2026-07-07': 'POD-D' }, syn_mike: { '2026-07-08': 'FLEX-E' } };
+      const block = { ...fixture.block, schedule, lockedCells: { syn_alpha: { '2026-07-06': true } } };
+      const payload = buildSolverPayload({ ...fixture, block, optimizeExisting: true });
+      expect(payload.locked).toEqual([{ residentId: 'syn_alpha', date: '2026-07-06', shiftId: 'POD-D' }]);
+      expect(payload.hint).toHaveLength(3);
+    });
+    it('default (no option) still pins every non-empty cell', () => {
+      const fixture = makeFixture('standard');
+      const block = { ...fixture.block, schedule: { syn_alpha: { '2026-07-06': 'POD-D', '2026-07-07': 'POD-D' } }, lockedCells: {} };
+      expect(buildSolverPayload({ ...fixture, block }).locked).toHaveLength(2);
+    });
+  });
+
   // R9 (2026-09-27, CP-SAT-as-polisher, PAYLOAD_SCHEMA.md's dated R9 section): warm-start hint.
   describe('hint (R9 warm start)', () => {
     it('omits the hint field entirely when no hint arg is passed — byte-identical to pre-R9', () => {
