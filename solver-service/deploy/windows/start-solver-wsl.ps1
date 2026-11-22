@@ -14,7 +14,7 @@ $envFile = Join-Path $env:APPDATA 'resident-solver\solver.env'
 if (-not (Test-Path $envFile)) { Log "Missing $envFile"; exit 1 }
 Log 'starting solver in WSL (Ubuntu)'
 $ErrorActionPreference = 'Continue'   # wsl.exe may write to stderr
-wsl.exe -d Ubuntu -e sh -c '~/rs-solver-live/solver-service/deploy/wsl/run-solver.sh' 2>&1 |
+wsl.exe -d Ubuntu -e sh -c 'sh ~/rs-solver-live/solver-service/deploy/wsl/run-solver.sh' 2>&1 |
   ForEach-Object { Add-Content -Path $logFile -Value "$_" }
 $code = $LASTEXITCODE
 Log "WSL solver exited ($code)"

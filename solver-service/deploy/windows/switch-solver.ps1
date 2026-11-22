@@ -11,7 +11,10 @@ try { $h = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8766/health -Tim
 if ($h -and $h -match '"busy"\s*:\s*true' -and -not $Force) { throw "Solver busy, not switching (use -Force): $h" }
 $task = Get-ScheduledTask ResidentSolver
 $act = $task.Actions[0]
-$act.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`""
+# Swap only the script file name: the action may be `conhost.exe --headless powershell.exe ... -File <script>`,
+# so rewriting the whole argument string would break the launcher.
+if ($act.Arguments -notmatch 'start-solver(-wsl)?\.ps1') { throw "Unexpected task arguments: $($act.Arguments)" }
+$act.Arguments = $act.Arguments -replace 'start-solver(-wsl)?\.ps1', (Split-Path -Leaf $script)
 Stop-ScheduledTask ResidentSolver
 Set-ScheduledTask -TaskName ResidentSolver -Action $act | Out-Null
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
