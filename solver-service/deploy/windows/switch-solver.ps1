@@ -20,7 +20,9 @@ Set-ScheduledTask -TaskName ResidentSolver -Action $act | Out-Null
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
   Where-Object { $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match '--port 8766(\s|$)' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-wsl.exe -d Ubuntu -e sh -c 'pkill -f "uvicorn api.main:app --host 127.0.0.1 --port 8766" || true'
+# One token, no shell: Windows PowerShell 5 drops embedded double quotes when calling native exes, which
+# once turned this into `pkill -f uvicorn` and killed the EM solver (8767) too. port.8766 matches only ours.
+wsl.exe -d Ubuntu -e pkill -f 'port.8766'
 Start-Sleep 3
 Start-ScheduledTask ResidentSolver
 $h = 'DOWN'
