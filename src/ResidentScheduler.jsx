@@ -48,6 +48,8 @@ import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudg
 import { diffSchedules as diffOptimizeCells, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize } from './lib/optimizeFlow.js';
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
+import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
+import { trackOptimizeProgress } from './lib/optimizeProgress.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import { needsManualReview, manualReviewTooltip, manualReviewLabel } from "./lib/manualReview.js";
 import {
@@ -7745,7 +7747,8 @@ export const LONG_SOLVE_BUDGET_MINUTES = [5, 15, 30];
 // progress, infrequent enough to comfortably clear /jobs' own rate limiting (which, unlike /solve,
 // is NOT the strict per-minute bucket for GET/DELETE — see solver-service/api/jobs.py's module
 // docstring) and to keep genuinely blunting Fly traffic-based autostop without hammering it.
-const LONG_SOLVE_POLL_MS = 15000;
+// 3 s since 2026-11-22 (live step tracker); the poll bucket is 300/min (api/ratelimit.py _poll_limiter).
+const LONG_SOLVE_POLL_MS = 3000;
 
 // ─── SOLVER PAYLOAD (external CP-SAT service) ──────────────────────────────────────────────────
 // Builds the request body for solver-service's POST /solve — see
@@ -17650,6 +17653,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // heavier than a bare jobId.
   const [longSolveJob, setLongSolveJob] = useLocalStorage('res_long_solve_job', null);
   const [longSolveStatus, setLongSolveStatus] = useState(null); // latest GET /jobs/{id} view | 'lost' | null
+  const [optimizeTracker, setOptimizeTracker] = useState(null); // trackOptimizeProgress state for the step tracker
   // Optimize (flow split 2026-11-22): Generate builds with the built-in engine only; Optimize sends the
   // CURRENT grid to a solver machine as a background job (the long-solve job machinery below) and the
   // result is reviewed in OptimizeCompareModal before anything is applied.
@@ -17708,6 +17712,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // also what keeps Fly's traffic-based autostart/autostop from idling the machine out from under a
   // genuinely running job (see solver-service/CLAUDE.md's "Background jobs" section).
   useEffect(() => {
+    setOptimizeTracker(null);
     if (readOnly || !longSolveJob?.jobId) { setLongSolveStatus(null); return; }
     let stopped = false;
     async function pollOnce() {
@@ -17722,6 +17727,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         const view = await pollSolveJob(longSolveJob.jobId, { accessToken, url: longSolveJob.solverTargetUrl });
         if (stopped) return;
         setLongSolveStatus(view.lost || view.status === 'lost' ? 'lost' : view);
+        if (view?.progress) setOptimizeTracker(prev => trackOptimizeProgress(prev, view.progress, Date.now()));
       } catch (e) {
         if (!stopped) console.warn('Long solve poll failed:', e);
       } finally {
@@ -19237,6 +19243,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           {longSolveSpinning && (
             <div className="basis-full"><RunLocationPanel stage="solver" claim={longSolveJob.usingLocal ? 'this-computer' : 'cloud'}
               runner={longSolveStatus?.progress?.runner || (longSolveJob.usingLocal ? null : getCachedRunner(longSolveJob.solverTargetUrl))}/></div>
+          )}
+          {(longSolveSpinning || longSolveStatus?.status === 'done') && (
+            <OptimizeProgressPanel tracker={optimizeTracker} status={longSolveStatus && longSolveStatus !== 'lost' ? longSolveStatus.status : 'running'}
+              elapsedFallback={longSolveElapsedSec} budgetFallback={longSolveJob.budgetSeconds || 0} now={Date.now()}/>
           )}
           {longSolveStatus?.status === 'done' ? (
             <>
