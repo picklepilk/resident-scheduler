@@ -413,6 +413,27 @@ def _carry_hint(model, store, solver: cp_model.CpSolver) -> None:
     hint.values.extend(solver.response_proto.solution)
 
 
+def _carry_hint_eval(model, hint_eval) -> None:
+    """Hint floor (2026-11-23): replaces the model hint with the ORIGINAL warm-start's full solution
+    (every variable, read from `evaluate_hint`'s clone solve; `clone()` keeps variable indices 1:1)."""
+    values = hint_eval.solver.response_proto.solution
+    n = min(len(model.proto.variables), len(values))
+    model.clear_hints()
+    hint = model.proto.solution_hint
+    hint.vars.extend(range(n))
+    hint.values.extend(values[i] for i in range(n))
+
+
+def _hint_beats(hint_tiers: dict, tiers: dict) -> bool:
+    """True when the hint's tier vector is lexicographically STRICTLY better than `tiers` (ladder order)."""
+    for name in _STAGE_NAMES:
+        if name not in hint_tiers or name not in tiers:
+            continue
+        if hint_tiers[name] != tiers[name]:
+            return hint_tiers[name] < tiers[name]
+    return False
+
+
 # Tiebreak multiplier for the staged solve (see `_solve_staged`'s own
 # docstring for the problem this fixes). Chosen the same "moderate, generous,
 # documented -- not a proof for pathological inputs" way objective.py's own
@@ -552,6 +573,11 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
     # need (proven OPTIMAL early, or skipped as empty) flows into the NEXT
     # stage's budget instead of sitting unused.
     rollover_seconds = 0.0
+    # HINT FLOOR (2026-11-23): while the (feasible) original hint is at least as good as every stage
+    # solved so far, the next stage's warm start is the ORIGINAL hint, not that stage's own (possibly
+    # equally-tier-optimal but much worse on later tiers) solution. Flips off at the first stage that
+    # strictly beats the hint.
+    hint_tracking = hint_eval is not None and hint_eval.feasible and bool(getattr(hint_eval, "tiers", None))
 
     for i, ((name, expr), budget) in enumerate(zip(stage_defs, budgets)):
         budget = budget + rollover_seconds
@@ -640,7 +666,12 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
             # lexStrict pins an OPTIMAL stage exactly (an `==` the next stage cannot trade against).
             value = round(solver.value(expr))
             model.add(expr == value if lex_strict and status_name == "OPTIMAL" else expr <= value)
-            _carry_hint(model, store, solver)
+            if hint_tracking and hint_eval.tiers.get(name, value + 1) > value:
+                hint_tracking = False  # this stage strictly beat the hint
+            if hint_tracking:
+                _carry_hint_eval(model, hint_eval)
+            else:
+                _carry_hint(model, store, solver)
             # BUDGET ROLLOVER: only when CP-SAT PROVED this stage's
             # (tiebreak-weighted) objective optimal -- "FEASIBLE" means it
             # merely ran out the clock, and the clock was already set to
@@ -841,8 +872,17 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
             feasibility=None,
         )
 
+    # HINT FLOOR safety net (2026-11-23): never ship a result lexicographically worse than a feasible hint.
+    hint_kept = False
+    if payload.config.objective_mode == "staged" and hint_eval is not None and hint_eval.feasible and hint_eval.tiers:
+        result_tiers = {name: round(solver.value(expr)) for name, expr in objective.stage_exprs.items()}
+        if _hint_beats(hint_eval.tiers, result_tiers):
+            solver = hint_eval.solver
+            hint_kept = True
     schedule = _extract_schedule(solver, store)
     report = _build_report(payload, solver, objective, hint_diag)
+    if payload.config.objective_mode == "staged" and hint_eval is not None and hint_eval.feasible:
+        report["hintKept"] = hint_kept
     report["variety"] = compute_variety_report(payload, schedule)
     if outer_report is not None:
         report["outerLns"] = outer_report

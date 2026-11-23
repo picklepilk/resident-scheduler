@@ -143,6 +143,9 @@ class HintEvaluation:
     # expressions against this same clone-solved solver).
     solver: object = None
     solve_time_ms: int = 0
+    # stage name -> the hint schedule's own value of that stage's expression (2026-11-23 hint floor;
+    # same order/keys as `objective.stage_exprs`). Populated only when feasible.
+    tiers: dict = field(default_factory=dict)
 
 
 def evaluate_hint(payload: Payload, build_result, time_cap: float = None) -> HintEvaluation:
@@ -199,7 +202,9 @@ def evaluate_hint(payload: Payload, build_result, time_cap: float = None) -> Hin
     # extension of them.
     exprs = pinned_component_exprs(payload, build_result.objective)
     components = {name: round(solver.value(expr)) for name, expr in exprs.items()}
-    return HintEvaluation(feasible=True, components=components, solver=solver, solve_time_ms=solve_time_ms)
+    stage_exprs = getattr(build_result.objective, "stage_exprs", None) or {}
+    tiers = {name: round(solver.value(expr)) for name, expr in stage_exprs.items()}
+    return HintEvaluation(feasible=True, components=components, solver=solver, solve_time_ms=solve_time_ms, tiers=tiers)
 
 
 def apply_hint_pins(model, payload: Payload, objective, hint_eval: HintEvaluation) -> None:

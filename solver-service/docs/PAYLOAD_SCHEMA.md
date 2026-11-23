@@ -1687,3 +1687,14 @@ Each emitted progress dict then also carries (once the first solution exists, st
 - `stage` = progress stage when published (outer LNS = the `outerLns` stage), `elapsed` seconds since solve start, `objective` = stage-local incumbent objective (LNS: quality tier).
 - Throttled by `PROGRESS_MIN_INTERVAL_SECONDS` (2 s). A throttled solution is flushed when that stage solve returns, so each stage last incumbent is published. Outer LNS publishes on each accepted improvement (same throttle) and flushes at the end.
 - `GET /jobs/{id}` returns `progress` unchanged, so `progress.incumbent` passes through. Portfolio K>1: only run 0 reports progress.
+
+## Hint floor (2026-11-23)
+
+Bug: Optimize from an already-good grid could return a result worse than the grid (even `OPTIMAL`). `_solve_staged` carried each stage's own solution as the next stage's hint; when the grid was already optimal for an early tier, CP-SAT could return a different equally-good solution much worse on later tiers.
+
+Fix (`solver/solve.py`, `solver/model/hint_pin.py`):
+- `HintEvaluation.tiers`: per-stage values (`objective.stage_exprs`, same keys as `SolveResult.tiers`) of the hint, read off the existing `evaluate_hint` clone solve. No extra solve.
+- `_solve_staged`: after each non-final stage, while the feasible hint's value for every stage so far is `<=` the stage's achieved value, the ORIGINAL full hint (all variables from the clone solution, `_carry_hint_eval`) is carried forward instead of the stage solution. First stage that strictly beats the hint switches back to `_carry_hint`.
+- Safety net in `_solve_pass1` (after outer LNS): if the hint is feasible and its tier vector is lexicographically strictly better (`_hint_beats`, ladder order) than the result's, the hint's solver is returned: schedule equals the hint grid, `tiers` = hint tiers, status unchanged.
+- `report.hintKept` (bool) present in staged mode whenever the hint was feasible; absent with no hint, an infeasible hint, or weighted mode.
+- Tests: `tests/test_hint_floor.py`.
