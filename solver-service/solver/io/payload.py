@@ -519,6 +519,9 @@ def parse_payload(raw: dict) -> Payload:
             symmetry_level=int(config_raw["symmetryLevel"]) if config_raw.get("symmetryLevel") is not None else None,
             portfolio=(max(1, min(8, int(config_raw["portfolio"] or 1))) if config_raw.get("portfolio") is not None else None),
             portfolio_params=([validate_params(d) for d in config_raw["portfolioParams"]] or None) if config_raw.get("portfolioParams") is not None else None,
+            # config.satParams (2026-11-23): SatParameters overrides for every solver of a single (K=1) solve;
+            # a portfolio run replaces it with its own portfolioParams entry. Same validation/forbidden list.
+            solver_params=validate_params(config_raw["satParams"]) if config_raw.get("satParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
             outer_lns=parse_outer_lns(config_raw.get("outerLns")),
             deadline_seconds=min(_finite_seconds(config_raw["deadlineSeconds"], "deadlineSeconds"), MAX_TIME_SECONDS_CAP + DEADLINE_GRACE_CAP_SECONDS) if config_raw.get("deadlineSeconds") is not None else None,

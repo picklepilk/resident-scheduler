@@ -1531,6 +1531,7 @@ Chief + program director decisions, extending the asNeeded idea from cells to CO
   `{linearization_level:2, search_branching:PORTFOLIO_WITH_QUICK_RESTART_SEARCH, randomize_search:true}`,
   `{optimize_with_core:true, linearization_level:0}`, `{use_lns_only:true}`. Workers are still split `W // concurrent`
   per run (bounded by cpus). Deterministic per (payload, config). Applied to every stage solver of that run.
+- **`config.satParams`** (optional object, 2026-11-23): `SatParameters` field -> value applied to every CP-SAT solver of a single (K=1) solve (staged stages and outer-LNS sub-solves). Same validation and forbidden fields as `portfolioParams`; a portfolio run (K>1) uses its own `portfolioParams` entry instead. Bench knob for e.g. `num_violation_ls`, `exploit_best_solution`.
 - **`config.portfolioParams`** (optional list of objects, `SatParameters` field -> value; enums by name, e.g.
   `"PORTFOLIO_SEARCH"`): replaces the built-in table; run `i` uses `portfolioParams[i % len]`. Validated at parse time:
   unknown fields or bad enum names -> 400; `num_workers`, `max_time_in_seconds`, `random_seed`, `repair_hint`,
