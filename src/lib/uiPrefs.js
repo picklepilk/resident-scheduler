@@ -34,6 +34,7 @@ export const DEFAULT_UI_PREFS = {
   gridGroupBy: GRID_GROUP_MODE_DEFAULT,
   reviewPanelOpen: true,
   blockSeen: {},
+  optimizeBestOfExtra: false,
 };
 
 // Clamps to the same bounds every writer uses. A persisted value outside them (hand-edited
@@ -81,5 +82,6 @@ export function normalizeUiPrefs(raw) {
       if (typeof v === 'string' && Number.isFinite(Date.parse(v))) blockSeen[k] = v;
     }
   }
-  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy, reviewPanelOpen, blockSeen };
+  const optimizeBestOfExtra = raw?.optimizeBestOfExtra === true; // Optimize "Best of": also use the third (PickleBook) machine
+  return { tabOverflow, cardOpen, showUnscheduled, gridZoom, gridColExtra, gridGroupBy, reviewPanelOpen, blockSeen, optimizeBestOfExtra };
 }

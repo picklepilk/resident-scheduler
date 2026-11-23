@@ -126,3 +126,69 @@ export function lockedCellsForOptimize(block) {
   }
   return out.sort(byResDate);
 }
+
+// ─── BEST OF MACHINES ───────────────────────────────────────────────────────────────────────────
+// "Best of both": the same Optimize job runs on 2-3 pool machines with different random seeds; the
+// better result (same lexicographic comparator as isStrictImprovement) wins.
+export const BEST_OF_TARGET = 'pool:best';
+export const BEST_OF_SEED_BASE = 42;
+export const bestOfSeed = (index, base = BEST_OF_SEED_BASE) => base + index * 1000;
+
+// First summary slot (errors, blocking, coverage, quality...) where `other` differs from the winner,
+// as a % of the winner's value (floor 1 so a 0 -> 2 gap does not divide by zero). 0 = exact tie.
+function gapPercent(winnerSummary, otherSummary) {
+  const w = vector(winnerSummary), o = vector(otherSummary);
+  const n = Math.max(w.length, o.length);
+  for (let i = 0; i < n; i++) {
+    const a = w[i] || 0, b = o[i] || 0;
+    if (a !== b) return Math.round(((b - a) / Math.max(Math.abs(a), 1)) * 1000) / 10;
+  }
+  return 0;
+}
+
+// results: [{ machine, ok, summary, ...rest }] in machine priority order (earlier wins exact ties).
+// Failed / offline machines (ok !== true or no summary) are ignored. Returns
+// { winner, ranked: [{ machine, result, gapPct }], failed: [machine], error }; winner null + error when none succeeded.
+export function pickBestOfMachines(results) {
+  const list = Array.isArray(results) ? results.filter(Boolean) : [];
+  const good = list.filter(r => r.ok === true && r.summary && typeof r.summary === 'object');
+  const failed = list.filter(r => !good.includes(r)).map(r => r.machine);
+  if (!good.length) return { winner: null, ranked: [], failed, error: 'No machine returned a usable result.' };
+  const order = good.map((r, i) => ({ r, i, v: vector(r.summary) }))
+    .sort((a, b) => cmpVec(a.v, b.v) || a.i - b.i);
+  const winner = order[0].r;
+  const ranked = order.map(({ r }) => ({ machine: r.machine, result: r, gapPct: r === winner ? 0 : gapPercent(winner.summary, r.summary) }));
+  return { winner, ranked, failed, error: null };
+}
+
+// "Best of 2: Mac won (PicklePower 1.2% behind)" / "(PicklePower tied)"; one machine -> "Ran on Mac only".
+export function bestOfLine(pick) {
+  if (!pick || !pick.winner) return '';
+  const others = pick.ranked.slice(1);
+  const failedTxt = pick.failed?.length ? `${pick.failed.join(', ')} did not finish` : '';
+  if (!others.length) return `Ran on ${pick.winner.machine} only${failedTxt ? ` (${failedTxt})` : ''}`;
+  const part = o => `${o.machine} ${o.gapPct === 0 ? 'tied' : `${formatQualityValue(o.gapPct)}% behind`}`;
+  return `Best of ${pick.ranked.length}: ${pick.winner.machine} won (${others.map(part).join(', ')}${failedTxt ? `; ${failedTxt}` : ''})`;
+}
+
+// Folds the poll views of a Best-of run into ONE job view shaped like a single job's (so the existing
+// status text / toasts / Review button keep working). entries: [{ machine, view }] where view is the
+// pollSolveJob result, or null when that poll failed (treated as still running). Returns
+// 'lost' | { status: 'running'|'done'|'failed'|'cancelled', result, error, progress, perMachine:[{machine,status,error,result,progress}] }.
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'lost']);
+export function aggregateBestOfJobs(entries) {
+  const per = (Array.isArray(entries) ? entries : []).map(({ machine, view }) => {
+    if (!view) return { machine, status: 'running', error: null, result: null, progress: null };
+    if (view.lost || view.status === 'lost') return { machine, status: 'lost', error: null, result: null, progress: null };
+    return { machine, status: String(view.status || 'running'), error: view.error || null, result: view.result ?? null, progress: view.progress || null };
+  });
+  if (!per.length) return 'lost';
+  const progress = (per.find(p => p.status === 'running' && p.progress) || per.find(p => p.progress) || {}).progress || null;
+  if (per.some(p => !TERMINAL.has(p.status))) return { status: 'running', progress, perMachine: per };
+  const done = per.find(p => p.status === 'done');
+  if (done) return { status: 'done', result: done.result, progress, perMachine: per };
+  if (per.every(p => p.status === 'lost')) return 'lost';
+  if (per.every(p => p.status === 'cancelled')) return { status: 'cancelled', progress, perMachine: per };
+  const err = per.filter(p => p.error).map(p => `${p.machine}: ${p.error}`).join('; ');
+  return { status: 'failed', error: err || 'every machine failed', progress, perMachine: per };
+}

@@ -164,6 +164,12 @@ export function useUiPrefs(viewer) {
     setPrefs(p => ({ ...p, reviewPanelOpen: !!(typeof v === 'function' ? v(p.reviewPanelOpen) : v) }));
   }, []);
 
+  // Optimize "Best of" third-machine tick-box (device preference).
+  const setOptimizeBestOfExtra = useCallback(v => {
+    if (!cloudLoadedRef.current) editedDuringLoadRef.current = true;
+    setPrefs(p => ({ ...p, optimizeBestOfExtra: !!v }));
+  }, []);
+
   // Marks a block's activity log as seen by this viewer (banner dismissal). Store the CURRENT time,
   // not the newest entry's time, so an entry stamped slightly in the future by clock skew still clears.
   const markBlockSeen = useCallback(blockId => {
@@ -177,8 +183,8 @@ export function useUiPrefs(viewer) {
   // callbacks are already stable via useCallback([]), so in practice this only changes when
   // `prefs` does).
   return useMemo(
-    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, markBlockSeen }),
-    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, markBlockSeen]
+    () => ({ prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, setOptimizeBestOfExtra, markBlockSeen }),
+    [prefs, setCardOpen, toggleTabOverflow, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, setOptimizeBestOfExtra, markBlockSeen]
   );
 }
 
@@ -198,7 +204,7 @@ export function UiPrefsProvider({ value, children }) {
   return createElement(UiPrefsContext.Provider, { value }, children);
 }
 
-const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {}, setReviewPanelOpen: () => {}, markBlockSeen: () => {} };
+const NOOP_UI_PREFS = { prefs: DEFAULT_UI_PREFS, setCardOpen: () => {}, toggleTabOverflow: () => {}, setShowUnscheduled: () => {}, setGridZoom: () => {}, setGridColExtra: () => {}, setGridGroupBy: () => {}, setReviewPanelOpen: () => {}, setOptimizeBestOfExtra: () => {}, markBlockSeen: () => {} };
 
 export function useUiPrefsContext() {
   return useContext(UiPrefsContext) || NOOP_UI_PREFS;

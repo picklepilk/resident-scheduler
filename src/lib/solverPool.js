@@ -112,3 +112,33 @@ export function pickSolverTarget({ preference, localStatus = null, poolStatus = 
   const pick = local || firstPool();
   return pick ? { ...pick, reason: null } : { url: null, usingLocal: false, name: null, reason: why() };
 }
+
+// ─── BEST-OF MACHINE SELECTION ──────────────────────────────────────────────────────────────────
+// Pure. Default pair = the Mac and PicklePower pool entries (matched by name), optional third =
+// PickleBook (`includeExtra`). If names do not match, the first two pool entries are the pair.
+// `poolStatus` = probePool() output; only online + idle machines run. Returns
+// { machines: [{name,url,defaultBudgetSeconds}], skipped: [{name, reason}], extraName } in priority order.
+const MAC_RE = /(^|[^a-z])mac([^a-z]|$)/i;
+const PC_RE = /power/i;
+const BOOK_RE = /book/i;
+
+export function bestOfCandidates(poolStatus = []) {
+  const pool = Array.isArray(poolStatus) ? poolStatus : [];
+  const mac = pool.find(m => MAC_RE.test(m.name));
+  const pc = pool.find(m => PC_RE.test(m.name));
+  const extra = pool.find(m => BOOK_RE.test(m.name) && m !== mac && m !== pc) || null;
+  let pair = [mac, pc].filter(Boolean);
+  if (pair.length < 2) pair = pool.filter(m => m !== extra).slice(0, 2);
+  return { pair, extra };
+}
+
+export function selectBestOfMachines(poolStatus = [], { includeExtra = false } = {}) {
+  const { pair, extra } = bestOfCandidates(poolStatus);
+  const wanted = includeExtra && extra ? [...pair, extra] : pair;
+  const machines = [], skipped = [];
+  for (const m of wanted) {
+    if (usable(m)) machines.push({ name: m.name, url: m.url, defaultBudgetSeconds: m.defaultBudgetSeconds ?? null });
+    else skipped.push({ name: m.name, reason: m.online ? 'busy' : 'offline' });
+  }
+  return { machines, skipped, extraName: extra ? extra.name : null };
+}
