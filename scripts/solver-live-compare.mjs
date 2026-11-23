@@ -48,8 +48,7 @@ export function compareHtml(recs) {
 <div class="mut">${esc(path.basename(r.file))}</div><table class="d">${HEAD}${rows.map((x) => rowHtml(x, rank.get(x))).join("")}</table>${rows.filter((x) => x.error).map((x) => `<p class="err">${esc(x.machine)}: ${esc(x.error)}</p>`).join("")}</div>`;
   }).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resident solver compare</title><style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2230;--mut:#667085;--line:#e3e6ec;--ok:#1a9e63;--bad:#d64545}
-@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--ink:#e6e9f0;--mut:#98a2b3;--line:#2a313d;--ok:#38c488;--bad:#f07070}}
+:root{--bg:#12151c;--card:#1b2029;--ink:#e6e9f0;--mut:#98a2b3;--line:#2a313d;--ok:#38c488;--bad:#f07070;color-scheme:dark} /* dark only (owner 2026-11-22) */
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,sans-serif;padding:12px;max-width:1500px;margin:0 auto}
 h1{font-size:20px;margin:0 0 8px}h2{font-size:15px;margin:0 0 6px}.mut{color:var(--mut);font-weight:400;font-size:13px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0;overflow-x:auto}

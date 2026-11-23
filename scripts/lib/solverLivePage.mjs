@@ -18,8 +18,7 @@ export function pageHtml({ recording = null } = {}) {
 const PAGE = String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Resident solver live</title>
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--ink:#1c2230;--mut:#667085;--line:#e3e6ec;--acc:#155e75;--ok:#1a9e63;--warn:#d9822b;--bad:#d64545;--we:rgba(120,120,140,.28);--s1:#2f6fed;--s2:#8a5cd0;--s3:#2c9d6a;--s4:#c9731f;--s5:#d64545;--s6:#5f7d8c}
-@media (prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2029;--ink:#e6e9f0;--mut:#98a2b3;--line:#2a313d;--acc:#5fb4cf;--ok:#38c488;--warn:#f0a050;--bad:#f07070;--we:rgba(0,0,0,.38);--s1:#6b9bff;--s2:#b48cf2;--s3:#5fd3a5;--s4:#f0a050;--s5:#f07070;--s6:#8fb0c0}}
+:root{--bg:#12151c;--card:#1b2029;--ink:#e6e9f0;--mut:#98a2b3;--line:#2a313d;--acc:#5fb4cf;--ok:#38c488;--warn:#f0a050;--bad:#f07070;--we:rgba(0,0,0,.38);--s1:#6b9bff;--s2:#b48cf2;--s3:#5fd3a5;--s4:#f0a050;--s5:#f07070;--s6:#8fb0c0;color-scheme:dark} /* dark only (owner 2026-11-22) */
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,Segoe UI,sans-serif}
 main{max-width:1600px;margin:0 auto;padding:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px;min-width:0}
