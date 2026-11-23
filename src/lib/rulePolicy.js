@@ -121,6 +121,9 @@ export const RULE_POLICY = {
   // Shift variety (2026-11-22, lib/variety.js): plain info warns; best-of-N prices them in the quality vector's last slot.
   shiftVarietyRun: { tier: 'info', label: 'Same shift many days in a row' },
   pairStacking: { tier: 'info', label: 'Same pair working the same area repeatedly' },
+  // Rotation ledger (owner 2026-11-23): off-service before-count not confirmed / rotation days too few. Plain info warns.
+  rotationPriorEstimated: { tier: 'info', label: 'Shifts before this block are estimated, not confirmed' },
+  rotationCannotFit: { tier: 'info', label: 'Rotation owes more shifts than its days can hold' },
   internPairing: { tier: 'info', label: 'Two interns on the same shift' },
   jcPresenterMissing: { tier: 'info', label: 'No Journal Club presenter marked for a PGY' },
 };

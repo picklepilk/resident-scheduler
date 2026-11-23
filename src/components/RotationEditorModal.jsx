@@ -58,7 +58,7 @@ export default function RotationEditorModal({ rot, block, blocks, computeLedger,
     try {
       const res = await onFindInQgenda(seg);
       if (res && Number.isFinite(res.count)) {
-        setDraft(d => ({ ...d, ranges: [...d.ranges.filter(r => !sameRange(r, seg)), { start: seg.start, end: seg.end, count: res.count, source: 'qgenda', ...(res.slotLabel ? { slotLabel: res.slotLabel } : {}) }] }));
+        setDraft(d => ({ ...d, ranges: [...d.ranges.filter(r => !sameRange(r, seg)), { start: seg.start, end: seg.end, count: res.count, source: 'qgenda', ...(res.slotLabel ? { slotLabel: res.slotLabel } : {}), ...(res.qgendaRunId ? { qgendaRunId: res.qgendaRunId } : {}) }] }));
         setFindMsg(`Found ${res.count} in QGenda for ${fmtMD(seg.start)} to ${fmtMD(seg.end)}${res.slotLabel ? ` (${res.slotLabel})` : ''}.`);
       } else setFindMsg(`Nothing found in QGenda for ${fmtMD(seg.start)} to ${fmtMD(seg.end)}.`);
     } catch { setFindMsg('QGenda lookup failed.'); }

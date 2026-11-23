@@ -16,17 +16,19 @@ for (let i = 0; i < argv.length; i++) { if (argv[i] === '--out') out = argv[++i]
 const [backupFile, ...recFiles] = files;
 
 const app = await import('../src/ResidentScheduler.jsx');
-const { buildSolverPayload, offServiceWindowTargetDelta, validateAll } = app;
+const { buildSolverPayload, composeAllResidents, offServiceWindowStatus, validateAll, getShiftTarget } = app;
 const { varietyStats, normalizeVarietyRule } = await import('../src/lib/variety.js');
+const { buildRotationCtx } = await import('../src/lib/rotationStore.js');
 const { gridFromMap, mapFromHint, gridsAt } = await import('./lib/solverLiveAnalysis.mjs');
 
 const parsed = JSON.parse(fs.readFileSync(backupFile, 'utf-8')); const d = parsed.data || parsed;
 const get = (k, dflt) => (d[k] == null ? dflt : unwrap(d[k]));
 const history = get('res_blocks_history', []); const block = get('res_current_block', null);
-const em = get('res_em_roster', []).map(r => { const a = block.emBlockAssignments?.[r.id]; return { ...r, blockType: a?.blockType ?? 'EM', isChief: !!a?.isChief, targetDelta: a?.targetDelta, targetNote: a?.targetNote, targetIsBuyDown: !!a?.targetIsBuyDown }; });
-const off = (block.offServiceResidents || []).map(r => { const wd = offServiceWindowTargetDelta(r, block, history); return wd == null ? r : { ...r, targetDelta: (Number(r.targetDelta) || 0) + wd }; });
-const ayData = get('res_ay_data', {});
-const A = { allResidents: [...em, ...off], block, coverage: get('res_coverage', {}), eligOverrides: get('res_eligibility_overrides', {}), appSettings: get('res_app_settings', {}), dayRules: get('res_day_rules', {}), blocksHistory: history, ayConf: ayData[block.academicYear] || {} };
+const ayData = get('res_ay_data', {}); const appSettingsB = get('res_app_settings', {});
+// Same composition the app uses (EM roster + off-service with the rotation-ledger seam), not a copy.
+const allResidentsB = composeAllResidents(get('res_em_roster', []), block, history, ayData, appSettingsB);
+const rotCtx = buildRotationCtx(ayData[block.academicYear], block, history);
+const A = { allResidents: allResidentsB, block, coverage: get('res_coverage', {}), eligOverrides: get('res_eligibility_overrides', {}), appSettings: appSettingsB, dayRules: get('res_day_rules', {}), blocksHistory: history, ayConf: ayData[block.academicYear] || {} };
 const payload = buildSolverPayload({ ...A, optimizeExisting: true });
 const pad = payload.residents.length > 99 ? 3 : 2;
 const codeToId = Object.fromEntries(payload.residents.map((r, i) => [`R${String(i + 1).padStart(pad, '0')}`, r.id]));
@@ -55,6 +57,17 @@ function metrics(grid, residents, dates) {
   };
 }
 
+// Rotation rows (metrics only): category, obligation, before, due here, placed, short. Placed uses the START grid.
+const rotationRows = (schedule) => {
+  const out = [];
+  for (const r of A.allResidents.filter(x => x.category !== 'EM_HOME' && x.category !== 'EM_BAMC')) {
+    const st = offServiceWindowStatus(r, block, history, rotCtx ? { ...rotCtx, appSettings: A.appSettings } : {});
+    if (!st || !st.ledger) continue;
+    const placed = Object.values(schedule[r.id] || {}).filter(Boolean).length;
+    out.push({ category: `${r.category}_${r.pgy}`, obligation: st.ledger.obligation, before: st.ledger.doneBefore, source: st.ledger.doneBeforeSource, dueHere: st.ledger.dueHere, owedAfter: st.ledger.owedAfter, cannotFit: st.ledger.cannotFit, placed, short: Math.max(0, st.ledger.dueHere - placed) });
+  }
+  return out;
+};
 const rows = [];
 let startDone = false;
 for (const f of recFiles) {
@@ -71,4 +84,16 @@ const keys = ['run', 'machine', 'workers', 'errors', 'slotsShort', 'slotsOverMax
 console.log('| ' + keys.join(' | ') + ' |'); console.log('|' + keys.map(() => '---').join('|') + '|');
 for (const r of rows) console.log('| ' + keys.map(k => r[k] ?? '').join(' | ') + ' |');
 for (const r of rows) console.log(r.run, r.machine, 'top warnings', JSON.stringify(r.topWarnings));
+if (rotCtx) {
+  // Rotation ledger rows for the START grid of the first recording (the final grids differ per run; metrics() has them too).
+  const first = recFiles[0] && JSON.parse(fs.readFileSync(recFiles[0], 'utf-8'));
+  if (first) {
+    const { residents, dates, hint } = first.meta;
+    const g = Array.isArray(hint) && hint.length === residents.length * dates.length && typeof hint[0] === 'string' ? hint : gridFromMap(residents, dates, mapFromHint(hint));
+    const sched = {}; residents.forEach((code, ri) => { const id = codeToId[code]; if (!id) return; const row = {}; dates.forEach((ds, di) => { if (g[ri * dates.length + di]) row[ds] = g[ri * dates.length + di]; }); sched[id] = row; });
+    const rr = rotationRows(sched);
+    console.log('rotation rows (start grid): category | obligation | before (source) | due here | after | placed | short | cannotFit');
+    for (const r of rr) console.log(`${r.category} | ${r.obligation} | ${r.before} (${r.source}) | ${r.dueHere} | ${r.owedAfter} | ${r.placed} | ${r.short} | ${r.cannotFit}`);
+  }
+}
 if (out) fs.writeFileSync(out, JSON.stringify(rows, null, 1));

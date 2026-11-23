@@ -51,6 +51,7 @@ export function normalizeRotation(raw) {
     if (s > e) continue;
     const out = { start: s, end: e, count, source: RANGE_SOURCES.includes(r.source) ? r.source : 'typed' };
     if (typeof r.slotLabel === 'string') out.slotLabel = r.slotLabel;
+    if (typeof r.qgendaRunId === 'string') out.qgendaRunId = r.qgendaRunId;
     ranges.push(out);
   }
   const splits = [...new Set((Array.isArray(raw.splits) ? raw.splits : [])

@@ -602,3 +602,7 @@ body {
   .dark .tri-rot-status--warn { background: #4A3A0A; color: #FDE68A; border-color: #7A6218; }
   .dark .tri-rot-warn { background: #4A3A0A; border-color: #7A6218; color: #FDE68A; }
 }
+
+/* Rotation ledger grid/card chip ("8 here · 7 before · 0 after"). Solid colours, no alpha. */
+.tri-rot-chip-mono { background: #E3EEF1; color: #155E75; }
+@media screen { .dark .tri-rot-chip-mono { background: #26395A; color: #D5DFEC; } }

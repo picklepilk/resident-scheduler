@@ -58,6 +58,13 @@ import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
   qgendaRowValues, QGENDA_JEOPARDY_TASK_ID, resolveQgendaHeaders, QGENDA_COLUMN_DEFAULTS,
 } from './lib/qgenda.js';
+import { rotationLedger, normalizeRotation } from './lib/rotationLedger.js';
+import { findRotationForResident, buildRotationCtx, getRotations, upsertRotations, updateRotation, blockDatesFromHome, setBlockDates, setQgendaSlotRuns, getQgendaSlotRuns, deriveBlocks, planApplyRoster } from './lib/rotationStore.js';
+import { parseRosterRotationRows } from './lib/rosterRows.js';
+import { slotRuns, rankRunsForRange } from './lib/qgendaSlotRuns.js';
+import RotationLedgerPanel from './components/RotationLedgerPanel.jsx';
+import RotationEditorModal from './components/RotationEditorModal.jsx';
+import RotationStrip from './components/RotationStrip.jsx';
 import { parseQGendaGrid, buildQGendaImport, buildScheduleFromImport } from './lib/qgendaImport.js';
 import { computeBuyDownsApplied, computeLedger } from './lib/jeopardyLedger.js';
 import { diffState } from './lib/stateDiff.js';
@@ -3359,8 +3366,13 @@ export function getShiftCeiling(resident, appSettings = {}) {
 // `offServiceWindowTargetDelta` (below) is the thin pre-existing wrapper every non-display
 // consumer (the allResidents composition seam, tests) still calls — it alone collapses a
 // zero/absent delta to null, preserving its exact original contract.
-export function offServiceWindowStatus(resident, block, blocksHistory = []) {
+export function offServiceWindowStatus(resident, block, blocksHistory = [], ctx = {}) {
   if (!resident || isEmResident(resident)) return null;
+  // Rotation ledger seam (owner 2026-11-23): a resident linked to a real rotation in
+  // ayData[AY].rotations gets the whole-rotation obligation split across blocks. No rotation (or a
+  // null ledger: BAMC, reference row, window off this block) falls through to the legacy path below.
+  const viaRotation = rotationLedgerStatus(resident, block, ctx);
+  if (viaRotation) return viaRotation;
   if ((resident.availabilityMode || 'full') !== 'ranges') return null;
   const ranges = (resident.availableRanges || []).filter(rg => rg.start && rg.end && rg.start <= rg.end);
   if (!ranges.length || !block?.startDate || !block?.endDate) return null;
@@ -3432,9 +3444,51 @@ export function offServiceWindowStatus(resident, block, blocksHistory = []) {
 // guards) — collapses to null here, same as before this function was split. This is the ONLY
 // consumer every non-display call site (allResidents' composition seam, the generator/validator
 // path through it, existing tests) should ever call; offServiceWindowStatus is for display only.
-export function offServiceWindowTargetDelta(resident, block, blocksHistory = []) {
-  const status = offServiceWindowStatus(resident, block, blocksHistory);
+export function offServiceWindowTargetDelta(resident, block, blocksHistory = [], ctx = {}) {
+  const status = offServiceWindowStatus(resident, block, blocksHistory, ctx);
+  if (status && status.ledger && ctx && ctx.appSettings) {
+    // Ledger delta lands the effective target on ledger.dueHere whatever Settings targetOverrides
+    // changed the category base to (getShiftTarget adds targetDelta onto that base).
+    const baseT = getShiftTarget({ ...resident, targetDelta: 0 }, ctx.appSettings);
+    if (baseT == null) return null;
+    const d = status.effectiveTarget - baseT;
+    return d !== 0 ? d : null;
+  }
   return status && status.delta !== 0 ? status.delta : null;
+}
+
+// Ledger half of the seam. ctx = { rotations, blocks, appSettings? } (src/lib/rotationStore.js
+// buildRotationCtx). Returns the offServiceWindowStatus shape plus ledger fields, or null.
+function rotationLedgerStatus(resident, block, ctx) {
+  const rotations = ctx && ctx.rotations;
+  if (!Array.isArray(rotations) || !rotations.length || !block?.startDate || !block?.endDate) return null;
+  const rot0 = findRotationForResident(rotations, resident, block);
+  if (!rot0 || rot0.start > block.endDate || rot0.end < block.startDate) return null;
+  // An import-guessed PGY (multi-PGY category) yields to the block resident's real PGY.
+  const rot = rot0.pgyGuessed && resident.pgy != null ? { ...rot0, pgy: resident.pgy } : rot0;
+  const ledger = rotationLedger(rot, block, { blocks: ctx.blocks || [], shiftTargets: SHIFT_TARGETS });
+  if (!ledger) return null;
+  const key = `${rot.category}_${rot.pgy}`;
+  const ovStart = rot.start < block.startDate ? block.startDate : rot.start;
+  const ovEnd = rot.end > block.endDate ? block.endDate : rot.end;
+  const dayN = (a, b) => Math.round((parseDate(b) - parseDate(a)) / 86_400_000) + 1;
+  return {
+    base: ledger.obligation,
+    alreadyWorked: ledger.doneBefore,
+    effectiveTarget: ledger.dueHere,
+    foundHistory: ledger.doneBeforeSource !== 'estimated' && ledger.doneBeforeSource !== 'none',
+    overlapDays: dayN(ovStart, ovEnd),
+    totalWindowDays: dayN(rot.start, rot.end),
+    ranges: [{ start: rot.start, end: rot.end }],
+    delta: ledger.dueHere - (SHIFT_TARGETS[key] ?? ledger.obligation),
+    owedAfter: ledger.owedAfter,
+    cannotFit: ledger.cannotFit,
+    source: ledger.doneBeforeSource,
+    obligation: ledger.obligation,
+    obligationSource: ledger.obligationSource,
+    ledger,
+    rotation: rot,
+  };
 }
 
 // Shared display wording for all three UI surfaces (Off-Service tab tile, Schedule grid row
@@ -3445,6 +3499,11 @@ export function offServiceWindowTargetDelta(resident, block, blocksHistory = [])
 // never be mistaken for a measurement. Returns null when there's nothing to say (status is null).
 export function offServiceWindowSummary(status) {
   if (!status) return null;
+  if (status.ledger) {
+    const L = status.ledger;
+    const src = { typed: 'typed', qgenda: 'QGenda', saved: 'saved block', estimated: 'estimated', none: '' }[L.doneBeforeSource] || '';
+    return `Rotation owes ${L.obligation} · ${L.doneBefore} done before${src && L.doneBefore > 0 ? ` (${src})` : ''} · ${L.dueHere} here · ${L.owedAfter} after${L.cannotFit > 0 ? ` · ${L.cannotFit} cannot fit` : ''}`;
+  }
   const { base, alreadyWorked, effectiveTarget, foundHistory } = status;
   return foundHistory
     ? `Window quota: ${alreadyWorked} of ${base} worked in prior blocks · ${effectiveTarget} remaining here`
@@ -3487,6 +3546,18 @@ export function buildOffServiceResidentsForBlock(offRows, b) {
 // tell that an off-service resident's real ER obligation keeps going past it). Renders nothing when
 // the window doesn't straddle (the common case).
 function OffServiceStraddleBadge({ status, block }) {
+  if (status && status.ledger) {
+    // Rotation ledger: one compact mono chip, "8 here · 7 before · 0 after"; sentence in the tooltip.
+    const L = status.ledger;
+    const windowDates = `${prettyDate(status.rotation.start)}–${prettyDate(status.rotation.end)}`;
+    return (
+      <span title={[`ER rotation window: ${windowDates}`, offServiceWindowSummary(status)].join(' · ')}
+        className="tri-rot-chip-mono text-[10px] px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"
+        style={{ fontFamily: "'IBM Plex Mono', ui-monospace, monospace" }}>
+        {L.dueHere} here · {L.doneBefore} before · {L.owedAfter} after
+      </span>
+    );
+  }
   const straddle = status && offServiceStraddle(status.ranges, block?.startDate, block?.endDate);
   if (!straddle) return null;
   const windowDates = (status.ranges || [])
@@ -4472,6 +4543,8 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
   // Depends only on the block's own date range, not the resident — computed once and reused by
   // both the streak-run walk and the circadian night-run walk below (each per-resident).
   const blockDates = getBlockDates(block.startDate, block.endDate);
+  // Rotation ledger ctx (null when this AY holds no rotations): resolved once per validate pass.
+  const rotCtxV = buildRotationCtx(ayConf, block, blocksHistory);
   // Also resident-independent (depends only on the block's date range) — compute once, not once
   // per resident inside the weekend-off check below.
   const blockWeekends = getBlockWeekends(blockDates);
@@ -4561,6 +4634,20 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
       }
     }
     const target = getShiftTarget(resident, appSettings);
+    // Rotation ledger status (off-service residents linked to a real rotation): explains the target
+    // in the under-target message and raises two info-tier flags. Never export-blocking.
+    const rotStatus = rotCtxV && !isEmResident(resident) ? offServiceWindowStatus(resident, block, blocksHistory, rotCtxV) : null;
+    const rotLedger = rotStatus && rotStatus.ledger ? rotStatus.ledger : null;
+    if (rotLedger && isSchedulable(resident)) {
+      if (rotLedger.doneBeforeSource === 'estimated' && rotLedger.doneBefore > 0) {
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'rotationPriorEstimated', level: 'warn',
+          message: `Shifts before this block are estimated for ${name} (${rotLedger.doneBefore} of ${rotLedger.obligation}); confirm in Off-Service, Rotation ledger` });
+      }
+      if (rotLedger.cannotFit > 0) {
+        issues.push({ residentId: resident.id, name, dateStr: null, shiftId: null, rule: 'rotationCannotFit', level: 'warn',
+          message: `${name}'s rotation owes ${rotLedger.cannotFit} more shift${rotLedger.cannotFit === 1 ? '' : 's'} than the rotation days can hold` });
+      }
+    }
     // isSchedulable guard is load-bearing for the under-target branch below: an EM Home/BAMC
     // resident on a non-schedulable rotation (METRO, ADMIN, OB_VAC — self-arranged, chief doesn't
     // place them on the EM schedule at all) still resolves a real SHIFT_TARGETS/CHIEF number here
@@ -4588,7 +4675,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
         // meant to be final. Everyone else (Peds included, now that it carries a real target too)
         // stays a review warning, not a hard block. See CLAUDE.md "1.9 Under-target enforcement".
         const d = Number(resident.targetDelta);
-        const hasDelta = Number.isFinite(d) && d !== 0;
+        const hasDelta = Number.isFinite(d) && d !== 0 && !rotLedger; // a ledger delta is explained by the rotation note below
         const overrideNote = hasDelta
           ? ` (target ${target} = ${target - d} ${d < 0 ? '-' : '+'} ${Math.abs(d)}, ${resident.targetIsBuyDown ? 'buy-down' : (d < 0 ? 'reduction' : 'increase')})`
           : '';
@@ -4615,7 +4702,7 @@ export function validateAll(allResidents, schedule, block, eligOverrides = {}, a
           // below would otherwise silently break).
           rule: 'underTarget',
           ...(toleratedConferenceShortfall ? { conferenceTolerated: true } : {}),
-          message: `Under target: ${count}/${target} shifts${overrideNote}${blocksNote}${conferenceNote}`,
+          message: `Under target: ${count}/${target} shifts${overrideNote}${blocksNote}${conferenceNote}${rotLedger ? ` — rotation owes ${rotLedger.obligation}, ${rotLedger.doneBefore} done before` : ''}`,
           level: isHardCategory && !toleratedConferenceShortfall ? 'error' : 'warn' });
       }
     }
@@ -12777,7 +12864,7 @@ function DashboardTab({ block, updateBlock, updateBlockTracked, allResidents, sc
           blocksHistory={blocksHistory} setBlocksHistory={setBlocksHistory}
           appSettings={appSettings} showToast={showToast}
           onClose={() => setShowImportMatrix(false)}
-          setImportLog={setImportLog}
+          setImportLog={setImportLog} ayData={ayData} updateAyData={updateAyData}
         />
       )}
 
@@ -12891,7 +12978,7 @@ function detectHomeAndOffSheetsByContent(wb, XLSX) {
 // Saved Blocks — EM Home rotation assignments (parseHomeResidentMatrix) plus off-service
 // rotators bucketed by date overlap (parseOffServiceSheet). Never touches the live/current
 // block, and never generates a schedule — roster only.
-function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast, setImportLog }) {
+function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHistory, appSettings, onClose, showToast, setImportLog, ayData, updateAyData }) {
   const [fileName, setFileName] = useState('');
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
   const [fileHashStr, setFileHashStr] = useState('');
@@ -12931,6 +13018,9 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         const ayStartYear = parseAYStartYear(homeRows);
         const home = parseHomeResidentMatrix(homeRows, ayStartYear);
         const off  = parseOffServiceSheet(offRows, ayStartYear);
+        // Rotation ledger (2026-11-23): the same off-service sheet read as whole rotations (real
+        // windows, BAMC PA reference rows) for ayData[AY].rotations; the parse above is untouched.
+        const rot = parseRosterRotationRows(offRows, ayStartYear);
 
         if (!home.blocks.length) {
           setError('No rotation blocks recognized — check that the Home EM residents sheet matches the expected layout: either a "Resident (EM-Home PGY-N)" section per PGY level, or blank-row-separated resident groups each starting with a "Resident" + date-range header row.');
@@ -12952,7 +13042,7 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
         const projectedTotal = blocksHistory.filter(b => !newIds.has(b.id)).length + blocks.length;
         const capOverflow = Math.max(0, projectedTotal - cap);
 
-        setPreview({ ayStartYear, home, off, newResidents, existingCount, blocks, capOverflow, warnings: [...home.warnings, ...off.warnings] });
+        setPreview({ ayStartYear, home, off, rot, newResidents, existingCount, blocks, capOverflow, warnings: [...home.warnings, ...off.warnings] });
       } catch (err) {
         setError(`Couldn't read this file — ${err?.message || 'is it a valid .xlsx workbook?'}`);
       }
@@ -13012,6 +13102,20 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
       };
     });
 
+    // Rotation ledger: whole rotations + block dates into ayData[AY] (existing res_ay_data blob).
+    let rotAdded = 0, rotUpdated = 0, rotGuessed = 0, rotRef = 0;
+    if (updateAyData && preview.rot?.rotations?.length) {
+      const up = upsertRotations(ayData || {}, academicYear, preview.rot.rotations);
+      rotAdded = up.added; rotUpdated = up.updated; rotGuessed = up.guessed;
+      rotRef = preview.rot.rotations.filter(r => r.scheduledByUs === false).length;
+      const bd = blockDatesFromHome(home.blocks);
+      const withDates = bd.length ? setBlockDates(up.ayData, academicYear, bd) : up.ayData;
+      updateAyData(academicYear, withDates[academicYear]);
+    } else if (updateAyData) {
+      const bd = blockDatesFromHome(home.blocks);
+      if (bd.length) updateAyData(academicYear, setBlockDates(ayData || {}, academicYear, bd)[academicYear]);
+    }
+
     setBlocksHistory(prev => {
       const newIds = new Set(newSnaps.map(s => s.id));
       // Re-upload replaces the snapshot; keep a previously published flag (same as saveBlock).
@@ -13027,8 +13131,9 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
       setImportLog(prev => appendImportLog(normalizeImportLog(prev), makeImportLogEntry('matrix', {
         filename: fileName || undefined, sizeBytes: fileSizeBytes || undefined, hash: fileHashStr || undefined,
         blockStarts: newSnaps.map(s => s.startDate), ays: [...new Set(newSnaps.map(s => s.academicYear).filter(Boolean))],
-        populated: [`Roster/rotations for ${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''}`, `${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''} added to roster`],
-        summary: `${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} imported (${ranges}) · ${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''}, ${preview.existingCount} matched existing`,
+        populated: [`Roster/rotations for ${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''}`, `${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''} added to roster`,
+          ...(rotAdded + rotUpdated > 0 ? [`${rotAdded + rotUpdated} off-service rotation${rotAdded + rotUpdated !== 1 ? 's' : ''} (Rotation ledger)`] : [])],
+        summary: `${newSnaps.length} block${newSnaps.length !== 1 ? 's' : ''} imported (${ranges}) · ${newResidents.length} new resident${newResidents.length !== 1 ? 's' : ''}, ${preview.existingCount} matched existing${rotAdded + rotUpdated > 0 ? ` · ${rotAdded} rotations added, ${rotUpdated} updated${rotRef ? `, ${rotRef} reference (not scheduled by us)` : ''}${rotGuessed ? `, ${rotGuessed} PGY guessed` : ''}` : ''}`,
       })));
     }
 
@@ -13072,6 +13177,13 @@ function ImportMatrixModal({ emRoster, setEmRoster, blocksHistory, setBlocksHist
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
                 <p className="font-semibold text-gray-700">Blocks to create/update</p>
                 <p className="text-gray-500 mt-1">{preview.blocks.length} blocks · AY{String(preview.ayStartYear).slice(2)}/{String(preview.ayStartYear + 1).slice(2)}</p>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 col-span-2">
+                <p className="font-semibold text-gray-700">Off-service rotations (Rotation ledger)</p>
+                <p className="text-gray-500 mt-1">
+                  {preview.rot.rotations.filter(r => r.scheduledByUs !== false).length} tracked across blocks · {preview.rot.rotations.filter(r => r.scheduledByUs === false).length} reference only (not scheduled by us)
+                  {preview.rot.rotations.filter(r => r.scheduledByUs !== false && r.pgy == null).length > 0 && <> · <strong>{preview.rot.rotations.filter(r => r.scheduledByUs !== false && r.pgy == null).length} with PGY not in the sheet</strong> (first PGY option assumed, marked as guessed, check in Off-Service)</>}
+                </p>
               </div>
             </div>
 
@@ -15535,7 +15647,218 @@ function EMResidentsTab({ moveGuard, emRoster, setEmRoster, block, updateBlock, 
 
 // ─── OFF-SERVICE TAB ──────────────────────────────────────────────────────────
 
-function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResidents, blocksHistory, setImportLog, pendingByResident }) {
+// ─── ROTATION LEDGER (Off-Service tab) ───
+// Off-service obligation per REAL rotation (ayData[AY].rotations, src/lib/rotationStore.js), shown
+// above the resident list. Pure math: src/lib/rotationLedger.js. Targets still flow ONLY through
+// offServiceWindowStatus -> composeAllResidents -> getShiftTarget; nothing here touches the solver.
+const ROT_SPECIALTY = (cat) => CAT_MAP[cat]?.shortLabel || (cat === 'BAMC_PA' ? 'BAMC PA' : (cat || '—'));
+
+function QGendaRunFinder({ seg, rot, obligation, runs, usedRunIds, onLoadFile, onPick, onCancel }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+  const ranked = useMemo(
+    () => rankRunsForRange(runs, { start: seg.start, end: seg.end, category: rot.category, obligation }, { usedRunIds }).slice(0, 5),
+    [runs, seg.start, seg.end, rot.category, obligation, usedRunIds]);
+  function pickFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true); setErr('');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const XLSX = await import('xlsx');
+        const wb = XLSX.read(reader.result, { type: 'array' });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+        const found = slotRuns(rows);
+        if (!found.length) setErr('No numbered off-service slots found. Use the QGenda "Grid By Staff" export.');
+        else onLoadFile(found);
+      } catch (e2) { setErr(`Could not read this file: ${e2?.message || 'is it a valid .xlsx?'}`); }
+      setBusy(false);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  return (
+    <div className="relative z-[70]">
+      <Modal title={`Find in QGenda: ${prettyDate(seg.start)} to ${prettyDate(seg.end)}`} onClose={onCancel} wide>
+        <div className="space-y-3 text-xs">
+          {runs.length === 0 && (
+            <div className="space-y-2">
+              <p className="text-gray-600">QGenda lists off-service residents as numbered slots, not names. Load the QGenda "Grid By Staff" export (.xlsx) and pick the run of shifts that matches this rotation. Nothing is chosen for you.</p>
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
+                <Upload size={12}/> {busy ? 'Reading' : 'Choose QGenda .xlsx'}
+              </button>
+              <input ref={fileRef} type="file" accept=".xlsx" onChange={pickFile} className="hidden"/>
+            </div>
+          )}
+          {err && <p className="text-red-700">{err}</p>}
+          {runs.length > 0 && ranked.length === 0 && <p className="text-gray-600">No slot run fits this range ({runs.length} runs loaded, {usedRunIds.size} already used).</p>}
+          {ranked.length > 0 && (
+            <ul className="space-y-2">
+              {ranked.map(({ run, score, reasons }) => (
+                <li key={run.id} className="border border-gray-200 rounded-lg p-2 flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-gray-800">{run.slot} <span className="font-normal text-gray-500">{prettyDate(run.start)} to {prettyDate(run.end)}</span></p>
+                    <p className="font-mono text-gray-600">{run.count} shifts · Peds {run.areaMix.peds} · main {run.areaMix.main} · trauma {run.areaMix.trauma} · fit {score}</p>
+                    <p className="text-gray-500">{reasons.join('; ') || 'weak match'}</p>
+                  </div>
+                  <button type="button" onClick={() => onPick({ count: run.count, slotLabel: run.slot, qgendaRunId: run.id })}
+                    className="px-2.5 py-1 text-xs font-semibold bg-primary text-white rounded-lg hover:bg-primary/90 shrink-0">Use this run</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex justify-end"><button type="button" onClick={onCancel} className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">None of these</button></div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function ApplyRosterModal({ plan, block, onApply, onClose }) {
+  const adds = plan.entries.filter(e => e.action === 'add').length;
+  return (
+    <div className="relative z-[70]">
+      <Modal title="Apply roster to this block" onClose={onClose} wide>
+        <div className="space-y-3 text-xs">
+          <p className="text-gray-600">Sets each matched off-service resident's availability to the rotation's real ER dates ({prettyDate(block.startDate)} to {prettyDate(block.endDate)} block) and links them to their rotation. Residents with no rotation are left unchanged.</p>
+          {plan.entries.length === 0 ? <p className="text-gray-500">No rotations on the roster touch this block.</p> : (
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto">
+              {plan.entries.map(({ rot, action, pgyFix }) => (
+                <div key={rot.id} className="flex items-center gap-2 px-3 py-1.5">
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${action === 'add' ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-800'}`}>{action === 'add' ? 'Add new' : 'Update'}</span>
+                  <span className="text-gray-800">{rot.firstName} {rot.lastName}</span>
+                  <span className="text-gray-500">{ROT_SPECIALTY(rot.category)} PGY-{pgyFix ?? rot.pgy}{rot.pgyGuessed && pgyFix == null ? ' (guessed)' : ''}</span>
+                  <span className="ml-auto font-mono text-gray-600">{prettyDate(rot.start)} to {prettyDate(rot.end)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {plan.notOnRoster.length > 0 && (
+            <div>
+              <p className="font-semibold text-gray-700">Not on the roster ({plan.notOnRoster.length}), no change</p>
+              <p className="text-gray-500">{plan.notOnRoster.map(r => `${r.firstName} ${r.lastName}`).join(', ')}</p>
+            </div>
+          )}
+          {plan.skipped.length > 0 && <p className="text-gray-500">{plan.skipped.length} reference row{plan.skipped.length === 1 ? '' : 's'} skipped (not scheduled by us).</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button type="button" disabled={!plan.entries.length} onClick={onApply} className="px-3 py-1.5 text-xs font-semibold bg-primary text-white rounded-lg hover:bg-primary/90 disabled:opacity-50">
+              Apply ({plan.entries.length - adds} update{plan.entries.length - adds === 1 ? '' : 's'}, {adds} new)
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function RotationLedgerSection({ block, ayData, updateAyData, blocksHistory, updateBlock, moveGuard, showToast }) {
+  const ay = block.academicYear;
+  const ayConf = ayData?.[ay];
+  const rotations = useMemo(() => getRotations(ayData, ay), [ayData, ay]);
+  const blocks = useMemo(() => deriveBlocks(ayConf, block, blocksHistory), [ayConf, block.startDate, block.endDate, block.id, blocksHistory]); // eslint-disable-line react-hooks/exhaustive-deps
+  const residents = block.offServiceResidents || [];
+  const sched = block.schedule || {};
+  const [editing, setEditing] = useState(null);
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [finder, setFinder] = useState(null); // { seg, rot, resolve }
+  const [loadedRuns, setLoadedRuns] = useState(null);
+
+  const ledgerFor = useCallback(
+    (rot) => rotationLedger(normalizeRotation(rot), block, { blocks, shiftTargets: SHIFT_TARGETS }),
+    [block, blocks]);
+
+  const rows = useMemo(() => {
+    const resByRot = new Map();
+    for (const r of residents) {
+      const rot = findRotationForResident(rotations, r, block);
+      if (rot && !resByRot.has(rot.id)) resByRot.set(rot.id, r);
+    }
+    const out = [];
+    for (const rot of rotations) {
+      if (rot.start > block.endDate || rot.end < block.startDate) continue;
+      const ledger = rotationLedger(rot, block, { blocks, shiftTargets: SHIFT_TARGETS });
+      if (!ledger && rot.scheduledByUs !== false) continue; // BAMC: per-block quota, not a rotation ledger
+      const res = resByRot.get(rot.id);
+      const placedHere = res ? Object.values(sched[res.id] || {}).filter(Boolean).length : 0;
+      out.push({ rot, ledger, placedHere, residentId: res?.id ?? null, displayName: `${rot.firstName} ${rot.lastName}`.trim(), specialtyLabel: ROT_SPECIALTY(rot.category) });
+    }
+    return out;
+  }, [rotations, residents, block, blocks, sched]);
+
+  const savedRuns = useMemo(() => getQgendaSlotRuns(ayData, ay), [ayData, ay]);
+  const runs = loadedRuns || savedRuns;
+
+  function saveRotation(draft) {
+    const n = normalizeRotation(draft);
+    if (!n || !editing) return;
+    const before = ledgerFor(editing)?.dueHere;
+    const after = rotationLedger(n, block, { blocks, shiftTargets: SHIFT_TARGETS })?.dueHere;
+    const next = updateRotation(ayData, ay, { ...draft, ...n, id: editing.id })[ay];
+    const apply = () => {
+      updateAyData(ay, next);
+      setEditing(null);
+      showToast && showToast(before !== after ? 'Rotation saved. Targets updated.' : 'Rotation saved.', 'green');
+    };
+    if (before !== after && moveGuard) moveGuard({ ayConf: next }, apply, 'this rotation change'); else apply();
+  }
+
+  function findInQgenda(seg) {
+    return new Promise(resolve => setFinder({ seg, rot: editing, resolve }));
+  }
+  const closeFinder = (result) => { const f = finder; setFinder(null); if (f) f.resolve(result); };
+  const usedRunIds = useMemo(() => new Set(rotations.filter(r => r.id !== finder?.rot?.id).flatMap(r => r.ranges.map(g => g.qgendaRunId).filter(Boolean))), [rotations, finder]);
+
+  const plan = useMemo(() => (applyOpen ? planApplyRoster(rotations, residents, block) : null), [applyOpen, rotations, residents, block]);
+  function applyRoster() {
+    const p = plan;
+    const fn = b => {
+      const byId = new Map(p.entries.filter(e => e.match).map(e => [e.match.id, e]));
+      const kept = (b.offServiceResidents || []).map(r => {
+        const e = byId.get(r.id);
+        return e ? { ...r, availabilityMode: 'ranges', availableRanges: [{ start: e.rot.start, end: e.rot.end }], rotationId: e.rot.id } : r;
+      });
+      const added = p.entries.filter(e => e.action === 'add').flatMap(e =>
+        buildOffServiceResidentsForBlock([e.rot], { start: b.startDate, end: b.endDate }).map(r => ({ ...r, rotationId: e.rot.id })));
+      return { ...b, offServiceResidents: [...kept, ...added] };
+    };
+    const fixes = p.entries.filter(e => e.pgyFix != null);
+    const done = () => {
+      if (fixes.length) {
+        let nd = ayData;
+        for (const e of fixes) nd = updateRotation(nd, ay, { id: e.rot.id, pgy: e.pgyFix, pgyGuessed: false });
+        updateAyData(ay, nd[ay]);
+      }
+      setApplyOpen(false);
+      const adds = p.entries.filter(e => e.action === 'add').length;
+      showToast && showToast(`Roster applied: ${p.entries.length - adds} updated, ${adds} added`, 'green');
+    };
+    const run = () => { updateBlock(fn); done(); };
+    if (moveGuard) moveGuard({ block: fn }, run, 'applying the roster'); else run();
+  }
+
+  return (
+    <>
+      <RotationLedgerPanel rows={rows} block={block} onEdit={rot => setEditing(rotations.find(r => r.id === rot.id) || rot)} onApplyRoster={() => setApplyOpen(true)}/>
+      {editing && (
+        <RotationEditorModal rot={editing} block={block} blocks={blocks} specialtyLabel={ROT_SPECIALTY(editing.category)}
+          computeLedger={ledgerFor} onFindInQgenda={findInQgenda} onClose={() => setEditing(null)} onSave={saveRotation}/>
+      )}
+      {finder && (
+        <QGendaRunFinder seg={finder.seg} rot={finder.rot} obligation={ledgerFor(finder.rot)?.obligation ?? null}
+          runs={runs} usedRunIds={usedRunIds}
+          onLoadFile={found => { setLoadedRuns(found); updateAyData(ay, setQgendaSlotRuns(ayData, ay, found)[ay]); }}
+          onPick={res => closeFinder(res)} onCancel={() => closeFinder(null)}/>
+      )}
+      {applyOpen && plan && <ApplyRosterModal plan={plan} block={block} onApply={applyRoster} onClose={() => setApplyOpen(false)}/>}
+    </>
+  );
+}
+
+function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResidents, blocksHistory, setImportLog, pendingByResident, ayData, updateAyData, showToast }) {
   // showAdd: null | { category }
   const [showAdd, setShowAdd]           = useState(null);
   const [showImport, setShowImport]     = useState(false);
@@ -15550,6 +15873,8 @@ function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResident
   // RAW block.offServiceResidents record (untouched); only the target readout looks the resident
   // up here by id.
   const composedById = useMemo(() => Object.fromEntries((allResidents || []).map(r => [r.id, r])), [allResidents]);
+  // Rotation ledger ctx for the tile's display status (null => legacy straddle path).
+  const rotCtx = useMemo(() => buildRotationCtx(ayData?.[block.academicYear], block, blocksHistory) || {}, [ayData, block, blocksHistory]);
 
   function addRes(r) { updateBlock(b => ({ ...b, offServiceResidents: [...(b.offServiceResidents || []), r] })); }
 
@@ -15612,6 +15937,11 @@ function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResident
         </div>
       </div>
 
+      {ayData && updateAyData && (
+        <RotationLedgerSection block={block} ayData={ayData} updateAyData={updateAyData} blocksHistory={blocksHistory}
+          updateBlock={updateBlock} moveGuard={moveGuard} showToast={showToast}/>
+      )}
+
       {residents.length === 0 ? (
         <div className="text-center py-12 text-gray-400 text-sm bg-gray-50 rounded-xl border border-dashed border-gray-200">
           No off-service residents this block — use the Add buttons above
@@ -15644,7 +15974,7 @@ function OffServiceTab({ moveGuard, block, updateBlock, appSettings, allResident
                   // header comment. Reuses the composedById lookup already built above rather than
                   // recomputing a second one; null (the common case — no straddling window) renders
                   // nothing.
-                  const offStatus  = offServiceWindowStatus(composed, block, blocksHistory);
+                  const offStatus  = offServiceWindowStatus(composed, block, blocksHistory, rotCtx);
                   const offSummary = offServiceWindowSummary(offStatus);
                   return (
                     <div key={res.id} className="bg-white border border-gray-200 rounded-xl p-4">
@@ -17462,6 +17792,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // readOnly (peek view of a non-active block): every mutator is a no-op even if some path is missed
   // below; the visible edit controls are also hidden/disabled at their own sites.
   if (readOnly) { updateBlock = NOOP_UPDATE; updateBlockTracked = NOOP_UPDATE; setAppSettings = NOOP_UPDATE; }
+  // Rotation ledger ctx for the row-header status (null => legacy straddle path).
+  const rotCtx = useMemo(() => buildRotationCtx(ayConf, block, blocksHistory) || {}, [ayConf, block, blocksHistory]);
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
   const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
@@ -18831,7 +19163,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     const rowLocked=!!(rowLockedCells && Object.keys(rowLockedCells).length>0);
     // Window-quota breakdown (1.11 display) — null for every EM_HOME/EM_BAMC resident and every
     // off-service resident whose window doesn't straddle this block, i.e. the common case.
-    const offStatus=offServiceWindowStatus(res, block, blocksHistory);
+    const offStatus=offServiceWindowStatus(res, block, blocksHistory, rotCtx);
     const offSummary=offServiceWindowSummary(offStatus);
     // Straddle day-math for the row's own title (narrow name column has no room for the chip, but
     // the full hover/tap title should still say so) — see OffServiceStraddleBadge's header comment.
@@ -20664,6 +20996,7 @@ const MIX_TYPE_ORDER = ['day','eve','night','swing'];
 const MIX_TYPE_LABEL = { day:'D', eve:'E', night:'N', swing:'S' };
 
 function ResidentCard({ res, rs, dates, appSettings, ayConf, violMap, dayRules, blockStart, block, blocksHistory, jeopardySchedule, onRowClick }) {
+  const rotCtx = useMemo(() => buildRotationCtx(ayConf, block, blocksHistory) || {}, [ayConf, block, blocksHistory]);
   const sched_ok = isSchedulable(res);
   const cnt = Object.values(rs).filter(Boolean).length;
   const tgt = getShiftTarget(res, appSettings);
@@ -20674,7 +21007,7 @@ function ResidentCard({ res, rs, dates, appSettings, ayConf, violMap, dayRules, 
   const cardHasDelta = Number.isFinite(cardDelta) && cardDelta !== 0;
   // Window-quota breakdown (1.11 display) — same status object renderResidentRow uses; null for
   // the common case (no straddling off-service window).
-  const offStatus = offServiceWindowStatus(res, block, blocksHistory);
+  const offStatus = offServiceWindowStatus(res, block, blocksHistory, rotCtx);
   const offSummary = offServiceWindowSummary(offStatus);
   const violCount = Object.entries(violMap)
     .filter(([k]) => k.startsWith(`${res.id}_`))
@@ -20726,13 +21059,14 @@ function ResidentCard({ res, rs, dates, appSettings, ayConf, violMap, dayRules, 
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
           <div className="flex items-center gap-1">
-            {offStatus && (
+            {offStatus && !offStatus.ledger && (
               <span title={offSummary}
                 className="text-[10px] px-1 py-0.5 rounded-full font-medium bg-sky-100 text-sky-700">
                 {offStatus.foundHistory ? `${offStatus.alreadyWorked}/${offStatus.base} prior` : `~${offStatus.effectiveTarget}/${offStatus.base} pro-rated`}
               </span>
             )}
             <OffServiceStraddleBadge status={offStatus} block={block}/>
+            {offStatus?.ledger && <RotationStrip ledger={offStatus.ledger} placedHere={cnt} block={block} compact/>}
             {cardHasDelta && (
               <span title={res.targetNote || (cardDelta<0?'Target reduced this block':'Target increased this block')}
                 className={`text-[10px] px-1 py-0.5 rounded-full font-medium ${res.targetIsBuyDown?'bg-teal-100 text-teal-700':'bg-indigo-100 text-indigo-700'}`}>
@@ -26089,7 +26423,7 @@ export function migratePedsPgy1ToPgy2(list) {
 // session at all, and the header simply omits the identity chip in that case.
 // Composes the runtime resident list (roster + per-block assignments + off-service) -- module-level
 // so the move-impact hook can evaluate a hypothetical roster/block without a second copy.
-function composeAllResidents(emRoster, block, blocksHistory) {
+export function composeAllResidents(emRoster, block, blocksHistory, ayData, appSettings) {
     const em = emRoster.map(r=>({
       ...r,
       blockType: block.emBlockAssignments?.[r.id]?.blockType ?? 'EM',
@@ -26112,8 +26446,11 @@ function composeAllResidents(emRoster, block, blocksHistory) {
     // be on the raw record. OffServiceTab itself edits the RAW block.offServiceResidents record
     // (untouched by this), but looks up this composed value by id for its own target display —
     // see its allResidents prop — so its display can't drift from this.
+    // Rotation ledger ctx (null when this AY holds no rotations => legacy straddle path).
+    const rotCtx = buildRotationCtx(ayData?.[block.academicYear], block, blocksHistory);
+    const offCtx = rotCtx ? { ...rotCtx, appSettings } : {};
     const off = (block.offServiceResidents || []).map(r => {
-      const windowDelta = offServiceWindowTargetDelta(r, block, blocksHistory);
+      const windowDelta = offServiceWindowTargetDelta(r, block, blocksHistory, offCtx);
       if (windowDelta == null) return r;
       const chiefDelta = Number(r.targetDelta) || 0;
       return { ...r, targetDelta: chiefDelta + windowDelta };
@@ -27401,7 +27738,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     toastTimerRef.current = setTimeout(()=>setToast(null),5000);
   }
 
-  const allResidents = useMemo(()=>composeAllResidents(emRoster,block,blocksHistory),[emRoster,block.emBlockAssignments,block.offServiceResidents,block.startDate,block.endDate,blocksHistory]);
+  const allResidents = useMemo(()=>composeAllResidents(emRoster,block,blocksHistory,ayData,appSettings),[emRoster,block.emBlockAssignments,block.offServiceResidents,block.startDate,block.endDate,block.academicYear,blocksHistory,ayData,appSettings.targetOverrides]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const schedulableCount = useMemo(()=>allResidents.filter(isSchedulable).length,[allResidents]);
 
@@ -27417,7 +27754,9 @@ export default function ResidentScheduler({ viewer } = {}) {
       const nb = c.block !== undefined ? resolveCand(c.block, block) : block;
       const nr = c.emRoster !== undefined ? resolveCand(c.emRoster, emRoster) : emRoster;
       const nc = c.ayConf !== undefined ? resolveCand(c.ayConf, currentAyConf) : currentAyConf;
-      return validateAll(composeAllResidents(nr, nb, blocksHistory), nb.schedule || {}, nb, eligOverrides, appSettings, dayRules, coverage, blocksHistory, nc);
+      // Rotation ledger reads ayData[AY].rotations, so a hypothetical ayConf must reach compose too.
+      const ayCand = c.ayConf !== undefined ? { ...ayData, [nb.academicYear]: nc } : ayData;
+      return validateAll(composeAllResidents(nr, nb, blocksHistory, ayCand, appSettings), nb.schedule || {}, nb, eligOverrides, appSettings, dayRules, coverage, blocksHistory, nc);
     },
     isBlocking: (i) => !!i && (i.level === 'error' || EXPORT_BLOCKING_RULE_IDS.has(i.rule)),
     residentName: (id) => { const r = allResidents.find(x => x.id === id); return r ? `${r.firstName} ${r.lastName}` : String(id); },
@@ -27469,8 +27808,8 @@ export default function ResidentScheduler({ viewer } = {}) {
   const peekAyRaw = peekBlock ? ayData[peekBlock.academicYear] : null;
   const peekAyConf = useMemo(() => (peekBlock ? (peekAyRaw || { ...DEFAULT_AY_CONF }) : null), [peekBlock, peekAyRaw]);
   const peekResidents = useMemo(
-    () => (peekBlock ? composeAllResidents(emRoster, peekBlock, blocksHistory) : []),
-    [peekBlock, emRoster, blocksHistory]);
+    () => (peekBlock ? composeAllResidents(emRoster, peekBlock, blocksHistory, ayData, appSettings) : []),
+    [peekBlock, emRoster, blocksHistory, ayData]); // eslint-disable-line react-hooks/exhaustive-deps
   // Same validateAll call as the live `issues` memo, only computed while a peek is open.
   const peekIssues = useMemo(
     () => (peekBlock ? validateAll(peekResidents, peekBlock.schedule || {}, peekBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, peekAyConf) : []),
@@ -28224,7 +28563,7 @@ export default function ResidentScheduler({ viewer } = {}) {
               stepHandlers={{ onGoToGenerate: goToGenerateStep, onGoToErrors: goToErrorsStep, onPublish: requestPublishStep, onExport: goToExportStep }}/>
           )}
           {tab==='em' && <EMResidentsTab moveGuard={moveImpact.guard} emRoster={emRoster} setEmRoster={setEmRoster} block={block} updateBlock={updateBlock} appSettings={appSettings} showToast={showToast} ayData={ayData} blocksHistory={blocksHistory} setImportLog={setImportLog} allResidents={allResidents} pendingByResident={pendingByResident}/>}
-          {tab==='offservice' && <OffServiceTab moveGuard={moveImpact.guard} block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident}/>}
+          {tab==='offservice' && <OffServiceTab moveGuard={moveImpact.guard} block={block} updateBlock={updateBlock} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} setImportLog={setImportLog} pendingByResident={pendingByResident} ayData={ayData} updateAyData={updateAyData} showToast={showToast}/>}
           {tab==='matrix' && <ShiftMatrixTab eligOverrides={eligOverrides} setEligOverrides={setEligOverrides}/>}
           {tab==='schedule' && peekBlock && <PeekBanner sticky peekBlock={peekBlock} liveBlock={block} onMakeActive={makePeekActive} onBack={() => setPeekSnapId(null)}/>}
           {tab==='schedule' && peekBlock && (
