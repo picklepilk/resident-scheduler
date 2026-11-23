@@ -59,7 +59,7 @@ export default function RotationLedgerPanel({ rows = [], block, onEdit, onApplyR
                 const isRef = g.id === 'ref';
                 return (
                   <div className={`tri-rot-row${isRef ? ' tri-rot-row--ref' : ''}`} role="row" key={rot.id}>
-                    <span role="cell" className="tri-rot-name" data-label="Resident">{row.displayName}<span className="tri-rot-muted"> PGY-{rot.pgy}</span></span>
+                    <span role="cell" className="tri-rot-name" data-label="Resident">{row.displayName}{rot.pgy != null && <span className="tri-rot-muted"> PGY-{rot.pgy}</span>}</span>
                     <span role="cell" data-label="Specialty">{row.specialtyLabel}</span>
                     <span role="cell" className="tri-rot-mono" data-label="ER dates">{fmtMD(rot.start)} to {fmtMD(rot.end)}</span>
                     <span role="cell" className="tri-rot-mono" data-label="Owes">

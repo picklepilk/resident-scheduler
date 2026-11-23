@@ -3694,6 +3694,18 @@ const CHANGELOG = [
       'Locked cells show their lock status only — unlock first to edit.',
     ],
   },
+  // Rotation ledger entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-23-rotation-ledger',
+    date: '2026-11-23',
+    title: 'Off-service rotations tracked across blocks',
+    items: [
+      'The **Off-Service** tab has a new **Rotation ledger**. Each off-service resident owes one shift count for the whole rotation, however many blocks it spans. You see what is **owed**, what was **done before** this block, what is **due here** and what is **owed after**.',
+      'Import the yearly roster (Dashboard, **Import Master Matrix**) to load the real rotation dates, then click **Apply roster to this block**. Open **Edit** on a rotation to type a count for a date range, split a range, or reset to automatic.',
+      'Shifts done before this block come from what you type or confirm (QGenda **Find in QGenda** offers matching runs, never picks one for you). Otherwise they are estimated by days and flagged **Estimated** in Issues.',
+      'The grid and resident cards show "8 here · 7 before · 0 after". BAMC stays a per-block quota. BAMC PA rows are shown for reference only.',
+    ],
+  },
   // Rule questions entry: same non-interrupting insert (CHANGELOG[0] unchanged).
   {
     id: '2026-11-23-rule-questions',
@@ -24343,7 +24355,7 @@ function UserGuideTab({ onNavigate }) {
       {show('quickstart') && <GuideSection {...sec('quickstart')}>
         <ol className="list-decimal space-y-1.5 text-sm">
           <li><strong>Dashboard</strong> — click <strong>New Block</strong> and set a name and start date.</li>
-          <li><strong>EM Residents / Off-Service</strong> — set each resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong>). Enter days off, vacation, and jeopardy dates.</li>
+          <li><strong>EM Residents / Off-Service</strong> — set each resident's rotation, and add this month's visiting residents (or use <strong>Import Roster</strong>). Enter days off, vacation, and jeopardy dates. After importing the yearly Master Matrix, open the <strong>Rotation ledger</strong> at the top of <strong>Off-Service</strong> and click <strong>Apply roster to this block</strong>: each off-service resident then owes one shift count for their whole rotation, split across blocks, and you can type what was already worked.</li>
           <li><strong>Dashboard</strong> — enter this block's special days (Code Blue, procedure, US days) before scheduling.</li>
           <li><strong>Rules</strong> — set how many residents each shift needs, then click <strong>Generate Schedule</strong> on the <strong>Schedule</strong> tab.</li>
           <li><strong>Schedule</strong> — review the result, or click any cell to assign or change a shift by hand.</li>
