@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from solver.io.payload import Payload
 from solver.model import timing
-from solver.model.coverage import no_overstaff_shift
+from solver.model.coverage import locked_count
 
 MAX_CONSECUTIVE_WORK_DAYS = 6
 NIGHT_RUN_MAX = 6
@@ -165,22 +165,17 @@ def _check_eligibility_and_locked(payload: Payload, schedule: dict) -> list:
 
 
 def _check_coverage_max(payload: Payload, schedule: dict) -> list:
-    """Mirrors `solver/model/coverage.py`'s own hard cap EXACTLY: a non-TRAUMA, non-Peds-night
-    (shift, date) with max>0 gets a +1 last-resort overstaff allowance (the app's own
-    under-target-lift policy), so this independent re-check must allow it too -- fixed 2026-09-27,
-    was previously failing on that allowed +1 (`chiefBenchmark.solver.test.js` caught it live:
-    `coverageMax: '3 assigned, max 2'`)."""
+    """Mirrors `solver/model/coverage.py`'s hard cap: count <= max (owner 2026-11-22), except a
+    (shift, date) whose locked cells alone exceed max is capped at the locked count."""
     failures = []
     counts = {}
     for resident_id, by_date in schedule.items():
         for date_str, shift_id in by_date.items():
             counts[(shift_id, date_str)] = counts.get((shift_id, date_str), 0) + 1
     for shift_id, by_date in payload.coverage.items():
-        shift = payload.shifts[shift_id]
-        allowance = 0 if no_overstaff_shift(shift) else 1
         for date_str, entry in by_date.items():
             n = counts.get((shift_id, date_str), 0)
-            cap = entry.max + (allowance if entry.max > 0 else 0)
+            cap = max(entry.max, locked_count(payload, shift_id, date_str))
             if n > cap:
                 failures.append(_fail("coverageMax", [], [date_str], [shift_id], f"{n} assigned, max {entry.max}"))
     return failures

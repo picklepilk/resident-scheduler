@@ -34,10 +34,9 @@ def test_overstaffed_is_empty_when_nothing_was_overstaffed():
     assert result.report["overstaffed"] == []
 
 
-def test_overstaffed_reports_the_shift_date_count_and_max_when_the_allowance_is_spent():
-    # 2 EM-core residents, both targeting 1 shift, but D's own coverage max is 1 that date and
-    # there is no OTHER shift either resident is eligible for -- the only way to hit both targets
-    # is to spend the +1-over-max allowance once on D/2026-01-05.
+def test_overstaffed_stays_empty_when_targets_would_need_over_max():
+    # 2 EM-core residents each targeting 1 shift, D max is 1 and nothing else is eligible. Max is
+    # hard (owner 2026-11-22): one resident stays under target, report.overstaffed stays empty.
     raw = make_payload(
         residents=[
             make_resident("r1", isEmCore=True, target=1),
@@ -50,12 +49,9 @@ def test_overstaffed_reports_the_shift_date_count_and_max_when_the_allowance_is_
     payload = parse_payload(raw)
     result = solve(payload)
     assert result.status in ("OPTIMAL", "FEASIBLE")
-    assert result.report["overstaffed"] == [
-        {"shiftId": "D", "dateStr": "2026-01-05", "count": 2, "max": 1}
-    ]
-    # Both residents actually landed on D that date (the model's only way to hit both targets).
-    assert result.schedule["r1"]["2026-01-05"] == "D"
-    assert result.schedule["r2"]["2026-01-05"] == "D"
+    assert result.report["overstaffed"] == []
+    placed = [r for r in ("r1", "r2") if result.schedule.get(r, {}).get("2026-01-05") == "D"]
+    assert len(placed) == 1
 
 
 def test_overstaffed_key_present_and_empty_on_an_infeasible_strict_result():
