@@ -47,6 +47,7 @@ import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarge
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
 import { diffSchedules as diffOptimizeCells, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize } from './lib/optimizeFlow.js';
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
+import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
 import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
 import { trackOptimizeProgress } from './lib/optimizeProgress.js';
@@ -17483,7 +17484,7 @@ const NOOP_UPDATE = () => {};
 // light-on-navy colour remaps never touch the menu). Null until the header mounts the slots.
 const GenSlotContext = React.createContext({ button: null, menu: null });
 
-function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer, readOnly = false }) {
+function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlock, updateBlockTracked, onUndo, onRedo, canUndo, canRedo, eligOverrides, appSettings, setAppSettings, dayRules, coverage, blocksHistory, showToast, pendingByResident, schedulableCount, blockSaveState, ayConf, issues, sickCallRequest, onConsumeSickCallRequest, onCreatePlaygroundFromSolve, demoMode, solverRunTarget, setSolverRunTarget, viewer, onSaveSolverTestFile, readOnly = false }) {
   // readOnly (peek view of a non-active block): every mutator is a no-op even if some path is missed
   // below; the visible edit controls are also hidden/disabled at their own sites.
   if (readOnly) { updateBlock = NOOP_UPDATE; updateBlockTracked = NOOP_UPDATE; setAppSettings = NOOP_UPDATE; }
@@ -17769,6 +17770,21 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   }, [longSolveJob?.jobId]);
   const longSolveElapsedSec = longSolveJob?.startedAt ? Math.max(0, Math.floor((Date.now() - longSolveJob.startedAt) / 1000)) : 0;
   const longSolveSpinning = !longSolveStatus || (longSolveStatus !== 'lost' && (longSolveStatus.status === 'running' || longSolveStatus.status === 'queued'));
+
+  // "Save solver test file": the exact payload Optimize would send (current grid as hint, locked cells pinned),
+  // coded + name-free (src/lib/solverTestFile.js), handed to the root's export gate (requestExport('solver-test')).
+  function saveSolverTestFile() {
+    setOptimizeMenuOpen(false);
+    if (totalAssigned === 0) { showToast('Generate a schedule first, then save the test file.', 'amber'); return; }
+    try {
+      const payload = buildSolverPayload({ allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, block, optimizeExisting: true });
+      const nameStrings = allResidents.flatMap(r => [r.firstName, r.lastName, r.email]);
+      const file = buildSolverTestFile(payload, { label: 'solver test', startDate: block.startDate, endDate: block.endDate, nameStrings });
+      onSaveSolverTestFile?.(JSON.stringify(file), `solver-test-${block.startDate || 'block'}.json`);
+    } catch (e) {
+      showToast(`Could not save the solver test file: ${e.message}`, 'red');
+    }
+  }
 
   // Optimize: submit the current grid to a solver machine (see generateViaSolverOrLocal's optimizeExisting branch).
   async function requestOptimize() {
@@ -19181,6 +19197,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
                 : 'No unlocked assignments currently break a hard rule.' },
             { key: 'sw', icon: Sparkles, label: 'What-if sweep', disabled: totalAssigned === 0, onClick: requestSweep,
               title: 'Tries alternate rule-priority orders, random draws, and the rest-hours toggle against the current schedule (quick best-of-5 per variant, ~20s budget) and shows any that would produce fewer errors/warnings. Nothing changes unless you apply a result.' },
+            { key: 'st', icon: Download, label: 'Save solver test file', disabled: totalAssigned === 0, onClick: saveSolverTestFile,
+              title: totalAssigned === 0 ? 'Generate a schedule first' : 'Download a coded test file (no names) holding what Optimize would send, for benchmarking a solver machine.' },
           ].map(it => (
             <button key={it.key} type="button" role="menuitem" title={it.title} disabled={it.disabled}
               onClick={() => { setOptimizeMenuOpen(false); it.onClick(); }}
@@ -26158,6 +26176,7 @@ export default function ResidentScheduler({ viewer } = {}) {
   // Read-only "peek" at another saved block (id of a blocksHistory snapshot). Session state only,
   // never persisted or synced: the live block is untouched, so no save-first prompt is needed.
   const [peekSnapId, setPeekSnapId] = useState(null);
+  const solverTestRef = useRef(null); // {text, filename} awaiting the export gate ('solver-test' kind)
   const [exportConfirm, setExportConfirm] = useState(null); // 'grid' | 'qgenda' | 'pdf-matrix' | 'pdf-resident' | null — pending export awaiting error confirmation
   // Sidecar state for a pending QGenda export: which variant was picked, and which shift ids (if
   // any) had no confirmed QGenda task and fell back to their on-screen label. exportConfirm itself
@@ -27842,6 +27861,17 @@ export default function ResidentScheduler({ viewer } = {}) {
       downloadCSV(`qgenda_${v}_${block.startDate||'block'}${demoSuffix}.csv`, rows, { bom: appSettings.qgendaBom ?? false, quoteMode: 'minimal' });
     }
     else if (kind==='ics') exportResidentICSFiles();
+    else if (kind==='solver-test') {
+      const t = solverTestRef.current;
+      solverTestRef.current = null;
+      if (t) {
+        const url = URL.createObjectURL(new Blob([t.text], { type: 'application/json' }));
+        const a = document.createElement('a'); a.href = url; a.download = t.filename; a.click();
+        URL.revokeObjectURL(url);
+      }
+      setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);
+      return; // not a schedule export: leave lastExportedAt alone
+    }
     else if (kind==='pdf-matrix' || kind==='pdf-resident') {
       try {
         if (kind==='pdf-matrix') await exportMatrixPDF({ block, allResidents, schedule: block.schedule, demoMode });
@@ -27862,6 +27892,8 @@ export default function ResidentScheduler({ viewer } = {}) {
     setExportConfirm(null); setExportVariant(null); setExportUnmapped([]);
   }
 
+  function requestSolverTestFile(text, filename) { solverTestRef.current = { text, filename }; requestExport('solver-test'); }
+
   function requestExport(kind, variant=null) {
     if (kind==='qgenda' && demoMode) { showToast('QGenda export is disabled in the demo sandbox.', 'red'); return; }
     if (kind==='qgenda') {
@@ -27880,7 +27912,7 @@ export default function ResidentScheduler({ viewer } = {}) {
     runExport(kind);
   }
 
-  const EXPORT_KIND_LABEL = { grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
+  const EXPORT_KIND_LABEL = { 'solver-test': 'the solver test file', grid: 'the CSV', qgenda: 'QGenda', ics: 'ICS Calendar (.ics)', 'pdf-matrix': 'the PDF', 'pdf-resident': 'the PDF' };
   // QGENDA_NAME_FORMAT_LABEL is module-level now — shared with SettingsTab's "QGenda Task Names" card.
 
   const exportHasProblems = pendingErrorCount() > 0 || pendingRestWarnCount() > 0 || (exportConfirm==='qgenda' && exportUnmapped.length > 0);
@@ -28239,7 +28271,7 @@ export default function ResidentScheduler({ viewer } = {}) {
                 onDismiss={() => uiPrefsApi.markBlockSeen(block.id || '_current')}/>
             </div>
           )}
-          {tab==='schedule' && !peekBlock && <ScheduleGrid allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} liveSetup={liveSetup} onNavigateFix={navigateToFix} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
+          {tab==='schedule' && !peekBlock && <ScheduleGrid onSaveSolverTestFile={requestSolverTestFile} allResidents={allResidents} block={block} updateBlock={updateBlock} updateBlockTracked={updateBlockTracked} onUndo={undoSchedule} onRedo={redoSchedule} canUndo={undoStack.length>0} canRedo={redoStack.length>0} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} coverage={coverage} blocksHistory={blocksHistory} showToast={showToast} pendingByResident={pendingByResident} schedulableCount={schedulableCount} blockSaveState={blockSaveState} ayConf={currentAyConf} issues={issues} liveSetup={liveSetup} onNavigateFix={navigateToFix} sickCallRequest={sickCallRequest} onConsumeSickCallRequest={()=>setSickCallRequest(null)}
             onCreatePlaygroundFromSolve={createPlaygroundFromSolve} demoMode={demoMode} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} viewer={viewer}/>}
           {tab==='rules' && <RulesTab allResidents={allResidents} block={block} eligOverrides={eligOverrides} appSettings={appSettings} setAppSettings={setAppSettings} dayRules={dayRules} setDayRules={setDayRules} coverage={coverage} setCoverage={setCoverage}/>}
           {tab==='validation' && <ValidationTab issues={issues} block={block} appSettings={appSettings} allResidents={allResidents} blocksHistory={blocksHistory} ayConf={currentAyConf} coverage={coverage} eligOverrides={eligOverrides} dayRules={dayRules} updateBlockTracked={updateBlockTracked} showToast={showToast}/>}
