@@ -43,9 +43,9 @@ import { diffSchedules, buildRulePriorityVariants, rankSweepCandidates, isBetter
 import { mulberry32 } from './lib/rng.js';
 import RunLocationPanel from './RunLocationPanel.jsx';
 import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, markSolverJobsDurable, probeSolverJobsMode, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
-import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarget, poolTargetName, pickSolverTarget, probePool, probeSolverHealth } from './lib/solverPool.js';
+import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarget, poolTargetName, pickSolverTarget, probePool, probeSolverHealth, selectBestOfMachines, bestOfCandidates } from './lib/solverPool.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
-import { diffSchedules as diffOptimizeCells, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize } from './lib/optimizeFlow.js';
+import { diffSchedules as diffOptimizeCells, formatQualityValue, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize, pickBestOfMachines, bestOfLine, bestOfSeed, aggregateBestOfJobs, BEST_OF_TARGET } from './lib/optimizeFlow.js';
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
@@ -3714,6 +3714,17 @@ const CHANGELOG = [
     items: [
       'New **Rule questions** tab: read open scheduling-rule questions, tap an answer, and add a note. Answers save with the rest of the app data.',
       'Use **Request a new rule or change** to ask for something new. **Copy questions for the chief** and **Download answers (.md)** are in the toolbar.',
+    ],
+  },
+  // Optimize best-of entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-23-optimize-best-of',
+    date: '2026-11-23',
+    title: 'Optimize: best of two machines',
+    items: [
+      'New machine choice in the **Optimize** menu: **Best of both (Mac + PicklePower)**. Both machines solve the same schedule at once with different random starts, and the app keeps the better result.',
+      'Tick **Also use PickleBook** to add a third machine. A machine that is busy or offline is skipped (you get a note), and with only one available Optimize runs on that one.',
+      'The progress bar shows one line per machine. The review window says which machine won and how far behind the others were. **Stop** cancels every machine.',
     ],
   },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
@@ -17808,7 +17819,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const rotCtx = useMemo(() => buildRotationCtx(ayConf, block, blocksHistory) || {}, [ayConf, block, blocksHistory]);
   const [picker, setPicker] = useState(null);
   const [catFilter, setCatFilter] = useState('ALL');
-  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen } = useUiPrefsContext();
+  const { prefs: uiPrefs, setShowUnscheduled, setGridZoom, setGridColExtra, setGridGroupBy, setReviewPanelOpen, setOptimizeBestOfExtra } = useUiPrefsContext();
   const reviewPanelOpen = uiPrefs.reviewPanelOpen;
   // Cell the review panel most recently jumped to — local selection state only (P3 builds the real
   // cell inspector on top of this later). Cleared implicitly whenever a different jump replaces it;
@@ -18011,9 +18022,18 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     { name: 'This computer', status: optimizeProbe ? (optimizeProbe.local ? 'online' : 'offline') : 'offline' },
     ...((optimizeProbe?.pool || []).map(m => ({ name: m.name, status: !m.online ? 'offline' : m.busy ? 'busy' : 'online' }))),
   ];
-  const optimizeMachineValue = optimizeTarget === 'cloud' ? 'auto' : optimizeTarget === 'local' ? 'This computer' : (poolTargetName(optimizeTarget) || 'auto');
-  const onOptimizeMachineChange = v => setSolverRunTarget(v === 'auto' ? 'cloud' : v === 'This computer' ? 'local' : `pool:${v}`);
-  const optimizeHostDefault = optimizeProbe?.pool?.find(m => `pool:${m.name}` === optimizeTarget)?.defaultBudgetSeconds;
+  // "Best of" (pool:best): same Optimize on Mac + PicklePower at once (+ PickleBook when ticked), keep the better.
+  const isBestOfTarget = optimizeTarget === BEST_OF_TARGET && canPickMachine;
+  const bestOfExtra = uiPrefs.optimizeBestOfExtra === true;
+  const bestOfCands = bestOfCandidates(optimizeProbe?.pool || []);
+  const bestOfMenu = (canPickMachine && bestOfCands.pair.length >= 2)
+    ? { label: `Best of both (${bestOfCands.pair.map(m => m.name).join(' + ')})`, extraName: bestOfCands.extra?.name || null, extraChecked: bestOfExtra, onExtraChange: setOptimizeBestOfExtra }
+    : null;
+  const optimizeMachineValue = isBestOfTarget ? 'best-of' : optimizeTarget === 'cloud' || optimizeTarget === BEST_OF_TARGET ? 'auto' : optimizeTarget === 'local' ? 'This computer' : (poolTargetName(optimizeTarget) || 'auto');
+  const onOptimizeMachineChange = v => setSolverRunTarget(v === 'auto' ? 'cloud' : v === 'best-of' ? BEST_OF_TARGET : v === 'This computer' ? 'local' : `pool:${v}`);
+  const optimizeHostDefault = isBestOfTarget
+    ? (() => { const d = selectBestOfMachines(optimizeProbe?.pool || [], { includeExtra: bestOfExtra }).machines.map(m => m.defaultBudgetSeconds).filter(n => n > 0); return d.length ? Math.min(...d) : undefined; })()
+    : optimizeProbe?.pool?.find(m => `pool:${m.name}` === optimizeTarget)?.defaultBudgetSeconds;
   const optimizeBudgetMinutes = Math.round(optimizeBudgetSeconds(optimizeBudget, optimizeHostDefault) / 60);
   const [longSolveSubmitting, setLongSolveSubmitting] = useState(false);
   const [longSolveReview, setLongSolveReview] = useState(null); // {schedule, lockedCells} once "Review" is confirmed-pending
@@ -18043,7 +18063,17 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         // the cloud deployment, regardless of what solverRunTarget says RIGHT NOW (the admin could
         // have flipped the Settings toggle while this job was running).
         const accessToken = (!longSolveJob.usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
-        const view = await pollSolveJob(longSolveJob.jobId, { accessToken, url: longSolveJob.solverTargetUrl });
+        let view;
+        if (Array.isArray(longSolveJob.jobs) && longSolveJob.jobs.length) {
+          // Best-of run: poll every machine's job, fold into one job-shaped view (aggregateBestOfJobs).
+          const entries = await Promise.all(longSolveJob.jobs.map(async j => {
+            try { return { machine: j.name, view: await pollSolveJob(j.jobId, { accessToken, url: j.url }) }; }
+            catch { return { machine: j.name, view: null }; }
+          }));
+          view = aggregateBestOfJobs(entries);
+        } else {
+          view = await pollSolveJob(longSolveJob.jobId, { accessToken, url: longSolveJob.solverTargetUrl });
+        }
         if (stopped) return;
         setLongSolveStatus(view.lost || view.status === 'lost' ? 'lost' : view);
         if (view?.progress) setOptimizeTracker(prev => trackOptimizeProgress(prev, view.progress, Date.now()));
@@ -18113,11 +18143,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     setLongSolveSubmitting(true);
     try {
       const genBlock = { ...block };
-      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target: optimizeTarget, budget: optimizeBudget });
+      const target = (optimizeTarget === BEST_OF_TARGET && !canPickMachine) ? 'cloud' : optimizeTarget;
+      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: optimizeBudget, bestOfExtra });
       if (!r) { showToast('Set block dates first', 'red'); return; }
       longSolveNotifiedRef.current = null;
-      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName });
+      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, ...(r.jobs ? { jobs: r.jobs } : {}) });
       setLongSolveStatus(null);
+      for (const sk of (r.skipped || [])) showToast(`${sk.name} skipped: ${sk.reason}.`, 'amber');
+      if (r.fallbackNote) showToast(r.fallbackNote, 'amber');
       showToast(`Optimizing on ${r.usingLocal ? 'this computer' : (r.machineName || 'the cloud optimizer')} (~${Math.round(r.budgetSeconds / 60)} min) - only locked cells are pinned. Keep working; review the result when it finishes.`, 'green');
     } catch (e) {
       showToast(`Could not start Optimize: ${e.message}`, 'red');
@@ -18128,11 +18161,13 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 
   async function cancelLongSolve() {
     if (!longSolveJob?.jobId) return;
-    const { jobId, usingLocal, solverTargetUrl } = longSolveJob;
+    const { jobId, usingLocal, solverTargetUrl, jobs } = longSolveJob;
     setLongSolveJob(null);
     setLongSolveStatus(null);
     setLongSolveReview(null);
     const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
+    // Best-of: Stop cancels every machine's job.
+    if (Array.isArray(jobs) && jobs.length) { await Promise.all(jobs.map(j => cancelSolveJob(j.jobId, { accessToken, url: j.url }))); return; }
     await cancelSolveJob(jobId, { accessToken, url: solverTargetUrl }); // best-effort — never throws, see solverJobs.js
   }
 
@@ -18159,10 +18194,15 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     if (!longSolveJob || !longSolveStatus || longSolveStatus === 'lost' || longSolveStatus.status !== 'done') return;
     const job = longSolveJob;
     if (!job.optimize) { dismissLongSolve(); showToast('That was an old long-solve job - run Optimize again.', 'amber'); return; }
-    const json = longSolveStatus.result;
-    if (!json || (json.status !== 'OPTIMAL' && json.status !== 'FEASIBLE' && json.status !== 'RELAXED')) {
+    const isBestOf = Array.isArray(job.jobs) && job.jobs.length > 0;
+    // One entry per machine: single run = the one job's result; Best-of = every machine's finished result.
+    const entries = isBestOf
+      ? (longSolveStatus.perMachine || []).map(p => ({ machine: p.machine, json: p.status === 'done' ? p.result : null, status: p.status }))
+      : [{ machine: job.usingLocal ? 'this computer' : (job.machineName || 'the cloud optimizer'), json: longSolveStatus.result, status: 'done' }];
+    const goodStatus = j => j && (j.status === 'OPTIMAL' || j.status === 'FEASIBLE' || j.status === 'RELAXED');
+    if (!entries.some(e => goodStatus(e.json))) {
       dismissLongSolve();
-      showToast(`Optimize failed: the solver returned status "${json?.status || 'unknown'}". The schedule is unchanged.`, 'red');
+      showToast(`Optimize failed: the solver returned status "${entries.find(e => e.json)?.json?.status || 'unknown'}". The schedule is unchanged.`, 'red');
       return;
     }
     if (JSON.stringify(block.schedule || {}) !== JSON.stringify(job.genBlock.schedule || {})) {
@@ -18172,28 +18212,43 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     }
     try {
       const args = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, block: job.genBlock };
-      const solverRes = mapSolverResult(json, { block: job.genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
-      // Cells the solver cannot represent (unknown shift ids) are never dropped: carry them over.
-      const optimized = {};
-      for (const [rid, row] of Object.entries(solverRes.schedule || {})) optimized[rid] = { ...row };
-      for (const [rid, row] of Object.entries(job.genBlock.schedule || {})) {
-        for (const [ds, sid] of Object.entries(row || {})) {
-          if (sid && !SHIFT_LABEL_BY_ID[sid] && !optimized[rid]?.[ds]) (optimized[rid] = optimized[rid] || {})[ds] = sid;
+      const candidates = entries.map(e => {
+        if (!goodStatus(e.json)) return { machine: e.machine, ok: false };
+        try {
+          const solverRes = mapSolverResult(e.json, { block: job.genBlock, allResidents, appSettings, ayConf, dayRules, eligOverrides, blocksHistory, coverage });
+          // Cells the solver cannot represent (unknown shift ids) are never dropped: carry them over.
+          const optimized = {};
+          for (const [rid, row] of Object.entries(solverRes.schedule || {})) optimized[rid] = { ...row };
+          for (const [rid, row] of Object.entries(job.genBlock.schedule || {})) {
+            for (const [ds, sid] of Object.entries(row || {})) {
+              if (sid && !SHIFT_LABEL_BY_ID[sid] && !optimized[rid]?.[ds]) (optimized[rid] = optimized[rid] || {})[ds] = sid;
+            }
+          }
+          return { machine: e.machine, ok: true, optimized, solverRes, summary: optimizeSummary(optimized, solverRes.report, args) };
+        } catch (err) {
+          if (!isBestOf) throw err;
+          return { machine: e.machine, ok: false };
         }
-      }
-      const cur = optimizeSummary(job.genBlock.schedule || {}, solverRes.report, args);
-      const opt = optimizeSummary(optimized, solverRes.report, args);
+      });
+      // Same lexicographic comparator as isStrictImprovement picks the winner; one machine = trivially it.
+      const pick = pickBestOfMachines(candidates);
       dismissLongSolve();
+      if (!pick.winner) { showToast('Optimize failed: no machine returned a usable result. The schedule is unchanged.', 'red'); return; }
+      const win = pick.winner;
+      const cur = optimizeSummary(job.genBlock.schedule || {}, win.solverRes.report, args);
+      const opt = win.summary;
       if (!isStrictImprovement(cur, opt)) {
         showToast('No improvement found — the current schedule is as good or better.', 'amber');
         return;
       }
+      const vec = s => [s.errors, s.blockingWarnings, (s.belowMin || 0) + (s.aboveMax || 0)];
       setOptimizeCompare({
-        machineName: job.usingLocal ? 'this computer' : (job.machineName || 'the cloud optimizer'),
+        machineName: isBestOf ? win.machine : (job.usingLocal ? 'this computer' : (job.machineName || 'the cloud optimizer')),
         rows: compareQuality(cur, opt),
-        diff: diffOptimizeCells(job.genBlock.schedule || {}, optimized),
+        diff: diffOptimizeCells(job.genBlock.schedule || {}, win.optimized),
         remainingErrors: opt.errorMessages,
-        schedule: optimized,
+        schedule: win.optimized,
+        ...(isBestOf ? { bestOf: { line: bestOfLine(pick), machines: pick.ranked.map((r, i) => ({ machine: r.machine, gapPct: r.gapPct, rank: i, vector: vec(r.result.summary) })) } } : {}),
       });
     } catch (e) {
       dismissLongSolve();
@@ -18952,6 +19007,37 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
 
     if (opts.optimizeExisting) {
       if (appSettings.useSolverService === false) throw new Error('The optimizer service is turned off in Settings.');
+      // "Best of" (target pool:best): same job on 2-3 pool machines with different seeds, submitted here
+      // (still this one decision point); reviewOptimize keeps the better result. Fewer than 2 usable
+      // machines -> plain single-machine Optimize on the one that is available.
+      if (opts.target === BEST_OF_TARGET) {
+        const sel = selectBestOfMachines(await probePool(), { includeExtra: opts.bestOfExtra === true });
+        const skipped = sel.skipped.map(s => ({ name: s.name, reason: s.reason }));
+        if (sel.machines.length === 0) throw new Error(`No Best-of machine is available${skipped.length ? ` (${skipped.map(s => `${s.name} ${s.reason}`).join(', ')})` : ''}.`);
+        if (sel.machines.length === 1) {
+          const only = sel.machines[0].name;
+          const r = await generateViaSolverOrLocal(genBlock, false, { ...opts, target: `pool:${only}` });
+          return { ...r, skipped, fallbackNote: `Best of needs two machines; running on ${only} only.` };
+        }
+        const defaults = sel.machines.map(m => m.defaultBudgetSeconds).filter(n => n > 0);
+        const budgetSec = optimizeBudgetSeconds(opts.budget, defaults.length ? Math.min(...defaults) : null);
+        const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
+        const settled = await Promise.all(sel.machines.map(async (m, i) => {
+          try {
+            const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, randomSeed: bestOfSeed(i) } });
+            const { jobId } = await submitSolveJob(payload, { accessToken, url: m.url });
+            return { jobId, url: m.url, name: m.name };
+          } catch (e) { return { failed: { name: m.name, reason: `could not start (${e.message})` } }; }
+        }));
+        const jobs = settled.filter(x => x.jobId);
+        skipped.push(...settled.filter(x => x.failed).map(x => x.failed));
+        if (!jobs.length) throw new Error(`No Best-of machine accepted the job (${skipped.map(s => `${s.name} ${s.reason}`).join(', ')}).`);
+        return {
+          jobId: jobs[0].jobId, solverTargetUrl: jobs[0].url, usingLocal: false, budgetSeconds: budgetSec, jobs, skipped,
+          machineName: jobs.map(j => j.name).join(' + '),
+          fallbackNote: jobs.length < 2 ? `Best of needs two machines; running on ${jobs[0].name} only.` : null,
+        };
+      }
       const { url, usingLocal, name, reason, status } = await resolveSolverRunTarget(opts.target || 'cloud');
       if (!url) throw new Error(reason ? `${reason[0].toUpperCase()}${reason.slice(1)}.` : 'No solver machine is reachable.');
       const budgetSec = optimizeBudgetSeconds(opts.budget, status?.defaultBudgetSeconds);
@@ -19529,7 +19615,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
               : longSolveJob?.jobId ? 'An optimize run is already in progress.'
               : totalAssigned === 0 ? 'Generate a schedule first.' : ''}
-            running={longSolveSubmitting} onOptimize={requestOptimize}/>
+            running={longSolveSubmitting} onOptimize={requestOptimize} bestOf={bestOfMenu}/>
         </div>, genSlots.menu)}
       {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
           promotion (60), below the toast (200); see the DAY_MARKERS z-ladder note in CLAUDE.md. */}
@@ -19574,11 +19660,21 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               ? 'Optimize stopped.'
               : longSolveStatus?.status === 'done'
               ? 'Optimize finished — review the result before it is applied.'
-              : `Optimizing on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. Only locked cells are pinned; you can keep working.`}
+              : `Optimizing${longSolveJob.jobs?.length > 1 ? ` best of ${longSolveJob.jobs.length}` : ''} on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. Only locked cells are pinned; you can keep working.`}
           </span>
           {longSolveSpinning && (
             <div className="basis-full"><RunLocationPanel stage="solver" claim={longSolveJob.usingLocal ? 'this-computer' : 'cloud'}
               runner={longSolveStatus?.progress?.runner || (longSolveJob.usingLocal ? null : getCachedRunner(longSolveJob.solverTargetUrl))}/></div>
+          )}
+          {Array.isArray(longSolveJob.jobs) && longSolveJob.jobs.length > 1 && (
+            <ul className="basis-full text-xs text-gray-700 space-y-0.5" data-testid="best-of-machines">
+              {longSolveJob.jobs.map(j => {
+                const p = longSolveStatus && longSolveStatus !== 'lost' ? (longSolveStatus.perMachine || []).find(x => x.machine === j.name) : null;
+                const st = p?.status || 'running';
+                const best = typeof p?.progress?.best === 'number' ? ` · best ${formatQualityValue(p.progress.best)}` : '';
+                return <li key={j.jobId}><span className="font-semibold">{j.name}</span>: {st === 'done' ? 'finished' : st === 'queued' ? 'queued' : st === 'running' ? 'running' : st}{best}</li>;
+              })}
+            </ul>
           )}
           {(longSolveSpinning || longSolveStatus?.status === 'done') && (
             <OptimizeProgressPanel tracker={optimizeTracker} status={longSolveStatus && longSolveStatus !== 'lost' ? longSolveStatus.status : 'running'}
@@ -19848,7 +19944,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       )}
 
       <OptimizeCompareModal open={!!optimizeCompare} machineName={optimizeCompare?.machineName} rows={optimizeCompare?.rows || []}
-        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []}
+        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []} bestOf={optimizeCompare?.bestOf || null}
         residentName={rid => { const r = allResidents.find(x => x.id === rid); return r ? `${r.lastName}, ${r.firstName}` : rid; }}
         shiftLabel={sid => SHIFT_LABEL_BY_ID[sid] || sid}
         onAccept={acceptOptimize} onDiscard={() => setOptimizeCompare(null)}/>
@@ -24398,7 +24494,7 @@ function UserGuideTab({ onNavigate }) {
       </GuideSection>}
 
       {show('generate') && <GuideSection {...sec('generate')}>
-        <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot with the built-in engine. Then use the <strong>Optimize</strong> menu to improve the current schedule on a solver machine: pick the machine and time, wait for the progress pill, and <strong>Review</strong> the comparison. Nothing changes until you <strong>Accept</strong> (one undo step); only cells you locked stay pinned.</p>
+        <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot with the built-in engine. Then use the <strong>Optimize</strong> menu to improve the current schedule on a solver machine: pick the machine and time, wait for the progress pill, and <strong>Review</strong> the comparison. Nothing changes until you <strong>Accept</strong> (one undo step); only cells you locked stay pinned. Picker accounts can choose <strong>Best of both</strong> in the machine list: the same run goes to two machines at once and the better result is kept (tick <strong>Also use PickleBook</strong> for a third).</p>
         <ul className="list-disc space-y-1">
           <li>The generator only assigns shifts a resident can legally work — it respects eligibility, days off, jeopardy, rest rules, and the max-6-consecutive-days rule.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — it only fills what's still empty. Run it again anytime after manual edits.</li>

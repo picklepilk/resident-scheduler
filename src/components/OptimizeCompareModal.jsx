@@ -3,6 +3,7 @@ import { formatQualityValue } from '../lib/optimizeFlow.js';
 
 // Before/after compare for "Optimize on a solver machine". Presentational only: the parent computes
 // rows (compareQuality) and diff (diffSchedules) from src/lib/optimizeFlow.js. Markup mirrors the
+// bestOf (optional): { line, machines: [{machine, gapPct, rank, vector:[...]}] } from pickBestOfMachines for "Best of" runs.
 // ResidentScheduler `Modal` primitive (scrim bg-black/50, full-screen sheet below sm:, role=dialog).
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -32,7 +33,7 @@ function CellList({ title, items, render, defaultOpen = false }) {
   );
 }
 
-export default function OptimizeCompareModal({ open, machineName, rows = [], diff, remainingErrors = [], residentName = id => id, shiftLabel = id => id, onAccept, onDiscard }) {
+export default function OptimizeCompareModal({ open, machineName, rows = [], diff, remainingErrors = [], bestOf = null, residentName = id => id, shiftLabel = id => id, onAccept, onDiscard }) {
   const dialogRef = useRef(null);
   const acceptRef = useRef(null);
   const onDiscardRef = useRef(onDiscard);
@@ -72,6 +73,25 @@ export default function OptimizeCompareModal({ open, machineName, rows = [], dif
           <h2 className="text-base font-semibold text-gray-800">{title}</h2>
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4">
+          {bestOf?.line && (
+            <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900" data-testid="best-of-line">
+              <div className="font-semibold">{bestOf.line}</div>
+              {Array.isArray(bestOf.machines) && bestOf.machines.length > 1 && (
+                <table className="mt-1 w-full text-xs">
+                  <thead><tr className="text-left text-blue-700"><th className="font-medium">Machine</th><th className="font-medium text-right">Errors</th><th className="font-medium text-right">Warnings</th><th className="font-medium text-right">Coverage</th><th className="font-medium text-right">Behind</th></tr></thead>
+                  <tbody>
+                    {bestOf.machines.map(m => (
+                      <tr key={m.machine} className="border-t border-blue-100">
+                        <td className="py-0.5">{m.machine}{m.rank === 0 ? ' (won)' : ''}</td>
+                        {[0, 1, 2].map(i => <td key={i} className="py-0.5 text-right tabular-nums">{formatQualityValue(m.vector?.[i] ?? 0)}</td>)}
+                        <td className="py-0.5 text-right tabular-nums">{m.rank === 0 ? '-' : m.gapPct === 0 ? 'tied' : `${formatQualityValue(m.gapPct)}%`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
           <div className="text-sm font-semibold text-gray-800 mb-1">Current {'→'} Optimized <span className="font-normal text-gray-500">(lower is better)</span></div>
           <table className="w-full text-sm">
             <thead>

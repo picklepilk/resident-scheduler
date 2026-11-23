@@ -10,13 +10,13 @@ describe('normalizeUiPrefs', () => {
   });
 
   it('defaults on null/undefined', () => {
-    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
-    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
+    expect(normalizeUiPrefs(null)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {}, optimizeBestOfExtra: false });
+    expect(normalizeUiPrefs(undefined)).toEqual({ tabOverflow: [], cardOpen: {}, showUnscheduled: false, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {}, optimizeBestOfExtra: false });
   });
 
   it('passes through a well-formed shape', () => {
     const raw = { tabOverflow: ['guide', 'whatsnew'], cardOpen: { 'dash-equity': false, 'settings-qgenda': true }, showUnscheduled: true };
-    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {} });
+    expect(normalizeUiPrefs(raw)).toEqual({ ...raw, gridZoom: 100, gridColExtra: 0, gridGroupBy: 'category', reviewPanelOpen: true, blockSeen: {}, optimizeBestOfExtra: false });
   });
 
   // gridGroupBy is validated by SET MEMBERSHIP, not coerced — an unknown mode (one removed in a

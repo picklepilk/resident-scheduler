@@ -3,8 +3,9 @@ import { optimizeBudgetOptions } from '../lib/optimizeFlow.js';
 // Generate-menu section. Props only, no fetching.
 // machines: [{name, status:'online'|'busy'|'offline'}]; machine: 'auto' or a machine name;
 // budget: 'auto' | 5 | 10 | 15 | 30; budgetMinutes: number shown in the button (resolved by parent);
+// bestOf: null | { label, extraName, extraChecked, onExtraChange } adds the "Best of" machine option (+ optional third-machine tick-box);
 // disabledReason: string shown under the controls and disables the button; running: bool.
-export default function OptimizeMenuSection({ machines = [], machine = 'auto', onMachineChange, budget = 'auto', onBudgetChange, budgetMinutes, disabledReason = '', running = false, onOptimize }) {
+export default function OptimizeMenuSection({ machines = [], machine = 'auto', onMachineChange, budget = 'auto', onBudgetChange, budgetMinutes, disabledReason = '', running = false, onOptimize, bestOf = null }) {
   const disabled = running || !!disabledReason;
   const mins = budgetMinutes != null ? budgetMinutes : (budget === 'auto' ? 5 : budget);
   const selectCls = 'w-full text-sm border border-gray-300 rounded-lg px-2 py-1.5 bg-white text-gray-800 min-h-[36px] focus-visible:outline focus-visible:outline-2';
@@ -15,6 +16,7 @@ export default function OptimizeMenuSection({ machines = [], machine = 'auto', o
         <label className="text-xs text-gray-600">Machine
           <select className={selectCls} value={machine} onChange={e => onMachineChange?.(e.target.value)} disabled={running}>
             <option value="auto">Auto</option>
+            {bestOf && <option value="best-of">{bestOf.label}</option>}
             {machines.map(m => (
               <option key={m.name} value={m.name} disabled={m.status === 'offline'}>
                 {m.name}{m.status === 'busy' ? ' (busy)' : m.status === 'offline' ? ' (offline)' : ''}
@@ -29,6 +31,17 @@ export default function OptimizeMenuSection({ machines = [], machine = 'auto', o
           </select>
         </label>
       </div>
+      {bestOf && machine === 'best-of' && (
+        <div className="mt-2 text-xs text-gray-600">
+          <p>Runs on both machines at once with different seeds and keeps the better result.</p>
+          {bestOf.extraName && (
+            <label className="mt-1 flex items-center gap-2">
+              <input type="checkbox" checked={!!bestOf.extraChecked} disabled={running} onChange={e => bestOf.onExtraChange?.(e.target.checked)}/>
+              Also use {bestOf.extraName}
+            </label>
+          )}
+        </div>
+      )}
       {disabledReason && <p className="mt-2 text-xs text-gray-500" role="status">{disabledReason}</p>}
       <button type="button" onClick={() => onOptimize?.()} disabled={disabled}
         className="mt-2 w-full px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
