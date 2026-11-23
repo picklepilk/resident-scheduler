@@ -33,6 +33,14 @@ def _scalars(d) -> Optional[dict]:
     return {k: v for k, v in d.items() if isinstance(v, _SCALARS)}
 
 
+def _outer_lns(d) -> Optional[dict]:
+    """Scalars of report.outerLns plus the per-neighborhood stats (tried/accepted/gain/seconds)."""
+    out = _scalars(d)
+    if out is not None and isinstance(d.get("byNeighborhood"), dict):
+        out["byNeighborhood"] = {str(k): _scalars(v) for k, v in d["byNeighborhood"].items() if isinstance(v, dict)}
+    return out
+
+
 def _effective_workers(payload) -> Optional[int]:
     try:
         from solver.solve import _num_workers  # lazy: keep runlog import-light
@@ -90,7 +98,7 @@ def build_record(payload, result, wall_seconds: float, source: str = "solve") ->
         "objective": getattr(result, "objective_value", None),
         "deadline": _scalars(report.get("deadline")),
         "stall": [_scalars(s) for s in stall] if isinstance(stall, list) else None,
-        "outerLns": _scalars(report.get("outerLns")),
+        "outerLns": _outer_lns(report.get("outerLns")),
         "portfolioWinner": (portfolio or {}).get("winnerIndex"),
     }
 

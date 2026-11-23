@@ -843,6 +843,9 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 progress=progress,
                 cancel_event=cancel_event,
                 tiers=outer.tiers,
+                sub_workers=outer.sub_workers,
+                parallel=outer.parallel,
+                neighborhoods=outer.neighborhoods,
                 # OPTIMAL for the QUALITY stage specifically: that stage minimizes the bare quality expr, so its
                 # objective equals the quality tier's value (an earlier stage's tiebreak composite would not).
                 proven_optimal=(status_name == "OPTIMAL"
