@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // scripts/solver-live-compare.mjs - one static page comparing solver-live recordings: per recording and machine
 // the final tiers, wall time, cells changed vs the input and time of the last improvement, plus one table across
 // all recordings. Coded resident ids only.

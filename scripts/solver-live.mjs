@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // scripts/solver-live.mjs - watch the resident CP-SAT solver work on one coded test file, live, in a browser;
 // one or more machines side by side on the same input and seed. Never real names (test files are coded R01..).
 //
