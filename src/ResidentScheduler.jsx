@@ -50,6 +50,7 @@ import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
 import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
+import RuleClarificationsTab from './components/RuleClarificationsTab.jsx';
 import { trackOptimizeProgress } from './lib/optimizeProgress.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
 import { needsManualReview, manualReviewTooltip, manualReviewLabel } from "./lib/manualReview.js";
@@ -3240,6 +3241,8 @@ const DEFAULT_APP_SETTINGS = {
   // has never heard of this field, same as targetOverrides/rulePriority above. Do not "clean this
   // up" into its own key later without re-solving that problem.
   jeopardyLog: [],
+  // Chief's answers to scheduling-rule questions + new rule requests (src/lib/ruleClarifications.js). Lives here, NOT in its own res_* key, for the same reason as jeopardyLog; guard every read.
+  ruleClarifications: { v: 1, items: [] },
   ruleDatesMigrated: false, // one-time marker: materialized the formerly-derived First Friday / Wellness Wednesday / Journal Club dates into ayData (lib/ruleDates.js); lives here so it round-trips with the data it describes
   // Shift-variety soft rule (2026-11-22): penalise > maxSameShiftRun consecutive days on the same NON-night
   // shift id and > pairStackDays shared same-area days for an EM resident pair. Lives in res_app_settings (no
@@ -3618,6 +3621,16 @@ const CHANGELOG = [
       'A filled cell offers **Give to** or **Swap with** another resident, one click to apply.',
       'An empty cell offers **Assign**, showing eligible residents who most need the shift.',
       'Locked cells show their lock status only — unlock first to edit.',
+    ],
+  },
+  // Rule questions entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-23-rule-questions',
+    date: '2026-11-23',
+    title: 'Rule questions tab',
+    items: [
+      'New **Rule questions** tab: read open scheduling-rule questions, tap an answer, and add a note. Answers save with the rest of the app data.',
+      'Use **Request a new rule or change** to ask for something new. **Copy questions for the chief** and **Download answers (.md)** are in the toolbar.',
     ],
   },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
@@ -23915,6 +23928,7 @@ const GUIDE_SECTIONS = [
   { id: 'grid',       title: 'Schedule Grid — Reading the Cells', goTab: 'schedule', keywords: 'cells GR grand rounds JC journal club lecture off jeopardy red ring gray picker rest period filter chips targets generate' },
   { id: 'legend',     title: 'Cell & Shift Color Legend', goTab: 'schedule', keywords: 'colors legend chips POD PED FLEX MT trauma day eve night swatch' },
   { id: 'rules',      title: 'Violations & Generation Report', goTab: 'validation', keywords: 'errors warnings violations rules day-of-week clinic enforcement badge count generation report unfilled recommendations' },
+  { id: 'rulequestions', title: 'Rule Questions', goTab: 'rulequestions', keywords: 'rule questions chief answer request new rule clarification rotation split qgenda naming copy download' },
   { id: 'export',     title: 'Exporting to QGenda', keywords: 'export CSV QGenda download grid import migrate' },
   { id: 'settings',   title: 'Settings & Data Safety', goTab: 'settings', keywords: 'backup restore import localStorage sync computers jeopardy policy rest rule trauma cap shift targets data qgenda task names staff id name format' },
   { id: 'faq',        title: 'FAQ & Troubleshooting', keywords: 'faq help troubleshooting gray cell missing data disappeared export button assign anyway sync' },
@@ -24092,6 +24106,11 @@ function UserGuideTab({ onNavigate }) {
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-white text-gray-700 ring-2 ring-red-400">POD-D</span> rule violation</span>
           <span className="flex items-center gap-1.5"><span className="px-2 py-0.5 rounded font-bold bg-gray-100 text-gray-400">—</span> no eligible shifts</span>
         </div>
+      </GuideSection>}
+
+      {show('rulequestions') && <GuideSection {...sec('rulequestions')}>
+        <p>The <strong>Rule questions</strong> tab lists open scheduling-rule questions. Tap an answer (one tap saves) and add a note if needed; <strong>Suggested</strong> marks the recommended choice.</p>
+        <p>Use <strong>Request a new rule or change</strong> to ask for something new. <strong>Copy questions for the chief</strong> makes plain text to send by text or email, and <strong>Download answers (.md)</strong> saves everything answered so far.</p>
       </GuideSection>}
 
       {show('rules') && <GuideSection {...sec('rules')}>
@@ -25430,6 +25449,7 @@ const TABS = [
   { id: 'matrix',     label: 'Shift Matrix',  icon: Table2, global: true, group: 'setup' },
   { id: 'schedule',   label: 'Schedule',      icon: Calendar, blockScoped: true },
   { id: 'rules',      label: 'Rules',         icon: BookOpen, global: true, group: 'setup' },
+  { id: 'rulequestions', label: 'Rule questions', icon: HelpCircle, global: true, group: 'setup' },
   { id: 'validation', label: 'Validation',    icon: AlertTriangle, blockScoped: true },
   { id: 'coverage',   label: 'Coverage',      icon: Activity, blockScoped: true },
   { id: 'jeopardy',   label: 'Jeopardy',      icon: Shield, blockScoped: true },
@@ -28241,6 +28261,7 @@ export default function ResidentScheduler({ viewer } = {}) {
           {tab==='jeopardy' && <JeopardyTab block={block} updateBlock={updateBlock} allResidents={allResidents} showToast={showToast}/>}
           {tab==='settings' && <SettingsTab block={block} updateBlock={updateBlock} onBlockReset={blockReset} appSettings={appSettings} setAppSettings={setAppSettings} showToast={showToast} demoMode={demoMode} activeRowId={activeRowId} dbReady={dbReady} onShowWhatsNew={()=>setTab('whatsnew')} importLog={importLog} setImportLog={setImportLog} flushPendingCloudSave={flushPendingCloudSave} solverRunTarget={solverRunTarget} setSolverRunTarget={setSolverRunTarget} viewer={viewer}/>}
           {tab==='feedback' && SUPABASE_ENABLED && <FeedbackAdminTab/>}
+          {tab==='rulequestions' && <RuleClarificationsTab appSettings={appSettings} setAppSettings={setAppSettings} viewer={viewer} showToast={showToast}/>}
           {tab==='whatsnew' && <WhatsNewTab unseenIds={unseenChangelogIds} onMarkSeen={markChangelogSeen}/>}
           {tab==='guide' && <UserGuideTab onNavigate={setTab}/>}
         </main>
