@@ -112,7 +112,7 @@ describe('solver-coop against a mock jobs server', () => {
     const A = await mockServer(prefer), B = await mockServer(prefer);
     const hint = []; for (const r of residents) for (const d of dates) hint.push({ residentId: r, date: d, shiftId: 'X' });
     const input = writeTest({ residents: residents.map((id) => ({ id })), hint, config: {} }, dates[0], dates[4]);
-    const run = await runCoop({ input, mode: 'relay', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 1.5, slice: 0.2, minSlice: 0.05, pollMs: 15, seed: 42, tag: 't', noPage: true, noSave: true, log: () => {} });
+    const run = await runCoop({ input, mode: 'relay', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 1.5, slice: 0.2, minSlice: 0.05, pollMs: 15, minGapMs: 10, backoffMs: [20, 40, 80], seed: 42, tag: 't', noPage: true, noSave: true, log: () => {} });
     A.srv.close(); B.srv.close();
     const incs = run.rec.machines[0].incs.filter((i) => i.tier !== 'final');
     expect(incs.length).toBeGreaterThan(1);
@@ -153,7 +153,7 @@ describe('solver-coop against a mock jobs server', () => {
     const hint = dates.map((d) => ({ residentId: 'R01', date: d, shiftId: 'X' }));
     const input = writeTest({ residents: [{ id: 'R01' }], hint, config: {} }, dates[0], dates[4]);
     const logs = [];
-    const run = await runCoop({ input, mode: 'split', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 0.35, slice: 0.2, minSlice: 0.05, windowDays: 1, pollMs: 15, seed: 42, tag: 't', noPage: true, noSave: true, log: (m) => logs.push(m) });
+    const run = await runCoop({ input, mode: 'split', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 0.35, slice: 0.2, minSlice: 0.05, windowDays: 1, pollMs: 15, minGapMs: 10, backoffMs: [20, 40, 80], seed: 42, tag: 't', noPage: true, noSave: true, log: (m) => logs.push(m) });
     A.srv.close(); B.srv.close();
     // round 0 windows = d1 (N) and d2 (D): merged = N,D => tier1 conflict => rejected
     expect(logs.some((l) => /^\[merge\] round 1: merged \[1,/.test(l))).toBe(true);
@@ -175,11 +175,113 @@ describe('solver-coop against a mock jobs server', () => {
     const A = await mockServer(prefer(2)), B = await mockServer(prefer(5));
     const hint = dates.map((d) => ({ residentId: 'R01', date: d, shiftId: 'X' }));
     const input = writeTest({ residents: [{ id: 'R01' }], hint, config: {} }, dates[0], dates[4]);
-    const run = await runCoop({ input, mode: 'best', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 5, pollMs: 15, seed: 7, tag: 't', noPage: true, noSave: true, log: () => {} });
+    const run = await runCoop({ input, mode: 'best', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 5, pollMs: 15, minGapMs: 10, backoffMs: [20, 40, 80], seed: 7, tag: 't', noPage: true, noSave: true, log: () => {} });
     A.srv.close(); B.srv.close();
     expect(run.rec.machines[0].coop.slices.length).toBe(2);
     expect(run.best.tiers[4]).toBe(0);
     expect(run.best.by).toBe('pp');
     expect(run.line).toMatch(/coop-best/);
+  });
+});
+
+
+// ---------- robustness: backoff, drop, min gap, split bootstrap ----------
+function flakyServer(inner, { failFirst = Infinity, code = 429 } = {}) {
+  // wraps a mock: POST /jobs answers `code` for the first failFirst submissions (default: always); records submit times.
+  const times = []; let seen = 0;
+  const srv = http.createServer((rq, rs) => {
+    if (rq.method === 'POST') {
+      times.push(Date.now());
+      if (++seen <= failFirst) { rs.writeHead(code, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify({ detail: 'rate limit exceeded' })); rq.resume(); return; }
+    }
+    const f = http.request({ host: '127.0.0.1', port: inner.srv.address().port, path: rq.url, method: rq.method, headers: rq.headers }, (r) => { rs.writeHead(r.statusCode, r.headers); r.pipe(rs); });
+    rq.pipe(f);
+  });
+  return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, times, url: `http://127.0.0.1:${srv.address().port}`, close: () => { srv.close(); inner.srv.close(); } })));
+}
+const fixD = (p) => {
+  const m = gridMap(p); let k = 2;
+  for (const key of [...m.keys()]) if (k > 0 && m.get(key) !== 'D') { m.set(key, 'D'); k--; }
+  const mism = [...m.values()].filter((v) => v !== 'D').length;
+  return { status: 'FEASIBLE', tiers: [0, 0, 0, 0, mism], objective: mism, schedule: scheduleOf(p, m) };
+};
+const hintInput = () => writeTest({ residents: [{ id: 'R01' }], hint: dates.map((d) => ({ residentId: 'R01', date: d, shiftId: 'X' })), config: {} }, dates[0], dates[4]);
+
+describe('solver-coop robustness', () => {
+  it('drops a machine after 3 consecutive failures, backs off in between, keeps the other going', async () => {
+    const good = await mockServer(fixD), bad = await flakyServer(await mockServer(fixD));
+    const logs = [];
+    const run = await runCoop({ input: hintInput(), mode: 'relay', solvers: [{ name: 'mac', url: good.url }, { name: 'pp', url: bad.url }], budget: 2, slice: 0.3, minSlice: 0.05, pollMs: 15, minGapMs: 10, backoffMs: [100, 200, 400], seed: 1, tag: 't', noPage: true, noSave: true, log: (m) => logs.push(m) });
+    good.srv.close(); bad.close();
+    expect(bad.times.length).toBe(3); // dropped after exactly 3 submissions, no more
+    expect(bad.times[1] - bad.times[0]).toBeGreaterThanOrEqual(90); // backoff 100 ms
+    expect(bad.times[2] - bad.times[1]).toBeGreaterThanOrEqual(190); // backoff 200 ms
+    const d = run.rec.machines[0].coop.dropped;
+    expect(d.length).toBe(1);
+    expect(d[0].machine).toBe('pp');
+    expect(d[0].reason).toMatch(/429/);
+    expect(typeof d[0].at).toBe('number');
+    expect(logs.some((l) => /DROPPED/.test(l) && /pp/.test(l))).toBe(true);
+    expect(run.line).toMatch(/ dropped=pp$/);
+    expect(run.rec.machines[0].final.dropped.length).toBe(1);
+    expect(run.best.tiers[4]).toBe(0); // mac alone still finished the job
+    expect(run.rec.machines[0].coop.slices.filter((s) => s.machine === 'pp').every((s) => s.jobStatus === 'error' && /429/.test(s.error))).toBe(true);
+  });
+
+  it('a transient failure recovers: fail counter resets on success, machine not dropped', async () => {
+    const flaky = await flakyServer(await mockServer(fixD), { failFirst: 2 });
+    const run = await runCoop({ input: hintInput(), mode: 'relay', solvers: [{ name: 'mac', url: flaky.url }], budget: 1.5, slice: 0.3, minSlice: 0.05, pollMs: 15, minGapMs: 10, backoffMs: [50, 50, 50], seed: 1, tag: 't', noPage: true, noSave: true, log: () => {} });
+    flaky.close();
+    expect(run.rec.machines[0].coop.dropped).toEqual([]);
+    expect(run.best.tiers[4]).toBe(0);
+    expect(run.line).not.toMatch(/dropped/);
+  });
+
+  it('ends the run with a clear message when every machine is dropped (split too)', async () => {
+    for (const mode of ['relay', 'split']) {
+      const a = await flakyServer(await mockServer(fixD)), b = await flakyServer(await mockServer(fixD));
+      const logs = [];
+      const run = await runCoop({ input: hintInput(), mode, solvers: [{ name: 'mac', url: a.url }, { name: 'pp', url: b.url }], budget: 30, slice: 0.3, minSlice: 0.05, pollMs: 15, minGapMs: 10, backoffMs: [10, 10, 10], seed: 1, tag: 't', noPage: true, noSave: true, log: (m) => logs.push(m) });
+      a.close(); b.close();
+      expect(run.rec.machines[0].coop.dropped.map((x) => x.machine).sort()).toEqual(['mac', 'pp']);
+      expect(logs.some((l) => /ALL 2 MACHINES DROPPED/.test(l))).toBe(true);
+      expect(run.best.tiers).toBe(null);
+      expect(run.line).toMatch(/dropped=mac,pp$|dropped=pp,mac$/);
+      expect(run.rec.machines[0].final.wall).toBeLessThan(10);
+    }
+  });
+
+  it('keeps at least minGapMs between submissions to one machine', async () => {
+    const m = await flakyServer(await mockServer(fixD), { failFirst: 0 });
+    await runCoop({ input: hintInput(), mode: 'relay', solvers: [{ name: 'mac', url: m.url }], budget: 1.2, slice: 0.1, minSlice: 0.05, pollMs: 5, minGapMs: 250, seed: 1, tag: 't', noPage: true, noSave: true, log: () => {} });
+    m.close();
+    expect(m.times.length).toBeGreaterThan(1);
+    for (let i = 1; i < m.times.length; i++) expect(m.times[i] - m.times[i - 1]).toBeGreaterThanOrEqual(240);
+  });
+
+  it('split bootstraps from a full solve when the input grid is strictly infeasible (pinned windows would be INFEASIBLE)', async () => {
+    // score of the original input -> INFEASIBLE; a sub-solve with locked cells pins infeasible input -> INFEASIBLE;
+    // full solve (no locked) -> fixD result. After bootstrap, windows pin the feasible global best and succeed.
+    const prefer = (p) => {
+      const m = gridMap(p);
+      const hasX = [...m.values()].includes('X');
+      if (p.config.mode === 'score') return hasX ? { status: 'INFEASIBLE', schedule: {} } : { status: 'SCORED', tiers: [0, 0, 0, 0, [...m.values()].filter((v) => v !== 'D').length], schedule: scheduleOf(p, m) };
+      const locked = new Set((p.locked || []).map((c) => `${c.residentId}|${c.date}`));
+      if (hasX && locked.size) return { status: 'INFEASIBLE', schedule: {}, tiers: null };
+      let k = 2;
+      for (const key of [...m.keys()]) if (k > 0 && m.get(key) !== 'D' && !locked.has(key)) { m.set(key, 'D'); k--; }
+      const mism = [...m.values()].filter((v) => v !== 'D').length;
+      return { status: 'FEASIBLE', tiers: [0, 0, 0, 0, mism], objective: mism, schedule: scheduleOf(p, m) };
+    };
+    const A = await mockServer(prefer), B = await mockServer(prefer);
+    const logs = [];
+    const run = await runCoop({ input: hintInput(), mode: 'split', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 2.5, slice: 0.3, minSlice: 0.05, windowDays: 1, pollMs: 15, minGapMs: 10, seed: 3, tag: 't', noPage: true, noSave: true, log: (m) => logs.push(m) });
+    A.srv.close(); B.srv.close();
+    expect(logs.some((l) => /NOT strictly feasible/.test(l))).toBe(true);
+    const slices = run.rec.machines[0].coop.slices;
+    expect(slices.filter((s) => s.window === 'full').every((s) => s.jobStatus === 'done')).toBe(true);
+    expect(slices.some((s) => s.window && s.window !== 'full' && s.tiers)).toBe(true); // window sub-solves now return tiers
+    expect(slices.every((s) => s.jobStatus === undefined || s.jobStatus === 'done')).toBe(true);
+    expect(run.best.tiers[4]).toBe(0);
   });
 });

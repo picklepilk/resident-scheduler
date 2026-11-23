@@ -16,6 +16,12 @@
 //   strictly better than the global best, else the single best machine result is accepted if strictly better.
 // best ("best of both"): every machine solves the same payload with its own seed for the full budget; best final wins.
 //   (Same as running solver-live with the machines and taking the better final, but reported as one coop line.)
+// Robustness: a failed submit/job (HTTP 429, refused, job error) backs off 2s,5s,10s,30s (never a tight loop); a machine
+//   failing 3 times in a row is DROPPED for the rest of the run (logged loudly, recorded in coop.dropped and the summary
+//   line suffix ` dropped=name`); all dropped = run ends. >= --min-gap-ms (default 1000) between submissions per machine.
+// split bootstrap: pinned cells must be a strictly feasible grid. If the input grid is not (score mode INFEASIBLE, e.g.
+//   it breaks traumaCap/targetCeiling/pedsMixMax), pinning it makes EVERY window sub-solve INFEASIBLE (tiers null). So the
+//   first round(s) solve the whole payload (hint only), adopt the best usable result, and window rounds start from that.
 // Never real names: test files are coded (R01..).
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +44,7 @@ export async function runCoop(opts) {
   const budget = Number(opts.budget ?? 300), seed = Number(opts.seed ?? 42), tag = opts.tag || "run";
   const sliceSec = Number(opts.slice ?? (mode === "split" ? 30 : 60)), stall = opts.stall ?? 10, minSlice = opts.minSlice ?? 5;
   const pollMs = opts.pollMs ?? 2000, windowDays = opts.windowDays ?? 7;
+  const minGapMs = opts.minGapMs ?? 1000, backoffMs = opts.backoffMs ?? [2000, 5000, 10000, 30000], maxFails = opts.maxFails ?? 3;
   const tf = loadTestFile(opts.input);
   const payload = tf.payload;
   const label = tf.label || path.basename(opts.input, ".json");
@@ -56,7 +63,7 @@ export async function runCoop(opts) {
     meta: { label, tag, seed, budget, startDate: dates[0], endDate: dates[dates.length - 1], dates, weekend: dates.map((d) => [0, 6].includes(dayDow(d))),
       dayLabels: dates.map((d) => String(Number(d.slice(8, 10)))), residents, hint: hintGrid, stages: AN.STAGE_NAMES, createdAt: new Date().toISOString() },
     machines: [{ name: "coop", url: machines.map((m) => `${m.name}=${m.url}`).join(" "), workers, config: { mode, slice: sliceSec, budget, seed, windowDays, stall },
-      frames: [], incs: [], final: null, error: null, coop: { mode, machines: machines.map((m) => m.name), wins: {}, slices: [] } }],
+      frames: [], incs: [], final: null, error: null, coop: { mode, machines: machines.map((m) => m.name), wins: {}, slices: [], dropped: [] } }],
   };
   const RM = REC.machines[0];
 
@@ -123,6 +130,39 @@ export async function runCoop(opts) {
     } finally { jobs.delete(key); }
     return { res: st.status === "done" ? st.result : null, status: st.status, t4, wall: +((Date.now() - t0) / 1000).toFixed(2), error: st.error };
   }
+  // ---- per-machine health: min gap between submissions, backoff on failure, drop after maxFails in a row ----
+  const health = new Map(machines.map((m) => [m.name, { fails: 0, last: 0, dropped: false }]));
+  const active = () => machines.filter((m) => !health.get(m.name).dropped);
+  const sleepCancellable = async (ms) => { const end = Date.now() + ms; while (!cancelled && Date.now() < end) await sleep(Math.min(200, end - Date.now())); };
+  // -> {r} on a finished job (any result status), {fail, dropped?} on failure (already backed off), null when cancelled/dropped.
+  async function safeJob(mc, body) {
+    const h = health.get(mc.name);
+    if (h.dropped || cancelled) return null;
+    const wait = h.last + minGapMs - Date.now();
+    if (wait > 0) await sleepCancellable(wait);
+    if (cancelled) return null;
+    h.last = Date.now();
+    let msg;
+    try {
+      const r = await runJob(mc, body);
+      if (r.status === "done") { h.fails = 0; return { r }; }
+      if (cancelled) return null;
+      msg = `job ${r.status}${r.error ? `: ${typeof r.error === "string" ? r.error : JSON.stringify(r.error)}` : ""}`;
+    } catch (e) { if (cancelled) return null; msg = String(e?.message || e); }
+    h.fails++;
+    emit("error", `[${mc.name}] ${msg}`);
+    if (h.fails >= maxFails) {
+      h.dropped = true;
+      const d = { machine: mc.name, at: +rel().toFixed(2), reason: msg };
+      RM.coop.dropped.push(d);
+      log(`!!!!! [${mc.name}] DROPPED for the rest of the run after ${h.fails} consecutive failures at t=${d.at}s: ${msg}`);
+      return { fail: msg, dropped: true };
+    }
+    const wt = backoffMs[Math.min(h.fails - 1, backoffMs.length - 1)];
+    log(`[${mc.name}] failure ${h.fails}/${maxFails}: ${msg}; backing off ${wt / 1000}s`);
+    await sleepCancellable(Math.min(wt, Math.max(0, deadline() * 1000)));
+    return { fail: msg };
+  }
   const gridOf = (res) => AN.gridFromMap(residents, dates, AN.mapFromSchedule(res.schedule));
   const usable = (res) => res && res.status !== "INFEASIBLE" && res.schedule && AN.tierVector(res.tiers);
   const bodyFor = (name, extra, cfgExtra) => ({ ...payload, ...extra, config: { ...cfgBase(name), ...cfgExtra, liveIncumbent: false } });
@@ -133,21 +173,23 @@ export async function runCoop(opts) {
       const mc = machines[mi];
       let n = 0;
       for (;;) {
-        if (cancelled) return;
-        const b = share ? C.nextSliceBudget(deadline(), sliceSec, minSlice) : (n === 0 ? budget : null);
+        if (cancelled || health.get(mc.name).dropped) return;
+        const b = share ? C.nextSliceBudget(deadline(), sliceSec, minSlice) : C.nextSliceBudget(deadline(), budget, minSlice);
         if (b == null) return;
         const no = ++n;
         const useHint = share && G.grid.some(Boolean);
         const hint = useHint ? C.gridToCells(residents, dates, G.grid) : payload.hint;
         const body = bodyFor(mc.name, hint ? { hint } : {}, { maxTimeSeconds: b, randomSeed: C.sliceSeed(seed, mi, no), stallSeconds: stall });
         const tS = rel();
-        let r;
-        try { r = await runJob(mc, body); } catch (e) { if (cancelled) return; emit("error", `[${mc.name}] ${e.message}`); log(`[${mc.name}] ERROR ${e.message}`); return; }
+        const o = await safeJob(mc, body);
+        if (!o) return;
+        if (o.fail) { RM.coop.slices.push({ slice: no, machine: mc.name, start: +tS.toFixed(2), budget: b, tiers: null, jobStatus: "error", error: o.fail }); continue; }
+        const r = o.r;
         const ok = usable(r.res), tiers = ok ? AN.tierVector(r.res.tiers) : null;
         const won = !!ok && C.strictlyBetter(tiers, G.tiers);
-        RM.coop.slices.push({ slice: no, machine: mc.name, start: +tS.toFixed(2), budget: b, wall: r.wall, timeToTier4: r.t4, tiers, won, jobStatus: r.status });
+        RM.coop.slices.push({ slice: no, machine: mc.name, start: +tS.toFixed(2), budget: b, wall: r.wall, timeToTier4: r.t4, tiers, won, jobStatus: r.status, resultStatus: r.res?.status ?? null });
         if (won) adopt(gridOf(r.res), tiers, r.res.objective, r.res.status, mc.name);
-        log(`[${mc.name}] slice ${no}: ${tiers ? `[${tiers.join(",")}]` : r.status} ${won ? "NEW BEST" : ""}`);
+        log(`[${mc.name}] slice ${no}: ${tiers ? `[${tiers.join(",")}]` : `${r.status}/${r.res?.status ?? "-"}`} ${won ? "NEW BEST" : ""}`);
         if (!share) return;
       }
     };
@@ -156,34 +198,53 @@ export async function runCoop(opts) {
 
   // ---------- split ----------
   async function split() {
+    // base = G.grid is a strictly feasible grid that window locks can safely pin. Unknown input grid -> must be scored.
+    let base = false;
     if (hasHint) {
-      const s = await scoreGrid(hintGrid);
-      if (s) { G.tiers = s; log(`[score] input grid [${s.join(",")}]`); }
+      const sc = await scoreGrid(hintGrid);
+      if (sc) { G.tiers = sc; base = true; log(`[score] input grid [${sc.join(",")}]`); }
+      else log("[score] input grid is NOT strictly feasible (or unscorable): pinning it would make every window sub-solve INFEASIBLE; bootstrapping with a full solve first");
     }
+    let badRounds = 0;
     for (let round = 0; ; round++) {
       if (cancelled) return;
+      const act = active();
+      if (!act.length) return;
       const b = C.nextSliceBudget(deadline(), sliceSec, minSlice);
       if (b == null) return;
-      const cold = !G.grid.some(Boolean);
-      const nbs = cold ? machines.map((_, i) => ({ index: i, dates: new Set(dates), from: dates[0], to: dates[dates.length - 1] })) : C.pickNeighborhoods(dates, machines.length, round, windowDays);
-      const hint = cold ? payload.hint : C.gridToCells(residents, dates, G.grid);
+      const cold = !base;
+      const nbs = cold ? act.map((_, i) => ({ index: i, dates: new Set(dates), from: dates[0], to: dates[dates.length - 1] })) : C.pickNeighborhoods(dates, act.length, round, windowDays);
+      const hint = G.grid.some(Boolean) ? C.gridToCells(residents, dates, G.grid) : payload.hint;
       const outs = await Promise.all(nbs.map(async (nb, i) => {
-        const mc = machines[i];
+        const mc = act[i];
         const extra = { ...(hint ? { hint } : {}), ...(cold ? {} : { locked: C.lockedForNeighborhood(payload.locked, residents, dates, G.grid, nb) }) };
         const body = bodyFor(mc.name, extra, { maxTimeSeconds: b, randomSeed: C.sliceSeed(seed, i, round + 1), stallSeconds: stall, outerLns: { enabled: false } });
         const tS = rel();
-        try {
-          const r = await runJob(mc, body);
-          const ok = usable(r.res);
-          RM.coop.slices.push({ slice: round + 1, machine: mc.name, window: `${nb.from}..${nb.to}`, start: +tS.toFixed(2), budget: b, wall: r.wall, timeToTier4: r.t4, tiers: ok ? AN.tierVector(r.res.tiers) : null, jobStatus: r.status });
-          return ok ? { name: mc.name, nb, res: r.res, grid: gridOf(r.res), tiers: AN.tierVector(r.res.tiers) } : null;
-        } catch (e) { if (!cancelled) { emit("error", `[${mc.name}] ${e.message}`); log(`[${mc.name}] ERROR ${e.message}`); } return null; }
+        const o = await safeJob(mc, body);
+        if (!o) return null;
+        const win = cold ? "full" : `${nb.from}..${nb.to}`;
+        if (o.fail) { RM.coop.slices.push({ slice: round + 1, machine: mc.name, window: win, start: +tS.toFixed(2), budget: b, tiers: null, jobStatus: "error", error: o.fail }); return null; }
+        const r = o.r, ok = usable(r.res);
+        const conf = r.res?.status === "INFEASIBLE" ? (r.res.feasibility?.conflicts || []).flat().length : null;
+        RM.coop.slices.push({ slice: round + 1, machine: mc.name, window: win, start: +tS.toFixed(2), budget: b, wall: r.wall, timeToTier4: r.t4, tiers: ok ? AN.tierVector(r.res.tiers) : null, jobStatus: r.status, resultStatus: r.res?.status ?? null, ...(conf != null ? { conflictCount: conf } : {}) });
+        log(`[${mc.name}] ${cold ? "bootstrap" : "window " + win}: job ${r.status}, result ${r.res?.status ?? "-"}${ok ? ` [${AN.tierVector(r.res.tiers).join(",")}]` : ""}`);
+        return ok ? { name: mc.name, nb, res: r.res, grid: gridOf(r.res), tiers: AN.tierVector(r.res.tiers) } : null;
       }));
       const good = outs.filter(Boolean);
-      if (!good.length) continue;
+      if (!good.length) {
+        // nothing usable: infeasible pins or failures. After 2 empty window rounds, re-bootstrap from a full solve.
+        if (!cold && ++badRounds >= 2) { base = false; badRounds = 0; log("[split] 2 empty window rounds in a row: re-bootstrapping with a full solve"); }
+        continue;
+      }
+      badRounds = 0;
       const single = C.bestOf(good);
+      if (cold) {
+        if (C.strictlyBetter(single.tiers, G.tiers)) adopt(single.grid, single.tiers, single.res.objective, single.res.status, single.name);
+        base = true;
+        continue;
+      }
       let cand = null;
-      if (!cold && good.length > 1) {
+      if (good.length > 1) {
         const merged = C.mergeNeighborhoods(residents, dates, G.grid, good);
         const mt = await scoreGrid(merged).catch(() => null);
         log(`[merge] round ${round + 1}: merged ${mt ? `[${mt.join(",")}]` : "infeasible"} vs best ${G.tiers ? `[${G.tiers.join(",")}]` : "-"}`);
@@ -195,10 +256,12 @@ export async function runCoop(opts) {
     }
   }
   async function scoreGrid(grid) {
-    const mc = machines[0];
-    const body = bodyFor(mc.name, { hint: C.gridToCells(residents, dates, grid) }, { mode: "score", maxTimeSeconds: 30, randomSeed: seed, outerLns: { enabled: false } });
-    const r = await runJob(mc, body);
-    return r.res && r.res.status !== "INFEASIBLE" ? AN.tierVector(r.res.tiers) : null;
+    for (const mc of active()) {
+      const body = bodyFor(mc.name, { hint: C.gridToCells(residents, dates, grid) }, { mode: "score", maxTimeSeconds: 30, randomSeed: seed, outerLns: { enabled: false } });
+      const o = await safeJob(mc, body);
+      if (o?.r) return o.r.res && o.r.res.status !== "INFEASIBLE" ? AN.tierVector(o.r.res.tiers) : null;
+    }
+    return null;
   }
 
   async function cancelAll() {
@@ -213,13 +276,16 @@ export async function runCoop(opts) {
   await cancelAll();
   clearInterval(framer);
   const wall = rel();
+  const droppedList = RM.coop.dropped;
+  if (machines.length && !active().length) { const m = `ALL ${machines.length} MACHINES DROPPED - run ended early at t=${wall.toFixed(1)}s`; emit("error", m); log(`!!!!! ${m}`); }
+  else if (droppedList.length) log(`!!!!! run finished with dropped machines: ${droppedList.map((d) => `${d.machine}@${d.at}s`).join(", ")}`);
   curStatus = G.tiers ? "done" : "failed";
   frame();
   const status = G.tiers ? (G.status || "FEASIBLE") : "failed";
   const verdict = AN.verdictOf(startTiers, G.tiers);
   emit("inc", { seq: RM.incs.length + 1, t: +(wall + 0.01).toFixed(2), stage: 0, tier: "final", objective: G.objective, d: [] });
-  emit("final", { t: +(wall + 0.01).toFixed(2), status, jobStatus: curStatus, tiers: G.tiers, startTiers, verdict, wall: +wall.toFixed(2), cellsChanged: AN.cellsDiffer(hintGrid, G.grid), lastImprovementT: AN.lastImprovementT(RM) });
-  const line = AN.formatSummary({ tag, machine: summaryName, seed, label, start: startTiers, end: G.tiers, verdict, wall, status, workers });
+  emit("final", { t: +(wall + 0.01).toFixed(2), status, jobStatus: curStatus, tiers: G.tiers, startTiers, verdict, wall: +wall.toFixed(2), cellsChanged: AN.cellsDiffer(hintGrid, G.grid), lastImprovementT: AN.lastImprovementT(RM), dropped: droppedList });
+  const line = AN.formatSummary({ tag, machine: summaryName, seed, label, start: startTiers, end: G.tiers, verdict, wall, status, workers }) + (droppedList.length ? ` dropped=${droppedList.map((d) => d.machine).join(",")}` : "");
   let outPath = null;
   if (!opts.noSave) {
     outPath = saveRecording(REC, opts.out || defaultOutPath(tag, seed));
@@ -243,7 +309,7 @@ function parseArgs(argv) {
     mode, input: one("--input", null), solvers: all("--solver").map(named), budget: Number(one("--budget", 300)), seed: Number(one("--seed", 42)),
     slice: one("--slice", null) == null ? undefined : Number(one("--slice")), windowDays: Number(one("--window-days", 7)), stall: Number(one("--stall", 10)),
     config: one("--config", null) ? json(one("--config"), "--config") : {}, configFor, tag: one("--tag", "run"), port: Number(one("--port", 8799)),
-    out: one("--out", null), noPage: has("--no-page"), noSave: has("--no-save"), exitWhenDone: has("--exit-when-done"), pollMs: Number(one("--poll-ms", 2000)),
+    out: one("--out", null), noPage: has("--no-page"), noSave: has("--no-save"), exitWhenDone: has("--exit-when-done"), pollMs: Number(one("--poll-ms", 2000)), minGapMs: Number(one("--min-gap-ms", 1000)),
   };
 }
 
