@@ -196,7 +196,7 @@ def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
         assert "do not correspond 1:1" in str(exc)
 
 
-def test_double_locked_max_collision_absorbed_by_plus_one_overstaff():
+def test_double_locked_max_collision_absorbed_by_locked_count_cap():
     """Two locked cells colliding on a non-TRAUMA coverage max by exactly 1
     are no longer a never-relax conflict -- `solver/model/coverage.py`'s
     +1-overstaff allowance (mirrors the JS repairPass's
@@ -227,16 +227,11 @@ def test_double_locked_max_collision_absorbed_by_plus_one_overstaff():
     assert result.schedule["r2"]["2026-02-03"] == "D"
 
 
-def test_double_locked_max_collision_on_trauma_still_infeasible():
-    """Same double-lock shape as above, but on a TRAUMA-area shift --
-    TRAUMA is excluded from the +1-overstaff allowance (its max is
-    separately hard-clamped to 1 and its run cap is "never relaxed"), so
-    this exact conflict must still come back INFEASIBLE."""
+def test_double_locked_max_collision_on_trauma_capped_at_locked_count():
+    """Same double-lock shape on a TRAUMA-area shift: max is hard for everything, but where locked
+    cells alone exceed max the cap becomes the locked count, so this stays solvable (owner
+    2026-11-22) instead of INFEASIBLE."""
     raw = copy.deepcopy(load_fixture("infeasible_rest.json"))
-    # Same isolation as the +1-overstaff test above -- keep this test's
-    # INFEASIBLE result attributable to the TRAUMA coverage-max collision
-    # it's actually testing, not the fixture's own (also never-relax, but
-    # unrelated) restGap conflict.
     raw["locked"] = [lc for lc in raw["locked"] if lc["shiftId"] != "N"]
     raw["shifts"]["D"]["area"] = "TRAUMA"
     raw["locked"].append({"residentId": "r2", "date": "2026-02-03", "shiftId": "D"})
@@ -245,8 +240,7 @@ def test_double_locked_max_collision_on_trauma_still_infeasible():
     payload = parse_payload(raw)
     result = solve(payload)
 
-    assert result.status == "INFEASIBLE"
-    assert result.schedule == {}
+    assert result.status in ("OPTIMAL", "FEASIBLE", "RELAXED")
 
 
 def _bamc_wed_night_relaxation_payload() -> dict:

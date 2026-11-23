@@ -36,7 +36,7 @@ function unfilledCounts(report) {
   return out;
 }
 
-const SEEDS = [1003]; // seed 1003 lands on a truePrimary fix+lift winner for both realScale shapes
+const SEEDS = [1012]; // seed 1012 lands on a truePrimary fix+lift winner for both realScale shapes, with and without LNS (re-picked 2026-11-22 after max became hard; was 1003)
 
 describe('generateScheduleBest report consistency', () => {
   it('report.unfilled matches holes on a non-fix winner with a partly filled min-2 slot (staggered seed 1001)', async () => {

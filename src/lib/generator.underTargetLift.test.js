@@ -1,6 +1,6 @@
 // src/lib/generator.underTargetLift.test.js
 // A4 (fix/under-target-lift): repairPass' Phase 5 ("under-target lift" — see ResidentScheduler.jsx's
-// repairPass, Steps 1-4: Room/Steal/Chain/Overstaff) tries every legal way to close a resident's
+// repairPass, Steps 1-3: Room/Steal/Chain; no overstaff since 2026-11-22) tries every legal way to close a resident's
 // shift-count gap before giving up on them. This test is the completeness check on that claim: for
 // every resident generateScheduleBest still reports under target, NOT ONE of the (date, shift) pairs
 // its own per-resident diagnostic (computeUnderTargetDiagnostics, populated automatically on the

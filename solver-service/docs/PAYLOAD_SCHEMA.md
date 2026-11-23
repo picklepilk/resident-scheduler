@@ -1,3 +1,13 @@
+> **2026-11-22 owner decision, "never go over max" (supersedes every overstaff section below).** Coverage
+> max is HARD in `solver/model/coverage.py`: `count <= max` for every shift, no +1 allowance. Only
+> exception (avoids INFEASIBLE): where LOCKED cells alone exceed max on a (shift, date), the cap for
+> that cell is the locked count. `solver/validate.py::_check_coverage_max` mirrors this. No `overstaff`
+> BoolVars are created, so `CoverageResult.overstaff`, `ObjectiveInfo.coverage_overstaff` and the
+> `overstaffCoverage` objective term are inert (weight key kept in `config/default_weights.json` for
+> backward compatibility, never charged) and `report.overstaffed` is always `[]` (response shape
+> unchanged; `mapSolverResult` still reads it). A resident the model cannot fit stays under target.
+> Historical notes below describing the +1 allowance are kept for context only.
+
 # Solver objective weight policy: target vs. soft rules vs. overstaffing
 
 (NOTE: this file was found empty at HEAD when this section was added

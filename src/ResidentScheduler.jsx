@@ -5633,9 +5633,8 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // 'jeopardyConflict', reported through the normal unfilled/summarizeGenerationReport path
     // instead), so the old "placed anyway, here's the list" tracking could never fire again.
     unfilled: [], underTarget: [], seniorGaps: [], restCompromises: [], repairs: [], capacityWarnings: [],
-    // Phase 5 (under-target lift, A2) placements that pushed a shift's headcount one over its
-    // coverage max as a last resort — see repairPass' overstaffFor. Always present (even empty) so
-    // downstream consumers (GenerationReportCard) never need an `?? []` guard.
+    // Generation never exceeds coverage max (owner 2026-11-22), so this is ALWAYS empty now. Kept
+    // (even empty) so GenerationReportCard / merge sites / solver mapping need no `?? []` guard.
     overstaffed: [],
     // 2b-2 PGY gating pool-restrict: one entry per slot filled by the "gated" PGY (EM PGY-2 on
     // POD, EM PGY-3 on FLEX) because no qualifying primary-PGY candidate was available in that
@@ -7226,17 +7225,17 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
     // Phase 5 — under-target lift (A2, fix/under-target-lift). Phases 1-4 only ever repair
     // COVERAGE (min-slot) gaps; a resident sitting under their own shift-count TARGET with every
     // coverage min already met was never addressed, and chiefs regularly see it. This phase closes
-    // that gap directly per-resident, most-short-first, trying four escalating moves for each
+    // that gap directly per-resident, most-short-first, trying three escalating moves for each
     // ADDITIONAL shift a resident still needs: (1) Room — a free date+shift with real headroom
     // (filled < coverage max) that the resident can legally take; (2) Steal — swap a shift 1-for-1
     // away from a resident who is OVER target on that exact date+shift (headcount is unchanged, so
     // this can never create a new coverage gap); (3) Chain — the shift is genuinely full (no
     // headroom anywhere), so relocate ONE occupant sideways, same day, into a DIFFERENT shift that
     // itself has headroom, then take the seat that relocation frees (two assignment changes total,
-    // hence "depth-2"); (4) Overstaff — last resort, place the resident on a shift already at max,
-    // pushing headcount one over (never TRAUMA-D/N — hard-clamped to 1 everywhere else in this
-    // file — and never a shift whose max is 0 that date, which also excludes every 12h id outside
-    // its own window). Every move is transactional through the exact same assignCell/unassignCell/
+    // hence "depth-2");
+    // Coverage MAX is HARD for generation (owner 2026-11-22, "never go over max"): there is no
+    // overstaff step; a resident none of the moves can seat stays under target (underTarget warn).
+    // Every move is transactional through the exact same assignCell/unassignCell/
     // narrowForSeniority/compositionStillSatisfied machinery Phases 1-4 use, so it can never violate
     // a hard candidatePool rule (hoursCapped, streakBlocked, circadian, nightCapped,
     // traumaRunCapped, jeopardy, vacation/off, hard seniority composition, ...) — those residents
@@ -7379,43 +7378,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
       return false;
     }
 
-    // Step 4 — Overstaff: last resort, place r on a shift already at (or, after Steps 1-3, still
-    // at) max — accepted as a deliberate, visible exception rather than leaving the resident short.
-    // Never TRAUMA-D/N (hard-clamped to 1 everywhere else — see getCoverageFor's own TRAUMA_SOLO_IDS
-    // clamp) and never a shift whose max is 0 that date (this alone also excludes every 12h id
-    // outside its own chief-defined window — see twelveHourAllows/getCoverageFor). validateAll
-    // already reports count > max as a plain warn (rule `coverageAboveMax`, tier info), so
-    // it is neither export-blocking nor counted in errorCount/blockingWarnCount — recorded here in
-    // report.overstaffed for the report card to surface explicitly.
-    function overstaffFor(r) {
-      for (const ds of dates) {
-        if (liftBudget <= 0) return false;
-        if (schedule[r.id][ds]) continue; // r must be free that day
-        const dsDow = parseDate(ds).getDay();
-        const elig = eligCache[r.id]?.[ds];
-        if (!elig) continue;
-        for (const shift of SHIFTS) {
-          if (liftBudget <= 0) return false;
-          if (shift.area === 'TRAUMA') continue; // never TRAUMA-D/N
-          if (shift.area === 'PED' && shift.type === 'night') continue; // never a Peds night (PED-N/PED-N-FM/PED-N12) — chief call 2026-09-26; solver coverage.py mirrors
-          if (!shiftActiveOnDow(shift.id, dsDow)) continue;
-          if (!elig.has(shift.id)) continue;
-          const cov = getCoverageFor(shift.id, coverage, dsDow, conf12For(ds));
-          if (cov.max <= 0) continue; // never a shift with max 0 that date (also excludes 12h-outside-window)
-          const filled = filledCount(shift.id, ds);
-          if (filled < cov.max) continue; // real headroom belongs to Room/Steal/Chain, not this
-          if (filled > cov.max) continue; // already overstaffed once — cap at max+1, same as the solver's overstaff BoolVar
-          const pool = narrowForSeniority(poolFor5(shift, ds).candidates, shift, ds);
-          if (!pool.includes(r)) continue;
-          assignCell(r.id, shift.id, ds);
-          report.overstaffed.push({ residentId: r.id, name: `${r.firstName} ${r.lastName}`, date: ds, shiftId: shift.id });
-          report.repairs.push({ type: 'underTargetOverstaff', residentId: r.id, dateStr: ds, shiftId: shift.id });
-          return true;
-        }
-      }
-      return false;
-    }
-
     // Most-short-first: a resident 4 shifts under target is a bigger visible gap than one 1 short,
     // so give the scarce lift budget to them first. Re-sorted fresh (not cached) since a Steal can
     // move another resident's own assigned count, technically outside this phase's own population,
@@ -7432,7 +7394,6 @@ export function generateSchedule({ allResidents, block, coverage = {}, eligOverr
         if (roomFor(r)) continue;
         if (stealFor(r)) continue;
         if (chainFor(r)) continue;
-        if (overstaffFor(r)) continue;
         break; // every move exhausted for this resident — genuinely infeasible, move on
       }
     }
@@ -8316,7 +8277,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
   // allows +1 over max, see coverage.py's own docstring) since the model has no notion of WHICH
   // resident is "the extra one" — only that the shift/date ended up one over. Re-expand into this
   // app's own `report.overstaffed` shape (one entry per over-placement, `{residentId,name,date,
-  // shiftId}` — see repairPass Phase 5's `overstaffFor`) by picking that many residents off the
+  // shiftId}` — see the removed repairPass Phase 5 overstaff step) by picking that many residents off the
   // FINAL merged schedule's own (shiftId,dateStr) roster — arbitrary WHICH one (the model never
   // tracked that), but the (shift,date) and count are exact. Only runs when `allResidents` is
   // supplied, same optional/backward-compatible posture as podSubstitutes/underTarget above.

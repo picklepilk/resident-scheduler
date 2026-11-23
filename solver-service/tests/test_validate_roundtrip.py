@@ -35,21 +35,17 @@ def test_hand_broken_schedule_fails_validation_on_coverage_max():
     assert any(f["rule"] == "coverageMax" for f in failures)
 
 
-def test_coverage_max_allows_the_same_plus_one_overstaff_validate_side():
-    """Mirrors test_coverage.py's build-side `test_max_side_is_elastic_by_exactly_one_for_non_trauma`
-    -- validate.py's independent `_check_coverage_max` must allow the exact same +1 for a non-TRAUMA,
-    non-Peds-night shift, not just the build side (this is the pre-existing gap fixed 2026-09-27)."""
+def test_coverage_max_has_no_plus_one_allowance_validate_side():
+    """validate.py mirrors coverage.py: count > max fails (no +1 allowance, owner 2026-11-22) unless
+    locked cells alone exceed max."""
     payload = parse_payload(load_fixture("small_feasible.json"))
     result = solve(payload)
     schedule = copy.deepcopy(result.schedule)
-
-    # D's coverage max is 1 -- exactly ONE over is the documented last-resort allowance, not a
-    # failure.
     schedule.setdefault("r1", {})["2026-01-05"] = "D"
     schedule.setdefault("r2", {})["2026-01-05"] = "D"
 
     failures = validate_schedule(payload, schedule)
-    assert not any(f["rule"] == "coverageMax" for f in failures)
+    assert any(f["rule"] == "coverageMax" for f in failures)
 
 
 def test_hand_broken_schedule_fails_validation_on_eligibility():

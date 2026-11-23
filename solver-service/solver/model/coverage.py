@@ -11,20 +11,12 @@ Min side depends on `config.coverageMinMode`:
   leaves relaxation to the pass-2 seam -- this module does not implement
   pass 2.
 
-Max side is a hard cap, with ONE deliberate exception mirroring the app's own
-"under-target lift" policy (repairPass Phase 5 / `underTargetOverstaff` in
-ResidentScheduler.jsx): a resident's target obligation beats ordinary soft
-rules, and as a genuine last resort the app allows exceeding a shift's
-coverage max by exactly 1 -- never TRAUMA (its max is separately hard-clamped
-to 1 and its run cap is a hard rule that is "never relaxed", see
-trauma_runs.py), never a shift whose max is already 0 that date (this also
-naturally excludes every 12h id outside its own chief-defined window, same as
-the JS side's own `cov.max <= 0` guard). Every other non-TRAUMA (shift,date)
-with `max > 0` gets a 0/1 `overstaff` BoolVar folded into the hard `<=`,
-charged by `objective.py` at `overstaffCoverage` -- a weight documented there
-to sit strictly between every ordinary soft-rule weight and targetDeficit(Core),
-so CP-SAT only reaches for it once every cheaper alternative is exhausted, and
-always prefers spending it over leaving a resident under target.
+Max side is a HARD cap (owner decision 2026-11-22, "never go over max"): count <= max, no
+overstaff allowance for any shift. The only exception exists to avoid INFEASIBLE: where the
+request's locked (pinned/hand-kept) cells alone already exceed max on a (shift, date), the cap for
+that cell is the locked count -- the solver adds nobody beyond what the chief already placed.
+`CoverageResult.overstaff` is kept (always empty) so objective/report plumbing and the response
+shape (`report.overstaffed`, always `[]`) stay unchanged.
 """
 
 from __future__ import annotations
@@ -38,17 +30,18 @@ from solver.model.variables import VarStore
 @dataclass
 class CoverageResult:
     slacks: dict = field(default_factory=dict)  # (shiftId, date) -> IntVar, empty in hard mode
-    overstaff: dict = field(default_factory=dict)  # (shiftId, date) -> BoolVar, only where max>0, non-TRAUMA, not a Peds night
+    overstaff: dict = field(default_factory=dict)  # (shiftId, date) -> BoolVar, always empty since 2026-11-22 (max is hard)
 
 
 def no_overstaff_shift(shift) -> bool:
-    """True when `shift` may NEVER use the +1 last-resort overstaff allowance (see module
-    docstring): TRAUMA, or any Peds night (PED-N/PED-N-FM/PED-N12) -- chief call 2026-09-26, mirrors
-    repairPass Phase 5's overstaffFor guard in ResidentScheduler.jsx. Shared with
-    `solver/validate.py`'s independent `_check_coverage_max` re-check so the two can't drift on which
-    shifts are exempt from the allowance (pre-existing gap fixed 2026-09-27: validate.py used to fail
-    on ANY overstaff, including the allowed +1)."""
-    return shift.area == "TRAUMA" or (shift.area == "PED" and shift.type == "night")
+    """Legacy helper, kept for imports. Since 2026-11-22 NO shift may be overstaffed (max is hard),
+    so this is True for every shift."""
+    return True
+
+
+def locked_count(payload: Payload, shift_id: str, date_str: str) -> int:
+    """Locked cells on (shift, date): the floor of the coverage cap (see module docstring)."""
+    return sum(1 for lc in payload.locked if lc.shift_id == shift_id and lc.date == date_str)
 
 
 def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enforcement=None) -> CoverageResult:
@@ -77,17 +70,10 @@ def add_coverage_constraints(model, payload: Payload, store: VarStore, min_enfor
     locked = {(lc.resident_id, lc.shift_id, lc.date) for lc in payload.locked} if payload.as_needed else frozenset()
 
     for shift_id, by_date in payload.coverage.items():
-        shift = payload.shifts[shift_id]
-        no_overstaff = no_overstaff_shift(shift)
         for date_str, entry in by_date.items():
             assigned = store.x_sum_for_shift_date(shift_id, date_str)
 
-            if entry.max > 0 and not no_overstaff:
-                overstaff = model.new_bool_var(f"overstaff[{shift_id},{date_str}]")
-                model.add(sum(assigned) <= entry.max + overstaff)
-                result.overstaff[(shift_id, date_str)] = overstaff
-            else:
-                model.add(sum(assigned) <= entry.max)
+            model.add(sum(assigned) <= max(entry.max, locked_count(payload, shift_id, date_str)))
 
             # As-needed link (program decision 2026-10-30): an as-needed cell (payload.as_needed) may be
             # used ONLY to fill a coverage MINIMUM -- never to top a shift up past it. If any such cell is
