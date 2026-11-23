@@ -27,7 +27,7 @@ import * as AN from "./lib/solverLiveAnalysis.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------- helpers ----------
-function request(method, url, body, timeoutMs = 0) {
+export function request(method, url, body, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const u = new URL(url), lib = u.protocol === "https:" ? https : http;
     const data = body ? JSON.stringify(body) : null;
@@ -50,7 +50,7 @@ export function loadTestFile(file) {
   if (j?.kind !== "resident-solver-test" || !j.payload || !Array.isArray(j.payload.residents)) throw new Error("--input is not a resident-solver-test file (kind 'resident-solver-test' with a payload)");
   return j;
 }
-function dateRange(a, b) {
+export function dateRange(a, b) {
   const out = [];
   for (let d = new Date(a + "T00:00:00Z"); d <= new Date(b + "T00:00:00Z"); d = new Date(d.getTime() + 86400000)) out.push(d.toISOString().slice(0, 10));
   return out;
