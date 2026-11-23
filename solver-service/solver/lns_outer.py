@@ -336,6 +336,8 @@ def run_outer_lns(
                 solution = list(slv.response_proto.solution)
                 incumbent_tiers = new_tiers
                 last_ord = new_ord
+                if progress is not None:
+                    progress.offer(slv.value, float(new_tiers[quality_name]))  # live feed; no-op unless opted in
             elif status_name == "OPTIMAL":
                 hood.scale[name] = min(2.5, hood.scale[name] * 1.25)  # proven no gain here: look wider
         else:
@@ -344,6 +346,8 @@ def run_outer_lns(
             stats[name]["accepted"] += 1
             report["accepted"] += 1
 
+    if progress is not None:
+        progress.flush(incumbent_solver, float(incumbent_tiers[quality_name]))  # live feed; no-op unless opted in
     report["iterations"] = iteration
     report["endObjective"] = incumbent_tiers[quality_name]
     if all_mode:

@@ -145,8 +145,12 @@ class ProgressReporter:
     A failing sink never affects the solve.
     """
 
-    def __init__(self, on_progress, budget: float, stages: int):
+    def __init__(self, on_progress, budget: float, stages: int, live_store=None):
         self._cb = on_progress
+        # Opt-in live incumbent feed (config.liveIncumbent): `live_store` is the model's VarStore, None = off.
+        self._live_store = live_store
+        self._incumbent = None   # last published {stage, elapsed, objective, rows}
+        self._pending = False    # a solution was throttled away; flush() publishes it
         self.budget = float(budget)
         self.stages = stages
         self.stage = 0
@@ -154,6 +158,43 @@ class ProgressReporter:
         self.best = None
         self._t0 = time.time()
         self._last_emit = 0.0
+
+    def _rows(self, value) -> list:
+        """[[residentId, date, shiftId], ...] of every assigned cell, sorted (one pass over x)."""
+        return sorted([r, d, sh] for (r, sh, d), var in self._live_store.x.items() if value(var))
+
+    def _publish(self, value, objective) -> None:
+        try:
+            self._incumbent = {
+                "stage": self.stage,
+                "elapsed": round(time.time() - self._t0, 1),
+                "objective": objective,
+                "rows": self._rows(value),
+            }
+            self._pending = False
+        except Exception:
+            pass
+
+    def offer(self, value, objective) -> None:
+        """Live feed: a new newest solution (`value` reads var values). Publishes now unless throttled."""
+        if self._live_store is None:
+            return
+        if time.time() - self._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+            self._publish(value, objective)
+            self.emit()
+        else:
+            self._pending = True
+
+    def flush(self, solver, objective=None) -> None:
+        """Live feed: publish a throttled solution once its solve returned (solver holds the newest)."""
+        if self._live_store is None or not self._pending:
+            return
+        try:
+            self._publish(solver.value, solver.objective_value if objective is None else objective)
+        except Exception:
+            self._pending = False
+            return
+        self.emit()
 
     def emit(self) -> None:
         self._last_emit = time.time()
@@ -166,6 +207,7 @@ class ProgressReporter:
                 "best": self.best,
                 "runner": runner_info(),
                 **({"stageName": self.label} if self.label else {}),
+                **({"incumbent": self._incumbent} if self._incumbent is not None else {}),
             })
         except Exception:
             pass
@@ -192,7 +234,9 @@ class ProgressReporter:
         class _Cb(cp_model.CpSolverSolutionCallback):
             def on_solution_callback(self):
                 reporter.best = self.objective_value
-                if time.time() - reporter._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+                if reporter._live_store is not None:
+                    reporter.offer(self.value, self.objective_value)
+                elif time.time() - reporter._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
                     reporter.emit()
 
         return _Cb()
@@ -200,7 +244,9 @@ class ProgressReporter:
     def on_solution(self, cb) -> None:
         """`solver/callbacks.py` handler form of `solution_callback()`."""
         self.best = cb.objective_value
-        if time.time() - self._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
+        if self._live_store is not None:
+            self.offer(cb.value, cb.objective_value)
+        elif time.time() - self._last_emit >= PROGRESS_MIN_INTERVAL_SECONDS:
             self.emit()
 
 
@@ -210,7 +256,10 @@ def _solve_with_progress(solver: cp_model.CpSolver, model, progress, handlers=()
     all_handlers = [h for h in (progress, *handlers) if h is not None]
     if not all_handlers:
         return solver.solve(model)
-    return solver.solve(model, MultiCallback(all_handlers))
+    status = solver.solve(model, MultiCallback(all_handlers))
+    if progress is not None:
+        progress.flush(solver)
+    return status
 
 
 def _pass1_handlers(payload: Payload, build_result) -> list:
@@ -722,6 +771,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     build_result = build_model(payload)
     store = build_result.store
     objective = build_result.objective
+    if progress is not None and payload.config.live_incumbent:
+        progress._live_store = store
 
     hint_diag, hint_eval = _apply_hint_pinning(payload, build_result, deadline)
 

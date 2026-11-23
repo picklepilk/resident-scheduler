@@ -49,6 +49,8 @@ class ConfigModel(_RequestModel):
     hintStickiness: Optional[int] = None
     # Optional outer LNS after the staged solve: {enabled, fraction, subSolveSeconds}; see solver/lns_outer.py.
     outerLns: Optional[dict] = None
+    # Opt-in live incumbent feed (progress.incumbent); see solver/solve.py ProgressReporter.
+    liveIncumbent: Optional[bool] = None
 
 
 class BlockModel(_RequestModel):

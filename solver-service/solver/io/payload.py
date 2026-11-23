@@ -105,6 +105,8 @@ class Config:
     # Opt-in (None = off): ERRORS and BLOCKING stages also stop after this many seconds without a
     # strictly better incumbent, and their unused time rolls forward to the next stage.
     stall_early_seconds: Optional[float] = None
+    # Opt-in live incumbent feed: progress dicts carry `incumbent` (rows of the newest solution).
+    live_incumbent: bool = False
     # Keep up to N distinct best pass-1 schedules in report.shortlist (0 = off).
     shortlist_size: int = 0
     # "solve" (default) or "score": price payload.hint exactly (every x fixed), no search.
@@ -526,6 +528,7 @@ def parse_payload(raw: dict) -> Payload:
             mode="score" if config_raw.get("mode") == "score" else "solve",
             implied_cliques=bool(config_raw.get("impliedCliques", False)),
             lex_strict=bool(config_raw.get("lexStrict", True)),
+            live_incumbent=config_raw.get("liveIncumbent") is True,
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(

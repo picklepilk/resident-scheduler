@@ -1667,3 +1667,13 @@ Measured on the real Block 6 (cleared, 300 s): solver schedules had mean longest
 - **Pair stacking:** per pair of EM residents and AREA, co-occurrence days on a NON-night shift of that area beyond M. Size control: only pair+area combinations where both residents have a var in that area on more than M shared dates exist; one-sided linearisation `p >= A_a + A_b - 1` (A = sum of the resident's non-night vars in the area that day) plus `excess >= sum(p) - M`. No AND channelling constraints.
 - **Area churn reduced:** `workShape.areaChurnCost` 25 -> 12. JS caps the continuity reward (`AREA_CHURN_FREE_AFTER` = 3: leaving an area after 3+ days in it is free); the solver approximates that by halving the per-change cost, because an exact "streak >= 3" waiver would need 3-day AND literals per resident-day. Documented drift, not asserted equal.
 - **Report:** `report.variety = {runExcess, pairExcess}`, computed independently from the extracted schedule (`solver/report/variety.py`) and asserted equal to the JS `validateAll` units (`shiftVarietyRun`, `pairStacking`) in the env-gated `src/lib/solverParity.test.js`. Tests: `tests/test_variety_terms.py`.
+
+## Live incumbent feed (2026-11-22)
+
+Opt-in: `config.liveIncumbent: true` (literal `true` only; absent/other = off, behavior and callbacks identical to before). Only has an effect when a progress sink exists (jobs API / `solve(..., on_progress=)`).
+
+Each emitted progress dict then also carries (once the first solution exists, sticky on later emits) `incumbent: {stage, elapsed, objective, rows}`:
+- `rows` = `[[residentId, date, shiftId], ...]`, every assigned cell of the NEWEST solution, ids as in the request, sorted.
+- `stage` = progress stage when published (outer LNS = the `outerLns` stage), `elapsed` seconds since solve start, `objective` = stage-local incumbent objective (LNS: quality tier).
+- Throttled by `PROGRESS_MIN_INTERVAL_SECONDS` (2 s). A throttled solution is flushed when that stage solve returns, so each stage last incumbent is published. Outer LNS publishes on each accepted improvement (same throttle) and flushes at the end.
+- `GET /jobs/{id}` returns `progress` unchanged, so `progress.incumbent` passes through. Portfolio K>1: only run 0 reports progress.
