@@ -49,7 +49,7 @@ export default function OptimizeMenuSection({ machines = [], machine = 'auto', o
         <p className="mt-2 text-xs text-gray-600" data-testid="budget-hint-leveloff">Stops by itself once the schedule has stopped getting better, after 15 minutes at most.</p>
       )}
       {shownBudget === BUDGET_LONG && (
-        <p className="mt-2 text-xs text-gray-600" data-testid="budget-hint-long">Meant to be left running, for example overnight. Keep this page open on this device; the result will be waiting here when you come back.</p>
+        <p className="mt-2 text-xs text-gray-600" data-testid="budget-hint-long">Meant to be left running, for example overnight. It keeps running on the solver machine. Open the Schedule tab on this device later and the result will be waiting for you (kept 24 hours).</p>
       )}
       {disabledReason && <p className="mt-2 text-xs text-gray-500" role="status">{disabledReason}</p>}
       <button type="button" onClick={() => onOptimize?.()} disabled={disabled}

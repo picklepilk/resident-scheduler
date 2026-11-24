@@ -18027,7 +18027,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     setOptimizeProbe(null);
     Promise.all([
       probeSolverHealth(LOCAL_SOLVER_URL, { timeoutMs: 1500 }).then(r => (r.online ? r : null)).catch(() => null),
-      (canPickMachine && SOLVER_POOL_ENABLED) ? probePool().catch(() => []) : Promise.resolve([]),
+      // Probed for everyone (not just machine pickers): Auto resolves to a pool machine, and its /health `features` decide which time choices show.
+      SOLVER_POOL_ENABLED ? probePool().catch(() => []) : Promise.resolve([]),
     ]).then(([local, pool]) => { if (!cancelled) setOptimizeProbe({ local, pool }); });
     const onDown = e => {
       if (optimizeMenuRef.current?.contains(e.target) || genMenuPanelRef.current?.contains(e.target)) return;
@@ -18043,7 +18044,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // Menu machine list: This computer (when its solver answers) + pool machines (picker accounts only).
   const optimizeMachines = [
     { name: 'This computer', status: optimizeProbe ? (optimizeProbe.local ? 'online' : 'offline') : 'offline' },
-    ...((optimizeProbe?.pool || []).map(m => ({ name: m.name, status: !m.online ? 'offline' : m.busy ? 'busy' : 'online' }))),
+    ...((canPickMachine ? (optimizeProbe?.pool || []) : []).map(m => ({ name: m.name, status: !m.online ? 'offline' : m.busy ? 'busy' : 'online' }))),
   ];
   // "Best of" (pool:best): same Optimize on Mac + PicklePower at once (+ PickleBook when ticked), keep the better.
   const isBestOfTarget = optimizeTarget === BEST_OF_TARGET && canPickMachine;
