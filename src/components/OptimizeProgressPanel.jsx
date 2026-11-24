@@ -8,7 +8,11 @@ import { describeOptimizeProgress, agoText } from '../lib/optimizeProgress.js';
 // now: ms timestamp (re-render tick).
 const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-export default function OptimizeProgressPanel({ tracker, status, elapsedFallback = 0, budgetFallback = 0, now = Date.now() }) {
+// Optional extras (all absent on hosts without the matching feature, so the old look is unchanged):
+// trend: { state, text } from describeTrend ("Still improving..."); live: [{ key, text }] from liveComparison
+// (current best grid vs the start); wrappingUp: Stop-and-keep-best was pressed; autoStop: run ends by itself
+// when it levels off.
+export default function OptimizeProgressPanel({ tracker, status, elapsedFallback = 0, budgetFallback = 0, now = Date.now(), trend = null, live = null, wrappingUp = false, autoStop = false }) {
   const d = describeOptimizeProgress(tracker, status, { elapsedFallback, budgetFallback });
   const ago = agoText(tracker?.lastImprovedAt, now);
   const improvements = tracker?.improvements || 0;
@@ -44,6 +48,20 @@ export default function OptimizeProgressPanel({ tracker, status, elapsedFallback
         <span>{improvements === 0 ? 'No better schedule found yet' : `${improvements} improvement${improvements === 1 ? '' : 's'} found`}{ago ? ` · last ${ago}` : ''}</span>
         {d.finishedEarly && <span>Finished early: the solver proved it could not do better on these steps.</span>}
       </div>
+      {wrappingUp && status !== 'done' && (
+        <div className="mt-1 text-xs font-medium tri-optimize-note" data-testid="optimize-wrapping-up" role="status">Wrapping up... keeping the best schedule found so far.</div>
+      )}
+      {!wrappingUp && autoStop && status !== 'done' && (
+        <div className="mt-1 text-[11px] text-muted-foreground" data-testid="optimize-autostop-note">This run stops by itself when the schedule stops getting better.</div>
+      )}
+      {trend && status !== 'done' && !wrappingUp && (
+        <div className={`mt-1 text-xs tri-optimize-trend tri-optimize-trend--${trend.state}`} data-testid="optimize-trend">{trend.text}</div>
+      )}
+      {Array.isArray(live) && live.length > 0 && status !== 'done' && (
+        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs tri-optimize-live" data-testid="optimize-live" aria-label="Best schedule so far, compared with where you started">
+          {live.map(l => <li key={l.key}>{l.text}</li>)}
+        </ul>
+      )}
     </div>
   );
 }

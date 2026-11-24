@@ -606,3 +606,15 @@ body {
 /* Rotation ledger grid/card chip ("8 here · 7 before · 0 after"). Solid colours, no alpha. */
 .tri-rot-chip-mono { background: #E3EEF1; color: #155E75; }
 @media screen { .dark .tri-rot-chip-mono { background: #26395A; color: #D5DFEC; } }
+
+/* Optimize live read-out (trend, live numbers, wrap-up note). Solid colours, no alpha. */
+.tri-optimize-note { color: #155E75; font-weight: 500; }
+.tri-optimize-trend { color: hsl(var(--muted-foreground)); }
+.tri-optimize-trend--improving { color: #166534; }
+.tri-optimize-trend--levelling { color: #6B4B00; }
+.tri-optimize-live { list-style: none; margin: 4px 0 0; padding: 0; color: hsl(var(--foreground)); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+@media screen {
+  .dark .tri-optimize-note { color: #5FB6CC; }
+  .dark .tri-optimize-trend--improving { color: #86EFAC; }
+  .dark .tri-optimize-trend--levelling { color: #FDE68A; }
+}

@@ -53,8 +53,8 @@ export const isRemoteTarget = pref => pref === 'cloud' || poolTargetName(pref) !
 
 // One /health probe -> { online, busy, runner, jobsMode, host, preferJobs, defaultBudgetSeconds }.
 // host/preferJobs/defaultBudgetSeconds are the server's SOLVER_HOST_KIND hints (pi|pc); absent
-// = null/false/null (Fly/Modal/local). Never throws.
-const OFFLINE = { online: false, busy: false, runner: null, jobsMode: null, host: null, preferJobs: false, defaultBudgetSeconds: null };
+// = null/false/null (Fly/Modal/local). features = /health `features` strings, [] when absent. Never throws.
+const OFFLINE = { online: false, busy: false, runner: null, jobsMode: null, host: null, preferJobs: false, defaultBudgetSeconds: null, features: [] };
 export async function probeSolverHealth(url, { timeoutMs = 2500 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -65,6 +65,8 @@ export async function probeSolverHealth(url, { timeoutMs = 2500 } = {}) {
     return {
       online: true, busy: json?.busy === true, runner: json?.runner ?? null, jobsMode: json?.jobs === 'durable' ? 'durable' : 'memory',
       ...parseHealthHints(json),
+      // /health `features` (e.g. 'stop', 'longRun'); absent = none, so older hosts show nothing new.
+      features: Array.isArray(json?.features) ? json.features.filter(x => typeof x === 'string' && x) : [],
     };
   } catch {
     return OFFLINE;

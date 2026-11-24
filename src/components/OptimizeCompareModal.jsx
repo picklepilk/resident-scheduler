@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react'; // React in scope for the classic JSX runtime under vitest
 import { formatQualityValue } from '../lib/optimizeFlow.js';
 
 // Before/after compare for "Optimize on a solver machine". Presentational only: the parent computes
@@ -33,7 +33,7 @@ function CellList({ title, items, render, defaultOpen = false }) {
   );
 }
 
-export default function OptimizeCompareModal({ open, machineName, rows = [], diff, remainingErrors = [], bestOf = null, residentName = id => id, shiftLabel = id => id, onAccept, onDiscard }) {
+export default function OptimizeCompareModal({ open, machineName, rows = [], diff, remainingErrors = [], bestOf = null, stoppedEarly = null, residentName = id => id, shiftLabel = id => id, onAccept, onDiscard }) {
   const dialogRef = useRef(null);
   const acceptRef = useRef(null);
   const onDiscardRef = useRef(onDiscard);
@@ -73,6 +73,11 @@ export default function OptimizeCompareModal({ open, machineName, rows = [], dif
           <h2 className="text-base font-semibold text-gray-800">{title}</h2>
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4">
+          {stoppedEarly && (
+            <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700" data-testid="stopped-early">
+              {stoppedEarly}. This is the best schedule found up to that point.
+            </div>
+          )}
           {bestOf?.line && (
             <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800" data-testid="best-of-line">
               <div className="font-semibold">{bestOf.line}</div>

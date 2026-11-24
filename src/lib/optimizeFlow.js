@@ -2,6 +2,8 @@
 // Schedule maps are { residentId: { 'YYYY-MM-DD': shiftId } }. Summaries are
 // { errors, blockingWarnings, belowMin, aboveMax, quality: number[] } (lower is better everywhere).
 
+import { pickSolverTarget, selectBestOfMachines } from './solverPool.js';
+
 const isFilled = v => v !== undefined && v !== null && v !== '';
 
 function cellMap(sched) {
@@ -96,19 +98,104 @@ export function pickFewestChanges(candidates, current) {
   return best;
 }
 
-export function optimizeBudgetOptions() {
+// ─── HOST FEATURES + BUDGET CHOICES ─────────────────────────────────────────────────────────────
+// A solver host lists what it can do in /health `features` (strings). Absent / unknown = not available,
+// so an older host shows exactly the old menu.
+export const FEATURE_STOP = 'stop';
+export const FEATURE_LONG_RUN = 'longRun';
+export const BUDGET_LEVEL_OFF = 'leveloff';
+export const BUDGET_LONG = 'long';
+export const LEVEL_OFF_SECONDS = 900;   // "Until it levels off" budget (15 min max)
+export const LONG_RUN_SECONDS = 7200;   // "Long polish" budget (2 h); host needs config.longRun
+export const STANDARD_MAX_SECONDS = 1800; // what a host without longRun caps at
+
+export function parseFeatures(json) {
+  const f = json?.features;
+  return Array.isArray(f) ? f.filter(x => typeof x === 'string' && x) : [];
+}
+export const hasFeature = (features, name) => Array.isArray(features) && features.includes(name);
+// Features every listed machine has (Best-of needs all of them). No machines -> none.
+export function commonFeatures(featureLists) {
+  const lists = (Array.isArray(featureLists) ? featureLists : []).map(l => (Array.isArray(l) ? l : []));
+  if (!lists.length) return [];
+  return lists[0].filter(f => lists.every(l => l.includes(f)));
+}
+// Capabilities as booleans for the menu / submit: { stop, longRun }.
+export const capsFromFeatures = features => ({ stop: hasFeature(features, FEATURE_STOP), longRun: hasFeature(features, FEATURE_LONG_RUN) });
+
+export function optimizeBudgetOptions({ stop = false, longRun = false } = {}) {
   return [
     { value: 'auto', label: 'Auto' },
     ...[5, 10, 15, 30].map(m => ({ value: m, label: `${m} minutes` })),
+    ...(stop ? [{ value: BUDGET_LEVEL_OFF, label: 'Until it levels off (15 min max)' }] : []),
+    ...(longRun ? [{ value: BUDGET_LONG, label: 'Long polish (2 hours)' }] : []),
   ];
+}
+
+// A choice the current host cannot do falls back to Auto in the menu.
+export function budgetAvailable(value, caps = {}) {
+  if (value === BUDGET_LEVEL_OFF) return !!caps.stop;
+  if (value === BUDGET_LONG) return !!caps.longRun;
+  return true;
 }
 
 export function budgetSeconds(value, hostDefault) {
   const d = Number(hostDefault);
   const fallback = Number.isFinite(d) && d > 0 ? d : 300;
+  if (value === BUDGET_LEVEL_OFF) return LEVEL_OFF_SECONDS;
+  if (value === BUDGET_LONG) return LONG_RUN_SECONDS;
   if (value === 'auto' || value == null || value === '') return fallback;
   const m = Number(value);
   return Number.isFinite(m) && m > 0 ? m * 60 : fallback;
+}
+
+// What to submit for a budget choice on a host with `caps`. -> { seconds, config, autoStop, note }
+// `config` = extra solver config keys; `note` = text for the chief when the choice had to be reduced.
+export function optimizeRunPlan(value, hostDefault, caps = {}) {
+  if (value === BUDGET_LEVEL_OFF) {
+    return caps.stop
+      ? { seconds: LEVEL_OFF_SECONDS, config: {}, autoStop: true, note: null }
+      : { seconds: LEVEL_OFF_SECONDS, config: {}, autoStop: false, note: 'This machine cannot stop early, so it will use the full 15 minutes.' };
+  }
+  if (value === BUDGET_LONG) {
+    return caps.longRun
+      ? { seconds: LONG_RUN_SECONDS, config: { longRun: true }, autoStop: false, note: null }
+      : { seconds: STANDARD_MAX_SECONDS, config: {}, autoStop: false, note: 'This machine cannot do a 2-hour run, so it will use 30 minutes.' };
+  }
+  return { seconds: budgetSeconds(value, hostDefault), config: {}, autoStop: false, note: null };
+}
+
+// Button / hint text for the chosen budget (minutes already resolved by the caller).
+export function optimizeButtonLabel(budget, minutes) {
+  if (budget === BUDGET_LEVEL_OFF) return `Optimize (up to ${minutes} min)`;
+  if (budget === BUDGET_LONG) return 'Optimize (long polish, up to 2 h)';
+  return `Optimize (${minutes} min)`;
+}
+
+// "Stopped early at 4:12" from a finished result + job view; null when the run was not stopped early.
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+export function stoppedEarlyText(result, view) {
+  if (result?.report?.stoppedEarly !== true) return null;
+  const cands = [result?.report?.stoppedAtSeconds, result?.report?.elapsedSeconds, view?.elapsedSeconds, view?.progress?.elapsed];
+  const sec = cands.map(Number).find(n => Number.isFinite(n) && n > 0);
+  return sec ? `Stopped early at ${mmss(sec)}` : 'Stopped early';
+}
+
+// Targets for the menu: which features does the chosen machine (or every Best-of machine) offer?
+// preference = optimize target ('cloud' | 'local' | 'pool:<name>' | 'pool:best'); statuses = probe results.
+export function targetFeatures({ preference, localStatus = null, poolStatus = [], bestOfExtra = false }) {
+  if (preference === BEST_OF_TARGET) {
+    const sel = selectBestOfMachines(poolStatus, { includeExtra: bestOfExtra }).machines;
+    if (sel.length < 2) { // Best of falls back to the single usable machine
+      const one = sel[0] && poolStatus.find(m => m.name === sel[0].name);
+      return one?.features || [];
+    }
+    return commonFeatures(sel.map(m => poolStatus.find(p => p.name === m.name)?.features || []));
+  }
+  const pick = pickSolverTarget({ preference, localStatus, poolStatus });
+  if (!pick.url) return [];
+  const st = pick.usingLocal ? localStatus : poolStatus.find(m => m.url === pick.url);
+  return Array.isArray(st?.features) ? st.features : [];
 }
 
 // Only user-locked cells (block.lockedCells[rid][date] truthy) that hold a shift in block.schedule.
@@ -180,11 +267,11 @@ export function aggregateBestOfJobs(entries) {
   const per = (Array.isArray(entries) ? entries : []).map(({ machine, view }) => {
     if (!view) return { machine, status: 'running', error: null, result: null, progress: null };
     if (view.lost || view.status === 'lost') return { machine, status: 'lost', error: null, result: null, progress: null };
-    return { machine, status: String(view.status || 'running'), error: view.error || null, result: view.result ?? null, progress: view.progress || null };
+    return { machine, status: String(view.status || 'running'), error: view.error || null, result: view.result ?? null, progress: view.progress || null, ...(view.stopping === true ? { stopping: true } : {}), ...(Number.isFinite(Number(view.elapsedSeconds)) ? { elapsedSeconds: Number(view.elapsedSeconds) } : {}) };
   });
   if (!per.length) return 'lost';
   const progress = (per.find(p => p.status === 'running' && p.progress) || per.find(p => p.progress) || {}).progress || null;
-  if (per.some(p => !TERMINAL.has(p.status))) return { status: 'running', progress, perMachine: per };
+  if (per.some(p => !TERMINAL.has(p.status))) return { status: 'running', progress, perMachine: per, ...(per.some(p => p.stopping) ? { stopping: true } : {}) };
   const done = per.find(p => p.status === 'done');
   if (done) return { status: 'done', result: done.result, progress, perMachine: per };
   if (per.every(p => p.status === 'lost')) return 'lost';
