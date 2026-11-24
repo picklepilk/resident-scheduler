@@ -178,7 +178,9 @@ export async function runLive(opts) {
       if (res.status !== "INFEASIBLE" && res.schedule) finalGrid = AN.gridFromMap(residents, dates, AN.mapFromSchedule(res.schedule));
       emit(mi, "inc", { seq: ++seq, t: +(wall + 0.01).toFixed(2), stage: 0, tier: "final", objective: res.objective ?? null, d: AN.diffGrid(prevGrid, finalGrid) });
       const end = AN.tierVector(res.tiers), start = AN.extractHintTiers(res, tf);
-      const fin = { t: +(wall + 0.01).toFixed(2), status: res.status, jobStatus: st.status, tiers: end, startTiers: start, verdict: AN.verdictOf(start, end), wall: +wall.toFixed(2), cellsChanged: AN.cellsDiffer(hintGrid, finalGrid), lastImprovementT: AN.lastImprovementT(rm) };
+      const fin = { t: +(wall + 0.01).toFixed(2), status: res.status, jobStatus: st.status, tiers: end, startTiers: start, verdict: AN.verdictOf(start, end), wall: +wall.toFixed(2), cellsChanged: AN.cellsDiffer(hintGrid, finalGrid), lastImprovementT: AN.lastImprovementT(rm),
+        // compact slice of the solver report (no schedule data) for bench tooling: where the time went and what the search did
+        report: res.report ? Object.fromEntries(["timing", "hintRepair", "hintKept", "stoppedEarly", "outerLns", "stall"].filter((k) => res.report[k] != null).map((k) => [k, res.report[k]])) : null };
       emit(mi, "final", fin);
     } catch (e) {
       wall = rel();
