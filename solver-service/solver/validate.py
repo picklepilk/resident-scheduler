@@ -423,9 +423,8 @@ def _check_count_caps(payload: Payload, schedule: dict) -> list:
                 if sid in payload.shifts and date_pred(d) and shift_pred(sid)
             )
 
-        trauma_n = count(lambda sid: payload.shifts[sid].area == "TRAUMA")
-        if resident.caps.trauma is not None and trauma_n > resident.caps.trauma:
-            failures.append(_fail("traumaCap", [resident.id], [], [], f"{trauma_n} trauma, cap {resident.caps.trauma}"))
+        # `caps.trauma` (EM PGY-2/3 trauma cap) is SOFT since 2026-11-23: not a failure here; see
+        # solver/report/trauma_cap.py (`report.traumaCapExcess`) and objective.py's `traumaCapExcess` term.
 
         jc_n = count(
             lambda sid: timing.overlaps_hour_window(payload.shifts[sid], payload.jc_window_start_h, payload.jc_window_end_h),

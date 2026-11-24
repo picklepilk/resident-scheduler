@@ -1774,3 +1774,25 @@ ladder stage (weighted mode: empty list). `firstIncumbentSeconds` is recorded on
 attached anyway (progress sink, stall stop, shortlist), otherwise null: a bare solve stays callback-free.
 `presolveSeconds` is always null (CP-SAT exposes presolve time only through its search log, which stays off).
 Pass 2 (relaxed) results carry no `timing`.
+
+## EM PGY-2/3 trauma cap is SOFT (2026-11-23, owner)
+
+`caps.trauma` (shipped only for EM Home PGY-2/3; count = every TRAUMA-area shift, TRAUMA-D + TRAUMA-N, per block)
+was a hard count cap in `count_caps.py` and a pass-2 relaxable family (`traumaCap`). The app only raises a soft,
+non-blocking warn ("EM PGY-2/3 cap is 2/block"), and its generator sometimes places a 3rd, so a fresh draft failed
+the solver's strict hint check and switched off the warm start. Now:
+
+- Objective: one integer excess var per capped resident, `max(0, count - cap)`, weight `traumaCapExcess.perUnit`
+  (600, `config/default_weights.json`) in `TIER_QUALITY` (`objective._add_trauma_cap_excess_term`). 600 sits above
+  `traumaSecondInRun` (400) and equals `seniorTruePrimary`/`podEmComposition`.
+- Removed: the hard constraint, `SPEC_TO_RULE["trauma"]`, `traumaCap` in `elastic.RELAXABLE_POLICY_CAP_FAMILIES`
+  (no relaxation literal; relaxed results never report `traumaCap`), and the `validate.py` failure. A hint with 3
+  trauma shifts for an EM PGY-2 now evaluates feasible (pins, floor and repair apply as for any feasible hint).
+- Still hard, unchanged: at most 2 TRAUMA-N per night run (`trauma_runs.py`), TRAUMA-D rotation-only eligibility,
+  the Trauma/Peds split halves (`traumaPedsSplit`), locked cells.
+- Report: `report.traumaCapExcess = [{residentId, count, cap}]` for residents over the cap in the returned schedule
+  (`[]` when none); on strict, relaxed and score results (`solver/report/trauma_cap.py`).
+- Known drift: `src/lib/scheduleQuality.js` does NOT penalise a 3rd trauma shift (only `traumaRunPenalty`, the
+  second TRAUMA-N in a night run), and the JS quality tuple is a ratchet, so no JS term was added. The solver
+  therefore minimises a quality-tier cost the app's `betterQuality` cannot see; `pickEngineResult` is unaffected
+  (the validator's cap warn is non-blocking). JS `SOLVER_RELAXED_NONBLOCKING_FAMILIES` dropped `traumaCap`.

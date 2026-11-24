@@ -261,8 +261,6 @@ def _assigned_count_for_cap(payload: Payload, schedule: dict, resident_id: str, 
     def count(shift_pred, date_pred=lambda d: True):
         return sum(1 for d, sid in by_date.items() if sid in payload.shifts and date_pred(d) and shift_pred(sid))
 
-    if rule == "traumaCap":
-        return count(lambda sid: payload.shifts[sid].area == "TRAUMA")
     if rule == "jcCap":
         return count(
             lambda sid: timing.overlaps_hour_window(payload.shifts[sid], payload.jc_window_start_h, payload.jc_window_end_h),

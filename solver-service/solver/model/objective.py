@@ -399,6 +399,30 @@ def _add_night_excess_term(model, payload: Payload, store: VarStore, group: Term
         group.add(coef, excess)
 
 
+# ---- traumaCapExcess: EM PGY-2/3 trauma cap is SOFT (owner 2026-11-23, matches the app's non-blocking warn) ----
+#
+# `caps.trauma` (only shipped for EM Home PGY-2/3) used to be a hard count cap. Now each TRAUMA-area shift
+# (TRAUMA-D + TRAUMA-N, the same count as the app's validator) above the cap costs `traumaCapExcess.perUnit` (600:
+# above traumaSecondInRun 400, equal to seniorTruePrimary/podEmComposition, so a 3rd trauma shift is clearly
+# discouraged but can buy a coverage minimum or a target, which sit in higher tiers). No hard ceiling above the
+# cap: the other hard trauma rules (<=2 TRAUMA-N per night run, TRAUMA-D rotation-only eligibility, the
+# Trauma/Peds split halves) still bound the count.
+def _add_trauma_cap_excess_term(model, payload: Payload, store: VarStore, group: TermGroup, weights: dict) -> None:
+    coef = int((weights.get("traumaCapExcess") or {}).get("perUnit", 0))
+    if coef <= 0:
+        return
+    for resident in payload.residents:
+        cap = resident.caps.trauma
+        if cap is None:
+            continue
+        terms = terms_for(payload, store, resident.id, lambda sid: payload.shifts[sid].area == "TRAUMA", lambda d: True)
+        if len(terms) <= cap:
+            continue
+        excess = model.new_int_var(0, len(terms) - cap, f"trauma_cap_excess[{resident.id}]")
+        model.add(excess >= sum(terms) - cap)
+        group.add(coef, excess)
+
+
 # ---- overstaffCoverage: last-resort +1-over-max, mirrors the JS repair
 # pass's Phase 5 `underTargetOverstaff` (see coverage.py's own module
 # docstring for the full policy). `overstaffCoverage.perUnit` (2000, see
@@ -1176,6 +1200,7 @@ def build_objective(model, payload: Payload, store: VarStore, coverage_result: C
     _add_short_night_stint_term(model, payload, store, tier_quality, weights)
     _add_band8_terms(model, payload, store, tier_quality, weights)
     _add_trauma_run_batch2_terms(model, payload, store, tier_quality, weights)
+    _add_trauma_cap_excess_term(model, payload, store, tier_quality, weights)
     _add_em_composition_round2b_terms(model, payload, store, tier_quality, weights)
     _add_true_primary_preference_term(model, payload, store, tier_quality, weights)
     _add_dow_preference_term(payload, store, tier_quality, weights)
