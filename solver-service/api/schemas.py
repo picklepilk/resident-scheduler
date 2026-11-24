@@ -204,3 +204,5 @@ class HealthResponse(BaseModel):
     host: Optional[str] = None
     preferJobs: Optional[bool] = None
     defaultBudgetSeconds: Optional[int] = None
+    # Optional capabilities of this host (see api/main.py health()); absent on old hosts.
+    features: Optional[list[str]] = None

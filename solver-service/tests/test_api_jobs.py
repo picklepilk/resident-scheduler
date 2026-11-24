@@ -49,7 +49,7 @@ def _isolated_state(monkeypatch):
     ratelimit_module.reset_rate_limiter()
 
 
-def _fast_solve(payload, cancel_event=None):
+def _fast_solve(payload, cancel_event=None, stop_event=None):
     return _FAKE_RESULT
 
 
@@ -92,7 +92,7 @@ def test_poll_unknown_job_is_404(monkeypatch):
 
 
 def test_failed_job_reports_error(monkeypatch):
-    def _boom(payload, cancel_event=None):
+    def _boom(payload, cancel_event=None, stop_event=None):
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(jobs_module, "solve", _boom)
@@ -112,7 +112,7 @@ def test_cancel_stops_a_running_job(monkeypatch):
     Actual CpSolver.stop_search() wiring is covered by
     test_begin_stoppable_run_registers_solver below.
     """
-    def _slow_solve(payload, cancel_event=None):
+    def _slow_solve(payload, cancel_event=None, stop_event=None):
         for _ in range(100):
             if cancel_event is not None and cancel_event.is_set():
                 break
@@ -151,7 +151,7 @@ def test_cancel_an_already_done_job_is_a_noop(monkeypatch):
 
 
 def test_second_concurrent_submit_is_409(monkeypatch):
-    def _slow_solve(payload, cancel_event=None):
+    def _slow_solve(payload, cancel_event=None, stop_event=None):
         time.sleep(0.5)
         return _FAKE_RESULT
 

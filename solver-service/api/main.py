@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from api.auth import AuthResult, validate_startup_config
 from api.concurrency import solve_slot
-from api.jobs import jobs_backend_name, router as jobs_router
+from api.jobs import get_backend, jobs_backend_name, router as jobs_router
 from api.limits import MaxBodySizeMiddleware
 from solver.runner import runner_info
 from api.pna import PrivateNetworkAccessMiddleware
@@ -97,6 +97,12 @@ def health() -> dict:
         # Modal scales out (no one-at-a-time slot), so never busy there.
         "busy": False if jobs_backend_name() == "modal" else solve_slot.locked(),
     }
+    # `features`: what THIS backend really supports (stop = POST /jobs/{id}/stop, longRun = config.longRun
+    # budgets up to 7200 s, durableJobs = finished jobs survive a restart). The app shows buttons from it.
+    try:
+        out["features"] = get_backend().feature_list()
+    except Exception:  # pragma: no cover -- /health must never fail
+        out["features"] = []
     # Optional host hints (SOLVER_HOST_KIND=pi or pc; any non-empty value is echoed as `host`): `host` names the box so the app can label it,
     # `defaultBudgetSeconds` is the Generate budget it should use, `preferJobs` asks the app to
     # submit-then-poll (/jobs) instead of one long synchronous /solve. `jobs` stays truthful.
