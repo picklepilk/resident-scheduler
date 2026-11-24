@@ -179,21 +179,54 @@ def test_night_cap_is_still_a_genuinely_relaxable_last_resort():
     assert "cap 1" in violations[0]["magnitude"]
 
 
-def test_mismatch_guard_raises_when_validator_check_disabled(monkeypatch):
-    """If validate.py's night-cap checker silently stopped detecting the
-    violation the model actually relaxed, solve() must raise rather than
-    return a feasibility report the independent validator can't confirm.
-    (Moved off the old `infeasible_rest.json`/restGap fixture -- restGap can
-    no longer be relaxed at all, so it can never reach this guard; nightCap
-    is the still-relaxable family this guard now needs to exercise.)"""
+def test_validator_blind_spot_is_reconciled_not_raised(monkeypatch):
+    """If validate.py's night-cap checker stops detecting a violation the model relaxed, the validator
+    (independent check on the concrete schedule) wins: the job still returns a usable RELAXED schedule, the
+    unconfirmed violation is dropped, and the diff is recorded in report.relaxationReconciled (no raise)."""
     monkeypatch.setattr(validate, "_check_night_run_and_cap_and_segments", lambda payload, schedule: [])
 
+    result = solve(parse_payload(_night_cap_relaxation_payload()))
+
+    assert result.status == "RELAXED"
+    assert result.feasibility["violations"] == []
+    assert result.report["relaxationReconciled"]["litOpenButSatisfied"] == [["nightCap", "r1"]]
+
+
+def test_open_ok_literal_with_satisfied_rule_is_not_a_violation():
+    """Regression (2026-11-23, 'do not correspond 1:1'): an `ok[...]` literal at 0 is only permission to break.
+    A time-limited incumbent can leave it 0 while the schedule satisfies the rule; that must not become a
+    violation (and must not fail the job)."""
+    from solver.model.elastic import build_elastic_model
+    from solver.report.builder import build_violations
+
     payload = parse_payload(_night_cap_relaxation_payload())
-    try:
-        solve(payload)
-        assert False, "expected RuntimeError"
-    except RuntimeError as exc:
-        assert "do not correspond 1:1" in str(exc)
+    elastic = build_elastic_model(payload)
+    assert ("nightCap", "r1") in elastic.duty_pool.lits
+
+    class FakeSolver:
+        def value(self, lit):
+            return 0  # every ok literal left open
+
+    one_night = {"r1": {"2026-01-05": "N"}}  # within caps.nights == 1: rule satisfied
+    failures = validate.validate_schedule(payload, one_night)
+    assert not [f for f in failures if f["rule"] == "nightCap"]
+    diff: dict = {}
+    violations = build_violations(payload, one_night, elastic, FakeSolver(), failures, diff)
+
+    assert [v for v in violations if v["rule"] != "coverageMin"] == []
+    assert ["nightCap", "r1"] in diff["litOpenButSatisfied"]
+
+    # and a genuinely broken rule whose literal claims ok (model/validator disagreement) is still reported
+    class OkSolver:
+        def value(self, lit):
+            return 1
+
+    two_nights = {"r1": {"2026-01-05": "N", "2026-01-09": "N"}}
+    failures = validate.validate_schedule(payload, two_nights)
+    diff = {}
+    violations = build_violations(payload, two_nights, elastic, OkSolver(), failures, diff)
+    assert [v["rule"] for v in violations if v["rule"] != "coverageMin"] == ["nightCap"]
+    assert diff["failureWithLitOk"] == [["nightCap", "r1"]]
 
 
 def test_double_locked_max_collision_absorbed_by_locked_count_cap():

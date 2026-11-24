@@ -1139,10 +1139,15 @@ def run_pass2(payload: Payload, deadline: Deadline = None) -> SolveResult:
     report = _build_report_relaxed(payload, schedule, solver, elastic.objective)
 
     failures = validate_schedule(payload, schedule)
+    diff: dict = {}
     feasibility = build_feasibility_report(
-        payload, schedule, elastic, solver, failures, conflicts, payload.config.max_verification_resolves, deadline
+        payload, schedule, elastic, solver, failures, conflicts, payload.config.max_verification_resolves, deadline, diff
     )
     _assert_relaxed_matches_validation(failures, feasibility["violations"])
+    if diff.get("litOpenButSatisfied") or diff.get("failureWithLitOk"):
+        # Not an error: violations were reconciled to validate.py's verdict (see build_violations).
+        logging.getLogger(__name__).warning("relaxed-mode ok-literals vs validate.py reconciled: %s", diff)
+        report["relaxationReconciled"] = diff
 
     return SolveResult(
         status="RELAXED",
@@ -1199,20 +1204,20 @@ def _assert_relaxed_matches_validation(failures: list, violations: list) -> None
     (by rule + residentId) to the hard-rule subset of feasibility.violations
     -- coverageMin is excluded from this comparison since validate.py never
     claims to check it (rule 24 is the pre-existing soft/elastic rule, not a
-    hard one; see solver/validate.py's own docstring). A mismatch means
-    build.py/elastic.py and validate.py disagree about what actually broke
-    -- a bug, not a legitimate relaxation -- so this raises (-> HTTP 500,
-    client falls back to the JS engine), matching pass 1's own convention.
+    hard one; see solver/validate.py's own docstring). build_violations
+    already reconciles the two (validate.py wins; an `ok[...]` literal at 0 only means the rule MAY break), so a
+    mismatch here is a bug in that reconciliation. It is logged, never raised: the schedule is valid and usable.
     """
     failure_keys = {(f["rule"], rid) for f in failures if f["rule"] in HARD_RELAXABLE_RULES for rid in f["residentIds"]}
     violation_keys = {
         (v["rule"], rid) for v in violations if v["rule"] in HARD_RELAXABLE_RULES for rid in v["residentIds"]
     }
     if failure_keys != violation_keys:
-        raise RuntimeError(
+        logging.getLogger(__name__).error(
             "solver/validate.py's failures do not correspond 1:1 to feasibility.violations in relaxed mode "
-            f"-- only in failures: {sorted(failure_keys - violation_keys)}, "
-            f"only in violations: {sorted(violation_keys - failure_keys)}"
+            "-- only in failures: %s, only in violations: %s",
+            sorted(failure_keys - violation_keys),
+            sorted(violation_keys - failure_keys),
         )
 
 

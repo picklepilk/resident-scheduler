@@ -41,20 +41,37 @@ MIN_VERIFY_TIME_SECONDS = 1.0
 # violations
 # ---------------------------------------------------------------------------
 
-def build_violations(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list) -> list:
+def build_violations(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list, diff: dict = None) -> list:
+    """validate.py's failures on the concrete schedule are the source of truth for which relaxable rules
+    are actually broken. An `ok[...]` literal at 0 is only PERMISSION to break: a time-limited (non-optimal)
+    incumbent -- typical with a hint-seeded run -- can leave it 0 while the schedule satisfies the rule, so a
+    lit==0 group with no matching failure is NOT a violation and is dropped. Conversely a failure whose literal
+    is 1 (model/validator disagreement) is still reported. Both cases are recorded in `diff` (optional out-param)."""
     failures_by_key = _index_failures(failures)
     violations = []
+    seen = set()
+    dropped = []
 
-    for (family, resident_id), lit in elastic.duty_pool.lits.items():
-        if solver.value(lit) == 1:
-            continue
-        violations.append(_violation_from_group(family, resident_id, failures_by_key.get((family, resident_id), [])))
+    for pool in (elastic.duty_pool, elastic.cap_pool):
+        for (family, resident_id), lit in pool.lits.items():
+            if solver.value(lit) == 1:
+                continue
+            group = failures_by_key.get((family, resident_id), [])
+            if not group and family in HARD_RELAXABLE_RULES:
+                dropped.append([family, resident_id])
+                continue
+            seen.add((family, resident_id))
+            violations.append(_violation_from_group(family, resident_id, group))
 
-    for (family, resident_id), lit in elastic.cap_pool.lits.items():
-        if solver.value(lit) == 1:
-            continue
-        violations.append(_violation_from_group(family, resident_id, failures_by_key.get((family, resident_id), [])))
+    added = []
+    for (rule, resident_id), group in sorted(failures_by_key.items()):
+        if rule in HARD_RELAXABLE_RULES and (rule, resident_id) not in seen:
+            added.append([rule, resident_id])
+            violations.append(_violation_from_group(rule, resident_id, group))
 
+    if diff is not None:
+        diff["litOpenButSatisfied"] = sorted(dropped)
+        diff["failureWithLitOk"] = sorted(added)
     violations.extend(_coverage_violations(payload, schedule))
     return violations
 
@@ -338,8 +355,8 @@ def _apply_target_edit(raw: dict, resident_id: str, new_target: int) -> dict:
 # top-level report + raw round-trip
 # ---------------------------------------------------------------------------
 
-def build_feasibility_report(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list, conflicts: list, max_resolves: int, deadline=None) -> dict:
-    violations = build_violations(payload, schedule, elastic, solver, failures)
+def build_feasibility_report(payload: Payload, schedule: dict, elastic: ElasticBuildResult, solver, failures: list, conflicts: list, max_resolves: int, deadline=None, diff: dict = None) -> dict:
+    violations = build_violations(payload, schedule, elastic, solver, failures, diff)
     recommendations = build_recommendations(payload, schedule, violations, max_resolves, deadline)
     return {"mode": "relaxed", "violations": violations, "conflicts": conflicts, "recommendations": recommendations}
 
