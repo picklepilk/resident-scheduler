@@ -36,7 +36,8 @@ from ortools.sat.python import cp_model
 
 NEIGHBORHOODS = ("window", "residents", "shiftWindow", "worstTerms")
 # Opt-in extras (config.outerLns.neighborhoods / eligibilityGroup); absent = the four above only.
-OPTIONAL_NEIGHBORHOODS = ("eligibilityGroup",)
+# nightCleanup / qualityWorst (2026-11-23): quality-tier-aware, see _Neighborhoods.night_cleanup / quality_worst.
+OPTIONAL_NEIGHBORHOODS = ("eligibilityGroup", "nightCleanup", "qualityWorst")
 
 DEFAULT_FRACTION = 0.5
 DEFAULT_SUB_SOLVE_SECONDS = 5.0
@@ -52,6 +53,8 @@ class OuterLnsConfig:
     sub_workers: int = 0  # CP-SAT workers per sub-solve; 0 = same as the main solve (see run_outer_lns)
     neighborhoods: tuple = ()  # opt-in extra neighborhood names (subset of OPTIONAL_NEIGHBORHOODS)
     parallel: int = 1  # concurrent sub-solves on disjoint neighborhoods; 1 = serial (see run_outer_lns)
+    shrink_on_timeout: bool = False  # shrink a neighborhood's scale when a sub-solve ends FEASIBLE with no strict gain
+    skip: tuple = ()  # neighborhood names dropped from the active set (defaults and extras alike)
 
 
 def parse_outer_lns(raw) -> OuterLnsConfig:
@@ -95,6 +98,8 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         sub_workers=_int("subWorkers", 0, 0, 1024),
         parallel=_int("parallel", 1, 1, 8),
         neighborhoods=tuple(extras),
+        shrink_on_timeout=raw.get("shrinkOnTimeout") is True,
+        skip=tuple(n for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS if isinstance(raw.get("skip"), (list, tuple)) and n in raw["skip"]),
     )
 
 
@@ -120,6 +125,8 @@ class _Neighborhoods:
         # shrink when the sub-solve found nothing in its limit).
         self.scale = {n: 1.0 for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS}
         self._slots: dict = {}  # rid -> set of (shift, date) the resident could take (x keys exist)
+        self._cleanup_queue: list = []  # nightCleanup rotation: stints still to visit this cycle
+        self._night_exempt = {r.id for r in payload.residents if getattr(r, "night_exempt", False)}
 
     def _shift_attr(self, sid, attr):
         s = self.payload.shifts.get(sid)
@@ -224,8 +231,168 @@ class _Neighborhoods:
             free.update(self.by_resident.get(r, []))
         return free
 
+    # ---- quality-tier-aware neighborhoods (opt-in) ----
+
+    @staticmethod
+    def _values(solution):
+        """Solution vector from a CpSolver (response_proto.solution) or a plain sequence."""
+        proto = getattr(solution, "response_proto", None)
+        return proto.solution if proto is not None else solution
+
+    def _night_runs(self, vals) -> dict:
+        """rid -> list of (start_idx, end_idx) maximal night runs in block date order (night[] vars)."""
+        runs: dict = {}
+        D = len(self.dates)
+        for rid in self.rids:
+            if rid in self._night_exempt:
+                continue
+            cur = None
+            out = []
+            for i, d in enumerate(self.dates):
+                nv = self.store.night.get((rid, d))
+                on = nv is not None and int(vals[nv.index]) == 1
+                if on and cur is None:
+                    cur = i
+                elif not on and cur is not None:
+                    out.append((cur, i - 1))
+                    cur = None
+            if cur is not None:
+                out.append((cur, D - 1))
+            if out:
+                runs[rid] = out
+        return runs
+
+    def night_stints(self, solution) -> list:
+        """Interior night stints of length 1 or 2 (the ones the objective charges: isolatedNight for 1,
+        shortNightStint for 2; edge runs touching the block's first/last date are exempt there, so skipped
+        here). Sorted list of (rid, start_idx, end_idx)."""
+        vals = self._values(solution)
+        D = len(self.dates)
+        found = []
+        for rid, runs in self._night_runs(vals).items():
+            for a, b in runs:
+                if b - a + 1 <= 2 and a >= 1 and b <= D - 2:
+                    found.append((rid, a, b))
+        return sorted(found)
+
+    def night_cleanup(self, solution) -> set:
+        """Free the resident's cells for +/- pad days around one short night stint plus the cells (same days)
+        of other residents holding a night in that window. pad = round(3 * scale), other-resident cap =
+        max(2, round(8 * scale)). Stints are visited in a seeded-shuffled rotation (each stint once per cycle)."""
+        stints = self.night_stints(solution)
+        if not stints:
+            return self.window(solution)  # nothing to clean: behave like a plain window move
+        live = set(stints)
+        self._cleanup_queue = [t for t in self._cleanup_queue if t in live]
+        if not self._cleanup_queue:
+            self._cleanup_queue = list(stints)
+            self.rng.shuffle(self._cleanup_queue)
+        rid, a, b = self._cleanup_queue.pop()
+        scale = self.scale["nightCleanup"]
+        pad = max(1, round(3 * scale))
+        lo, hi = max(0, a - pad), min(len(self.dates) - 1, b + pad)
+        win = set(self.dates[lo:hi + 1])
+        vals = self._values(solution)
+        holders = []
+        for r in self.rids:
+            if r == rid or r in self._night_exempt:
+                continue
+            if any(int(vals[self.store.night[(r, d)].index]) == 1 for d in win if (r, d) in self.store.night):
+                holders.append(r)
+        cap = max(2, round(8 * scale))
+        if len(holders) > cap:
+            self.rng.shuffle(holders)
+            holders = holders[:cap]
+        group = {rid, *holders}
+        return {k for r in group for k in self.by_resident.get(r, []) if k[2] in win}
+
+    def quality_pain(self, solution) -> dict:
+        """PROXY for each resident's quality-tier contribution, derived from the incumbent grid (the objective
+        builder keeps only flat (coef, expr) lists, no per-resident attribution). Units match the solver weights
+        (`objective.weights`, defaults 300/60/300|100/100/100/25/12): isolated interior night, short interior
+        night stint (len 2..4), extra night runs (avoidable vs forced), isolated single work day, work runs
+        beyond ceil(worked/6), interior 2-day work runs, area changes inside interior work runs.
+        Residents with no pain are absent."""
+        W = getattr(self.objective, "weights", None) or {}
+
+        def w(key, sub, default):
+            try:
+                return int(W[key][sub])
+            except (KeyError, TypeError, ValueError):
+                return default
+
+        iso_n, short_n = w("isolatedNight", "perUnit", 300), w("shortNightStint", "perUnit", 60)
+        frag_av, frag_fo = w("nightFragment", "avoidableCost", 300), w("nightFragment", "forcedCost", 100)
+        iso_w, frag_w = w("workShape", "isolatedCost", 100), w("workShape", "fragmentCost", 100)
+        pair_w, churn_w = w("workShape", "pairRunCost", 25), w("workShape", "areaChurnCost", 12)
+        vals = self._values(solution)
+        D = len(self.dates)
+        area_on: dict = {}  # (rid, date) -> area of a shift held
+        for (rid, sid, d), var in self.store.x.items():
+            if int(vals[var.index]) == 1 and d in self.date_index:
+                area_on[(rid, d)] = self._shift_attr(sid, "area")
+        pain: dict = {}
+        for rid, runs in self._night_runs(vals).items():
+            total = sum(b - a + 1 for a, b in runs)
+            p = 0
+            for a, b in runs:
+                n = b - a + 1
+                if a >= 1 and b <= D - 2:
+                    if n == 1:
+                        p += iso_n
+                    elif n < 5:
+                        p += short_n * (5 - n)
+            if len(runs) > 1:
+                p += (len(runs) - 1) * (frag_av if total <= 6 else frag_fo)
+            if p:
+                pain[rid] = p
+        for rid in self.rids:
+            works = [(rid, d) in area_on or (self.store.work.get((rid, d)) is not None and int(vals[self.store.work[(rid, d)].index]) == 1) for d in self.dates]
+            runs, i = [], 0
+            while i < D:
+                if works[i]:
+                    j = i
+                    while j + 1 < D and works[j + 1]:
+                        j += 1
+                    runs.append((i, j))
+                    i = j + 1
+                else:
+                    i += 1
+            p = 0
+            worked = sum(b - a + 1 for a, b in runs)
+            for a, b in runs:
+                n = b - a + 1
+                if n == 1:
+                    p += iso_w
+                if n == 2 and a >= 1 and b <= D - 2:
+                    p += pair_w
+                if a >= 1 and b <= D - 2:
+                    for k in range(a, b):
+                        x1, x2 = area_on.get((rid, self.dates[k])), area_on.get((rid, self.dates[k + 1]))
+                        if x1 is not None and x2 is not None and x1 != x2:
+                            p += churn_w
+            p += max(0, len(runs) - (-(-worked // 6))) * frag_w
+            if p:
+                pain[rid] = pain.get(rid, 0) + p
+        return pain
+
+    def quality_worst(self, solution) -> set:
+        """Like worstTerms, ranked by `quality_pain`: anchor among the worst few, same-cohort preference."""
+        pain = self.quality_pain(solution)
+        if not pain:
+            return self.residents(solution)
+        size = round(self.rng.randint(4, 6) * self.scale["qualityWorst"])
+        ranked = sorted(pain, key=lambda r: (-pain[r], r))
+        group = self._group(ranked[: max(2, size // 2)], size)
+        free: set = set()
+        for r in group:
+            free.update(self.by_resident.get(r, []))
+        return free
+
     def pick(self, name: str, solution) -> set:
         return {
+            "nightCleanup": self.night_cleanup,
+            "qualityWorst": self.quality_worst,
             "eligibilityGroup": self.eligibility_group,
             "window": self.window,
             "residents": self.residents,
@@ -263,6 +430,8 @@ def run_outer_lns(
     sub_workers: int = 0,
     parallel: int = 1,
     neighborhoods: tuple = (),
+    shrink_on_timeout=None,
+    skip=None,
 ):
     """Improve `solver`'s incumbent until `deadline` (a `time.time()` value). Returns `(solver, report)`:
     `solver` is the CpSolver holding the best solution (the input one if nothing was accepted) and `report`
@@ -295,6 +464,13 @@ def run_outer_lns(
     tiers re-evaluated; infeasible or not strictly better than the best single sub-solution => fall back to
     that best single one). So the accepted incumbent is always a real solver solution that lexicographically
     beats the previous incumbent.
+
+    `neighborhoods` adds opt-in extras (eligibilityGroup, nightCleanup, qualityWorst). `skip` (names) drops
+    neighborhoods from the active set, defaults included (ignored if it would empty the set).
+    `shrink_on_timeout` shrinks a neighborhood's scale (x0.8, min 0.4) when its sub-solve ends FEASIBLE
+    (not proven OPTIMAL) without a strict gain. Both default to `payload.config.outer_lns` (None = read
+    from there; solve.py passes only `neighborhoods`). `report["timing"]` = {fixSeconds, solveSeconds,
+    otherSeconds}; no presolve split (CP-SAT exposes none without parsing its log).
     """
     model = build_result.model
     store = build_result.store
@@ -304,7 +480,16 @@ def run_outer_lns(
     def _tier_values(slv) -> dict:
         return {n: round(slv.value(objective.stage_exprs[n])) for n in stage_names}
 
-    stats = {n: {"tried": 0, "accepted": 0, "gain": 0, "seconds": 0.0} for n in NEIGHBORHOODS + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()))}
+    cfg_outer = getattr(getattr(payload, "config", None), "outer_lns", None)
+    if shrink_on_timeout is None:
+        shrink_on_timeout = bool(getattr(cfg_outer, "shrink_on_timeout", False))
+    if skip is None:
+        skip = tuple(getattr(cfg_outer, "skip", ()) or ())
+    active = tuple(n for n in NEIGHBORHOODS if n not in skip) + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()) and n not in skip)
+    if not active:  # skip would empty the set: ignore it
+        active = NEIGHBORHOODS + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()))
+    stats = {n: {"tried": 0, "accepted": 0, "gain": 0, "seconds": 0.0} for n in active}
+    t_fix = t_solve = 0.0
     parallel = max(1, min(8, int(parallel or 1)))
     sub_workers = max(0, int(sub_workers or 0))
     quality_expr = objective.stage_exprs[quality_name]
@@ -454,10 +639,13 @@ def run_outer_lns(
         if progress is not None:
             progress.set_best(float(incumbent_tiers[quality_name]))
         runs = []
+        t_a = time.time()
         for j, (name, free, it) in enumerate(batch):
             _set_domains(subs[j], free)
             _set_hint(subs[j])
             runs.append(_make_solver(max(0.2, min(sub_solve_seconds, remaining)), seed + it))
+        t_fix += time.time() - t_a
+        t_a = time.time()
         out: list = [None] * len(batch)
         if len(batch) == 1:
             _run_one(runs[0], subs[0], out, 0)
@@ -467,6 +655,7 @@ def run_outer_lns(
                 t.start()
             for t in threads:
                 t.join()
+        t_solve += time.time() - t_a
 
         improving = []  # (new_ord, new_tiers, slv, j)
         for j, (name, free, it) in enumerate(batch):
@@ -483,6 +672,8 @@ def run_outer_lns(
                     improving.append((new_ord, new_tiers, slv, j))
                 elif status_name == "OPTIMAL":
                     hood.scale[name] = min(2.5, hood.scale[name] * 1.25)  # proven no gain here: look wider
+                elif shrink_on_timeout:
+                    hood.scale[name] = max(0.4, hood.scale[name] * 0.8)  # timed out (FEASIBLE) without gain: look smaller
             else:
                 hood.scale[name] = max(0.4, hood.scale[name] * 0.8)  # nothing found in the limit: look smaller
         if not improving:
@@ -535,7 +726,13 @@ def run_outer_lns(
         report["parallel"] = parallel
         report["mergedBatches"] = merged_batches
     report["endObjective"] = incumbent_tiers[quality_name]
+    report["scales"] = {n: round(hood.scale[n], 3) for n in stats}  # final per-neighborhood size multipliers
     if all_mode:
         report["endTiers"] = dict(incumbent_tiers)
     report["seconds"] = round(time.time() - t_start, 2)
+    report["timing"] = {
+        "fixSeconds": round(t_fix, 2),
+        "solveSeconds": round(t_solve, 2),
+        "otherSeconds": round(max(0.0, time.time() - t_start - t_fix - t_solve), 2),
+    }
     return incumbent_solver, report

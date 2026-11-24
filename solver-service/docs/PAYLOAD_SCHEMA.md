@@ -1709,3 +1709,21 @@ Fix (`solver/solve.py`, `solver/model/hint_pin.py`):
 - Durable finished jobs (in-memory backend only): one file `<jobId>.json` per job in `SOLVER_JOBS_DIR` (default `<SOLVER_RUNLOG_DIR>/jobs` if the run log is on, else `%LOCALAPPDATA%\resident-solver\jobs` on Windows / `$XDG_DATA_HOME|~/.local/share/resident-solver/jobs`). A dir inside the git repo tree, or one that cannot be created/written, disables persistence (one log warning; memory-only). File = `{v:1,id,owner,state,createdAt,startedAt,finishedAt,budgetSeconds,result,error}`, written atomically (`.tmp` + `os.replace`). A `queued` marker is written at submit and replaced by the result at finish (`done`/`failed`); a cancelled job's file is deleted. On first backend use files younger than 24 h are loaded; a marker still `queued`/`running` becomes status `lost` (rewritten as `lost`). Persisted jobs live 24 h (non-persisted: 2 h); the opportunistic sweep deletes expired files and stale `.tmp`. Owner is stored and still enforced. The dir holds schedule data: not served by any route.
 - `config.longRun: true` (literal `true` only) raises the `maxTimeSeconds` clamp from 1800 to 7200 (and `deadlineSeconds` from 1860 to 7260). Without it behavior is unchanged. `POST /jobs` returns 400 `long_run_not_supported` when the budget exceeds the backend's ceiling (memory 7200, Modal 1800: its function timeout is 35 min). `/solve` also accepts it (synchronous; not recommended).
 - `GET /health` gains `features` (list, absent on old hosts): memory backend `["stop","longRun"]` plus `"durableJobs"` when the store dir is usable; Modal `["durableJobs"]`.
+
+## Outer LNS targeting options (2026-11-23, `solver/lns_outer.py`)
+
+All opt-in; absent = behaviour unchanged (the default neighbourhood sequence for a fixed seed is identical to before).
+
+`config.outerLns`:
+- `neighborhoods: [...]` also accepts `"nightCleanup"` and `"qualityWorst"` (besides `"eligibilityGroup"`). Unknown names are dropped.
+- `skip: [...]` drops neighbourhoods by name from the active set, defaults included (`window`, `residents`, `shiftWindow`, `worstTerms`, plus extras). Ignored if it would leave nothing active.
+- `shrinkOnTimeout: false` (literal `true` enables). A sub-solve that ends FEASIBLE (not proven OPTIMAL) without a strict gain multiplies that neighbourhood's scale by 0.8 (floor 0.4). Today the scale only shrinks on a no-solution status, which practically never happens.
+
+Neighbourhoods:
+- `nightCleanup`: finds each non-`nightExempt` resident's INTERIOR night stints of length 1 or 2 in the incumbent (the ones `isolatedNight` / `shortNightStint` charge; runs touching the block's first or last date are exempt in the objective, so skipped). Visits stints in a seeded-shuffled rotation (each live stint once per cycle). Free set = that resident's cells for +/- `round(3*scale)` days around the stint, plus the cells (same days) of other residents holding a night in that window (cap `max(2, round(8*scale))`, random pick beyond). No stints: behaves like `window`.
+- `qualityWorst`: like `worstTerms`, but ranks residents by `quality_pain`, a PROXY derived from the incumbent grid (the objective keeps only flat `(coef, expr)` lists, no per-resident attribution): isolated interior night, short interior night stint (len 2..4), extra night runs (avoidable vs forced), isolated work day, work runs beyond `ceil(worked/6)`, interior 2-day work runs, area changes inside interior work runs, at the solver's weights (`objective.weights`, defaults when absent). Anchor among the worst `max(2, size//2)`, group filled with same-cohort preference, whole block freed. No pain: behaves like `residents`.
+
+Report (`report.outerLns`), additive:
+- `timing: {fixSeconds, solveSeconds, otherSeconds}`: time rewriting domains/hints and building sub-solvers, wall time inside the (possibly parallel) `solver.solve` calls, and the remainder of the loop. No `presolveSeconds`: CP-SAT does not expose presolve time outside its log output.
+- `scales: {name: float}`: final per-neighbourhood size multipliers.
+- `byNeighborhood` carries the new names (when enabled) with the usual `{tried, accepted, gain, seconds}`.
