@@ -257,6 +257,7 @@ def run_outer_lns(
     seed: int,
     progress=None,
     cancel_event=None,
+    stop_event=None,
     proven_optimal: bool = False,
     tiers: str = "quality",
     sub_workers: int = 0,
@@ -428,6 +429,8 @@ def run_outer_lns(
         if remaining < 0.3:
             break
         if cancel_event is not None and cancel_event.is_set():
+            break
+        if stop_event is not None and stop_event.is_set():  # "stop and keep best": return the incumbent
             break
         # Pick up to `parallel` neighborhoods with pairwise-disjoint free sets (serial: exactly one).
         batch = []  # (name, free, iteration)

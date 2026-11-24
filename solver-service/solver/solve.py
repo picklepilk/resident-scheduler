@@ -716,19 +716,25 @@ class SolveResult:
     tiers: dict = None
 
 
-def solve(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
+def solve(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None,
+          stop_event: "threading.Event | None" = None) -> SolveResult:
     """Entry point. K = `resolve_portfolio_k(config.portfolio, workers)`: 1 is exactly `_solve_single`;
-    K > 1 runs `_solve_portfolio`. Everything else about the pipeline lives in `_solve_single`."""
+    K > 1 runs `_solve_portfolio`. Everything else about the pipeline lives in `_solve_single`.
+
+    `stop_event` (optional, set by api/jobs.py's "stop and keep best"): unlike `cancel_event` (result
+    discarded), a set `stop_event` asks the run to wrap up within a few seconds and RETURN its best
+    solution so far through the normal result path, with `report["stoppedEarly"] = True`."""
     if payload.config.mode == "score":
         from solver.score import solve_score  # pricing a fixed schedule never needs a portfolio
         return solve_score(payload)
     k = resolve_portfolio_k(payload.config.portfolio, _num_workers(payload))
     if k > 1:
         return _solve_portfolio(payload, cancel_event, on_progress, k=k, auto=payload.config.portfolio is None)
-    return _solve_single(payload, cancel_event, on_progress)
+    return _solve_single(payload, cancel_event, on_progress, stop_event=stop_event)
 
 
-def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None) -> SolveResult:
+def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = None, on_progress=None,
+                  stop_event: "threading.Event | None" = None) -> SolveResult:
     """`cancel_event` (optional, used only by api/jobs.py's background runner):
     when a stage-1 solve is stopped early via `begin_stoppable_run()`'s
     registry + `CpSolver.stop_search()`, CP-SAT can come back with status
@@ -754,7 +760,7 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
             stages += 1  # the extra 'outerLns' stage
         progress = ProgressReporter(on_progress, payload.config.max_time_seconds, stages)
     deadline = Deadline.for_config(payload.config)
-    result = _solve_pass1(payload, progress, cancel_event, deadline)
+    result = _solve_pass1(payload, progress, cancel_event, deadline, stop_event=stop_event)
     if progress is not None:
         progress.finish()
     if result.status == "INFEASIBLE" and not (cancel_event is not None and cancel_event.is_set()):
@@ -795,7 +801,8 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult, deadline: D
     return {"applied": True, "hintFeasible": True, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
 
 
-def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: Deadline = None) -> SolveResult:
+def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: Deadline = None,
+                 stop_event=None) -> SolveResult:
     t_pass1 = time.time()
     if deadline is None:
         deadline = Deadline.for_config(payload.config, t_pass1)
@@ -842,6 +849,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 seed=payload.config.random_seed,
                 progress=progress,
                 cancel_event=cancel_event,
+                stop_event=stop_event,
                 tiers=outer.tiers,
                 sub_workers=outer.sub_workers,
                 parallel=outer.parallel,
