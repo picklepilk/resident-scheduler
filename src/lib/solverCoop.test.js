@@ -175,7 +175,9 @@ describe('solver-coop against a mock jobs server', () => {
     const A = await mockServer(prefer(2)), B = await mockServer(prefer(5));
     const hint = dates.map((d) => ({ residentId: 'R01', date: d, shiftId: 'X' }));
     const input = writeTest({ residents: [{ id: 'R01' }], hint, config: {} }, dates[0], dates[4]);
-    const run = await runCoop({ input, mode: 'best', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 5, pollMs: 15, minGapMs: 10, backoffMs: [20, 40, 80], seed: 7, tag: 't', noPage: true, noSave: true, log: () => {} });
+    // minSlice must be < budget: default minSlice is 5, so budget 5 left deadline() = 5 - rel() < 5 and nextSliceBudget
+    // returned null (zero slices) unless rel() was still exactly 0 -> flaky under load.
+    const run = await runCoop({ input, mode: 'best', solvers: [{ name: 'mac', url: A.url }, { name: 'pp', url: B.url }], budget: 5, minSlice: 1, pollMs: 15, minGapMs: 10, backoffMs: [20, 40, 80], seed: 7, tag: 't', noPage: true, noSave: true, log: () => {} });
     A.srv.close(); B.srv.close();
     expect(run.rec.machines[0].coop.slices.length).toBe(2);
     expect(run.best.tiers[4]).toBe(0);

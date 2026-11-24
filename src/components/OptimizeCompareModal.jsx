@@ -74,7 +74,7 @@ export default function OptimizeCompareModal({ open, machineName, rows = [], dif
         </div>
         <div className="overflow-y-auto flex-1 px-5 py-4">
           {bestOf?.line && (
-            <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900" data-testid="best-of-line">
+            <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800" data-testid="best-of-line">
               <div className="font-semibold">{bestOf.line}</div>
               {Array.isArray(bestOf.machines) && bestOf.machines.length > 1 && (
                 <table className="mt-1 w-full text-xs">
