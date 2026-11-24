@@ -34,6 +34,18 @@ def test_non_finite_time_budget_rejected(value):
         parse_payload(_with_config(deadlineSeconds=value))
 
 
+def test_long_run_raises_cap_to_7200():
+    p = parse_payload(_with_config(maxTimeSeconds=10**9, deadlineSeconds=10**9, longRun=True))
+    assert p.config.max_time_seconds == 7200.0
+    assert p.config.deadline_seconds == 7260.0
+    assert parse_payload(_with_config(maxTimeSeconds=7000, longRun=True)).config.max_time_seconds == 7000.0
+
+
+@pytest.mark.parametrize("flag", ["true", 1, None, False])
+def test_long_run_must_be_literal_true(flag):
+    assert parse_payload(_with_config(maxTimeSeconds=7200, longRun=flag)).config.max_time_seconds == 1800.0
+
+
 def test_time_budget_is_clamped():
     p = parse_payload(_with_config(maxTimeSeconds=10**9, deadlineSeconds=10**9))
     assert p.config.max_time_seconds == 1800.0

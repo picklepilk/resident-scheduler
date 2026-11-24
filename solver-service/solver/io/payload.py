@@ -487,6 +487,8 @@ def _parse_preferences(raw: list) -> list:
 # Largest time budget the app ever asks for is 30 min; with no cap one authenticated caller could
 # hold the single solve slot (409 for everyone else) indefinitely.
 MAX_TIME_SECONDS_CAP = 1800.0
+# `config.longRun: true` (overnight polish) raises the cap; the job backends enforce their own ceiling.
+LONG_RUN_MAX_TIME_SECONDS_CAP = 7200.0
 DEADLINE_GRACE_CAP_SECONDS = 60.0
 
 
@@ -506,9 +508,10 @@ def parse_payload(raw: dict) -> Payload:
             dates=list(block_raw["dates"]),
         )
         config_raw = raw.get("config", {}) or {}
+        time_cap = LONG_RUN_MAX_TIME_SECONDS_CAP if config_raw.get("longRun") is True else MAX_TIME_SECONDS_CAP
         stage_split_raw = config_raw.get("stageSplit")
         config = Config(
-            max_time_seconds=min(_finite_seconds(config_raw.get("maxTimeSeconds", 30), "maxTimeSeconds"), MAX_TIME_SECONDS_CAP),
+            max_time_seconds=min(_finite_seconds(config_raw.get("maxTimeSeconds", 30), "maxTimeSeconds"), time_cap),
             num_workers=int(config_raw.get("numWorkers", 0) or 0),
             random_seed=int(config_raw.get("randomSeed", 42)),
             coverage_min_mode=config_raw.get("coverageMinMode", "elastic_always"),
@@ -524,7 +527,7 @@ def parse_payload(raw: dict) -> Payload:
             solver_params=validate_params(config_raw["satParams"]) if config_raw.get("satParams") is not None else None,
             hint_stickiness=int(config_raw["hintStickiness"]) if config_raw.get("hintStickiness") is not None else None,
             outer_lns=parse_outer_lns(config_raw.get("outerLns")),
-            deadline_seconds=min(_finite_seconds(config_raw["deadlineSeconds"], "deadlineSeconds"), MAX_TIME_SECONDS_CAP + DEADLINE_GRACE_CAP_SECONDS) if config_raw.get("deadlineSeconds") is not None else None,
+            deadline_seconds=min(_finite_seconds(config_raw["deadlineSeconds"], "deadlineSeconds"), time_cap + DEADLINE_GRACE_CAP_SECONDS) if config_raw.get("deadlineSeconds") is not None else None,
             stall_seconds=_finite_seconds(config_raw["stallSeconds"], "stallSeconds") if config_raw.get("stallSeconds") is not None else None,
             stall_early_seconds=(lambda v: v if v > 0 else None)(_finite_seconds(config_raw["stallEarlySeconds"], "stallEarlySeconds")) if config_raw.get("stallEarlySeconds") is not None else None,
             shortlist_size=max(0, min(20, int(config_raw.get("shortlistSize", 0) or 0))),
