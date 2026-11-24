@@ -45,14 +45,15 @@ import RunLocationPanel from './RunLocationPanel.jsx';
 import { SOLVER_ENABLED, getCachedRunner, solveRemote, LOCAL_SOLVER_URL, checkLocalSolverHealth, markSolverJobsDurable, probeSolverJobsMode, normalizeSolverTarget, shouldPolishLocal } from './lib/solverClient.js';
 import { SOLVER_POOL_ENABLED, canPickSolverMachine, getSolverPool, isRemoteTarget, poolTargetName, pickSolverTarget, probePool, probeSolverHealth, selectBestOfMachines, bestOfCandidates } from './lib/solverPool.js';
 import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudgetSeconds, solverTimeoutMs, backendFor, backendLabel, buildEngineComparison, qualityVectorLabels, restSlotCount } from './lib/solverBudget.js';
-import { diffSchedules as diffOptimizeCells, formatQualityValue, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize, pickBestOfMachines, bestOfLine, bestOfSeed, aggregateBestOfJobs, BEST_OF_TARGET } from './lib/optimizeFlow.js';
+import { diffSchedules as diffOptimizeCells, formatQualityValue, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize, pickBestOfMachines, bestOfLine, bestOfSeed, aggregateBestOfJobs, BEST_OF_TARGET, optimizeRunPlan, targetFeatures, capsFromFeatures, budgetAvailable, stoppedEarlyText, commonFeatures } from './lib/optimizeFlow.js';
+import { appendSample, describeTrend, shouldAutoStop, bestOfProgress, incumbentToSchedule, summarizeLive, liveComparison, shouldRecomputeLive, incumbentKey } from './lib/optimizeLive.js';
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
 import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
 import RuleClarificationsTab from './components/RuleClarificationsTab.jsx';
 import { trackOptimizeProgress } from './lib/optimizeProgress.js';
-import { submitSolveJob, pollSolveJob, cancelSolveJob, solveViaJob } from './lib/solverJobs.js';
+import { submitSolveJob, pollSolveJob, cancelSolveJob, stopSolveJob, solveViaJob } from './lib/solverJobs.js';
 import { needsManualReview, manualReviewTooltip, manualReviewLabel } from "./lib/manualReview.js";
 import {
   qgendaTaskFor, qgendaName, QGENDA_NAME_FORMATS, QGENDA_VARIANTS, QGENDA_TASKS,
@@ -3725,6 +3726,18 @@ const CHANGELOG = [
       'New machine choice in the **Optimize** menu: **Best of both (Mac + PicklePower)**. Both machines solve the same schedule at once with different random starts, and the app keeps the better result.',
       'Tick **Also use PickleBook** to add a third machine. A machine that is busy or offline is skipped (you get a note), and with only one available Optimize runs on that one.',
       'The progress bar shows one line per machine. The review window says which machine won and how far behind the others were. **Stop** cancels every machine.',
+    ],
+  },
+  // Optimize stop / live numbers / long run entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-23-optimize-stop-live',
+    date: '2026-11-23',
+    title: 'Optimize: stop early, live progress, long runs',
+    items: [
+      'While **Optimize** runs you now see how the best schedule so far compares with where you started: **single isolated nights** and **warnings** ("was 20, 6 fewer"), plus a plain line saying whether it is **still improving** or **levelling off**.',
+      'On machines that support it, **Stop and keep best** ends the run in a few seconds and keeps the best schedule found. You still review it before anything is applied, and the review says "Stopped early at 4:12". **Cancel (discard)** is separate and throws the run away.',
+      'New time choice **Until it levels off (15 min max)**: Optimize stops by itself once the schedule has stopped getting better.',
+      'New time choice **Long polish (2 hours)**: meant to be left running, for example overnight. Open the Schedule tab on this device later and the result will be waiting (kept 24 hours). If the solver machine restarts during a run, you are told the run was lost and can run Optimize again.',
     ],
   },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
@@ -17984,11 +17997,21 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const [longSolveJob, setLongSolveJob] = useLocalStorage('res_long_solve_job', null);
   const [longSolveStatus, setLongSolveStatus] = useState(null); // latest GET /jobs/{id} view | 'lost' | null
   const [optimizeTracker, setOptimizeTracker] = useState(null); // trackOptimizeProgress state for the step tracker
+  // Live read-out while a run works (optimizeLive.js): best-over-time series (server seconds; ref, no re-render per
+  // sample), the live numbers from the current best grid, and the stop / poll-trouble flags.
+  const optimizeSeriesRef = useRef([]);
+  const optimizeLiveRef = useRef({ jobId: null, lastAt: null, lastKey: null, start: null, busy: false });
+  const [optimizeLiveNums, setOptimizeLiveNums] = useState(null); // [{key,text}] | null
+  const [optimizeStopRequested, setOptimizeStopRequested] = useState(false);
+  const [optimizePollTrouble, setOptimizePollTrouble] = useState(false);
+  const autoStopSentRef = useRef(null); // jobId we already auto-stopped
+  const requestStopAndKeepRef = useRef(null); // latest stopAndKeepBest (the poll loop outlives renders)
+  const optimizeLiveComputeRef = useRef(null); // latest computeOptimizeLive
   // Optimize (flow split 2026-11-22): Generate builds with the built-in engine only; Optimize sends the
   // CURRENT grid to a solver machine as a background job (the long-solve job machinery below) and the
   // result is reviewed in OptimizeCompareModal before anything is applied.
   const [optimizeMenuOpen, setOptimizeMenuOpen] = useState(false);
-  const [optimizeBudget, setOptimizeBudget] = useState('auto'); // 'auto' | 5 | 10 | 15 | 30 (minutes)
+  const [optimizeBudget, setOptimizeBudget] = useState('auto'); // 'auto' | 5 | 10 | 15 | 30 (minutes) | 'leveloff' | 'long' (last two need host features)
   const [optimizeProbe, setOptimizeProbe] = useState(null);     // {pool:[{name,online,busy,defaultBudgetSeconds}], local:null|obj} while the menu is open
   const [optimizeCompare, setOptimizeCompare] = useState(null); // {machineName, rows, diff, remainingErrors, schedule, baseSchedule}
   const optimizeMenuRef = useRef(null);
@@ -18003,7 +18026,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     let cancelled = false;
     setOptimizeProbe(null);
     Promise.all([
-      checkLocalSolverHealth().catch(() => null),
+      probeSolverHealth(LOCAL_SOLVER_URL, { timeoutMs: 1500 }).then(r => (r.online ? r : null)).catch(() => null),
       (canPickMachine && SOLVER_POOL_ENABLED) ? probePool().catch(() => []) : Promise.resolve([]),
     ]).then(([local, pool]) => { if (!cancelled) setOptimizeProbe({ local, pool }); });
     const onDown = e => {
@@ -18034,7 +18057,13 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const optimizeHostDefault = isBestOfTarget
     ? (() => { const d = selectBestOfMachines(optimizeProbe?.pool || [], { includeExtra: bestOfExtra }).machines.map(m => m.defaultBudgetSeconds).filter(n => n > 0); return d.length ? Math.min(...d) : undefined; })()
     : optimizeProbe?.pool?.find(m => `pool:${m.name}` === optimizeTarget)?.defaultBudgetSeconds;
-  const optimizeBudgetMinutes = Math.round(optimizeBudgetSeconds(optimizeBudget, optimizeHostDefault) / 60);
+  // What the chosen machine can do (its /health `features`): "Stop and keep best", the "until it levels off"
+  // and "long polish" budgets. No probe yet / older host = nothing new.
+  const optimizeCaps = capsFromFeatures(optimizeProbe
+    ? targetFeatures({ preference: isBestOfTarget ? BEST_OF_TARGET : optimizeTarget, localStatus: optimizeProbe.local, poolStatus: optimizeProbe.pool || [], bestOfExtra })
+    : []);
+  const effectiveBudget = budgetAvailable(optimizeBudget, optimizeCaps) ? optimizeBudget : 'auto';
+  const optimizeBudgetMinutes = Math.round(optimizeBudgetSeconds(effectiveBudget, optimizeHostDefault) / 60);
   const [longSolveSubmitting, setLongSolveSubmitting] = useState(false);
   const [longSolveReview, setLongSolveReview] = useState(null); // {schedule, lockedCells} once "Review" is confirmed-pending
   const [longSolveReviewName, setLongSolveReviewName] = useState('');
@@ -18052,8 +18081,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // genuinely running job (see solver-service/CLAUDE.md's "Background jobs" section).
   useEffect(() => {
     setOptimizeTracker(null);
+    optimizeSeriesRef.current = [];
+    optimizeLiveRef.current = { jobId: longSolveJob?.jobId || null, lastAt: null, lastKey: null, start: null, busy: false };
+    setOptimizeLiveNums(null);
+    setOptimizeStopRequested(false);
+    setOptimizePollTrouble(false);
     if (readOnly || !longSolveJob?.jobId) { setLongSolveStatus(null); return; }
     let stopped = false;
+    let pollFailures = 0;
     async function pollOnce() {
       if (longSolvePollingRef.current) return;
       longSolvePollingRef.current = true;
@@ -18075,10 +18110,37 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           view = await pollSolveJob(longSolveJob.jobId, { accessToken, url: longSolveJob.solverTargetUrl });
         }
         if (stopped) return;
+        pollFailures = 0;
+        setOptimizePollTrouble(false);
         setLongSolveStatus(view.lost || view.status === 'lost' ? 'lost' : view);
         if (view?.progress) setOptimizeTracker(prev => trackOptimizeProgress(prev, view.progress, Date.now()));
+        if (view && view !== 'lost' && view.status === 'running') {
+          // Best-over-time series + auto-stop ("until it levels off") + live numbers. Best of: the machine furthest along
+          // feeds the series; live numbers are single-job only.
+          const prog = Array.isArray(longSolveJob.jobs) && longSolveJob.jobs.length ? bestOfProgress(view.perMachine) : view.progress;
+          optimizeSeriesRef.current = appendSample(optimizeSeriesRef.current, prog);
+          if (longSolveJob.autoStop && longSolveJob.canStop && autoStopSentRef.current !== longSolveJob.jobId && !view.stopping
+              && shouldAutoStop(optimizeSeriesRef.current, Number(prog?.elapsed))) {
+            autoStopSentRef.current = longSolveJob.jobId;
+            requestStopAndKeepRef.current?.(true);
+          }
+          const inc = view.progress?.incumbent;
+          const key = incumbentKey(inc);
+          const lv = optimizeLiveRef.current;
+          if (longSolveJob.live && !Array.isArray(longSolveJob.jobs) && !lv.busy
+              && shouldRecomputeLive({ lastAt: lv.lastAt, lastKey: lv.lastKey, key, now: Date.now() })) {
+            lv.busy = true; lv.lastAt = Date.now(); lv.lastKey = key;
+            // Off the poll tick, so typing and scrolling are never blocked by a validator run.
+            setTimeout(() => {
+              try {
+                const nums = optimizeLiveComputeRef.current?.(inc.rows, lv);
+                if (nums && !stopped) setOptimizeLiveNums(nums);
+              } catch (e) { console.warn('Live numbers failed:', e); } finally { lv.busy = false; }
+            }, 0);
+          }
+        }
       } catch (e) {
-        if (!stopped) console.warn('Long solve poll failed:', e);
+        if (!stopped) { console.warn('Long solve poll failed:', e); if (++pollFailures >= 3) setOptimizePollTrouble(true); }
       } finally {
         longSolvePollingRef.current = false;
       }
@@ -18098,13 +18160,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     if (longSolveNotifiedRef.current === key) return;
     longSolveNotifiedRef.current = key;
     if (statusKey === 'lost') {
-      showToast('The optimizer stopped before finishing — run it again. (The solver process restarted or was closed and lost the job; see solver-service/CLAUDE.md\'s "Background jobs" section.)', 'red');
+      showToast('The optimizer machine restarted or was closed while this run was going, so the run was lost. Run Optimize again. The schedule is unchanged.', 'red');
     } else if (statusKey === 'failed') {
       showToast(`Optimize failed: ${longSolveStatus.error || 'unknown error'}. The schedule is unchanged.`, 'red');
     } else if (statusKey === 'cancelled') {
       showToast('Optimize stopped.', 'amber');
     } else if (statusKey === 'done') {
-      showToast('Optimize finished — review it below.', 'green');
+      const early = longSolveStatus.result?.report?.stoppedEarly === true || (longSolveStatus.perMachine || []).some(p => p.result?.report?.stoppedEarly === true);
+      showToast(early ? 'Optimize stopped early - review the best schedule it found.' : 'Optimize finished - review it below.', 'green');
     }
   }, [longSolveJob?.jobId, longSolveStatus, showToast]);
 
@@ -18117,6 +18180,10 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     return () => clearInterval(t);
   }, [longSolveJob?.jobId]);
   const longSolveElapsedSec = longSolveJob?.startedAt ? Math.max(0, Math.floor((Date.now() - longSolveJob.startedAt) / 1000)) : 0;
+  // Stop-and-keep-best state + plain-words trend for the progress panel (hosts without `stop` never set canStop).
+  const optimizeWrappingUp = !!longSolveJob?.canStop && (optimizeStopRequested || (longSolveStatus && longSolveStatus !== 'lost' && longSolveStatus.stopping === true));
+  const optimizeSeries = optimizeSeriesRef.current;
+  const optimizeTrend = optimizeSeries.length ? describeTrend(optimizeSeries, optimizeSeries[optimizeSeries.length - 1].t) : null;
   const longSolveSpinning = !longSolveStatus || (longSolveStatus !== 'lost' && (longSolveStatus.status === 'running' || longSolveStatus.status === 'queued'));
 
   // "Save solver test file": the exact payload Optimize would send (current grid as hint, locked cells pinned),
@@ -18144,20 +18211,53 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     try {
       const genBlock = { ...block };
       const target = (optimizeTarget === BEST_OF_TARGET && !canPickMachine) ? 'cloud' : optimizeTarget;
-      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: optimizeBudget, bestOfExtra });
+      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: effectiveBudget, bestOfExtra });
       if (!r) { showToast('Set block dates first', 'red'); return; }
       longSolveNotifiedRef.current = null;
-      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, ...(r.jobs ? { jobs: r.jobs } : {}) });
+      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, ...(r.jobs ? { jobs: r.jobs } : {}), canStop: r.canStop === true, autoStop: r.autoStop === true, longRun: r.longRun === true, live: r.live === true });
       setLongSolveStatus(null);
       for (const sk of (r.skipped || [])) showToast(`${sk.name} skipped: ${sk.reason}.`, 'amber');
       if (r.fallbackNote) showToast(r.fallbackNote, 'amber');
-      showToast(`Optimizing on ${r.usingLocal ? 'this computer' : (r.machineName || 'the cloud optimizer')} (~${Math.round(r.budgetSeconds / 60)} min) - only locked cells are pinned. Keep working; review the result when it finishes.`, 'green');
+      if (r.planNote) showToast(r.planNote, 'amber');
+      if (r.longRun) showToast('Long polish started: it can take up to 2 hours and is meant to be left running, for example overnight. It keeps running on the solver machine. Open the Schedule tab on this device later and the result will be waiting for you (kept 24 hours).', 'green');
+      else showToast(`Optimizing on ${r.usingLocal ? 'this computer' : (r.machineName || 'the cloud optimizer')} (~${Math.round(r.budgetSeconds / 60)} min) - only locked cells are pinned. Keep working; review the result when it finishes.`, 'green');
     } catch (e) {
       showToast(`Could not start Optimize: ${e.message}`, 'red');
     } finally {
       setLongSolveSubmitting(false);
     }
   }
+
+  // "Stop and keep best": asks every job of this run to wrap up and finish normally (result keeps the best
+  // schedule found); polling continues and the usual Review step follows. Best of: stops all its jobs.
+  async function stopAndKeepBest(auto = false) {
+    const job = longSolveJob;
+    if (!job?.jobId || !job.canStop) return;
+    setOptimizeStopRequested(true);
+    const accessToken = (!job.usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
+    const targets = Array.isArray(job.jobs) && job.jobs.length ? job.jobs.map(j => ({ jobId: j.jobId, url: j.url })) : [{ jobId: job.jobId, url: job.solverTargetUrl }];
+    const results = await Promise.all(targets.map(t => stopSolveJob(t.jobId, { accessToken, url: t.url })));
+    if (results.every(r => !r.ok)) {
+      setOptimizeStopRequested(false);
+      if (auto) autoStopSentRef.current = null;
+      showToast(`Could not stop the run${results[0]?.error ? ` (${results[0].error})` : ''}. It keeps running.`, 'amber');
+    } else if (auto) {
+      showToast('The schedule stopped getting better, so Optimize is wrapping up.', 'green');
+    }
+  }
+  requestStopAndKeepRef.current = stopAndKeepBest;
+
+  // Live numbers: the solver's current best grid scored with the app's own validator, against the start grid.
+  function computeOptimizeLive(rows, lv) {
+    const job = longSolveJob;
+    if (!job?.genBlock) return null;
+    const dates = getBlockDates(job.genBlock.startDate, job.genBlock.endDate);
+    const validate = sched => validateAll(allResidents, sched, job.genBlock, eligOverrides, appSettings, dayRules, coverage, blocksHistory, ayConf);
+    if (!lv.start) lv.start = summarizeLive(job.genBlock.schedule || {}, dates, validate);
+    const sched = incumbentToSchedule(rows, job.genBlock.schedule, sid => !!SHIFT_LABEL_BY_ID[sid]);
+    return liveComparison(lv.start, summarizeLive(sched, dates, validate)).map(({ key, text }) => ({ key, text }));
+  }
+  optimizeLiveComputeRef.current = computeOptimizeLive;
 
   async function cancelLongSolve() {
     if (!longSolveJob?.jobId) return;
@@ -18246,6 +18346,11 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         machineName: isBestOf ? win.machine : (job.usingLocal ? 'this computer' : (job.machineName || 'the cloud optimizer')),
         rows: compareQuality(cur, opt),
         diff: diffOptimizeCells(job.genBlock.schedule || {}, win.optimized),
+        stoppedEarly: (() => {
+          const e = entries.find(x => x.machine === win.machine);
+          const per = isBestOf ? (longSolveStatus.perMachine || []).find(p => p.machine === win.machine) : longSolveStatus;
+          return stoppedEarlyText(e?.json, per);
+        })(),
         remainingErrors: opt.errorMessages,
         schedule: win.optimized,
         ...(isBestOf ? { bestOf: { line: bestOfLine(pick), machines: pick.ranked.map((r, i) => ({ machine: r.machine, gapPct: r.gapPct, rank: i, vector: vec(r.result.summary) })) } } : {}),
@@ -19011,7 +19116,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       // (still this one decision point); reviewOptimize keeps the better result. Fewer than 2 usable
       // machines -> plain single-machine Optimize on the one that is available.
       if (opts.target === BEST_OF_TARGET) {
-        const sel = selectBestOfMachines(await probePool(), { includeExtra: opts.bestOfExtra === true });
+        const probed = await probePool();
+        const sel = selectBestOfMachines(probed, { includeExtra: opts.bestOfExtra === true });
         const skipped = sel.skipped.map(s => ({ name: s.name, reason: s.reason }));
         if (sel.machines.length === 0) throw new Error(`No Best-of machine is available${skipped.length ? ` (${skipped.map(s => `${s.name} ${s.reason}`).join(', ')})` : ''}.`);
         if (sel.machines.length === 1) {
@@ -19020,11 +19126,15 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           return { ...r, skipped, fallbackNote: `Best of needs two machines; running on ${only} only.` };
         }
         const defaults = sel.machines.map(m => m.defaultBudgetSeconds).filter(n => n > 0);
-        const budgetSec = optimizeBudgetSeconds(opts.budget, defaults.length ? Math.min(...defaults) : null);
+        // Best of: every machine must offer a feature for it to be used (stop / long run); live numbers are not
+        // requested (several jobs, one grid each - too heavy to show side by side).
+        const caps = capsFromFeatures(commonFeatures(sel.machines.map(m => probed.find(p => p.name === m.name)?.features || [])));
+        const plan = optimizeRunPlan(opts.budget, defaults.length ? Math.min(...defaults) : null, caps);
+        const budgetSec = plan.seconds;
         const accessToken = AUTH_ENABLED ? await getAccessTokenBounded().catch(() => null) : null;
         const settled = await Promise.all(sel.machines.map(async (m, i) => {
           try {
-            const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, randomSeed: bestOfSeed(i) } });
+            const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, randomSeed: bestOfSeed(i), ...plan.config } });
             const { jobId } = await submitSolveJob(payload, { accessToken, url: m.url });
             return { jobId, url: m.url, name: m.name };
           } catch (e) { return { failed: { name: m.name, reason: `could not start (${e.message})` } }; }
@@ -19034,18 +19144,22 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
         if (!jobs.length) throw new Error(`No Best-of machine accepted the job (${skipped.map(s => `${s.name} ${s.reason}`).join(', ')}).`);
         return {
           jobId: jobs[0].jobId, solverTargetUrl: jobs[0].url, usingLocal: false, budgetSeconds: budgetSec, jobs, skipped,
+          canStop: caps.stop, autoStop: plan.autoStop, longRun: !!plan.config.longRun, planNote: plan.note,
           machineName: jobs.map(j => j.name).join(' + '),
           fallbackNote: jobs.length < 2 ? `Best of needs two machines; running on ${jobs[0].name} only.` : null,
         };
       }
       const { url, usingLocal, name, reason, status } = await resolveSolverRunTarget(opts.target || 'cloud');
       if (!url) throw new Error(reason ? `${reason[0].toUpperCase()}${reason.slice(1)}.` : 'No solver machine is reachable.');
-      const budgetSec = optimizeBudgetSeconds(opts.budget, status?.defaultBudgetSeconds);
-      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec } });
+      const caps = capsFromFeatures(status?.features);
+      const plan = optimizeRunPlan(opts.budget, status?.defaultBudgetSeconds, caps);
+      const budgetSec = plan.seconds;
+      // liveIncumbent: the job's progress carries the current best grid, for the live numbers in the progress panel.
+      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, liveIncumbent: true, ...plan.config } });
       // Never sent to the local target (loopback, SOLVER_AUTH_MODE=off).
       const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
       const { jobId } = await submitSolveJob(payload, { accessToken, url });
-      return { jobId, solverTargetUrl: url, usingLocal, machineName: name || null, budgetSeconds: budgetSec };
+      return { jobId, solverTargetUrl: url, usingLocal, machineName: name || null, budgetSeconds: budgetSec, canStop: caps.stop, autoStop: plan.autoStop, longRun: !!plan.config.longRun, planNote: plan.note, live: true };
     }
 
     setGenStageLabel('Preparing…');
@@ -19611,7 +19725,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             </button>
           ))}
           <OptimizeMenuSection machines={optimizeMachines} machine={optimizeMachineValue} onMachineChange={onOptimizeMachineChange}
-            budget={optimizeBudget} onBudgetChange={setOptimizeBudget} budgetMinutes={optimizeBudgetMinutes}
+            budget={effectiveBudget} onBudgetChange={setOptimizeBudget} budgetMinutes={optimizeBudgetMinutes} caps={optimizeCaps}
             disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
               : longSolveJob?.jobId ? 'An optimize run is already in progress.'
               : totalAssigned === 0 ? 'Generate a schedule first.' : ''}
@@ -19660,6 +19774,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               ? 'Optimize stopped.'
               : longSolveStatus?.status === 'done'
               ? 'Optimize finished — review the result before it is applied.'
+              : optimizeWrappingUp
+              ? 'Wrapping up... keeping the best schedule found so far.'
               : `Optimizing${longSolveJob.jobs?.length > 1 ? ` best of ${longSolveJob.jobs.length}` : ''} on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. Only locked cells are pinned; you can keep working.`}
           </span>
           {longSolveSpinning && (
@@ -19678,7 +19794,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           )}
           {(longSolveSpinning || longSolveStatus?.status === 'done') && (
             <OptimizeProgressPanel tracker={optimizeTracker} status={longSolveStatus && longSolveStatus !== 'lost' ? longSolveStatus.status : 'running'}
-              elapsedFallback={longSolveElapsedSec} budgetFallback={longSolveJob.budgetSeconds || 0} now={Date.now()}/>
+              elapsedFallback={longSolveElapsedSec} budgetFallback={longSolveJob.budgetSeconds || 0} now={Date.now()}
+              trend={longSolveSpinning ? optimizeTrend : null} live={longSolveSpinning ? optimizeLiveNums : null}
+              wrappingUp={optimizeWrappingUp} autoStop={!!longSolveJob.autoStop}/>
+          )}
+          {optimizePollTrouble && longSolveSpinning && (
+            <div className="basis-full text-xs tri-optimize-note" data-testid="optimize-poll-trouble" role="status">
+              Cannot reach the solver machine right now. The app keeps trying; the run itself is not affected, and its result is kept on the machine for 24 hours.
+            </div>
           )}
           {longSolveStatus?.status === 'done' ? (
             <>
@@ -19688,7 +19811,14 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           ) : longSolveStatus === 'lost' || longSolveStatus?.status === 'failed' || longSolveStatus?.status === 'cancelled' ? (
             <Button variant="ghost" size="sm" onClick={dismissLongSolve}>Dismiss</Button>
           ) : (
-            <Button variant="dangerOutline" size="sm" onClick={cancelLongSolve} title="Stops the run on the solver machine; the schedule is unchanged.">Stop</Button>
+            <>
+              {longSolveJob.canStop && !optimizeWrappingUp && (
+                <Button variant="primary" size="sm" onClick={() => stopAndKeepBest(false)} data-testid="optimize-stop-keep"
+                  title="Ends the run now and keeps the best schedule found so far. You still review it before anything is applied.">Stop and keep best</Button>
+              )}
+              <Button variant="dangerOutline" size="sm" onClick={cancelLongSolve} data-testid="optimize-cancel"
+                title="Throws the run away. The schedule is unchanged and nothing is kept.">{longSolveJob.canStop ? 'Cancel (discard)' : 'Stop'}</Button>
+            </>
           )}
         </div>
       )}
@@ -19944,7 +20074,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       )}
 
       <OptimizeCompareModal open={!!optimizeCompare} machineName={optimizeCompare?.machineName} rows={optimizeCompare?.rows || []}
-        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []} bestOf={optimizeCompare?.bestOf || null}
+        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []} bestOf={optimizeCompare?.bestOf || null} stoppedEarly={optimizeCompare?.stoppedEarly || null}
         residentName={rid => { const r = allResidents.find(x => x.id === rid); return r ? `${r.lastName}, ${r.firstName}` : rid; }}
         shiftLabel={sid => SHIFT_LABEL_BY_ID[sid] || sid}
         onAccept={acceptOptimize} onDiscard={() => setOptimizeCompare(null)}/>
@@ -24495,6 +24625,7 @@ function UserGuideTab({ onNavigate }) {
 
       {show('generate') && <GuideSection {...sec('generate')}>
         <p>Set <strong>Daily Shift Coverage</strong> on the <strong>Rules</strong> tab first — how many residents each shift needs per day. Then, on the <strong>Schedule</strong> tab, click <strong>Generate Schedule</strong> to auto-fill every open slot with the built-in engine. Then use the <strong>Optimize</strong> menu to improve the current schedule on a solver machine: pick the machine and time, wait for the progress pill, and <strong>Review</strong> the comparison. Nothing changes until you <strong>Accept</strong> (one undo step); only cells you locked stay pinned. Picker accounts can choose <strong>Best of both</strong> in the machine list: the same run goes to two machines at once and the better result is kept (tick <strong>Also use PickleBook</strong> for a third).</p>
+        <p>While Optimize runs, the progress bar shows how the best schedule so far compares with your starting one (<strong>single isolated nights</strong> and <strong>warnings</strong>) and whether it is <strong>still improving</strong> or <strong>levelling off</strong>. On machines that support it you also get <strong>Stop and keep best</strong>, which ends the run in a few seconds and keeps the best schedule found (you still review it first; <strong>Cancel (discard)</strong> throws the run away), and two more time choices: <strong>Until it levels off (15 min max)</strong>, which stops by itself, and <strong>Long polish (2 hours)</strong>, meant to be left running overnight. A long run keeps going on the solver machine; open the Schedule tab on this device later and the result is waiting for you (kept 24 hours). If the machine restarted meanwhile, you are told the run was lost and can run Optimize again.</p>
         <ul className="list-disc space-y-1">
           <li>The generator only assigns shifts a resident can legally work — it respects eligibility, days off, jeopardy, rest rules, and the max-6-consecutive-days rule.</li>
           <li><strong>Generate never overwrites a cell you've already filled in</strong> — it only fills what's still empty. Run it again anytime after manual edits.</li>

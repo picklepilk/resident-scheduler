@@ -133,6 +133,30 @@ export async function cancelSolveJob(jobId, { accessToken = null, timeoutMs = 10
   }
 }
 
+// POSTs `${url}/jobs/{jobId}/stop`: asks the run to wrap up within a few seconds and finish NORMALLY
+// (status becomes 'done' with a real result, report.stoppedEarly === true) - unlike cancelSolveJob,
+// which discards. Only hosts whose /health `features` lists "stop" have it. Never throws: resolves
+// `{ ok: true, view }` (view = the job view, `stopping: true`), `{ ok: false, lost: true }` on a 404, or
+// `{ ok: false, error }` on anything else; the caller keeps polling either way.
+export async function stopSolveJob(jobId, { accessToken = null, timeoutMs = 10000, url: urlOverride = null } = {}) {
+  const url = urlOverride || getSolverUrl();
+  if (!url) return { ok: false, error: 'Solver is not configured' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url}/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST', headers: authHeaders(accessToken), signal: controller.signal });
+    if (res.status === 404) return { ok: false, lost: true };
+    if (!res.ok) return { ok: false, error: `Stop returned ${res.status}` };
+    let view = null;
+    try { view = await res.json(); } catch { /* body is best-effort */ }
+    return { ok: true, view };
+  } catch (e) {
+    return { ok: false, error: e?.name === 'AbortError' ? 'Stop timed out' : (e?.message || String(e)) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Submit-then-poll for the durable (Modal) backend, where POST /solve is disabled (400 use_jobs) and
 // every cloud solve must be a job. Resolves with the finished job's `result` — the exact JSON shape
 // solveRemote returns from /solve — so callers can swap one for the other. Rejects on failed /
