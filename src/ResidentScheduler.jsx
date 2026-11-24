@@ -9377,7 +9377,7 @@ export function pickDistinctAlternates(winner, finalists, max) {
 // breach only as a rule-less warn and never counts it as blocking. Mirrors the null-mapped members of
 // elastic.py RELAXABLE_POLICY_CAP_FAMILIES (solverTierParity.test.js guards the drift). nightCap /
 // nightSegments are NOT here: they map to override-tier rules validateAll already catches.
-export const SOLVER_RELAXED_NONBLOCKING_FAMILIES = ['traumaCap', 'pedsMixMax', 'targetCeiling'];
+export const SOLVER_RELAXED_NONBLOCKING_FAMILIES = ['pedsMixMax', 'targetCeiling'];
 
 // Count of relaxed-mode cap breaches the solver reports in `report.feasibility.violations`
 // ({mode:'relaxed', violations:[{rule, residentIds, ...}]}) for the families above. 0 unless relaxed.

@@ -83,8 +83,8 @@ describe('pickEngineResult', () => {
     walk(engineComparison);
   });
 
-  it('relaxed solver result breaching traumaCap cannot win over an equal local result', () => {
-    const solverClone = { schedule: JSON.parse(JSON.stringify(good.schedule)), report: { ...JSON.parse(JSON.stringify(good.report)), feasibility: { mode: 'relaxed', violations: [{ rule: 'traumaCap', residentIds: ['x'] }] } } };
+  it('relaxed solver result breaching pedsMixMax cannot win over an equal local result', () => {
+    const solverClone = { schedule: JSON.parse(JSON.stringify(good.schedule)), report: { ...JSON.parse(JSON.stringify(good.report)), feasibility: { mode: 'relaxed', violations: [{ rule: 'pedsMixMax', residentIds: ['x'] }] } } };
     expect(countRelaxedCapBreaches(solverClone)).toBe(1);
     const { winner, engineComparison } = pickEngineResult(solverClone, good, args);
     expect(winner).toBe('local');
@@ -94,7 +94,7 @@ describe('pickEngineResult', () => {
 
   it('breach families only count in relaxed mode; nightCap is not double-counted here', () => {
     const mk = (mode, rule) => ({ report: { feasibility: { mode, violations: [{ rule }] } } });
-    expect(countRelaxedCapBreaches(mk('strict', 'traumaCap'))).toBe(0);
+    expect(countRelaxedCapBreaches(mk('strict', 'pedsMixMax'))).toBe(0);
     expect(countRelaxedCapBreaches(mk('relaxed', 'nightCap'))).toBe(0);
     for (const f of SOLVER_RELAXED_NONBLOCKING_FAMILIES) expect(countRelaxedCapBreaches(mk('relaxed', f))).toBe(1);
     expect(countRelaxedCapBreaches(null)).toBe(0);

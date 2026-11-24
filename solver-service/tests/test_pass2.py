@@ -347,10 +347,9 @@ def test_infeasible_jc_cap_locked_cells_stays_infeasible_never_relaxed():
 def _trauma_cap_relaxation_payload() -> dict:
     """r1 LOCKED into 2 TRAUMA-area day shifts on 2 different dates while
     `caps.trauma == 1` -- unlike `bamcWedNight`/`jcCap`/`traumaPedsSplit`,
-    `traumaCap` has no entry in `src/lib/rulePolicy.js` at all (the JS side
-    only ever reports it as a plain, non-blocking warn), so it stays in
-    `RELAXABLE_POLICY_CAP_FAMILIES` -- this confirms the R9-follow-up split
-    didn't over-correct and make every policy cap always-hard."""
+    `traumaCap` has no entry in `src/lib/rulePolicy.js` (the JS side only ever
+    reports a plain, non-blocking warn). Since 2026-11-23 it is a SOFT
+    penalised excess in the solver instead of a relaxable hard cap."""
     shifts = {"TRAUMA-D": {"startH": 7, "durationH": 9, "type": "day", "area": "TRAUMA"}}
     dates = ["2026-01-05", "2026-01-06"]
     return make_payload(
@@ -365,18 +364,15 @@ def _trauma_cap_relaxation_payload() -> dict:
     )
 
 
-def test_trauma_cap_is_still_a_genuinely_relaxable_last_resort():
+def test_trauma_cap_is_soft_so_strict_pass_one_succeeds():
     payload = parse_payload(_trauma_cap_relaxation_payload())
     result = solve(payload)
 
-    assert result.status == "RELAXED"
-    assert result.mode == "relaxed"
+    # 2026-11-23: traumaCap is soft (penalised excess): strict pass 1 succeeds, no pass 2, no violation.
+    assert result.status in ("OPTIMAL", "FEASIBLE")
+    assert result.mode == "strict"
     assert result.schedule == {"r1": {"2026-01-05": "TRAUMA-D", "2026-01-06": "TRAUMA-D"}}
-
-    violations = result.feasibility["violations"]
-    assert len(violations) == 1
-    assert violations[0]["rule"] == "traumaCap"
-    assert violations[0]["residentIds"] == ["r1"]
+    assert result.report["traumaCapExcess"] == [{"residentId": "r1", "count": 2, "cap": 1}]
 
 
 def test_locked_non_primary_senior_cell_gives_relaxed_with_senior_gaps():

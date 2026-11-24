@@ -138,6 +138,7 @@ from solver.model.objective import (
 )
 from solver.model.hint_stickiness import changed_cells, stickiness_weight
 from solver.report.builder import HARD_RELAXABLE_RULES, build_feasibility_report
+from solver.report.trauma_cap import compute_trauma_cap_excess
 from solver.report.variety import compute_variety_report
 from solver.report.structural import compute_structural_floor
 from solver.validate import validate_schedule
@@ -1058,6 +1059,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     if payload.config.hint_repair.enabled:
         report["hintRepair"] = repair_extra.get("hintRepair") or _no_repair_report()
     report["variety"] = compute_variety_report(payload, schedule)
+    report["traumaCapExcess"] = compute_trauma_cap_excess(payload, schedule)
     if outer_report is not None:
         report["outerLns"] = outer_report
     for _h in handlers:
@@ -1503,6 +1505,7 @@ def _build_report_relaxed(payload: Payload, schedule: dict, solver: cp_model.CpS
     """
     report = _build_report(payload, solver, objective)
     report["variety"] = compute_variety_report(payload, schedule)
+    report["traumaCapExcess"] = compute_trauma_cap_excess(payload, schedule)
     report["unfilled"] = _unfilled_from_schedule(payload, schedule)
     report["structuralFloor"] = compute_structural_floor(payload, schedule)
     return report

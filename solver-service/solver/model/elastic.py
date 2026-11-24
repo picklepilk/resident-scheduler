@@ -155,7 +155,7 @@ DUTY_HOUR_FAMILIES = ALWAYS_HARD_DUTY_HOUR_FAMILIES + RELAXABLE_DUTY_HOUR_FAMILI
 # `traumaPedsSplit` are ALL tier `program` on the JS side -- "chief-decided
 # hard policy, blocks everywhere exactly like 'acgme'" (rulePolicy.js's own
 # comment: the two tiers differ in WHY they're hard, not in how hard they
-# are). `traumaCap`, `pedsMixMax` and `targetCeiling` have no entry in
+# are). `pedsMixMax` and `targetCeiling` (and, until 2026-11-23, `traumaCap`) have no entry in
 # `RULE_POLICY` at all -- the JS side only ever reports these as a plain,
 # non-blocking warn, never a hard error -- so those three stay genuinely
 # pass-2-relaxable last resorts, same posture as `nightCap`/`nightSegments`
@@ -172,8 +172,9 @@ ALWAYS_HARD_POLICY_CAP_FAMILIES = (
     "jcCap",
     "traumaPedsSplit",
 )
+# 2026-11-23: `traumaCap` is no longer a family -- the EM PGY-2/3 trauma cap is a soft, penalised excess in the
+# quality tier (objective.py `_add_trauma_cap_excess_term`), so it needs no pass-2 relaxation literal.
 RELAXABLE_POLICY_CAP_FAMILIES = (
-    "traumaCap",
     "pedsMixMax",
     "targetCeiling",
 )

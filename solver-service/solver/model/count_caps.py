@@ -3,7 +3,10 @@ predicate, capped per resident" rule, driven by one generic (shift predicate,
 date predicate, cap-getter) spec list rather than five near-identical
 hand-written loops.
 
-- `trauma` (26): TRAUMA-area shifts, any date, cap = caps.trauma.
+- `trauma` (26): REMOVED as a hard cap 2026-11-23 (owner: the EM PGY-2/3 per-block trauma cap is SOFT, like the
+  app's non-blocking warning). It is now a penalised excess (`traumaCapExcess`) in objective.py's
+  `_add_trauma_cap_excess_term`; nothing here constrains it. The per-night-run limit (trauma_runs.py), the
+  Trauma/Peds split halves (`traumaPedsSplit`, below) and TRAUMA-D rotation-only eligibility stay hard.
 - `jcRemaining` (28): shifts whose timing overlaps 18:00-21:00, on `jcDates`,
   cap = caps.jcRemaining (already "3 minus prior published-block count").
 - `bamcWedNights` (27): night-type shifts on Wednesdays, cap = caps.bamcWedNights.
@@ -35,7 +38,6 @@ THURSDAY = 3
 # enforcement literal (solver/model/elastic.py). `targetCeiling` keeps the
 # same name on both sides.
 SPEC_TO_RULE = {
-    "trauma": "traumaCap",
     "jcRemaining": "jcCap",
     "bamcWedNights": "bamcWedNight",
     "pedsMixMax": "pedsMixMax",
@@ -54,12 +56,6 @@ class CapSpec:
 
 def _build_simple_specs(payload: Payload) -> list:
     return [
-        CapSpec(
-            name="trauma",
-            cap_getter=lambda r: r.caps.trauma,
-            shift_pred=lambda sid: payload.shifts[sid].area == "TRAUMA",
-            date_pred=lambda d: True,
-        ),
         CapSpec(
             name="jcRemaining",
             cap_getter=lambda r: r.caps.jc_remaining,

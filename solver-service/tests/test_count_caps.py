@@ -20,7 +20,8 @@ def _build(dates, eligible, coverage, residents):
     return model, store
 
 
-def test_trauma_cap_enforced():
+def test_trauma_cap_is_soft_not_enforced_here():
+    # 2026-11-23: caps.trauma is a penalised excess (objective.py), no longer a hard count cap.
     dates = ["2026-01-05", "2026-01-06", "2026-01-07"]
     eligible = {"r1": {d: ["TRAUMA-D"] for d in dates}}
     coverage = {"TRAUMA-D": {d: {"min": 0, "max": 1} for d in dates}}
@@ -28,7 +29,7 @@ def test_trauma_cap_enforced():
     for d in dates:
         model.add(store.get_x("r1", "TRAUMA-D", d) == 1)
     solver = cp_model.CpSolver()
-    assert solver.status_name(solver.solve(model)) == "INFEASIBLE"
+    assert solver.status_name(solver.solve(model)) in ("OPTIMAL", "FEASIBLE")
 
 
 def test_target_ceiling_enforced():

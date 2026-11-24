@@ -19,6 +19,7 @@ from ortools.sat.python import cp_model
 
 from solver.build import build_model
 from solver.model.elastic import build_elastic_model
+from solver.report.trauma_cap import compute_trauma_cap_excess
 from solver.report.variety import compute_variety_report
 from solver.model.hint_pin import SOLVABLE_STATUSES, pinned_component_exprs
 
@@ -67,6 +68,7 @@ def solve_score(payload):
         schedule = S._extract_schedule(solver, store)
         report = S._build_report(payload, solver, objective, S._default_hint_diag())
         report["variety"] = compute_variety_report(payload, schedule)
+        report["traumaCapExcess"] = compute_trauma_cap_excess(payload, schedule)
         tiers = {n: round(solver.value(e)) for n, e in objective.stage_exprs.items()}
         components = {n: round(solver.value(e)) for n, e in pinned_component_exprs(payload, objective).items()}
         report["score"] = {"feasible": True, "components": components, "missingCells": []}
