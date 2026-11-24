@@ -1750,7 +1750,10 @@ hint was infeasible). Not repaired: continue exactly as without the flag.
 (present whenever `enabled`; `attempted: false` for a feasible or absent hint). `changedCells` counts (resident, date)
 cells whose shift differs from the hint. `scope` is the scope that produced the repair, or the last one tried.
 
-### `config.ladder = {skipZeroStages: false, qualityStageSeconds: null}`
+### `config.ladder = {skipZeroStages: true, qualityStageSeconds: 20}`
+Defaults ON since 2026-11-24 (owner; bench base4, 3 grids x 4 seeds x 2 machines at 5 min: better than the old defaults in
+18 of 24 paired runs at 300 s and 23 of 24 at 120 s). Old behaviour per request: `{skipZeroStages: false,
+qualityStageSeconds: null}`. Absent or invalid values fall back to the defaults; `null`, `0` or `false` removes the cap.
 - `skipZeroStages`: while the (feasible or repaired) hint is still the floor (every earlier stage tied it), a
   non-quality stage whose tier value in `evaluate_hint` is 0 cannot improve: its search is skipped, `expr == 0` is
   fixed, the hint is carried on, and its time rolls forward. `report.timing.stages[].skipped = "hintZero"`,

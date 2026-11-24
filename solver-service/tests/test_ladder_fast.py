@@ -1,4 +1,4 @@
-"""config.ladder (2026-11-23): skipZeroStages and qualityStageSeconds. Defaults off == unchanged."""
+"""config.ladder (2026-11-23): skipZeroStages and qualityStageSeconds. Defaults ON since 2026-11-24 (owner, bench base4)."""
 
 from __future__ import annotations
 
@@ -26,18 +26,21 @@ def _skipped(result):
 
 
 def test_config_defaults_and_garbage():
+    # Defaults ON since 2026-11-24; garbage falls back to the defaults; only explicit false / null turns them off.
     c = parse_payload(_raw()).config.ladder
-    assert c.skip_zero_stages is False and c.quality_stage_seconds is None
+    assert c.skip_zero_stages is True and c.quality_stage_seconds == 20.0
     c = parse_payload(_raw(ladder={"skipZeroStages": 1, "qualityStageSeconds": "x"})).config.ladder
+    assert c.skip_zero_stages is True and c.quality_stage_seconds == 20.0
+    c = parse_payload(_raw(ladder={"skipZeroStages": False, "qualityStageSeconds": None})).config.ladder
     assert c.skip_zero_stages is False and c.quality_stage_seconds is None
     c = parse_payload(_raw(ladder={"skipZeroStages": True, "qualityStageSeconds": 2})).config.ladder
     assert c.skip_zero_stages is True and c.quality_stage_seconds == 2.0
 
 
-def test_zero_stage_skipped_only_when_flag_on():
-    off = solve(parse_payload(_raw()))
+def test_zero_stage_skipped_unless_flag_off():
+    off = solve(parse_payload(_raw({"skipZeroStages": False})))
     assert _skipped(off) == []
-    on = solve(parse_payload(_raw({"skipZeroStages": True})))
+    on = solve(parse_payload(_raw()))
     skipped = _skipped(on)
     assert skipped and TIER_QUALITY not in skipped
     rows = {r["name"]: r for r in on.report["stages"]}
@@ -60,8 +63,8 @@ def test_quality_stage_capped_when_outer_lns_enabled():
     assert "outerLns" in res.report
 
 
-def test_quality_cap_ignored_without_outer_lns_and_default():
-    for ladder, outer in (({"qualityStageSeconds": 0.2}, False), (None, True)):
+def test_quality_cap_ignored_without_outer_lns_and_when_null():
+    for ladder, outer in (({"qualityStageSeconds": 0.2}, False), ({"qualityStageSeconds": None}, True)):
         res = solve(parse_payload(_raw(ladder, outer=outer, max_time=8)))
         row = [r for r in res.report["stages"] if r["name"] == TIER_QUALITY][0]
         assert row["budgetSeconds"] > 0.2

@@ -602,7 +602,7 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
     LEX_STRICT (`config.lexStrict`): non-final stages minimize their OWN expr only (no tiebreak sum);
     the pin is `expr == value` when the stage proved OPTIMAL, else `expr <= value`.
 
-    LADDER (2026-11-23, `config.ladder`, default off): `skipZeroStages` skips a non-quality stage whose tier
+    LADDER (2026-11-23, `config.ladder`, default ON since 2026-11-24): `skipZeroStages` skips a non-quality stage whose tier
     value is 0 in the feasible/repaired hint while the hint is still the floor (`hint_tracking`: every earlier
     stage tied it, so the hint is a feasible witness for `expr == 0`); `qualityStageSeconds` caps the last
     stage's wall time when outer LNS is enabled (the rest goes to outer LNS). `stop_event` ("stop and keep

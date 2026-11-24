@@ -3740,6 +3740,16 @@ const CHANGELOG = [
       'New time choice **Long polish (2 hours)**: meant to be left running, for example overnight. Open the Schedule tab on this device later and the result will be waiting (kept 24 hours). If the solver machine restarts during a run, you are told the run was lost and can run Optimize again.',
     ],
   },
+  // Optimize quick start entry: same non-interrupting insert (CHANGELOG[0] unchanged).
+  {
+    id: '2026-11-24-optimize-quick-start',
+    date: '2026-11-24',
+    title: 'Optimize gets to the useful part sooner',
+    items: [
+      '**Optimize** now starts its fine polishing after about 40 seconds instead of about 2.5 minutes. In overnight tests the schedule at 2 minutes was about as good as it used to be at 3, and the 5 minute result was a little better.',
+      'Because polishing starts earlier, **Until it levels off** can now stop well before its 15 minute limit.',
+    ],
+  },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
   {
     id: '2026-11-22-shift-variety',

@@ -37,8 +37,9 @@ class HintRepairConfig:
 
 @dataclass(frozen=True)
 class LadderConfig:
-    skip_zero_stages: bool = False
-    quality_stage_seconds: Optional[float] = None
+    # Defaults ON since 2026-11-24 (owner, bench base4: better in 18 of 24 paired 5 min runs, 23 of 24 at 2 min).
+    skip_zero_stages: bool = True
+    quality_stage_seconds: Optional[float] = 20.0
 
 
 def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:
@@ -52,10 +53,12 @@ def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:
             return default
         return f if math.isfinite(f) and f > 0 else default
 
-    q = _pos(ld.get("qualityStageSeconds"), None)
+    # Absent or garbage -> default 20 s; explicit null / 0 / false -> no cap (the pre-2026-11-24 behaviour).
+    raw_q = ld.get("qualityStageSeconds", 20.0)
+    q = None if raw_q is None or raw_q is False or raw_q == 0 else _pos(raw_q, 20.0)
     return {
         "hint_repair": HintRepairConfig(enabled=hr.get("enabled") is True, seconds=_pos(hr.get("seconds"), 20.0)),
-        "ladder": LadderConfig(skip_zero_stages=ld.get("skipZeroStages") is True, quality_stage_seconds=q),
+        "ladder": LadderConfig(skip_zero_stages=ld.get("skipZeroStages") is not False, quality_stage_seconds=q),
     }
 
 
