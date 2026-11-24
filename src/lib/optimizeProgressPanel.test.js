@@ -19,4 +19,13 @@ describe('OptimizeProgressPanel', () => {
     expect(html).toContain('Starting');
     expect(html).toContain('No better schedule found yet');
   });
+  it('says stopped early, not proved optimal, after a manual stop', () => {
+    const tracker = { stage: 6, stages: 6, elapsed: 120, budget: 900, improvements: 3 };
+    const stopped = renderToStaticMarkup(createElement(OptimizeProgressPanel, { tracker, status: 'done', stopped: true }));
+    expect(stopped).toContain('Stopped early: kept the best schedule found so far.');
+    expect(stopped).not.toContain('proved it could not do better');
+    const proved = renderToStaticMarkup(createElement(OptimizeProgressPanel, { tracker, status: 'done' }));
+    expect(proved).toContain('proved it could not do better');
+    expect(proved).not.toContain('Stopped early');
+  });
 });

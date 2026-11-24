@@ -19797,7 +19797,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             <OptimizeProgressPanel tracker={optimizeTracker} status={longSolveStatus && longSolveStatus !== 'lost' ? longSolveStatus.status : 'running'}
               elapsedFallback={longSolveElapsedSec} budgetFallback={longSolveJob.budgetSeconds || 0} now={Date.now()}
               trend={longSolveSpinning ? optimizeTrend : null} live={longSolveSpinning ? optimizeLiveNums : null}
-              wrappingUp={optimizeWrappingUp} autoStop={!!longSolveJob.autoStop}/>
+              wrappingUp={optimizeWrappingUp} autoStop={!!longSolveJob.autoStop}
+              stopped={!!longSolveStatus && longSolveStatus !== 'lost' && (longSolveStatus.result?.report?.stoppedEarly === true || (longSolveStatus.perMachine || []).some(p => p.result?.report?.stoppedEarly === true))}/>
           )}
           {optimizePollTrouble && longSolveSpinning && (
             <div className="basis-full text-xs tri-optimize-note" data-testid="optimize-poll-trouble" role="status">
