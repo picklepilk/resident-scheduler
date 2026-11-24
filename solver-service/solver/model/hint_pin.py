@@ -216,3 +216,126 @@ def apply_hint_pins(model, payload: Payload, objective, hint_eval: HintEvaluatio
     for name in pinned_components_for(payload):
         expr = exprs[name]
         model.add(expr <= hint_eval.components[name])
+
+
+# --- Hint repair (2026-11-23, `config.hintRepair`) ---------------------------------------------------
+# `evaluate_hint` says "infeasible" as soon as ONE hard rule breaks, which switches off pins, hint floor
+# and fallback. `repair_hint_grid` finds a feasible grid close to the hint (fewest changed cells) so the
+# rest of the pipeline can treat it exactly like a feasible hint. Never uses CpSolver `repair_hint`.
+
+@dataclass
+class RepairOutcome:
+    attempted: bool = False
+    repaired: bool = False
+    hint: list = field(default_factory=list)   # repaired LockedCell list (only when repaired)
+    changed_cells: int = 0                     # (resident, date) cells whose shift differs from the hint
+    seconds: float = 0.0
+    violated_rules: list = field(default_factory=list)
+    scope: str = None                          # "residents" | "all" (scope that produced the repair, or the last tried)
+
+    def report(self) -> dict:
+        return {
+            "attempted": self.attempted,
+            "repaired": self.repaired,
+            "changedCells": self.changed_cells,
+            "seconds": round(self.seconds, 2),
+            "violatedRules": list(self.violated_rules),
+            "scope": self.scope,
+        }
+
+
+def hint_grid(payload: Payload) -> dict:
+    grid: dict = {}
+    for h in payload.hint:
+        grid.setdefault(h.resident_id, {})[h.date] = h.shift_id
+    return grid
+
+
+def hint_violations(payload: Payload) -> tuple:
+    """(sorted rule names, set of resident ids involved) for the hard rules `payload.hint` breaks,
+    via solver/validate.py (the independent fixed-grid checker). A failure naming no resident (coverage
+    max, senior composition) involves whoever the hint puts on its dates/shifts."""
+    from solver.validate import validate_schedule
+
+    grid = hint_grid(payload)
+    try:
+        failures = validate_schedule(payload, grid)
+    except Exception:
+        return [], set()
+    rules = sorted({f["rule"] for f in failures})
+    residents: set = set()
+    for f in failures:
+        if f["residentIds"]:
+            residents.update(f["residentIds"])
+            continue
+        dates, shifts = set(f["dates"]), set(f["shiftIds"])
+        for rid, by_date in grid.items():
+            for d, sid in by_date.items():
+                if d in dates and (not shifts or sid in shifts):
+                    residents.add(rid)
+    return rules, residents
+
+
+def _repair_solve(payload: Payload, build_result, free_residents, seconds: float, make_solver):
+    """One repair solve on a CLONE: hard rules only, x fixed to the hint for every resident not in
+    `free_residents` (None = free everyone), minimise the number of x cells that differ from the hint.
+    Returns the solver (with a solution) or None."""
+    store = build_result.store
+    wanted = {(h.resident_id, h.date): h.shift_id for h in payload.hint}
+    clone = build_result.model.clone()
+    clone.clear_hints()
+    diffs = []
+    for (rid, sid, d), var in store.x.items():
+        cv = clone.get_bool_var_from_proto_index(var.index)
+        hv = 1 if wanted.get((rid, d)) == sid else 0
+        clone.add_hint(cv, hv)
+        if free_residents is not None and rid not in free_residents:
+            clone.add(cv == hv)
+        else:
+            diffs.append(1 - cv if hv else cv)
+    clone.minimize(sum(diffs, start=0))
+    solver = make_solver()
+    solver.parameters.max_time_in_seconds = max(0.1, seconds)
+    status = solver.solve(clone)
+    if solver.status_name(status) not in SOLVABLE_STATUSES:
+        return None
+    return solver
+
+
+def repair_hint_grid(payload: Payload, build_result, seconds: float, make_solver, stop_event=None) -> RepairOutcome:
+    """Repair an infeasible hint. First frees only the residents involved in violations (everyone else
+    fixed to the hint); if that is infeasible or yields nothing within half of `seconds`, frees everyone
+    for the rest. `make_solver()` returns a configured CpSolver (solve.py's, registered for cancel)."""
+    out = RepairOutcome(attempted=True)
+    t0 = time.time()
+    out.violated_rules, involved = hint_violations(payload)
+    all_residents = {r.id for r in payload.residents}
+    involved &= all_residents
+    plan = []
+    if involved and involved != all_residents:
+        plan.append(("residents", involved, seconds / 2.0))
+    plan.append(("all", None, None))
+    solver = None
+    for scope, free, cap in plan:
+        if stop_event is not None and stop_event.is_set():
+            break
+        remaining = seconds - (time.time() - t0)
+        if remaining <= 0.05:
+            break
+        out.scope = scope
+        solver = _repair_solve(payload, build_result, free, remaining if cap is None else min(cap, remaining), make_solver)
+        if solver is not None:
+            break
+    out.seconds = time.time() - t0
+    if solver is None:
+        return out
+
+    from solver.io.payload import LockedCell
+
+    rows = sorted((rid, d, sid) for (rid, sid, d), var in build_result.store.x.items() if solver.value(var))
+    out.hint = [LockedCell(resident_id=r, date=d, shift_id=s) for r, d, s in rows]
+    old = {(h.resident_id, h.date): h.shift_id for h in payload.hint}
+    new = {(r, d): s for r, d, s in rows}
+    out.changed_cells = sum(1 for k in old.keys() | new.keys() if old.get(k) != new.get(k))
+    out.repaired = True
+    return out

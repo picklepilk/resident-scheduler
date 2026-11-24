@@ -1702,3 +1702,50 @@ Fix (`solver/solve.py`, `solver/model/hint_pin.py`):
 - Safety net in `_solve_pass1` (after outer LNS): if the hint is feasible and its tier vector is lexicographically strictly better (`_hint_beats`, ladder order) than the result's, the hint's solver is returned: schedule equals the hint grid, `tiers` = hint tiers, status unchanged.
 - `report.hintKept` (bool) present in staged mode whenever the hint was feasible; absent with no hint, an infeasible hint, or weighted mode.
 - Tests: `tests/test_hint_floor.py`.
+
+
+## Hint repair, fast ladder, stop-and-keep-best, timing (2026-11-23)
+
+All new behaviour is opt-in via config flags that default OFF; with the flags off a solve is unchanged.
+Only `report.timing` (and `report.stoppedEarly` when a stop was requested) appear without a flag.
+
+### `config.hintRepair = {enabled: false, seconds: 20}`
+When enabled, the payload has a `hint`, and `evaluate_hint` finds it infeasible (any hard rule broken), a repair
+pass runs before the ladder. `solver/validate.py` names the broken rules and the residents involved; a repair solve
+on a CLONE of the built model (hard rules only, never CpSolver `repair_hint`) minimises the number of `x` cells that
+differ from the hint. First only the involved residents are free (everyone else fixed to the hint), within half the
+repair time; if infeasible or nothing found, every resident is freed for the rest. Total repair time is capped at
+`min(seconds, 0.2 * maxTimeSeconds, deadline)`. Locked cells are model constraints, so they always hold.
+A repaired grid is re-evaluated with `evaluate_hint` and from then on behaves exactly like a feasible hint: hard
+pins (`apply_hint_pins`), hint floor / `hint_tracking`, the full-variable hint carried into stage 1, and the final
+safety net (`report.hintKept`). `report.hintPinning` then reads `applied: true, hintFeasible: false` (the ORIGINAL
+hint was infeasible). Not repaired: continue exactly as without the flag.
+
+`report.hintRepair = {attempted, repaired, changedCells, seconds, violatedRules: [rule names], scope: "residents"|"all"|null}`
+(present whenever `enabled`; `attempted: false` for a feasible or absent hint). `changedCells` counts (resident, date)
+cells whose shift differs from the hint. `scope` is the scope that produced the repair, or the last one tried.
+
+### `config.ladder = {skipZeroStages: false, qualityStageSeconds: null}`
+- `skipZeroStages`: while the (feasible or repaired) hint is still the floor (every earlier stage tied it), a
+  non-quality stage whose tier value in `evaluate_hint` is 0 cannot improve: its search is skipped, `expr == 0` is
+  fixed, the hint is carried on, and its time rolls forward. `report.timing.stages[].skipped = "hintZero"`,
+  `report.stages[]` row `status: "SKIPPED"`. The quality tier is never skipped (it can contain negative terms).
+- `qualityStageSeconds: N`: hard cap on the last (quality) stage's budget when outer LNS is enabled; the rest of the
+  budget goes to outer LNS. The stall rule is unchanged.
+
+### `stop_event` ("stop and keep best")
+`solve(payload, stop_event=...)`: when set, the running stage search is stopped (a watcher thread calls
+`stop_search()` on the newest registered solver every 50 ms, so it works with or without `begin_stoppable_run`),
+no further stage starts, outer LNS is skipped (or breaks its loop), pass 2 is skipped, and the best solution so far
+is returned through the normal path with `report.stoppedEarly = true`. No incumbent yet: a feasible/repaired hint is
+returned; with nothing at all the result is `INFEASIBLE` with an empty schedule (pass 2 is NOT started).
+The seed portfolio path (K > 1) ignores `stop_event` (K defaults to 1); `cancel_event` semantics are unchanged.
+
+### `report.timing`
+`{buildSeconds, hintEvalSeconds, presolveSeconds, stages: [{name, wallSeconds, firstIncumbentSeconds|null, skipped|null}], lnsSeconds}`
+on every pass-1 result (also an INFEASIBLE one). `hintEvalSeconds` covers `evaluate_hint` (and the repair, whose own
+time is in `hintRepair.seconds`). `skipped` is `"empty"` (no terms), `"hintZero"`, or null. `stages` has one row per
+ladder stage (weighted mode: empty list). `firstIncumbentSeconds` is recorded only when a solution callback is
+attached anyway (progress sink, stall stop, shortlist), otherwise null: a bare solve stays callback-free.
+`presolveSeconds` is always null (CP-SAT exposes presolve time only through its search log, which stays off).
+Pass 2 (relaxed) results carry no `timing`.

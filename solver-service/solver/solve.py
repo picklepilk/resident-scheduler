@@ -67,13 +67,67 @@ def _register_active_solver(solver: cp_model.CpSolver) -> None:
     lst = getattr(_tls, "solvers", None)
     if lst is not None:
         lst.append(solver)
+    watch = getattr(_tls, "stop_watch", None)
+    if watch is not None:
+        watch.append(solver)
+
+
+class _StopWatcher:
+    """"Stop and keep best" (`stop_event`): a daemon thread that, once the event is set, keeps calling
+    `stop_search()` on the newest solver this thread's solve registered (a solver registered after the
+    event was set is stopped within ~50 ms, a finished one is a no-op). Context manager; no-op without an event.
+    Solvers made on OTHER threads (outer-LNS parallel sub-solves) are stopped by `run_outer_lns`'s own loop check."""
+
+    def __init__(self, stop_event):
+        self._ev = stop_event
+        self._solvers: list = []
+        self._done = threading.Event()
+        self._thread = None
+
+    def __enter__(self):
+        if self._ev is None:
+            return self
+        self._prev = getattr(_tls, "stop_watch", None)
+        _tls.stop_watch = self._solvers
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while not self._done.is_set():
+            if self._ev.is_set():
+                for s in self._solvers[-1:]:
+                    try:
+                        s.stop_search()
+                    except Exception:
+                        pass
+            self._done.wait(0.05)
+
+    def __exit__(self, *exc):
+        if self._thread is not None:
+            self._done.set()
+            self._thread.join(timeout=2)
+            _tls.stop_watch = self._prev
+        return False
+
+
+class _FirstIncumbent:
+    """Solution handler (solver/callbacks.py form) recording seconds from creation to the first incumbent."""
+
+    def __init__(self):
+        self.t0 = time.time()
+        self.first = None
+
+    def on_solution(self, cb) -> None:
+        if self.first is None:
+            self.first = time.time() - self.t0
 
 from solver.build import BuildResult, build_model
 from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
 from solver.io.sat_params import apply_params, params_for_run
 from solver.lns_outer import run_outer_lns
-from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for
+from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for, repair_hint_grid
 from solver.model.objective import (
     TIER_BLOCKING,
     TIER_ERRORS,
@@ -450,7 +504,8 @@ def _hint_beats(hint_tiers: dict, tiers: dict) -> bool:
 _TIEBREAK_MULTIPLIER = 1_000_000
 
 
-def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None, stall_log=None, stage_log=None):
+def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, progress=None, handlers=(), deadline=None, stall_log=None, stage_log=None,
+                  stop_event=None, timing_stages=None):
     """Runs the (up to 5-stage) lexicographic ladder described at `_STAGE_NAMES`'s
     own module-level comment, on the SAME model/store build_model() already
     produced (no rebuild between stages -- only the objective and an
@@ -545,6 +600,14 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
 
     LEX_STRICT (`config.lexStrict`): non-final stages minimize their OWN expr only (no tiebreak sum);
     the pin is `expr == value` when the stage proved OPTIMAL, else `expr <= value`.
+
+    LADDER (2026-11-23, `config.ladder`, default off): `skipZeroStages` skips a non-quality stage whose tier
+    value is 0 in the feasible/repaired hint while the hint is still the floor (`hint_tracking`: every earlier
+    stage tied it, so the hint is a feasible witness for `expr == 0`); `qualityStageSeconds` caps the last
+    stage's wall time when outer LNS is enabled (the rest goes to outer LNS). `stop_event` ("stop and keep
+    best"): checked before every stage; a stopped stage keeps its incumbent, later stages never start, and with
+    no incumbent a feasible hint is returned (else status "UNKNOWN", solver None). `timing_stages` (list)
+    receives one `{name, wallSeconds, firstIncumbentSeconds, skipped}` row per stage (`report.timing.stages`).
     """
     if deadline is None:
         deadline = Deadline.for_config(payload.config)
@@ -579,15 +642,39 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
     # strictly beats the hint.
     hint_tracking = hint_eval is not None and hint_eval.feasible and bool(getattr(hint_eval, "tiers", None))
 
+    ladder = payload.config.ladder
     for i, ((name, expr), budget) in enumerate(zip(stage_defs, budgets)):
         budget = budget + rollover_seconds
         rollover_seconds = 0.0
+        if stop_event is not None and stop_event.is_set():
+            if not have_solution and hint_eval is not None and hint_eval.feasible:
+                return "FEASIBLE", hint_eval.solver, total_time_ms + hint_eval.solve_time_ms
+            if not have_solution:
+                return "UNKNOWN", None, total_time_ms
+            break
+        if timing_stages is not None:
+            timing_stages.append({"name": name, "wallSeconds": 0.0, "firstIncumbentSeconds": None, "skipped": None})
+        trow = timing_stages[-1] if timing_stages is not None else None
         if _is_empty_stage(expr):
+            if trow is not None:
+                trow["skipped"] = "empty"
             if stage_log is not None:
                 stage_log.append({"name": name, "seconds": 0.0, "status": "EMPTY", "objective": 0, "budgetSeconds": round(budget, 2), "stalled": False})
             rollover_seconds = budget  # nothing to solve here -- hand the whole share onward
             continue
         is_last = name == stage_defs[-1][0]
+        if ladder.skip_zero_stages and hint_tracking and not is_last and hint_eval.tiers.get(name) == 0:
+            # The hint already scores 0 here and is still the floor: nothing to improve, pin and move on.
+            model.add(expr == 0)
+            _carry_hint_eval(model, hint_eval)
+            if stage_log is not None:
+                stage_log.append({"name": name, "seconds": 0.0, "status": "SKIPPED", "objective": 0, "budgetSeconds": round(budget, 2), "stalled": False})
+            if trow is not None:
+                trow["skipped"] = "hintZero"
+            rollover_seconds = budget
+            continue
+        if is_last and ladder.quality_stage_seconds and payload.config.outer_lns.enabled:
+            budget = min(budget, ladder.quality_stage_seconds)
         # See this function's own TIEBREAK paragraph: every stage after this
         # one is added at a heavily discounted weight purely to break ties
         # among solutions that are equally good for THIS stage.
@@ -606,10 +693,18 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         threshold = stall_threshold(payload.config.stall_seconds, budget) if name in _STALL_STAGES else 0.0
         if name in _EARLY_STALL_STAGES and payload.config.stall_early_seconds:
             threshold = float(payload.config.stall_early_seconds)
+        first_inc = _FirstIncumbent()
         t0 = time.time()
+        first_inc.t0 = t0
         with StallStop(solver, threshold) as stall:
-            status = _solve_with_progress(solver, model, progress, [*handlers, *([stall] if threshold > 0 else [])])
+            others = [*handlers, *([stall] if threshold > 0 else [])]
+            # first_inc rides only on a callback that exists anyway (progress/stall/shortlist): a bare
+            # solve stays callback-free exactly as before, and its firstIncumbentSeconds is null.
+            status = _solve_with_progress(solver, model, progress, [*others, *([first_inc] if others or progress is not None else [])])
         elapsed_seconds = time.time() - t0
+        if trow is not None:
+            trow["wallSeconds"] = round(elapsed_seconds, 3)
+            trow["firstIncumbentSeconds"] = None if first_inc.first is None else round(first_inc.first, 3)
         total_time_ms += int(elapsed_seconds * 1000)
         status_name = solver.status_name(status)
 
@@ -642,6 +737,8 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
             with StallStop(retry, threshold) as stall2:
                 retry_status = _solve_with_progress(retry, model, progress, [*handlers, *([stall2] if threshold > 0 else [])])
             total_time_ms += int((time.time() - t1) * 1000)
+            if trow is not None:
+                trow["wallSeconds"] = round(time.time() - t0, 3)
             if retry.status_name(retry_status) in SOLVABLE_STATUSES and retry.value(expr) < solver.value(expr):
                 solver = last_good_solver = retry
                 status_name = retry.status_name(retry_status)
@@ -681,6 +778,11 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
             if status_name == "OPTIMAL" or stalled:
                 rollover_seconds = max(0.0, budget - elapsed_seconds)
 
+    if last_status_name is None and stop_event is not None and stop_event.is_set():
+        return "UNKNOWN", None, total_time_ms
+    if last_status_name is None and hint_eval is not None and hint_eval.feasible and ladder.skip_zero_stages and not have_solution:
+        # Every stage was empty or skipped as hintZero: the hint is already optimal on all of them.
+        return "FEASIBLE", hint_eval.solver, total_time_ms + hint_eval.solve_time_ms
     if last_status_name is None:
         # Degenerate payload: every stage was empty (no soft terms anywhere
         # -- e.g. no EM-core residents, no night shifts, no coverage minimums
@@ -760,11 +862,15 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
             stages += 1  # the extra 'outerLns' stage
         progress = ProgressReporter(on_progress, payload.config.max_time_seconds, stages)
     deadline = Deadline.for_config(payload.config)
-    result = _solve_pass1(payload, progress, cancel_event, deadline, stop_event=stop_event)
-    if progress is not None:
-        progress.finish()
-    if result.status == "INFEASIBLE" and not (cancel_event is not None and cancel_event.is_set()):
-        result = run_pass2(payload, deadline)
+    stopped = lambda: stop_event is not None and stop_event.is_set()  # noqa: E731
+    with _StopWatcher(stop_event):
+        result = _solve_pass1(payload, progress, cancel_event, deadline, stop_event=stop_event)
+        if progress is not None:
+            progress.finish()
+        if result.status == "INFEASIBLE" and not (cancel_event is not None and cancel_event.is_set()) and not stopped():
+            result = run_pass2(payload, deadline)
+    if stopped():
+        result.report["stoppedEarly"] = True
     result.report["deadline"] = _deadline_report(deadline)
     return result
 
@@ -775,7 +881,23 @@ def _deadline_report(deadline: Deadline) -> dict:
     return {"seconds": round(deadline.at - deadline.start, 2), "hit": over > 0, "overrunSeconds": round(over, 2)}
 
 
-def _apply_hint_pinning(payload: Payload, build_result: BuildResult, deadline: Deadline = None):
+def _timing_report(build_seconds: float, hint_eval_seconds: float, stages: list, lns_seconds: float) -> dict:
+    """`report.timing`: setup vs search wall time. `presolveSeconds` is null (not measured: CP-SAT only
+    exposes presolve time through its search log, which this service keeps off)."""
+    return {
+        "buildSeconds": round(build_seconds, 3),
+        "hintEvalSeconds": round(hint_eval_seconds, 3),
+        "presolveSeconds": None,
+        "stages": stages,
+        "lnsSeconds": round(lns_seconds, 3),
+    }
+
+
+def _no_repair_report() -> dict:
+    return {"attempted": False, "repaired": False, "changedCells": 0, "seconds": 0.0, "violatedRules": [], "scope": None}
+
+
+def _apply_hint_pinning(payload: Payload, build_result: BuildResult, deadline: Deadline = None, stop_event=None, extra: dict = None):
     """R9 follow-up ("pin to hint", see solver/model/hint_pin.py): only in
     staged mode, and only when a hint was actually supplied -- weighted mode
     is the deliberate pre-R9 rollback path and gets none of this. Mutates
@@ -794,11 +916,38 @@ def _apply_hint_pinning(payload: Payload, build_result: BuildResult, deadline: D
         return {"applied": False, "hintFeasible": None, "pinned": {}}, None
 
     hint_eval = evaluate_hint(payload, build_result, None if deadline is None else deadline.cap(30.0))
+    hint_was_feasible = hint_eval.feasible
+    if not hint_eval.feasible and payload.config.hint_repair.enabled:
+        hint_eval = _repair_hint(payload, build_result, deadline, stop_event, extra) or hint_eval
     if not hint_eval.feasible:
         return {"applied": False, "hintFeasible": False, "pinned": {}}, hint_eval
 
     apply_hint_pins(build_result.model, payload, build_result.objective, hint_eval)
-    return {"applied": True, "hintFeasible": True, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
+    return {"applied": True, "hintFeasible": hint_was_feasible, "pinned": {k: v for k, v in hint_eval.components.items() if k in pinned_components_for(payload)}}, hint_eval
+
+
+def _repair_hint(payload: Payload, build_result: BuildResult, deadline, stop_event, extra: dict):
+    """`config.hintRepair`: the hint breaks a hard rule; find a nearby feasible grid and return its
+    `HintEvaluation` (feasible, same as a feasible hint from here on), or None when not repaired.
+    Budget: `seconds`, never more than 20% of maxTimeSeconds nor the deadline. On success the model's
+    warm start becomes the repaired solution (full-variable hint). Writes `extra["hintRepair"]`."""
+    cfg = payload.config
+    seconds = min(cfg.hint_repair.seconds, 0.2 * cfg.max_time_seconds)
+    if deadline is not None:
+        seconds = min(seconds, deadline.remaining())
+    outcome = repair_hint_grid(payload, build_result, seconds, lambda: _configure_solver(payload, allow_repair_hint=False), stop_event)
+    repaired_eval = None
+    if outcome.repaired:
+        repaired_payload = dataclasses.replace(payload, hint=outcome.hint)
+        repaired_eval = evaluate_hint(repaired_payload, build_result, None if deadline is None else deadline.cap(30.0))
+        if repaired_eval.feasible:
+            _carry_hint_eval(build_result.model, repaired_eval)
+        else:
+            outcome.repaired = False
+            repaired_eval = None
+    if extra is not None:
+        extra["hintRepair"] = outcome.report()
+    return repaired_eval
 
 
 def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: Deadline = None,
@@ -807,12 +956,18 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     if deadline is None:
         deadline = Deadline.for_config(payload.config, t_pass1)
     build_result = build_model(payload)
+    build_seconds = time.time() - t_pass1
     store = build_result.store
     objective = build_result.objective
     if progress is not None and payload.config.live_incumbent:
         progress._live_store = store
 
-    hint_diag, hint_eval = _apply_hint_pinning(payload, build_result, deadline)
+    t_hint = time.time()
+    repair_extra: dict = {}
+    hint_diag, hint_eval = _apply_hint_pinning(payload, build_result, deadline, stop_event, repair_extra)
+    hint_eval_seconds = time.time() - t_hint
+    timing_stages: list = []
+    lns_seconds = 0.0
 
     # R9: staged is the new default (payload.py's Config.objective_mode) --
     # `"weighted"` keeps the pre-R9 single-shot solve on `objective.total_expr`
@@ -836,8 +991,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                 ),
             )
         handlers = _pass1_handlers(payload, build_result)
-        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline, stall_log, stage_log)
-        if outer.enabled and status_name in SOLVABLE_STATUSES:
+        status_name, solver, solve_time_ms = _solve_staged(staged_payload, build_result, hint_eval, progress, handlers, deadline, stall_log, stage_log, stop_event, timing_stages)
+        if outer.enabled and status_name in SOLVABLE_STATUSES and not (stop_event is not None and stop_event.is_set()):
             if progress is not None:
                 progress.begin_stage(len(_STAGE_NAMES) + 1, "outerLns")
             t_lns = time.time()
@@ -860,6 +1015,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
                                 and round(solver.objective_value) == round(solver.value(objective.stage_exprs[TIER_QUALITY]))),
             )
             solve_time_ms += int((time.time() - t_lns) * 1000)
+            lns_seconds = time.time() - t_lns
     else:
         solver = _configure_solver(payload)
         solver.parameters.max_time_in_seconds = deadline.cap(payload.config.max_time_seconds)
@@ -871,6 +1027,10 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
         status_name = solver.status_name(status)
 
     if status_name not in SOLVABLE_STATUSES:
+        empty = _empty_report(hint_diag)
+        empty["timing"] = _timing_report(build_seconds, hint_eval_seconds, timing_stages, lns_seconds)
+        if payload.config.hint_repair.enabled:
+            empty["hintRepair"] = repair_extra.get("hintRepair") or _no_repair_report()
         return SolveResult(
             status="INFEASIBLE",
             mode="strict",
@@ -878,7 +1038,7 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
             objective_value=0,
             solve_time_ms=solve_time_ms,
             seed=payload.config.random_seed,
-            report=_empty_report(hint_diag),
+            report=empty,
             validation={"passed": True, "failures": []},
             feasibility=None,
         )
@@ -894,6 +1054,9 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     report = _build_report(payload, solver, objective, hint_diag)
     if payload.config.objective_mode == "staged" and hint_eval is not None and hint_eval.feasible:
         report["hintKept"] = hint_kept
+    report["timing"] = _timing_report(build_seconds, hint_eval_seconds, timing_stages, lns_seconds)
+    if payload.config.hint_repair.enabled:
+        report["hintRepair"] = repair_extra.get("hintRepair") or _no_repair_report()
     report["variety"] = compute_variety_report(payload, schedule)
     if outer_report is not None:
         report["outerLns"] = outer_report

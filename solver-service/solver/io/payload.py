@@ -28,6 +28,37 @@ class PayloadError(ValueError):
     """Raised for structurally invalid request JSON (maps to HTTP 400/422)."""
 
 
+# --- hintRepair / ladder config (2026-11-23; all default OFF, see docs/PAYLOAD_SCHEMA.md) ---
+@dataclass(frozen=True)
+class HintRepairConfig:
+    enabled: bool = False
+    seconds: float = 20.0
+
+
+@dataclass(frozen=True)
+class LadderConfig:
+    skip_zero_stages: bool = False
+    quality_stage_seconds: Optional[float] = None
+
+
+def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:
+    hr = config_raw.get("hintRepair") if isinstance(config_raw.get("hintRepair"), dict) else {}
+    ld = config_raw.get("ladder") if isinstance(config_raw.get("ladder"), dict) else {}
+
+    def _pos(v, default):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return default
+        return f if math.isfinite(f) and f > 0 else default
+
+    q = _pos(ld.get("qualityStageSeconds"), None)
+    return {
+        "hint_repair": HintRepairConfig(enabled=hr.get("enabled") is True, seconds=_pos(hr.get("seconds"), 20.0)),
+        "ladder": LadderConfig(skip_zero_stages=ld.get("skipZeroStages") is True, quality_stage_seconds=q),
+    }
+
+
 @dataclass(frozen=True)
 class Config:
     max_time_seconds: float = 30.0
@@ -116,6 +147,8 @@ class Config:
     # Strict lexicographic stages: pure stage objective, `==` pin when OPTIMAL. Default ON since the
     # 2026-11-05 PicklePower bench (PERF_NOTES.md); `lexStrict: false` restores the tiebreak ladder.
     lex_strict: bool = True
+    hint_repair: HintRepairConfig = HintRepairConfig()
+    ladder: LadderConfig = LadderConfig()
 
 
 @dataclass(frozen=True)
@@ -532,6 +565,7 @@ def parse_payload(raw: dict) -> Payload:
             implied_cliques=bool(config_raw.get("impliedCliques", False)),
             lex_strict=bool(config_raw.get("lexStrict", True)),
             live_incumbent=config_raw.get("liveIncumbent") is True,
+            **_parse_hint_repair_and_ladder(config_raw),
         )
         settings_raw = raw.get("settings", {}) or {}
         settings = Settings(
