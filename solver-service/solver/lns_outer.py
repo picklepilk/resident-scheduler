@@ -35,9 +35,13 @@ from dataclasses import dataclass
 from ortools.sat.python import cp_model
 
 NEIGHBORHOODS = ("window", "residents", "shiftWindow", "worstTerms")
-# Opt-in extras (config.outerLns.neighborhoods / eligibilityGroup); absent = the four above only.
+# Extras (config.outerLns.neighborhoods / eligibilityGroup), added to the four above.
 # nightCleanup / qualityWorst (2026-11-23): quality-tier-aware, see _Neighborhoods.night_cleanup / quality_worst.
 OPTIONAL_NEIGHBORHOODS = ("eligibilityGroup", "nightCleanup", "qualityWorst")
+# "Night search", default ON since 2026-11-24 (owner; bench base4b/base4c on top of quick start: better in 20 of 24
+# paired 5 min runs and 7 of 8 at 15 min, about 3 fewer isolated nights). Used when `neighborhoods` is absent or
+# not a list; an explicit list (even []) replaces it. Old behaviour: {neighborhoods: [], shrinkOnTimeout: false}.
+DEFAULT_EXTRA_NEIGHBORHOODS = ("nightCleanup", "qualityWorst")
 
 DEFAULT_FRACTION = 0.5
 DEFAULT_SUB_SOLVE_SECONDS = 5.0
@@ -51,9 +55,9 @@ class OuterLnsConfig:
     sub_solve_seconds: float = DEFAULT_SUB_SOLVE_SECONDS
     tiers: str = "quality"  # "quality" (default) | "all" -- see run_outer_lns
     sub_workers: int = 0  # CP-SAT workers per sub-solve; 0 = same as the main solve (see run_outer_lns)
-    neighborhoods: tuple = ()  # opt-in extra neighborhood names (subset of OPTIONAL_NEIGHBORHOODS)
+    neighborhoods: tuple = DEFAULT_EXTRA_NEIGHBORHOODS  # extra neighborhood names (subset of OPTIONAL_NEIGHBORHOODS)
     parallel: int = 1  # concurrent sub-solves on disjoint neighborhoods; 1 = serial (see run_outer_lns)
-    shrink_on_timeout: bool = False  # shrink a neighborhood's scale when a sub-solve ends FEASIBLE with no strict gain
+    shrink_on_timeout: bool = True  # shrink a neighborhood's scale when a sub-solve ends FEASIBLE with no strict gain
     skip: tuple = ()  # neighborhood names dropped from the active set (defaults and extras alike)
 
 
@@ -83,9 +87,9 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
             return default
         return max(lo, min(hi, v))
 
-    extras: list = []
+    extras: list = list(DEFAULT_EXTRA_NEIGHBORHOODS)
     nb = raw.get("neighborhoods")
-    if isinstance(nb, (list, tuple)):
+    if isinstance(nb, (list, tuple)):  # explicit list replaces the default extras ([] = the four base ones only)
         extras = [n for n in OPTIONAL_NEIGHBORHOODS if n in nb]
     if raw.get("eligibilityGroup") is True and "eligibilityGroup" not in extras:
         extras.append("eligibilityGroup")
@@ -98,7 +102,7 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         sub_workers=_int("subWorkers", 0, 0, 1024),
         parallel=_int("parallel", 1, 1, 8),
         neighborhoods=tuple(extras),
-        shrink_on_timeout=raw.get("shrinkOnTimeout") is True,
+        shrink_on_timeout=raw.get("shrinkOnTimeout") is not False,
         skip=tuple(n for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS if isinstance(raw.get("skip"), (list, tuple)) and n in raw["skip"]),
     )
 
@@ -465,7 +469,8 @@ def run_outer_lns(
     that best single one). So the accepted incumbent is always a real solver solution that lexicographically
     beats the previous incumbent.
 
-    `neighborhoods` adds opt-in extras (eligibilityGroup, nightCleanup, qualityWorst). `skip` (names) drops
+    `neighborhoods` adds extras (eligibilityGroup, nightCleanup, qualityWorst; this function's own default is
+    none, solve.py passes the config's, which defaults to nightCleanup + qualityWorst). `skip` (names) drops
     neighborhoods from the active set, defaults included (ignored if it would empty the set).
     `shrink_on_timeout` shrinks a neighborhood's scale (x0.8, min 0.4) when its sub-solve ends FEASIBLE
     (not proven OPTIMAL) without a strict gain. Both default to `payload.config.outer_lns` (None = read

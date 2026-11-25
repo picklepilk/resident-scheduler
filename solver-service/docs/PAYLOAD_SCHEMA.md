@@ -1712,12 +1712,12 @@ Fix (`solver/solve.py`, `solver/model/hint_pin.py`):
 
 ## Outer LNS targeting options (2026-11-23, `solver/lns_outer.py`)
 
-All opt-in; absent = behaviour unchanged (the default neighbourhood sequence for a fixed seed is identical to before).
+**Night search default ON since 2026-11-24** (owner; bench base4b/base4c on top of quick start: better in 20 of 24 paired 5 min runs and 7 of 8 at 15 min, about 3 fewer isolated nights): absent `neighborhoods` = `["nightCleanup", "qualityWorst"]`, absent `shrinkOnTimeout` = `true`. Old behaviour per request: `{neighborhoods: [], shrinkOnTimeout: false}` (then the default neighbourhood sequence for a fixed seed is identical to before 2026-11-23). `skip` stays opt-in.
 
 `config.outerLns`:
-- `neighborhoods: [...]` also accepts `"nightCleanup"` and `"qualityWorst"` (besides `"eligibilityGroup"`). Unknown names are dropped.
+- `neighborhoods: [...]` accepts `"nightCleanup"`, `"qualityWorst"` and `"eligibilityGroup"`. Unknown names are dropped. An explicit list (even `[]`) REPLACES the default extras; absent or not a list = the default two. `eligibilityGroup: true` still adds that one on top.
 - `skip: [...]` drops neighbourhoods by name from the active set, defaults included (`window`, `residents`, `shiftWindow`, `worstTerms`, plus extras). Ignored if it would leave nothing active.
-- `shrinkOnTimeout: false` (literal `true` enables). A sub-solve that ends FEASIBLE (not proven OPTIMAL) without a strict gain multiplies that neighbourhood's scale by 0.8 (floor 0.4). Today the scale only shrinks on a no-solution status, which practically never happens.
+- `shrinkOnTimeout: true` (literal `false` disables; anything else = on). A sub-solve that ends FEASIBLE (not proven OPTIMAL) without a strict gain multiplies that neighbourhood's scale by 0.8 (floor 0.4). Without it the scale only shrinks on a no-solution status, which practically never happens.
 
 Neighbourhoods:
 - `nightCleanup`: finds each non-`nightExempt` resident's INTERIOR night stints of length 1 or 2 in the incumbent (the ones `isolatedNight` / `shortNightStint` charge; runs touching the block's first or last date are exempt in the objective, so skipped). Visits stints in a seeded-shuffled rotation (each live stint once per cycle). Free set = that resident's cells for +/- `round(3*scale)` days around the stint, plus the cells (same days) of other residents holding a night in that window (cap `max(2, round(8*scale))`, random pick beyond). No stints: behaves like `window`.

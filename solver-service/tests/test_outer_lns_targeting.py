@@ -152,10 +152,17 @@ def test_parse_new_options():
     c = parse_outer_lns({"neighborhoods": ["nightCleanup", "qualityWorst", "bogus"], "shrinkOnTimeout": True,
                          "skip": ["shiftWindow", "bogus"]})
     assert c.neighborhoods == ("nightCleanup", "qualityWorst") and c.shrink_on_timeout and c.skip == ("shiftWindow",)
+    # Night search default ON since 2026-11-24: absent / garbage -> nightCleanup + qualityWorst, shrink on.
     d = parse_outer_lns({})
-    assert d == OuterLnsConfig() and not d.shrink_on_timeout and d.skip == ()
+    assert d == OuterLnsConfig() and d.shrink_on_timeout and d.skip == ()
+    assert d.neighborhoods == ("nightCleanup", "qualityWorst")
+    assert parse_outer_lns({"neighborhoods": "nightCleanup"}).neighborhoods == ("nightCleanup", "qualityWorst")
     assert parse_outer_lns({"shrinkOnTimeout": "yes", "skip": "shiftWindow"}).skip == ()
-    assert not parse_outer_lns({"shrinkOnTimeout": "yes"}).shrink_on_timeout
+    assert parse_outer_lns({"shrinkOnTimeout": "yes"}).shrink_on_timeout
+    # Old behaviour per request: explicit empty list and literal false.
+    off = parse_outer_lns({"neighborhoods": [], "shrinkOnTimeout": False})
+    assert off.neighborhoods == () and not off.shrink_on_timeout
+    assert parse_outer_lns({"neighborhoods": [], "eligibilityGroup": True}).neighborhoods == ("eligibilityGroup",)
     p = parse_payload(_raw(outerLns={"shrinkOnTimeout": True, "skip": ["window"]}))
     assert p.config.outer_lns.shrink_on_timeout and p.config.outer_lns.skip == ("window",)
 

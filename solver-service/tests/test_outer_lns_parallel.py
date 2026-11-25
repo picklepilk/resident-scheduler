@@ -103,10 +103,12 @@ def test_runlog_keeps_by_neighborhood():
 
 
 def test_eligibility_group_opt_in_parse_and_stats():
-    assert parse_outer_lns({}).neighborhoods == ()
+    night = ("nightCleanup", "qualityWorst")  # default extras since 2026-11-24 (night search on)
+    assert parse_outer_lns({}).neighborhoods == night
     assert parse_outer_lns({"neighborhoods": ["eligibilityGroup", "bogus"]}).neighborhoods == ("eligibilityGroup",)
-    assert parse_outer_lns({"eligibilityGroup": True}).neighborhoods == ("eligibilityGroup",)
-    assert parse_outer_lns({"neighborhoods": "x", "eligibilityGroup": 1}).neighborhoods == ()
+    assert parse_outer_lns({"eligibilityGroup": True}).neighborhoods == night + ("eligibilityGroup",)
+    assert parse_outer_lns({"neighborhoods": [], "eligibilityGroup": True}).neighborhoods == ("eligibilityGroup",)
+    assert parse_outer_lns({"neighborhoods": "x", "eligibilityGroup": 1}).neighborhoods == night
     payload = parse_payload(_raw())
     br, s = _bad_incumbent(payload)
     _best, rep = run_outer_lns(

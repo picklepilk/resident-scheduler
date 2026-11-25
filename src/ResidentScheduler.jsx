@@ -3750,6 +3750,14 @@ const CHANGELOG = [
       'Because polishing starts earlier, **Until it levels off** can now stop well before its 15 minute limit.',
     ],
   },
+  {
+    id: '2026-11-24-optimize-night-search',
+    date: '2026-11-24',
+    title: 'Optimize cleans up more single nights',
+    items: [
+      '**Optimize** now spends part of its polishing on isolated nights and two-night stints, and on the residents whose schedules need the most work. In tests it left about 3 fewer isolated nights and 4 to 6 fewer warnings, at both 5 and 15 minutes.',
+    ],
+  },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
   {
     id: '2026-11-22-shift-variety',
