@@ -68,6 +68,10 @@ class OuterLnsConfig:
     sub_stall_seconds: float = 0.0  # > 0: stop a sub-solve that found no better solution for this long (0 = run to the cap)
     chooser: str = "success"  # "success" (smoothed acceptance rate) | "gainRate" (smoothed quality points per second)
     grow_on_success: bool = False  # grow a neighborhood's scale while it keeps winning
+    # Adaptive stall rule (2026-11-25, bench round2a; needs sub_stall_seconds > 0): switch the rule off while the grid is polished.
+    sub_stall_adaptive: bool = False
+    sub_stall_off_below: float = 0.45  # win rate over the last SUB_STALL_WINDOW steps below this: rule off
+    sub_stall_on_at: float = 0.60  # win rate at/above this while off: rule back on (>= off_below)
 
 
 def parse_outer_lns(raw) -> OuterLnsConfig:
@@ -103,6 +107,9 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
     if raw.get("eligibilityGroup") is True and "eligibilityGroup" not in extras:
         extras.append("eligibilityGroup")
 
+    off_below = _num("subStallOffBelow", 0.45, 0.0, 1.0)
+    on_at = max(off_below, _num("subStallOnAt", 0.60, 0.0, 1.0))
+
     return OuterLnsConfig(
         enabled=raw.get("enabled") is not False,
         fraction=_num("fraction", DEFAULT_FRACTION, 0.05, 0.9),
@@ -115,8 +122,43 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         sub_stall_seconds=_num("subStallSeconds", 0.0, 0.0, 60.0),
         chooser="gainRate" if raw.get("chooser") == "gainRate" else "success",
         grow_on_success=raw.get("growOnSuccess") is True,
+        sub_stall_adaptive=raw.get("subStallAdaptive") is True,
+        sub_stall_off_below=off_below,
+        sub_stall_on_at=on_at,
         skip=tuple(n for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS if isinstance(raw.get("skip"), (list, tuple)) and n in raw["skip"]),
     )
+
+
+SUB_STALL_WINDOW = 12  # steps in the adaptive stall rule's rolling win-rate window
+
+
+class StallRuleGate:
+    """Adaptive sub-solve stall rule (`subStallAdaptive`): `on` says whether the next steps run with the stall rule.
+    `record(won)` once per finished step, `end_batch()` once per batch. With a full window of SUB_STALL_WINDOW steps,
+    win rate < off_below turns the rule off; win rate >= on_at turns it back on. Every switch clears the window
+    (rates with the rule on and off are not comparable) and is counted in `switches`."""
+
+    def __init__(self, off_below: float, on_at: float):
+        self.off_below, self.on_at = off_below, on_at
+        self.on = True
+        self.switches = 0
+        self.window: collections.deque = collections.deque(maxlen=SUB_STALL_WINDOW)
+
+    def record(self, won: bool) -> None:
+        self.window.append(bool(won))
+
+    def end_batch(self) -> None:
+        if len(self.window) < SUB_STALL_WINDOW:
+            return
+        rate = sum(self.window) / len(self.window)
+        if self.on and rate < self.off_below:
+            self.on = False
+        elif not self.on and rate >= self.on_at:
+            self.on = True
+        else:
+            return
+        self.switches += 1
+        self.window.clear()
 
 
 class _Neighborhoods:
@@ -463,6 +505,9 @@ def run_outer_lns(
     sub_stall_seconds=None,
     chooser=None,
     grow_on_success=None,
+    sub_stall_adaptive=None,
+    sub_stall_off_below=None,
+    sub_stall_on_at=None,
 ):
     """Improve `solver`'s incumbent until `deadline` (a `time.time()` value). Returns `(solver, report)`:
     `solver` is the CpSolver holding the best solution (the input one if nothing was accepted) and `report`
@@ -524,6 +569,16 @@ def run_outer_lns(
         chooser = getattr(cfg_outer, "chooser", "success") or "success"
     if grow_on_success is None:
         grow_on_success = bool(getattr(cfg_outer, "grow_on_success", False))
+    if sub_stall_adaptive is None:
+        sub_stall_adaptive = bool(getattr(cfg_outer, "sub_stall_adaptive", False))
+    if sub_stall_off_below is None:
+        sub_stall_off_below = float(getattr(cfg_outer, "sub_stall_off_below", 0.45))
+    if sub_stall_on_at is None:
+        sub_stall_on_at = float(getattr(cfg_outer, "sub_stall_on_at", 0.60))
+    sub_stall_on_at = max(sub_stall_on_at, sub_stall_off_below)
+    adaptive = bool(sub_stall_adaptive) and sub_stall_seconds > 0
+    gate = StallRuleGate(sub_stall_off_below, sub_stall_on_at) if adaptive else None
+    steps_on = steps_off = 0
     steps: list = []  # per-step record, capped at MAX_STEP_RECORDS (report["steps"])
     active = tuple(n for n in NEIGHBORHOODS if n not in skip) + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()) and n not in skip)
     if not active:  # skip would empty the set: ignore it
@@ -638,17 +693,21 @@ def run_outer_lns(
             elif obj < self.base - 1e-6:
                 self.last_gain = time.time() - self.t0
 
-    def _run_one(slv, sub, out: list, idx: int) -> None:
+    def _run_one(slv, sub, out: list, idx: int, rule: bool = True) -> None:
         t0 = time.time()
         last_gain = None
         stalled = False
         try:
-            if sub_stall_seconds > 0:
+            if sub_stall_seconds > 0 and rule:
                 watch = _GainWatch(_step_baseline(sub), t0)  # per-call state: safe in parallel threads
                 with StallStop(slv, sub_stall_seconds) as stall:
                     status_name = slv.status_name(slv.solve(sub, MultiCallback([watch, stall])))
                 last_gain = watch.last_gain
                 stalled = bool(stall.fired) and status_name != "OPTIMAL"
+            elif sub_stall_seconds > 0:  # adaptive, rule off for this step: no stall callback, lastGain still recorded
+                watch = _GainWatch(_step_baseline(sub), t0)
+                status_name = slv.status_name(slv.solve(sub, MultiCallback([watch])))
+                last_gain = watch.last_gain
             else:
                 status_name = slv.status_name(slv.solve(sub))
         except Exception:  # noqa: BLE001 -- one failed sub-solve must not kill the whole polish
@@ -694,6 +753,21 @@ def run_outer_lns(
                 if len(last5) == 5 and sum(1 for e in last5 if e[2]) >= 4:
                     hood.scale[name] = min(2.5, hood.scale[name] * 1.15)
 
+    def _adaptive_batch(batch, accepted_js, rule_used: bool) -> None:
+        """Adaptive stall rule: feed the finished batch to the gate, then let it switch (once per batch).
+        "Won" = the step was accepted as an improvement: `j in accepted_js`, the set that increments
+        report["accepted"] and sets the step record's `gain` (a merged batch counts every merged step)."""
+        nonlocal steps_on, steps_off
+        if gate is None:
+            return
+        for j in range(len(batch)):
+            gate.record(j in accepted_js)
+            if rule_used:
+                steps_on += 1
+            else:
+                steps_off += 1
+        gate.end_batch()
+
     last_ord = tuple(incumbent_tiers[n] for n in stage_names)
     iteration = 0
     merged_batches = 0
@@ -737,10 +811,11 @@ def run_outer_lns(
         t_fix += time.time() - t_a
         t_a = time.time()
         out: list = [None] * len(batch)
+        rule_now = gate.on if gate is not None else True  # fixed for the whole batch
         if len(batch) == 1:
-            _run_one(runs[0], subs[0], out, 0)
+            _run_one(runs[0], subs[0], out, 0, rule_now)
         else:
-            threads = [threading.Thread(target=_run_one, args=(runs[j], subs[j], out, j), daemon=True) for j in range(len(batch))]
+            threads = [threading.Thread(target=_run_one, args=(runs[j], subs[j], out, j, rule_now), daemon=True) for j in range(len(batch))]
             for t in threads:
                 t.start()
             for t in threads:
@@ -756,6 +831,8 @@ def run_outer_lns(
             step = {"n": name, "size": len(free), "scale": round(hood.scale[name], 3), "s": round(secs, 2),
                     "lastGain": None if last_gain_s is None else round(last_gain_s, 2), "status": status_name,
                     "stalled": bool(stalled), "gain": 0}
+            if gate is not None:
+                step["rule"] = rule_now
             step_refs[j] = step
             if len(steps) < MAX_STEP_RECORDS:
                 steps.append(step)
@@ -778,6 +855,7 @@ def run_outer_lns(
         accepted_js: set = set()
         if not improving:
             _record_history(batch, out, step_refs, accepted_js)
+            _adaptive_batch(batch, accepted_js, rule_now)
             continue
         improving.sort(key=lambda e: (e[0], e[3]))
         chosen = [improving[0]]
@@ -813,6 +891,7 @@ def run_outer_lns(
             if e[3] in step_refs:
                 step_refs[e[3]]["gain"] = max(0, prev_quality - e[1][quality_name])
         _record_history(batch, out, step_refs, accepted_js)
+        _adaptive_batch(batch, accepted_js, rule_now)
         incumbent_solver = accepted_slv
         solution = list(accepted_slv.response_proto.solution)
         incumbent_tiers = accepted_tiers
@@ -835,6 +914,9 @@ def run_outer_lns(
     report["steps"] = steps  # [{n, size, scale, s, lastGain, status, stalled, gain}], first MAX_STEP_RECORDS sub-solves
     if sub_stall_seconds > 0:
         report["subStallSeconds"] = sub_stall_seconds
+    if gate is not None:
+        report["subStallAdaptive"] = {"switches": gate.switches, "stepsOn": steps_on, "stepsOff": steps_off,
+                                      "offBelow": sub_stall_off_below, "onAt": sub_stall_on_at}
     if chooser != "success":
         report["chooser"] = chooser
     if grow_on_success:
