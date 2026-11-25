@@ -34,6 +34,21 @@ def _missing_cells(payload, store) -> list:
     ]
 
 
+def hint_check(payload, feasible: bool) -> dict:
+    """`report.hintCheck` (2026-11-24): the starting grid's hard-rule breaks as per-rule counts, no resident ids.
+    `feasible` is the score solve's verdict (same as `evaluate_hint`); counts come from the fixed-grid validator."""
+    from solver.model.hint_pin import hint_grid
+    from solver.validate import validate_schedule
+
+    counts: dict = {}
+    try:
+        for f in validate_schedule(payload, hint_grid(payload)):
+            counts[f["rule"]] = counts.get(f["rule"], 0) + 1
+    except Exception:
+        counts = {}
+    return {"feasible": bool(feasible), "violations": [{"rule": r, "count": n} for r, n in sorted(counts.items())]}
+
+
 def _fix_x(model, store, payload) -> None:
     wanted = {(h.resident_id, h.date): h.shift_id for h in payload.hint}
     for (rid, shift_id, date), var in store.x.items():
@@ -72,6 +87,7 @@ def solve_score(payload):
         tiers = {n: round(solver.value(e)) for n, e in objective.stage_exprs.items()}
         components = {n: round(solver.value(e)) for n, e in pinned_component_exprs(payload, objective).items()}
         report["score"] = {"feasible": True, "components": components, "missingCells": []}
+        report["hintCheck"] = hint_check(payload, True)
         return S.SolveResult(
             status="SCORED", mode="strict", schedule=schedule,
             objective_value=round(solver.value(objective.total_expr)),
@@ -87,6 +103,7 @@ def solve_score(payload):
         conflicts = S._run_conflict_probe(capped, elastic)
     report = S._empty_report()
     report["score"] = {"feasible": False, "conflicts": conflicts, "missingCells": missing}
+    report["hintCheck"] = hint_check(payload, False)
     return S.SolveResult(
         status="INFEASIBLE", mode="strict", schedule={}, objective_value=0,
         solve_time_ms=int((time.time() - t0) * 1000), seed=payload.config.random_seed,

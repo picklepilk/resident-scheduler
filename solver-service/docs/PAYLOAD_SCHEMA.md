@@ -1624,6 +1624,7 @@ Response additions (all additive, `report` is a plain dict):
 - `report.stall = [{stage, stoppedAfterSeconds, budgetSeconds, reseeded}]`
 - `report.shortlist = [{schedule, tiers}]` (best first, excludes the returned winner)
 - score mode: `status: "SCORED"` (or `"INFEASIBLE"` with `report.score.conflicts`), `tiers`, normal `report`.
+- score mode also returns `report.hintCheck = {feasible: bool, violations: [{rule, count}]}` (additive, 2026-11-24): `feasible` is the score verdict, `violations` counts the hard-rule breaks of the starting grid per `solver/validate.py` rule name (`coverageMax`, `targetCeiling`, ...), no resident ids. The app's Optimize menu sends a short score request to show this before Optimize is pressed.
 
 Hook points (`solver/solve.py`): `_pass1_handlers(payload, build_result)` returns solution handlers (`solver/callbacks.py` `on_solution(cb)`) that see every staged-stage incumbent; `_solve_single` dispatches `mode == "score"` to `solver/score.py` `solve_score(payload)`.
 

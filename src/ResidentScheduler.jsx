@@ -48,6 +48,8 @@ import { DEFAULT_SOLVE_MAX_TIME_SECONDS, DEEP_SOLVE_MAX_TIME_SECONDS, solverBudg
 import { diffSchedules as diffOptimizeCells, formatQualityValue, compareQuality, isStrictImprovement, budgetSeconds as optimizeBudgetSeconds, lockedCellsForOptimize, pickBestOfMachines, bestOfLine, bestOfSeed, aggregateBestOfJobs, BEST_OF_TARGET, optimizeRunPlan, targetFeatures, capsFromFeatures, budgetAvailable, stoppedEarlyText, commonFeatures } from './lib/optimizeFlow.js';
 import { appendSample, describeTrend, shouldAutoStop, bestOfProgress, incumbentToSchedule, summarizeLive, liveComparison, shouldRecomputeLive, incumbentKey } from './lib/optimizeLive.js';
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
+import OptimizePrecheckLine from './components/OptimizePrecheckLine.jsx';
+import { precheckRequest, summarizePrecheck } from './lib/solverPrecheck.js';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
 import OptimizeScopeControls from './components/OptimizeScopeControls.jsx';
@@ -18234,6 +18236,22 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     }
   }
 
+  // Optimize menu info line: price the current grid in solver score mode (see src/lib/solverPrecheck.js). Resolves a
+  // summary or null; null for anything unusable (no machine, durable/Modal host where /solve answers use_jobs, older
+  // host without hintCheck, any error). Never blocks or changes Optimize.
+  async function runOptimizePrecheck() {
+    try {
+      if (appSettings.useSolverService === false || totalAssigned === 0) return null;
+      if (!getBlockDates(block.startDate, block.endDate).length) return null;
+      const { url, usingLocal, status } = await resolveSolverRunTarget(optimizeTarget === BEST_OF_TARGET ? 'cloud' : optimizeTarget);
+      if (!url || status?.jobsMode === 'durable') return null;
+      const payload = precheckRequest(buildSolverPayload({ allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, block, optimizeExisting: true }));
+      const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
+      const res = await solveRemote(payload, { timeoutMs: 25000, accessToken, url });
+      return summarizePrecheck(res?.report);
+    } catch { return null; }
+  }
+
   // Optimize: submit the current grid to a solver machine (see generateViaSolverOrLocal's optimizeExisting branch).
   async function requestOptimize() {
     setOptimizeMenuOpen(false);
@@ -19803,6 +19821,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               <it.icon size={13} className="shrink-0"/>{it.label}
             </button>
           ))}
+          <OptimizePrecheckLine run={runOptimizePrecheck}/>
           <OptimizeMenuSection machines={optimizeMachines} machine={optimizeMachineValue} onMachineChange={onOptimizeMachineChange}
             budget={effectiveBudget} onBudgetChange={setOptimizeBudget} budgetMinutes={optimizeBudgetMinutes} caps={optimizeCaps}
             disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
