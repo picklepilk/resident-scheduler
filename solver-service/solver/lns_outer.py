@@ -44,6 +44,7 @@ OPTIONAL_NEIGHBORHOODS = ("eligibilityGroup", "nightCleanup", "qualityWorst")
 DEFAULT_EXTRA_NEIGHBORHOODS = ("nightCleanup", "qualityWorst")
 
 DEFAULT_FRACTION = 0.5
+MAX_STEP_RECORDS = 600  # report["outerLns"]["steps"] cap (a 2 h run at ~3 s per step would otherwise be ~2400 rows)
 DEFAULT_SUB_SOLVE_SECONDS = 5.0
 LNS_TIER_SCALE = 1_000_000  # tiers="all" objective: primary * scale + later tiers (see run_outer_lns)
 
@@ -59,6 +60,10 @@ class OuterLnsConfig:
     parallel: int = 1  # concurrent sub-solves on disjoint neighborhoods; 1 = serial (see run_outer_lns)
     shrink_on_timeout: bool = True  # shrink a neighborhood's scale when a sub-solve ends FEASIBLE with no strict gain
     skip: tuple = ()  # neighborhood names dropped from the active set (defaults and extras alike)
+    # Round 2 options (2026-11-24), all OFF by default; see docs/PAYLOAD_SCHEMA.md "Round 2 options".
+    sub_stall_seconds: float = 0.0  # > 0: stop a sub-solve that found no better solution for this long (0 = run to the cap)
+    chooser: str = "success"  # "success" (smoothed acceptance rate) | "gainRate" (smoothed quality points per second)
+    grow_on_success: bool = False  # grow a neighborhood's scale while it keeps winning
 
 
 def parse_outer_lns(raw) -> OuterLnsConfig:
@@ -103,6 +108,9 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         parallel=_int("parallel", 1, 1, 8),
         neighborhoods=tuple(extras),
         shrink_on_timeout=raw.get("shrinkOnTimeout") is not False,
+        sub_stall_seconds=_num("subStallSeconds", 0.0, 0.0, 60.0),
+        chooser="gainRate" if raw.get("chooser") == "gainRate" else "success",
+        grow_on_success=raw.get("growOnSuccess") is True,
         skip=tuple(n for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS if isinstance(raw.get("skip"), (list, tuple)) and n in raw["skip"]),
     )
 
@@ -436,6 +444,9 @@ def run_outer_lns(
     neighborhoods: tuple = (),
     shrink_on_timeout=None,
     skip=None,
+    sub_stall_seconds=None,
+    chooser=None,
+    grow_on_success=None,
 ):
     """Improve `solver`'s incumbent until `deadline` (a `time.time()` value). Returns `(solver, report)`:
     `solver` is the CpSolver holding the best solution (the input one if nothing was accepted) and `report`
@@ -490,6 +501,14 @@ def run_outer_lns(
         shrink_on_timeout = bool(getattr(cfg_outer, "shrink_on_timeout", False))
     if skip is None:
         skip = tuple(getattr(cfg_outer, "skip", ()) or ())
+    # Round 2 options (None = read config.outerLns; all default off).
+    if sub_stall_seconds is None:
+        sub_stall_seconds = float(getattr(cfg_outer, "sub_stall_seconds", 0.0) or 0.0)
+    if chooser is None:
+        chooser = getattr(cfg_outer, "chooser", "success") or "success"
+    if grow_on_success is None:
+        grow_on_success = bool(getattr(cfg_outer, "grow_on_success", False))
+    steps: list = []  # per-step record, capped at MAX_STEP_RECORDS (report["steps"])
     active = tuple(n for n in NEIGHBORHOODS if n not in skip) + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()) and n not in skip)
     if not active:  # skip would empty the set: ignore it
         active = NEIGHBORHOODS + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()))
@@ -584,7 +603,9 @@ def run_outer_lns(
             status_name = slv.status_name(slv.solve(sub))
         except Exception:  # noqa: BLE001 -- one failed sub-solve must not kill the whole polish
             status_name = "ERROR"
-        out[idx] = (status_name, time.time() - t0)
+        # (status, wall seconds, seconds from sub-solve start to its last strictly better solution or None,
+        #  stopped by the sub-solve stall rule). The last two are filled when `sub_stall_seconds` > 0.
+        out[idx] = (status_name, time.time() - t0, None, False)
 
     def _verify_merge(merged: list):
         """Solve a clone with every x fixed to `merged`: returns a CpSolver holding the full re-evaluated
@@ -663,10 +684,17 @@ def run_outer_lns(
         t_solve += time.time() - t_a
 
         improving = []  # (new_ord, new_tiers, slv, j)
+        step_refs: dict = {}  # j -> this batch's step record
         for j, (name, free, it) in enumerate(batch):
-            status_name, secs = out[j]
+            status_name, secs, last_gain_s, stalled = out[j]
             slv = runs[j]
             stats[name]["seconds"] += secs
+            step = {"n": name, "size": len(free), "scale": round(hood.scale[name], 3), "s": round(secs, 2),
+                    "lastGain": None if last_gain_s is None else round(last_gain_s, 2), "status": status_name,
+                    "stalled": bool(stalled), "gain": 0}
+            step_refs[j] = step
+            if len(steps) < MAX_STEP_RECORDS:
+                steps.append(step)
             if all_mode and status_name == "MODEL_INVALID":
                 stop = True  # objective overflow / invalid scaling: stop rather than spin (never expected, see LNS_TIER_SCALE)
                 continue
@@ -677,6 +705,8 @@ def run_outer_lns(
                     improving.append((new_ord, new_tiers, slv, j))
                 elif status_name == "OPTIMAL":
                     hood.scale[name] = min(2.5, hood.scale[name] * 1.25)  # proven no gain here: look wider
+                elif stalled:
+                    pass  # stopped by the sub-solve stall rule without gain: says nothing about size, leave it
                 elif shrink_on_timeout:
                     hood.scale[name] = max(0.4, hood.scale[name] * 0.8)  # timed out (FEASIBLE) without gain: look smaller
             else:
@@ -713,6 +743,8 @@ def run_outer_lns(
             stats[name]["accepted"] += 1
             stats[name]["gain"] += max(0, prev_quality - e[1][quality_name])
             report["accepted"] += 1
+            if e[3] in step_refs:
+                step_refs[e[3]]["gain"] = max(0, prev_quality - e[1][quality_name])
         incumbent_solver = accepted_slv
         solution = list(accepted_slv.response_proto.solution)
         incumbent_tiers = accepted_tiers
@@ -732,6 +764,13 @@ def run_outer_lns(
         report["mergedBatches"] = merged_batches
     report["endObjective"] = incumbent_tiers[quality_name]
     report["scales"] = {n: round(hood.scale[n], 3) for n in stats}  # final per-neighborhood size multipliers
+    report["steps"] = steps  # [{n, size, scale, s, lastGain, status, stalled, gain}], first MAX_STEP_RECORDS sub-solves
+    if sub_stall_seconds > 0:
+        report["subStallSeconds"] = sub_stall_seconds
+    if chooser != "success":
+        report["chooser"] = chooser
+    if grow_on_success:
+        report["growOnSuccess"] = True
     if all_mode:
         report["endTiers"] = dict(incumbent_tiers)
     report["seconds"] = round(time.time() - t_start, 2)

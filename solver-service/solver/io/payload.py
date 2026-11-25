@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import math
+from datetime import date as _date
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -40,6 +41,38 @@ class LadderConfig:
     # Defaults ON since 2026-11-24 (owner, bench base4: better in 18 of 24 paired 5 min runs, 23 of 24 at 2 min).
     skip_zero_stages: bool = True
     quality_stage_seconds: Optional[float] = 20.0
+    # Round 2 (2026-11-24), default OFF (0): end the coverage (RANK) stage when its first incumbent equals the
+    # hint's value and nothing improves for this many seconds; unused time rolls forward.
+    rank_stall_seconds: float = 0.0
+
+
+# --- config.scope (2026-11-24, "scoped polish"; absent = whole block) ---
+@dataclass(frozen=True)
+class ScopeConfig:
+    """Cells IN scope may move; every other cell is fixed to the hint's value. A cell is in scope when
+    (`dates` is None or dates[0] <= date <= dates[1]) and (`resident_ids` is empty or rid in resident_ids)."""
+    dates: Optional[tuple] = None  # (fromIso, toIso), inclusive
+    resident_ids: tuple = ()
+
+
+def parse_scope(raw) -> Optional["ScopeConfig"]:
+    """Lenient: anything malformed or empty -> None (whole block)."""
+    if not isinstance(raw, dict):
+        return None
+    dates = None
+    d = raw.get("dates")
+    if isinstance(d, (list, tuple)) and len(d) == 2 and all(isinstance(x, str) and len(x) == 10 for x in d):
+        try:
+            ok = _date.fromisoformat(d[0]) <= _date.fromisoformat(d[1])
+        except ValueError:
+            ok = False
+        if ok:
+            dates = (d[0], d[1])
+    r = raw.get("residentIds")
+    rids = tuple(dict.fromkeys(x for x in r if isinstance(x, str) and x)) if isinstance(r, (list, tuple)) else ()
+    if dates is None and not rids:
+        return None
+    return ScopeConfig(dates=dates, resident_ids=rids)
 
 
 def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:
@@ -58,7 +91,9 @@ def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:
     q = None if raw_q is None or raw_q is False or raw_q == 0 else _pos(raw_q, 20.0)
     return {
         "hint_repair": HintRepairConfig(enabled=hr.get("enabled") is True, seconds=_pos(hr.get("seconds"), 20.0)),
-        "ladder": LadderConfig(skip_zero_stages=ld.get("skipZeroStages") is not False, quality_stage_seconds=q),
+        "ladder": LadderConfig(skip_zero_stages=ld.get("skipZeroStages") is not False, quality_stage_seconds=q,
+                               rank_stall_seconds=min(120.0, _pos(ld.get("rankStallSeconds"), 0.0))),
+        "scope": parse_scope(config_raw.get("scope")),
     }
 
 
@@ -152,6 +187,7 @@ class Config:
     lex_strict: bool = True
     hint_repair: HintRepairConfig = HintRepairConfig()
     ladder: LadderConfig = LadderConfig()
+    scope: Optional[ScopeConfig] = None  # scoped polish; None = whole block (see ScopeConfig)
 
 
 @dataclass(frozen=True)

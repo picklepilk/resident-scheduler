@@ -1799,3 +1799,17 @@ the solver's strict hint check and switched off the warm start. Now:
   second TRAUMA-N in a night run), and the JS quality tuple is a ratchet, so no JS term was added. The solver
   therefore minimises a quality-tier cost the app's `betterQuality` cannot see; `pickEngineResult` is unaffected
   (the validator's cap warn is non-blocking). JS `SOLVER_RELAXED_NONBLOCKING_FAMILIES` dropped `traumaCap`.
+
+## Round 2 options (2026-11-24, all OFF by default; bench before any becomes a default)
+
+`config.outerLns`:
+- `subStallSeconds: 0` (0..60; 0 = off). A sub-solve that has an incumbent and finds no strictly better solution for this many seconds is stopped (`solver/stall.py` `StallStop`), instead of running to `subSolveSeconds`. A stall-stopped step without gain leaves the neighbourhood's scale unchanged (neither grow nor shrink).
+- `chooser: "success"` (default) | `"gainRate"`. `success` = the existing smoothed acceptance-rate weighting. `gainRate` = weight by smoothed quality points gained per second over each neighbourhood's recent tries, with a floor so every neighbourhood still gets turns.
+- `growOnSuccess: false` (literal `true` enables). Grows a neighbourhood's scale after a win while it keeps winning (cap 2.5).
+- `report.outerLns.steps`: always present. First 600 sub-solves, each `{n, size, scale, s, lastGain, status, stalled, gain}`: neighbourhood name, free cell count, scale used, wall seconds, seconds from sub-solve start to its last strictly better solution (null unless `subStallSeconds` > 0), CP-SAT status, stopped by the stall rule, quality points gained (0 when not accepted). `report.outerLns` also echoes `subStallSeconds` / `chooser` / `growOnSuccess` when non-default.
+
+`config.ladder`:
+- `rankStallSeconds: 0` (0..120; 0 = off). Ends the coverage stage (`tier3_qualityRank`) when its first incumbent equals the hint's value for that tier and nothing improves for this many seconds; the unused stage time rolls forward. Only applies while the hint is feasible (the hint floor is in force).
+
+`config.scope` ("scoped polish"; absent, malformed or empty = whole block):
+- `{dates: ["YYYY-MM-DD", "YYYY-MM-DD"], residentIds: ["id", ...]}`, either or both. A cell is IN scope when (`dates` absent or from <= date <= to, inclusive) AND (`residentIds` absent/empty or the resident is listed). Every x variable outside the scope is fixed to the hint's value (0 when the hint has no entry for it). Requires `hint`; without one the scope is ignored. `lockedCells` and the hint floor apply as usual. `report.scope = {applied, dates, residentIds, freeCells, fixedCells, ignored?}`.
