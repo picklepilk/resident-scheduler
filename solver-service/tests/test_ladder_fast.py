@@ -68,3 +68,79 @@ def test_quality_cap_ignored_without_outer_lns_and_when_null():
         res = solve(parse_payload(_raw(ladder, outer=outer, max_time=8)))
         row = [r for r in res.report["stages"] if r["name"] == TIER_QUALITY][0]
         assert row["budgetSeconds"] > 0.2
+
+
+# ---- rankStallSeconds (round 2): end TIER_RANK early while the hint is still the floor ----
+
+RANK_STALL = 3.5
+
+
+class _FakeStall:
+    """Replaces solver.solve.StallStop: records thresholds; the stage run with the rank threshold reports fired."""
+    log: list = []
+
+    def __init__(self, solver, threshold, clock=None):
+        self.threshold = float(threshold)
+        self.fired = False
+        _FakeStall.log.append(self)
+
+    def on_solution(self, cb):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.fired = self.threshold == RANK_STALL
+        return False
+
+
+def _run_fake(monkeypatch, raw):
+    import solver.solve as S
+    _FakeStall.log = []
+    monkeypatch.setattr(S, "StallStop", _FakeStall)
+    raw["config"]["stallSeconds"] = 0  # normal stall off: only the rank rule may create a threshold
+    return solve(parse_payload(raw))
+
+
+def _baseline_budgets(max_time):
+    from solver.solve import _stage_time_budgets
+    p = parse_payload(_raw({"skipZeroStages": False}, max_time=max_time))
+    return dict(zip(_STAGE_NAMES, _stage_time_budgets(p)))
+
+
+def test_rank_stall_off_changes_nothing(monkeypatch):
+    res = _run_fake(monkeypatch, _raw({"skipZeroStages": False}, max_time=20))
+    assert all(s.threshold == 0.0 for s in _FakeStall.log)
+    assert all("stalled" not in s for s in res.report["timing"]["stages"])
+
+
+def test_rank_stall_ends_rank_stage_and_rolls_budget(monkeypatch):
+    from solver.model.objective import TIER_RANK
+    res = _run_fake(monkeypatch, _raw({"skipZeroStages": False, "rankStallSeconds": RANK_STALL}, max_time=20))
+    rows = {s["name"]: s for s in res.report["timing"]["stages"]}
+    assert [n for n, r in rows.items() if r.get("stalled")] == [TIER_RANK]
+    assert [s.threshold for s in _FakeStall.log].count(RANK_STALL) == 1
+    stages = {r["name"]: r for r in res.report["stages"]}
+    assert stages[TIER_RANK]["stalled"] is True
+    names = list(_STAGE_NAMES)
+    after = names[names.index(TIER_RANK) + 1]
+    base = _baseline_budgets(20)
+    # next stage budget = its own share + RANK's unused time (the small model solves in well under a second)
+    assert stages[after]["budgetSeconds"] > base[after] + 0.5 * base[TIER_RANK]
+    assert stages[TIER_RANK]["seconds"] < 0.5 * base[TIER_RANK]
+
+
+def test_rank_stall_not_applied_without_hint(monkeypatch):
+    res = _run_fake(monkeypatch, _raw({"rankStallSeconds": RANK_STALL}, hint=False, max_time=20))
+    assert all(s.threshold == 0.0 for s in _FakeStall.log)
+    assert all("stalled" not in s for s in res.report["timing"]["stages"])
+
+
+def test_rank_stall_not_applied_with_infeasible_hint(monkeypatch):
+    raw = _raw({"skipZeroStages": False, "rankStallSeconds": RANK_STALL}, max_time=20)
+    # both residents on D every date (max 1): infeasible hint
+    raw["hint"] = [{"residentId": r, "date": d, "shiftId": "D"} for r in ("r1", "r2") for d in raw["block"]["dates"]]
+    res = _run_fake(monkeypatch, raw)
+    assert res.report.get("hintPinning", {}).get("hintFeasible") is False
+    assert all(s.threshold == 0.0 for s in _FakeStall.log)

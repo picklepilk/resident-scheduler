@@ -694,6 +694,10 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         threshold = stall_threshold(payload.config.stall_seconds, budget) if name in _STALL_STAGES else 0.0
         if name in _EARLY_STALL_STAGES and payload.config.stall_early_seconds:
             threshold = float(payload.config.stall_early_seconds)
+        if name == TIER_RANK and ladder.rank_stall_seconds > 0 and hint_tracking:
+            # RANK STALL (config.ladder.rankStallSeconds): the feasible hint is still the floor, so a RANK stage
+            # that has an incumbent but does not beat it for this long is not going to; end it early (budget rolls on).
+            threshold = float(ladder.rank_stall_seconds) if threshold <= 0 else min(threshold, float(ladder.rank_stall_seconds))
         first_inc = _FirstIncumbent()
         t0 = time.time()
         first_inc.t0 = t0
@@ -726,6 +730,8 @@ def _solve_staged(payload: Payload, build_result: BuildResult, hint_eval=None, p
         last_status_name = status_name
         last_good_solver = solver
         stalled = stall.fired
+        if stalled and trow is not None:
+            trow["stalled"] = True
         reseeded = False
         if stalled and is_last and budget - elapsed_seconds >= STALL_RECOVERY_MIN_SECONDS and not deadline.expired():
             # One re-seeded retry from the incumbent; keep it only on strict improvement of this stage.
