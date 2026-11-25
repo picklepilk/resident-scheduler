@@ -18239,16 +18239,24 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // Optimize menu info line: price the current grid in solver score mode (see src/lib/solverPrecheck.js). Resolves a
   // summary or null; null for anything unusable (no machine, durable/Modal host where /solve answers use_jobs, older
   // host without hintCheck, any error). Never blocks or changes Optimize.
+  // One /solve call per distinct (machine, payload): reopening the menu on an unchanged grid reuses the answer, so
+  // the check cannot eat the host's rate-limit bucket that the Optimize submit itself needs.
+  const optimizePrecheckCacheRef = useRef({ key: null, value: null });
   async function runOptimizePrecheck() {
     try {
       if (appSettings.useSolverService === false || totalAssigned === 0) return null;
+      if (longSolveJob?.jobId) return null; // a run is in flight on the host: do not compete with it
       if (!getBlockDates(block.startDate, block.endDate).length) return null;
       const { url, usingLocal, status } = await resolveSolverRunTarget(optimizeTarget === BEST_OF_TARGET ? 'cloud' : optimizeTarget);
       if (!url || status?.jobsMode === 'durable') return null;
       const payload = precheckRequest(buildSolverPayload({ allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, block, optimizeExisting: true }));
+      const key = `${url}|${JSON.stringify(payload)}`;
+      if (optimizePrecheckCacheRef.current.key === key) return optimizePrecheckCacheRef.current.value;
       const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
       const res = await solveRemote(payload, { timeoutMs: 25000, accessToken, url });
-      return summarizePrecheck(res?.report);
+      const value = summarizePrecheck(res?.report);
+      optimizePrecheckCacheRef.current = { key, value };
+      return value;
     } catch { return null; }
   }
 
