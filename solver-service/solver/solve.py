@@ -127,6 +127,7 @@ from solver.io.payload import Config, Payload
 from solver.model.elastic import build_elastic_model
 from solver.io.sat_params import apply_params, params_for_run
 from solver.lns_outer import run_outer_lns
+from solver.scope import apply_scope
 from solver.model.hint_pin import apply_hint_pins, evaluate_hint, pinned_components_for, repair_hint_grid
 from solver.model.objective import (
     TIER_BLOCKING,
@@ -870,6 +871,8 @@ def _solve_single(payload: Payload, cancel_event: "threading.Event | None" = Non
             progress.finish()
         if result.status == "INFEASIBLE" and not (cancel_event is not None and cancel_event.is_set()) and not stopped():
             result = run_pass2(payload, deadline)
+            if payload.config.scope is not None:
+                result.report["scope"] = {"applied": False, "ignored": "pass 2 (relaxed)"}
     if stopped():
         result.report["stoppedEarly"] = True
     result.report["deadline"] = _deadline_report(deadline)
@@ -967,6 +970,13 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     repair_extra: dict = {}
     hint_diag, hint_eval = _apply_hint_pinning(payload, build_result, deadline, stop_event, repair_extra)
     hint_eval_seconds = time.time() - t_hint
+    scope_report = None
+    if payload.config.scope is not None:
+        if payload.config.objective_mode == "staged":
+            # Same model the staged ladder and the outer LNS use; constraints survive LNS clones.
+            scope_report = apply_scope(payload, build_result, hint_diag.get("hintFeasible"))
+        else:
+            scope_report = {"applied": False, "ignored": "weighted objective mode"}
     timing_stages: list = []
     lns_seconds = 0.0
 
@@ -1029,6 +1039,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
 
     if status_name not in SOLVABLE_STATUSES:
         empty = _empty_report(hint_diag)
+        if scope_report is not None:
+            empty["scope"] = scope_report
         empty["timing"] = _timing_report(build_seconds, hint_eval_seconds, timing_stages, lns_seconds)
         if payload.config.hint_repair.enabled:
             empty["hintRepair"] = repair_extra.get("hintRepair") or _no_repair_report()
@@ -1056,6 +1068,8 @@ def _solve_pass1(payload: Payload, progress=None, cancel_event=None, deadline: D
     if payload.config.objective_mode == "staged" and hint_eval is not None and hint_eval.feasible:
         report["hintKept"] = hint_kept
     report["timing"] = _timing_report(build_seconds, hint_eval_seconds, timing_stages, lns_seconds)
+    if scope_report is not None:
+        report["scope"] = scope_report
     if payload.config.hint_repair.enabled:
         report["hintRepair"] = repair_extra.get("hintRepair") or _no_repair_report()
     report["variety"] = compute_variety_report(payload, schedule)
