@@ -3770,8 +3770,8 @@ const CHANGELOG = [
     items: [
       'Edits you make while **Optimize** is running are no longer lost. When you press **Review**, your changed cells are kept and Optimize re-polishes around them for about a minute before showing the comparison.',
       'New **Only part of the block** in the Optimize menu: pick dates and residents, and Optimize changes only those (about 2 minutes). Everything else stays exactly as it is.',
-      'The Optimize menu now says whether the current grid passes the solver's rules. If it does not, Optimize still runs but starts slower.',
-      '**Until it levels off** now judges by how much of the run's total gain is still arriving, so it no longer stops early on blocks with a large fixed score.',
+      "The Optimize menu now says whether the current grid passes the solver's rules. If it does not, Optimize still runs but starts slower.",
+      "**Until it levels off** now judges by how much of the run's total gain is still arriving, so it no longer stops early on blocks with a large fixed score.",
     ],
   },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
