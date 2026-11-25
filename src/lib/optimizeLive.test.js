@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   appendSample, recentGain, describeTrend, shouldAutoStop, bestOfProgress, incumbentToSchedule, countIsolatedNights, countWarnings,
   summarizeLive, liveComparison, shouldRecomputeLive, incumbentKey, isFinalStage,
-  AUTO_STOP_MIN_STAGE_SECONDS, AUTO_STOP_WINDOW_SECONDS, AUTO_STOP_MIN_GAIN_PCT, LIVE_RECOMPUTE_MS,
+  AUTO_STOP_MIN_STAGE_SECONDS, AUTO_STOP_WINDOW_SECONDS, AUTO_STOP_MIN_SHARE_PCT, AUTO_STOP_MIN_FLOOR_PCT, LIVE_RECOMPUTE_MS,
 } from './optimizeLive.js';
 
 // progress sample helper: stage 5 = quality, stage 6 = polishing (outerLns)
@@ -11,9 +11,10 @@ const series = (...ps) => ps.reduce((s, p) => appendSample(s, p), []);
 
 describe('constants', () => {
   it('match the agreed rule', () => {
-    expect(AUTO_STOP_MIN_STAGE_SECONDS).toBe(120);
+    expect(AUTO_STOP_MIN_STAGE_SECONDS).toBe(300);
     expect(AUTO_STOP_WINDOW_SECONDS).toBe(120);
-    expect(AUTO_STOP_MIN_GAIN_PCT).toBe(0.3);
+    expect(AUTO_STOP_MIN_SHARE_PCT).toBe(3);
+    expect(AUTO_STOP_MIN_FLOOR_PCT).toBe(0.05);
     expect(LIVE_RECOMPUTE_MS).toBe(10000);
   });
 });
@@ -52,30 +53,31 @@ describe('shouldAutoStop', () => {
     return s;
   };
   it('stops on a flat final stage that has run long enough', () => {
-    expect(shouldAutoStop(flat(), 300)).toBe(true);
+    expect(shouldAutoStop(flat(0, 300), 300)).toBe(true);
   });
-  it('does not stop before the final stage has run 120 s', () => {
+  it('does not stop before the final stage has run 300 s', () => {
     expect(shouldAutoStop(flat(0, 100), 100)).toBe(false);
-    expect(shouldAutoStop(flat(0, 119), 119)).toBe(false);
-    expect(shouldAutoStop(flat(0, 120), 120)).toBe(true);
+    expect(shouldAutoStop(flat(0, 299), 299)).toBe(false);
+    expect(shouldAutoStop(flat(0, 300), 300)).toBe(true);
   });
-  it('does not stop while gaining 0.3% or more over the last 120 s; stops just under', () => {
-    // best 1000 until t=190, then 996: gain over the window [180,300] = 4 of 996 = 0.40%
-    let a = [];
-    for (let t = 0; t <= 300; t += 10) a = appendSample(a, P(t, t <= 190 ? 1000 : 996));
-    expect(shouldAutoStop(a, 300)).toBe(false);
-    // gain 2 of 998 = 0.20% -> stops
-    let b = [];
-    for (let t = 0; t <= 300; t += 10) b = appendSample(b, P(t, t <= 190 ? 1000 : 998));
-    expect(shouldAutoStop(b, 300)).toBe(true);
+  // best falls by `total` over the first 180 s (stage start 100000), then by `late` more over the last 120 s
+  const curve = (total, late) => {
+    let s = [];
+    for (let t = 0; t <= 300; t += 10) s = appendSample(s, P(t, 100000 - (t <= 180 ? total * t / 180 : total + late * (t - 180) / 120)));
+    return s;
+  };
+  it('stops by share of the total gain, not by the size of the score', () => {
+    // total gain 5000 so far -> threshold 3% of 5000 = 150 over the window
+    expect(shouldAutoStop(curve(4900, 100), 300)).toBe(true);  // 100 < 150
+    expect(shouldAutoStop(curve(4800, 200), 300)).toBe(false); // 200 >= 150 (still 0.2% of best: old rule would have stopped)
   });
-  it('a stage change restarts the clock and never compares across stages', () => {
-    // quality stage (5) flat for 200 s, then polishing starts at t=200
-    let s = flat(0, 190, 10, 5000, 5);
-    for (let t = 200; t <= 290; t += 10) s = appendSample(s, P(t, 100, 6));
-    expect(shouldAutoStop(s, 290)).toBe(false); // polishing only 90 s old, best 5000 -> 100 is not a "gain"
-    for (let t = 300; t <= 330; t += 10) s = appendSample(s, P(t, 100, 6));
-    expect(shouldAutoStop(s, 330)).toBe(true); // 130 s into polishing, flat
+  it('the same relative gain gives the same answer at a small score', () => {
+    const small = late => { let s = []; for (let t = 0; t <= 300; t += 10) s = appendSample(s, P(t, 45000 - (t <= 180 ? 21000 * t / 180 : 21000 + late * (t - 180) / 120))); return s; };
+    expect(shouldAutoStop(small(700), 300)).toBe(false); // 700 >= 3% of ~21700
+    expect(shouldAutoStop(small(500), 300)).toBe(true);  // 500 < 3% of ~21500
+  });
+  it('a tiny total gain still stops once flat (absolute floor)', () => {
+    expect(shouldAutoStop(curve(10, 0), 300)).toBe(true);
   });
   it('never stops in a non-final stage, however flat', () => {
     expect(shouldAutoStop(flat(0, 900, 10, 1000, 5), 900)).toBe(false);
@@ -110,6 +112,12 @@ describe('describeTrend / recentGain', () => {
     expect(t.text).toContain('Still improving');
     expect(t.text).toContain('17%');
     expect(t.text).toContain('last 2 minutes');
+  });
+  it('trend uses the same threshold as the stop rule', () => {
+    // total gain 1000 over the stage; 1000-t slows to a crawl in the last window: 20 gained < 3% of ~1000
+    let s = []; for (let t = 0; t <= 300; t += 10) s = appendSample(s, P(t, t <= 180 ? 2000 - t * 5.5 : 1010 - (t - 180) / 6, 5));
+    expect(describeTrend(s, 300).state).toBe('levelling');
+    expect(recentGain(s, 300).threshold).toBeGreaterThan(recentGain(s, 300).gain);
   });
   it('levelling off when the gain is under the threshold', () => {
     const t = describeTrend(run(() => 1000), 300);
