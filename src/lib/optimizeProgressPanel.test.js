@@ -28,4 +28,11 @@ describe('OptimizeProgressPanel', () => {
     expect(proved).toContain('proved it could not do better');
     expect(proved).not.toContain('Stopped early');
   });
+  it('shows the edits notice only when given', () => {
+    const none = renderToStaticMarkup(createElement(OptimizeProgressPanel, { tracker: null, status: 'running' }));
+    expect(none).not.toContain('optimize-edits-notice');
+    const html = renderToStaticMarkup(createElement(OptimizeProgressPanel, { tracker: null, status: 'running', notice: 'You changed 2 cells.' }));
+    expect(html).toContain('optimize-edits-notice');
+    expect(html).toContain('You changed 2 cells.');
+  });
 });
