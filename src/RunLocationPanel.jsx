@@ -19,10 +19,10 @@ export default function RunLocationPanel({ stage, claim, runner, jobsMode }) {
     </div>
   );
   return (
-    <div className="w-full" aria-label="Where the computation is running">
+    <div className="w-0 min-w-full" aria-label="Where the computation is running">
       <div className="flex items-stretch gap-2">
         {node(stage === 'builtin', 'bg-sky-500', tab.title, stage === 'builtin' ? 'Computing here now' : 'Built-in pass')}
-        <span className="self-center text-muted-foreground" aria-hidden="true">→</span>
+        <span className="self-center flex-none text-muted-foreground" aria-hidden="true">→</span>
         {opt
           ? node(true, opt.verified ? 'bg-green-500' : 'bg-amber-500', opt.title, opt.verified ? `✓ verified · ${opt.detail}` : opt.detail)
           : node(false, 'bg-muted-foreground', claim === 'this-computer' ? 'This computer' : 'Cloud optimizer', 'Not started')}
