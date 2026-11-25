@@ -27,6 +27,7 @@ Design notes (why not the alternatives):
 
 from __future__ import annotations
 
+import collections
 import random
 import threading
 import time
@@ -413,12 +414,24 @@ class _Neighborhoods:
         }[name](solution)
 
 
-def _choose(stats: dict, rng: random.Random, iteration: int) -> str:
+def _gain_rate(entries) -> float:
+    """Smoothed quality points per second over a neighborhood's recent tries: entries are (gain, seconds, accepted)."""
+    return sum(e[0] for e in entries) / max(sum(e[1] for e in entries), 0.5)
+
+
+def _choose(stats: dict, rng: random.Random, iteration: int, chooser: str = "success", history=None) -> str:
     """Rotate through every neighborhood once, then sample proportionally to a smoothed success rate
-    (floored so a neighborhood that has not paid off recently still gets tried)."""
+    (floored so a neighborhood that has not paid off recently still gets tried).
+    chooser "gainRate": weight = max(rate, 0.1 * max rate) with rate = sum(gain) / max(sum(seconds), 0.5) over the
+    neighborhood's last 8 tries (`history[name]`); all rates 0 falls back to the success weighting."""
     names = tuple(stats)  # active neighborhoods, in order
     if iteration < len(names):
         return names[iteration]
+    if chooser == "gainRate" and history is not None:
+        rates = [_gain_rate(history.get(n, ())) for n in names]
+        top = max(rates)
+        if top > 0:
+            return rng.choices(names, weights=[max(r, 0.1 * top) for r in rates], k=1)[0]
     weights = [max(0.1, (stats[n]["accepted"] + 1) / (stats[n]["tried"] + 2)) for n in names]
     return rng.choices(names, weights=weights, k=1)[0]
 
@@ -630,6 +643,20 @@ def run_outer_lns(
             return None
         return slv if status_name in ("OPTIMAL", "FEASIBLE") else None
 
+    history = {n: collections.deque(maxlen=8) for n in stats}  # per neighborhood: (gain, seconds, accepted) of its last 8 sub-solves
+
+    def _record_history(batch, out, step_refs, accepted_js) -> None:
+        """Once per finished step (accepted or not); also grows a neighborhood that keeps winning (growOnSuccess)."""
+        for j, (name, _free, _it) in enumerate(batch):
+            if j not in step_refs:
+                continue
+            acc = j in accepted_js
+            history[name].append((step_refs[j]["gain"], out[j][1], acc))
+            if grow_on_success and acc:
+                last5 = list(history[name])[-5:]
+                if len(last5) == 5 and sum(1 for e in last5 if e[2]) >= 4:
+                    hood.scale[name] = min(2.5, hood.scale[name] * 1.15)
+
     last_ord = tuple(incumbent_tiers[n] for n in stage_names)
     iteration = 0
     merged_batches = 0
@@ -649,7 +676,7 @@ def run_outer_lns(
         attempts = 0
         while len(batch) < parallel and attempts < (1 if parallel == 1 else 6 * parallel):
             attempts += 1
-            name = _choose(stats, rng, iteration)
+            name = _choose(stats, rng, iteration, chooser, history)
             free = hood.pick(name, incumbent_solver)
             iteration += 1
             if not free:
@@ -711,7 +738,9 @@ def run_outer_lns(
                     hood.scale[name] = max(0.4, hood.scale[name] * 0.8)  # timed out (FEASIBLE) without gain: look smaller
             else:
                 hood.scale[name] = max(0.4, hood.scale[name] * 0.8)  # nothing found in the limit: look smaller
+        accepted_js: set = set()
         if not improving:
+            _record_history(batch, out, step_refs, accepted_js)
             continue
         improving.sort(key=lambda e: (e[0], e[3]))
         chosen = [improving[0]]
@@ -743,8 +772,10 @@ def run_outer_lns(
             stats[name]["accepted"] += 1
             stats[name]["gain"] += max(0, prev_quality - e[1][quality_name])
             report["accepted"] += 1
+            accepted_js.add(e[3])
             if e[3] in step_refs:
                 step_refs[e[3]]["gain"] = max(0, prev_quality - e[1][quality_name])
+        _record_history(batch, out, step_refs, accepted_js)
         incumbent_solver = accepted_slv
         solution = list(accepted_slv.response_proto.solution)
         incumbent_tiers = accepted_tiers
