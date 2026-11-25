@@ -143,3 +143,37 @@ def test_real_run_forced_off_runs_without_stall():
         assert any(not r["rule"] for r in steps)
         assert all(not r["stalled"] for r in steps if not r["rule"])
     _no_worse(before, after)
+
+
+def test_parse_window():
+    assert parse_outer_lns({}).sub_stall_window == 12
+    assert parse_outer_lns({"subStallWindow": 24}).sub_stall_window == 24
+    assert parse_outer_lns({"subStallWindow": 3}).sub_stall_window == 6
+    assert parse_outer_lns({"subStallWindow": 500}).sub_stall_window == 60
+    for bad in ("abc", True, None, float("nan")):
+        c = parse_outer_lns({"subStallWindow": bad})
+        assert c.sub_stall_window == 12 and isinstance(c.sub_stall_window, int)
+    assert isinstance(parse_outer_lns({"subStallWindow": 24.0}).sub_stall_window, int)
+
+
+def test_gate_window_24():
+    g = StallRuleGate(0.45, 0.60, 24)
+    for _ in range(23):
+        g.record(False)
+        g.end_batch()
+    assert g.on and g.switches == 0
+    g.record(False)
+    g.end_batch()
+    assert not g.on and g.switches == 1 and len(g.window) == 0
+
+
+def test_gate_default_window_unchanged():
+    g = StallRuleGate(0.45, 0.60)
+    assert g.size == SUB_STALL_WINDOW == 12 and g.window.maxlen == 12
+
+
+def test_real_run_reports_window():
+    rep, _, _ = _go_adaptive()
+    assert rep["subStallAdaptive"]["window"] == 12
+    rep, _, _ = _go_adaptive(sub_stall_window=24)
+    assert rep["subStallAdaptive"]["window"] == 24

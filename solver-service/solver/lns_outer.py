@@ -53,6 +53,9 @@ DEFAULT_SUB_SOLVE_SECONDS = 5.0
 LNS_TIER_SCALE = 1_000_000  # tiers="all" objective: primary * scale + later tiers (see run_outer_lns)
 
 
+SUB_STALL_WINDOW = 12  # default steps in the adaptive stall rule's rolling win-rate window
+
+
 @dataclass(frozen=True)
 class OuterLnsConfig:
     enabled: bool = True
@@ -72,6 +75,7 @@ class OuterLnsConfig:
     sub_stall_adaptive: bool = False
     sub_stall_off_below: float = 0.45  # win rate over the last SUB_STALL_WINDOW steps below this: rule off
     sub_stall_on_at: float = 0.60  # win rate at/above this while off: rule back on (>= off_below)
+    sub_stall_window: int = SUB_STALL_WINDOW  # steps looked back by the adaptive rule (6..60)
 
 
 def parse_outer_lns(raw) -> OuterLnsConfig:
@@ -109,6 +113,7 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
 
     off_below = _num("subStallOffBelow", 0.45, 0.0, 1.0)
     on_at = max(off_below, _num("subStallOnAt", 0.60, 0.0, 1.0))
+    window = _int("subStallWindow", SUB_STALL_WINDOW, 6, 60)
 
     return OuterLnsConfig(
         enabled=raw.get("enabled") is not False,
@@ -125,30 +130,29 @@ def parse_outer_lns(raw) -> OuterLnsConfig:
         sub_stall_adaptive=raw.get("subStallAdaptive") is True,
         sub_stall_off_below=off_below,
         sub_stall_on_at=on_at,
+        sub_stall_window=window,
         skip=tuple(n for n in NEIGHBORHOODS + OPTIONAL_NEIGHBORHOODS if isinstance(raw.get("skip"), (list, tuple)) and n in raw["skip"]),
     )
 
 
-SUB_STALL_WINDOW = 12  # steps in the adaptive stall rule's rolling win-rate window
-
-
 class StallRuleGate:
     """Adaptive sub-solve stall rule (`subStallAdaptive`): `on` says whether the next steps run with the stall rule.
-    `record(won)` once per finished step, `end_batch()` once per batch. With a full window of SUB_STALL_WINDOW steps,
+    `record(won)` once per finished step, `end_batch()` once per batch. With a full window of `size` steps (default SUB_STALL_WINDOW),
     win rate < off_below turns the rule off; win rate >= on_at turns it back on. Every switch clears the window
     (rates with the rule on and off are not comparable) and is counted in `switches`."""
 
-    def __init__(self, off_below: float, on_at: float):
+    def __init__(self, off_below: float, on_at: float, window: int = SUB_STALL_WINDOW):
         self.off_below, self.on_at = off_below, on_at
+        self.size = int(window)
         self.on = True
         self.switches = 0
-        self.window: collections.deque = collections.deque(maxlen=SUB_STALL_WINDOW)
+        self.window: collections.deque = collections.deque(maxlen=self.size)
 
     def record(self, won: bool) -> None:
         self.window.append(bool(won))
 
     def end_batch(self) -> None:
-        if len(self.window) < SUB_STALL_WINDOW:
+        if len(self.window) < self.size:
             return
         rate = sum(self.window) / len(self.window)
         if self.on and rate < self.off_below:
@@ -508,6 +512,7 @@ def run_outer_lns(
     sub_stall_adaptive=None,
     sub_stall_off_below=None,
     sub_stall_on_at=None,
+    sub_stall_window=None,
 ):
     """Improve `solver`'s incumbent until `deadline` (a `time.time()` value). Returns `(solver, report)`:
     `solver` is the CpSolver holding the best solution (the input one if nothing was accepted) and `report`
@@ -575,9 +580,11 @@ def run_outer_lns(
         sub_stall_off_below = float(getattr(cfg_outer, "sub_stall_off_below", 0.45))
     if sub_stall_on_at is None:
         sub_stall_on_at = float(getattr(cfg_outer, "sub_stall_on_at", 0.60))
+    if sub_stall_window is None:
+        sub_stall_window = int(getattr(cfg_outer, "sub_stall_window", SUB_STALL_WINDOW))
     sub_stall_on_at = max(sub_stall_on_at, sub_stall_off_below)
     adaptive = bool(sub_stall_adaptive) and sub_stall_seconds > 0
-    gate = StallRuleGate(sub_stall_off_below, sub_stall_on_at) if adaptive else None
+    gate = StallRuleGate(sub_stall_off_below, sub_stall_on_at, sub_stall_window) if adaptive else None
     steps_on = steps_off = 0
     steps: list = []  # per-step record, capped at MAX_STEP_RECORDS (report["steps"])
     active = tuple(n for n in NEIGHBORHOODS if n not in skip) + tuple(n for n in OPTIONAL_NEIGHBORHOODS if n in (neighborhoods or ()) and n not in skip)
@@ -916,7 +923,8 @@ def run_outer_lns(
         report["subStallSeconds"] = sub_stall_seconds
     if gate is not None:
         report["subStallAdaptive"] = {"switches": gate.switches, "stepsOn": steps_on, "stepsOff": steps_off,
-                                      "offBelow": sub_stall_off_below, "onAt": sub_stall_on_at}
+                                      "offBelow": sub_stall_off_below, "onAt": sub_stall_on_at,
+                                      "window": sub_stall_window}
     if chooser != "success":
         report["chooser"] = chooser
     if grow_on_success:
