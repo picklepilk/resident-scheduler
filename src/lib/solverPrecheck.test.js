@@ -26,7 +26,7 @@ describe('solverPrecheck', () => {
     expect(precheckLine(null)).toBe('');
     expect(precheckLine({ ok: true })).toBe("Starting grid passes the solver's rules.");
     const s = summarizePrecheck({ hintCheck: { feasible: false, violations: [{ rule: 'targetCeiling', count: 31 }] } });
-    expect(precheckLine(s)).toBe('Starting grid breaks 31 solver rules (more shifts than the target allows 31). Optimize will start slower.');
-    expect(precheckLine({ ok: false, total: 1, rules: [{ rule: 'x', count: 1, label: 'x' }] })).toContain('1 solver rule (');
+    expect(precheckLine(s)).toBe("Starting grid breaks the solver's rules in 31 places (more shifts than the target allows: 31). Optimize will start slower.");
+    expect(precheckLine({ ok: false, total: 1, rules: [{ rule: 'x', count: 1, label: 'x' }] })).toContain('in 1 place (');
   });
 });

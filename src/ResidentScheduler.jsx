@@ -19886,7 +19886,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               ? 'Wrapping up... keeping the best schedule found so far.'
               : longSolveJob.repolish
               ? `${repolishLabel(longSolveJob.repolish.changed.length)} Keep this tab open; do not edit the grid meanwhile.`
-              : `Optimizing${longSolveJob.jobs?.length > 1 ? ` best of ${longSolveJob.jobs.length}` : ''} on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. Only locked cells are pinned; you can keep working.`}
+              : `Optimizing${longSolveJob.jobs?.length > 1 ? ` best of ${longSolveJob.jobs.length}` : ''} on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. ${longSolveJob.scope ? `Only ${scopeLabel(longSolveJob.scope)} can change` : 'Only locked cells are pinned'}; you can keep working.`}
           </span>
           {longSolveSpinning && (
             <div className="basis-full"><RunLocationPanel stage="solver" claim={longSolveJob.usingLocal ? 'this-computer' : 'cloud'}

@@ -45,8 +45,8 @@ export function summarizePrecheck(report) {
 export function precheckLine(summary) {
   if (!summary) return '';
   if (summary.ok) return "Starting grid passes the solver's rules.";
-  const parts = summary.rules.slice(0, 3).map(r => `${r.label} ${r.count}`);
+  const parts = summary.rules.slice(0, 3).map(r => `${r.label}: ${r.count}`);
   const more = summary.rules.length > 3 ? `, and ${summary.rules.length - 3} more` : '';
   const n = summary.total;
-  return `Starting grid breaks ${n} solver ${n === 1 ? 'rule' : 'rules'} (${parts.join(', ')}${more}). Optimize will start slower.`;
+  return `Starting grid breaks the solver's rules in ${n} ${n === 1 ? 'place' : 'places'} (${parts.join(', ')}${more}). Optimize will start slower.`;
 }
