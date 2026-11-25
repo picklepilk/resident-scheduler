@@ -51,6 +51,7 @@ import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
 import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
+import { changedResidentDays, mergeEditsIntoResult, editsPreserved, repolishScope, editsNoticeText, repolishLabel, REPOLISH_CONFLICT_TOAST } from './lib/optimizeRepolish.js';
 import RuleClarificationsTab from './components/RuleClarificationsTab.jsx';
 import { trackOptimizeProgress } from './lib/optimizeProgress.js';
 import { submitSolveJob, pollSolveJob, cancelSolveJob, stopSolveJob, solveViaJob } from './lib/solverJobs.js';
@@ -18203,6 +18204,13 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   const optimizeWrappingUp = !!longSolveJob?.canStop && (optimizeStopRequested || (longSolveStatus && longSolveStatus !== 'lost' && longSolveStatus.stopping === true));
   const optimizeSeries = optimizeSeriesRef.current;
   const optimizeTrend = optimizeSeries.length ? describeTrend(optimizeSeries, optimizeSeries[optimizeSeries.length - 1].t) : null;
+  // Hand edits made while a run is in flight: counted only when the grid or the job changes. A re-polish job
+  // already carries its edits, so it shows its own label instead.
+  const optimizeEditsCount = useMemo(() => {
+    if (!longSolveJob?.jobId || !longSolveJob.optimize || longSolveJob.repolish) return 0;
+    return changedResidentDays(longSolveJob.genBlock?.schedule, block.schedule).length;
+  }, [block.schedule, longSolveJob?.jobId]);
+  const optimizeNotice = editsNoticeText(optimizeEditsCount); // a re-polish job shows repolishLabel in its status line
   const longSolveSpinning = !longSolveStatus || (longSolveStatus !== 'lost' && (longSolveStatus.status === 'running' || longSolveStatus.status === 'queued'));
 
   // "Save solver test file": the exact payload Optimize would send (current grid as hint, locked cells pinned),
@@ -18324,11 +18332,16 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       showToast(`Optimize failed: the solver returned status "${entries.find(e => e.json)?.json?.status || 'unknown'}". The schedule is unchanged.`, 'red');
       return;
     }
-    if (JSON.stringify(block.schedule || {}) !== JSON.stringify(job.genBlock.schedule || {})) {
+    // Hand edits made during the run are kept: first Review launches a short re-polish around them; the
+    // re-polish's Review compares against the grid as the chief has it now. A second change = give up.
+    const isRepolish = !!job.repolish;
+    const baseSchedule = isRepolish ? (job.repolish.baseline || {}) : (job.genBlock.schedule || {});
+    if (isRepolish && JSON.stringify(block.schedule || {}) !== JSON.stringify(baseSchedule)) {
       dismissLongSolve();
-      showToast('The schedule changed while Optimize was running - run Optimize again.', 'amber');
+      showToast(REPOLISH_CONFLICT_TOAST, 'amber');
       return;
     }
+    const edits = isRepolish ? [] : changedResidentDays(job.genBlock.schedule, block.schedule);
     try {
       const args = { allResidents, coverage, eligOverrides, appSettings, dayRules, blocksHistory, ayConf, block: job.genBlock };
       const candidates = entries.map(e => {
@@ -18351,10 +18364,19 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       });
       // Same lexicographic comparator as isStrictImprovement picks the winner; one machine = trivially it.
       const pick = pickBestOfMachines(candidates);
-      dismissLongSolve();
-      if (!pick.winner) { showToast('Optimize failed: no machine returned a usable result. The schedule is unchanged.', 'red'); return; }
+      if (!pick.winner) { dismissLongSolve(); showToast('Optimize failed: no machine returned a usable result. The schedule is unchanged.', 'red'); return; }
       const win = pick.winner;
-      const cur = optimizeSummary(job.genBlock.schedule || {}, win.solverRes.report, args);
+      if (edits.length) {
+        // Grid changed during the run: restore the chief's values on the solver's result and re-polish around them.
+        launchRepolish(job, win, edits, isBestOf);
+        return;
+      }
+      dismissLongSolve();
+      if (isRepolish && !editsPreserved(win.optimized, block.schedule, job.repolish.changed)) {
+        showToast(REPOLISH_CONFLICT_TOAST, 'amber');
+        return;
+      }
+      const cur = optimizeSummary(baseSchedule, win.solverRes.report, args);
       const opt = win.summary;
       if (!isStrictImprovement(cur, opt)) {
         showToast('No improvement found — the current schedule is as good or better.', 'amber');
@@ -18364,7 +18386,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       setOptimizeCompare({
         machineName: isBestOf ? win.machine : (job.usingLocal ? 'this computer' : (job.machineName || 'the cloud optimizer')),
         rows: compareQuality(cur, opt),
-        diff: diffOptimizeCells(job.genBlock.schedule || {}, win.optimized),
+        diff: diffOptimizeCells(baseSchedule, win.optimized),
         stoppedEarly: (() => {
           const e = entries.find(x => x.machine === win.machine);
           const per = isBestOf ? (longSolveStatus.perMachine || []).find(p => p.machine === win.machine) : longSolveStatus;
@@ -18377,6 +18399,30 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     } catch (e) {
       dismissLongSolve();
       showToast(`Optimize failed: ${e.message}. The schedule is unchanged.`, 'red');
+    }
+  }
+
+  // Re-polish around hand edits: the solver's result with the chief's current values restored becomes the hint of a
+  // 60 s Optimize job on ONE machine, with config.scope.keepCells fixing exactly those resident-days. Reuses the
+  // normal job state, so the poll effect, progress panel and Review path are unchanged.
+  async function launchRepolish(job, win, edits, isBestOf) {
+    setLongSolveSubmitting(true);
+    try {
+      const baseline = block.schedule || {};
+      const merged = mergeEditsIntoResult(win.optimized, baseline, edits);
+      const genBlock = { ...block, schedule: merged };
+      const target = isBestOf ? `pool:${win.machine}` : ((optimizeTarget === BEST_OF_TARGET) ? 'cloud' : optimizeTarget);
+      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: 1, extraConfig: { scope: repolishScope(edits) } });
+      if (!r) throw new Error('block dates are not set');
+      longSolveNotifiedRef.current = null;
+      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, repolish: { changed: edits, baseline }, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, canStop: r.canStop === true, autoStop: false, longRun: false, live: r.live === true });
+      setLongSolveStatus(null);
+      setLongSolveReview(null);
+    } catch (e) {
+      dismissLongSolve();
+      showToast(`${REPOLISH_CONFLICT_TOAST} (${e.message})`, 'amber');
+    } finally {
+      setLongSolveSubmitting(false);
     }
   }
 
@@ -19174,7 +19220,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       const plan = optimizeRunPlan(opts.budget, status?.defaultBudgetSeconds, caps);
       const budgetSec = plan.seconds;
       // liveIncumbent: the job's progress carries the current best grid, for the live numbers in the progress panel.
-      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, liveIncumbent: true, ...plan.config } });
+      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, liveIncumbent: true, ...plan.config, ...(opts.extraConfig || {}) } });
       // Never sent to the local target (loopback, SOLVER_AUTH_MODE=off).
       const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
       const { jobId } = await submitSolveJob(payload, { accessToken, url });
@@ -19795,6 +19841,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
               ? 'Optimize finished — review the result before it is applied.'
               : optimizeWrappingUp
               ? 'Wrapping up... keeping the best schedule found so far.'
+              : longSolveJob.repolish
+              ? `${repolishLabel(longSolveJob.repolish.changed.length)} Keep this tab open; do not edit the grid meanwhile.`
               : `Optimizing${longSolveJob.jobs?.length > 1 ? ` best of ${longSolveJob.jobs.length}` : ''} on ${longSolveJob.usingLocal ? 'this computer' : (longSolveJob.machineName || 'the cloud optimizer')} · ${Math.floor(longSolveElapsedSec / 60)}:${String(longSolveElapsedSec % 60).padStart(2, '0')} / ${Math.round((longSolveJob.budgetSeconds || 0) / 60)} min. Only locked cells are pinned; you can keep working.`}
           </span>
           {longSolveSpinning && (
@@ -19815,7 +19863,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             <OptimizeProgressPanel tracker={optimizeTracker} status={longSolveStatus && longSolveStatus !== 'lost' ? longSolveStatus.status : 'running'}
               elapsedFallback={longSolveElapsedSec} budgetFallback={longSolveJob.budgetSeconds || 0} now={Date.now()}
               trend={longSolveSpinning ? optimizeTrend : null} live={longSolveSpinning ? optimizeLiveNums : null}
-              wrappingUp={optimizeWrappingUp} autoStop={!!longSolveJob.autoStop}
+              wrappingUp={optimizeWrappingUp} autoStop={!!longSolveJob.autoStop} notice={optimizeNotice}
               stopped={!!longSolveStatus && longSolveStatus !== 'lost' && (longSolveStatus.result?.report?.stoppedEarly === true || (longSolveStatus.perMachine || []).some(p => p.result?.report?.stoppedEarly === true))}/>
           )}
           {optimizePollTrouble && longSolveSpinning && (

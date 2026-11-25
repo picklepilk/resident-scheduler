@@ -12,7 +12,7 @@ const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2
 // trend: { state, text } from describeTrend ("Still improving..."); live: [{ key, text }] from liveComparison
 // (current best grid vs the start); wrappingUp: Stop-and-keep-best was pressed; autoStop: run ends by itself
 // when it levels off.
-export default function OptimizeProgressPanel({ tracker, status, elapsedFallback = 0, budgetFallback = 0, now = Date.now(), trend = null, live = null, wrappingUp = false, autoStop = false, stopped = false }) {
+export default function OptimizeProgressPanel({ tracker, status, elapsedFallback = 0, budgetFallback = 0, now = Date.now(), trend = null, live = null, wrappingUp = false, autoStop = false, stopped = false, notice = null }) {
   const d = describeOptimizeProgress(tracker, status, { elapsedFallback, budgetFallback });
   const ago = agoText(tracker?.lastImprovedAt, now);
   const improvements = tracker?.improvements || 0;
@@ -49,6 +49,9 @@ export default function OptimizeProgressPanel({ tracker, status, elapsedFallback
         {stopped ? <span data-testid="optimize-stopped-early">Stopped early: kept the best schedule found so far.</span>
           : d.finishedEarly && <span>Finished early: the solver proved it could not do better on these steps.</span>}
       </div>
+      {notice && status !== 'done' && (
+        <div className="mt-1 text-xs tri-optimize-note" data-testid="optimize-edits-notice" role="status">{notice}</div>
+      )}
       {wrappingUp && status !== 'done' && (
         <div className="mt-1 text-xs font-medium tri-optimize-note" data-testid="optimize-wrapping-up" role="status">Wrapping up... keeping the best schedule found so far.</div>
       )}
