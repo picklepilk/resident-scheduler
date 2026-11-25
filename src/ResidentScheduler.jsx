@@ -18387,7 +18387,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       // Scoped run: say whether the host really limited it; if not (old host, infeasible start, or cells outside changed) the result is whole-block.
       const scopeNote = (!job.scope || isRepolish) ? null : (() => {
         const o = scopeOutcome(win.solverRes.report, job.genBlock.schedule || {}, win.optimized, job.scope);
-        return o.applied ? `Polished only: ${scopeLabel(job.scope)}` : 'This computer could not limit the run to your selection, so the result covers the whole block.';
+        return o.applied ? `Polished only: ${scopeLabel(job.scope)}` : 'The solver could not limit the run to your selection, so the result covers the whole block.';
       })();
       const cur = optimizeSummary(baseSchedule, win.solverRes.report, args);
       const opt = win.summary;
