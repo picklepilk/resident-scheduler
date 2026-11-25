@@ -34,6 +34,9 @@ from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
+from solver.callbacks import MultiCallback
+from solver.stall import StallStop
+
 NEIGHBORHOODS = ("window", "residents", "shiftWindow", "worstTerms")
 # Extras (config.outerLns.neighborhoods / eligibilityGroup), added to the four above.
 # nightCleanup / qualityWorst (2026-11-23): quality-tier-aware, see _Neighborhoods.night_cleanup / quality_worst.
@@ -597,15 +600,49 @@ def run_outer_lns(
             slv.parameters.num_workers = max(1, main_w // parallel)
         return slv
 
+    def _step_baseline(sub):
+        """Objective value (original scale, as `cb.objective_value`) of the incumbent under the sub-model's
+        objective; None when it cannot be evaluated (the first callback value is used instead)."""
+        try:
+            o = sub.proto.objective
+            if not len(o.vars):
+                return None
+            val = sum(int(c) * solution[v] for v, c in zip(o.vars, o.coeffs)) + o.offset
+            return val * (o.scaling_factor or 1.0)
+        except Exception:  # noqa: BLE001
+            return None
+
+    class _GainWatch:
+        """Seconds (from sub-solve start) of the last solution strictly better than the step's incumbent."""
+
+        def __init__(self, baseline, t0):
+            self.base, self.t0, self.last_gain = baseline, t0, None
+
+        def on_solution(self, cb) -> None:
+            obj = cb.objective_value
+            if self.base is None:
+                self.base = obj  # no evaluable incumbent value: the first solution (the hint) is the baseline
+            elif obj < self.base - 1e-6:
+                self.last_gain = time.time() - self.t0
+
     def _run_one(slv, sub, out: list, idx: int) -> None:
         t0 = time.time()
+        last_gain = None
+        stalled = False
         try:
-            status_name = slv.status_name(slv.solve(sub))
+            if sub_stall_seconds > 0:
+                watch = _GainWatch(_step_baseline(sub), t0)  # per-call state: safe in parallel threads
+                with StallStop(slv, sub_stall_seconds) as stall:
+                    status_name = slv.status_name(slv.solve(sub, MultiCallback([watch, stall])))
+                last_gain = watch.last_gain
+                stalled = bool(stall.fired) and status_name != "OPTIMAL"
+            else:
+                status_name = slv.status_name(slv.solve(sub))
         except Exception:  # noqa: BLE001 -- one failed sub-solve must not kill the whole polish
             status_name = "ERROR"
         # (status, wall seconds, seconds from sub-solve start to its last strictly better solution or None,
         #  stopped by the sub-solve stall rule). The last two are filled when `sub_stall_seconds` > 0.
-        out[idx] = (status_name, time.time() - t0, None, False)
+        out[idx] = (status_name, time.time() - t0, last_gain, stalled)
 
     def _verify_merge(merged: list):
         """Solve a clone with every x fixed to `merged`: returns a CpSolver holding the full re-evaluated
