@@ -3763,6 +3763,17 @@ const CHANGELOG = [
       '**Optimize** now spends part of its polishing on isolated nights and two-night stints, and on the residents whose schedules need the most work. In tests it left about 3 fewer isolated nights and 4 to 6 fewer warnings, at both 5 and 15 minutes.',
     ],
   },
+  {
+    id: '2026-11-24-optimize-edits-scope',
+    date: '2026-11-24',
+    title: 'Optimize: keep working, polish a part, see problems first',
+    items: [
+      'Edits you make while **Optimize** is running are no longer lost. When you press **Review**, your changed cells are kept and Optimize re-polishes around them for about a minute before showing the comparison.',
+      'New **Only part of the block** in the Optimize menu: pick dates and residents, and Optimize changes only those (about 2 minutes). Everything else stays exactly as it is.',
+      'The Optimize menu now says whether the current grid passes the solver's rules. If it does not, Optimize still runs but starts slower.',
+      '**Until it levels off** now judges by how much of the run's total gain is still arriving, so it no longer stops early on blocks with a large fixed score.',
+    ],
+  },
   // Variety rule entry: same non-interrupting insert (CHANGELOG[0] unchanged).
   {
     id: '2026-11-22-shift-variety',
