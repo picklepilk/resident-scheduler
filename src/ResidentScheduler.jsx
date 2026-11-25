@@ -50,6 +50,8 @@ import { appendSample, describeTrend, shouldAutoStop, bestOfProgress, incumbentT
 import OptimizeMenuSection from './components/OptimizeMenuSection.jsx';
 import { buildSolverTestFile } from './lib/solverTestFile.js';
 import OptimizeCompareModal from './components/OptimizeCompareModal.jsx';
+import OptimizeScopeControls from './components/OptimizeScopeControls.jsx';
+import { normalizeScope, scopeBudgetSeconds, scopeLabel, scopeOutcome } from './lib/optimizeScope.js';
 import OptimizeProgressPanel from './components/OptimizeProgressPanel.jsx';
 import RuleClarificationsTab from './components/RuleClarificationsTab.jsx';
 import { trackOptimizeProgress } from './lib/optimizeProgress.js';
@@ -8494,6 +8496,7 @@ export function mapSolverResult(json, { block, allResidents, appSettings = {}, a
         return gap ? [{ reason: 'structuralSupplyDemand', text: gap, slots: [] }] : [];
       })(),
       structuralFloor: json?.report?.structuralFloor ?? null,
+      scope: json?.report?.scope && typeof json.report.scope === 'object' ? json.report.scope : null, // scoped Optimize: host's echo (absent on older hosts)
       repairs: [],
       overstaffed,
       feasibility: json?.feasibility ?? null,
@@ -18029,6 +18032,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
   // CURRENT grid to a solver machine as a background job (the long-solve job machinery below) and the
   // result is reviewed in OptimizeCompareModal before anything is applied.
   const [optimizeMenuOpen, setOptimizeMenuOpen] = useState(false);
+  const [optimizeScopeSel, setOptimizeScopeSel] = useState({ from: '', to: '', residentIds: [] }); // scoped Optimize selection, per session only
   const [optimizeBudget, setOptimizeBudget] = useState('auto'); // 'auto' | 5 | 10 | 15 | 30 (minutes) | 'leveloff' | 'long' (last two need host features)
   const [optimizeProbe, setOptimizeProbe] = useState(null);     // {pool:[{name,online,busy,defaultBudgetSeconds}], local:null|obj} while the menu is open
   const [optimizeCompare, setOptimizeCompare] = useState(null); // {machineName, rows, diff, remainingErrors, schedule, baseSchedule}
@@ -18082,6 +18086,8 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     ? targetFeatures({ preference: isBestOfTarget ? BEST_OF_TARGET : optimizeTarget, localStatus: optimizeProbe.local, poolStatus: optimizeProbe.pool || [], bestOfExtra })
     : []);
   const effectiveBudget = budgetAvailable(optimizeBudget, optimizeCaps) ? optimizeBudget : 'auto';
+  const optimizeScopeResidents = allResidents.filter(isSchedulable).map(r => ({ id: r.id, label: `${r.lastName}, ${r.firstName}`, group: r.pgy ? `PGY-${r.pgy}` : '' })).sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+  const optimizeScope = normalizeScope({ from: optimizeScopeSel.from, to: optimizeScopeSel.to, residentIds: optimizeScopeSel.residentIds }, block, allResidents.filter(isSchedulable).map(r => r.id));
   const optimizeBudgetMinutes = Math.round(optimizeBudgetSeconds(effectiveBudget, optimizeHostDefault) / 60);
   const [longSolveSubmitting, setLongSolveSubmitting] = useState(false);
   const [longSolveReview, setLongSolveReview] = useState(null); // {schedule, lockedCells} once "Review" is confirmed-pending
@@ -18229,11 +18235,13 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
     setLongSolveSubmitting(true);
     try {
       const genBlock = { ...block };
-      const target = (optimizeTarget === BEST_OF_TARGET && !canPickMachine) ? 'cloud' : optimizeTarget;
-      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: effectiveBudget, bestOfExtra });
+      // Scoped polish: one machine only (no Best-of), short budget; unscoped = exactly as before.
+      const scope = optimizeScope;
+      const target = ((optimizeTarget === BEST_OF_TARGET && !canPickMachine) || (scope && optimizeTarget === BEST_OF_TARGET)) ? 'cloud' : optimizeTarget;
+      const r = await generateViaSolverOrLocal(genBlock, false, { optimizeExisting: true, target, budget: effectiveBudget, bestOfExtra, ...(scope ? { scope } : {}) });
       if (!r) { showToast('Set block dates first', 'red'); return; }
       longSolveNotifiedRef.current = null;
-      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, ...(r.jobs ? { jobs: r.jobs } : {}), canStop: r.canStop === true, autoStop: r.autoStop === true, longRun: r.longRun === true, live: r.live === true });
+      setLongSolveJob({ jobId: r.jobId, startedAt: Date.now(), budgetSeconds: r.budgetSeconds, genBlock, optimize: true, ...(optimizeScope ? { scope: optimizeScope } : {}), solverTargetUrl: r.solverTargetUrl, usingLocal: r.usingLocal, machineName: r.machineName, ...(r.jobs ? { jobs: r.jobs } : {}), canStop: r.canStop === true, autoStop: r.autoStop === true, longRun: r.longRun === true, live: r.live === true });
       setLongSolveStatus(null);
       for (const sk of (r.skipped || [])) showToast(`${sk.name} skipped: ${sk.reason}.`, 'amber');
       if (r.fallbackNote) showToast(r.fallbackNote, 'amber');
@@ -18354,6 +18362,11 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       dismissLongSolve();
       if (!pick.winner) { showToast('Optimize failed: no machine returned a usable result. The schedule is unchanged.', 'red'); return; }
       const win = pick.winner;
+      // Scoped run: say whether the host really limited it; if not (old host, infeasible start, or cells outside changed) the result is whole-block.
+      const scopeNote = !job.scope ? null : (() => {
+        const o = scopeOutcome(win.solverRes.report, job.genBlock.schedule || {}, win.optimized, job.scope);
+        return o.applied ? `Polished only: ${scopeLabel(job.scope)}` : 'This computer could not limit the run to your selection, so the result covers the whole block.';
+      })();
       const cur = optimizeSummary(job.genBlock.schedule || {}, win.solverRes.report, args);
       const opt = win.summary;
       if (!isStrictImprovement(cur, opt)) {
@@ -18371,6 +18384,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
           return stoppedEarlyText(e?.json, per);
         })(),
         remainingErrors: opt.errorMessages,
+        note: scopeNote,
         schedule: win.optimized,
         ...(isBestOf ? { bestOf: { line: bestOfLine(pick), machines: pick.ranked.map((r, i) => ({ machine: r.machine, gapPct: r.gapPct, rank: i, vector: vec(r.result.summary) })) } } : {}),
       });
@@ -19172,9 +19186,9 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       if (!url) throw new Error(reason ? `${reason[0].toUpperCase()}${reason.slice(1)}.` : 'No solver machine is reachable.');
       const caps = capsFromFeatures(status?.features);
       const plan = optimizeRunPlan(opts.budget, status?.defaultBudgetSeconds, caps);
-      const budgetSec = plan.seconds;
+      const budgetSec = opts.scope ? scopeBudgetSeconds(opts.scope, plan.seconds) : plan.seconds;
       // liveIncumbent: the job's progress carries the current best grid, for the live numbers in the progress panel.
-      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, liveIncumbent: true, ...plan.config } });
+      const payload = buildSolverPayload({ ...baseArgs, block: genBlock, optimizeExisting: true, config: { maxTimeSeconds: budgetSec, liveIncumbent: true, ...plan.config, ...(opts.scope ? { scope: opts.scope } : {}) } });
       // Never sent to the local target (loopback, SOLVER_AUTH_MODE=off).
       const accessToken = (!usingLocal && AUTH_ENABLED) ? await getAccessTokenBounded().catch(() => null) : null;
       const { jobId } = await submitSolveJob(payload, { accessToken, url });
@@ -19748,7 +19762,9 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
             disabledReason={appSettings.useSolverService === false ? 'The optimizer service is turned off in Settings.'
               : longSolveJob?.jobId ? 'An optimize run is already in progress.'
               : totalAssigned === 0 ? 'Generate a schedule first.' : ''}
-            running={longSolveSubmitting} onOptimize={requestOptimize} bestOf={bestOfMenu}/>
+            running={longSolveSubmitting} onOptimize={requestOptimize} bestOf={bestOfMenu}
+            scopeNote={optimizeScope ? scopeLabel(optimizeScope) : ''}
+            scopeSlot={appSettings.useSolverService === false ? null : <OptimizeScopeControls value={optimizeScopeSel} onChange={setOptimizeScopeSel} block={block} residents={optimizeScopeResidents}/>}/>
         </div>, genSlots.menu)}
       {/* Generate/Regenerate progress overlay — above the grid (10/20/30) and the fullscreen
           promotion (60), below the toast (200); see the DAY_MARKERS z-ladder note in CLAUDE.md. */}
@@ -20094,7 +20110,7 @@ function ScheduleGrid({ liveSetup, onNavigateFix, allResidents, block, updateBlo
       )}
 
       <OptimizeCompareModal open={!!optimizeCompare} machineName={optimizeCompare?.machineName} rows={optimizeCompare?.rows || []}
-        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []} bestOf={optimizeCompare?.bestOf || null} stoppedEarly={optimizeCompare?.stoppedEarly || null}
+        diff={optimizeCompare?.diff} remainingErrors={optimizeCompare?.remainingErrors || []} bestOf={optimizeCompare?.bestOf || null} stoppedEarly={optimizeCompare?.stoppedEarly || null} note={optimizeCompare?.note || null}
         residentName={rid => { const r = allResidents.find(x => x.id === rid); return r ? `${r.lastName}, ${r.firstName}` : rid; }}
         shiftLabel={sid => SHIFT_LABEL_BY_ID[sid] || sid}
         onAccept={acceptOptimize} onDiscard={() => setOptimizeCompare(null)}/>
