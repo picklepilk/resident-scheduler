@@ -47,12 +47,17 @@ class LadderConfig:
 
 
 # --- config.scope (2026-11-24, "scoped polish"; absent = whole block) ---
+MAX_SCOPE_KEEP_CELLS = 5000
+
+
 @dataclass(frozen=True)
 class ScopeConfig:
     """Cells IN scope may move; every other cell is fixed to the hint's value. A cell is in scope when
-    (`dates` is None or dates[0] <= date <= dates[1]) and (`resident_ids` is empty or rid in resident_ids)."""
+    (`dates` is None or dates[0] <= date <= dates[1]) and (`resident_ids` is empty or rid in resident_ids)
+    and (rid, date) is not in `keep_cells`."""
     dates: Optional[tuple] = None  # (fromIso, toIso), inclusive
     resident_ids: tuple = ()
+    keep_cells: tuple = ()  # ((rid, dateIso), ...): resident-days fixed to the hint's value (all shifts that day)
 
 
 def parse_scope(raw) -> Optional["ScopeConfig"]:
@@ -70,9 +75,16 @@ def parse_scope(raw) -> Optional["ScopeConfig"]:
             dates = (d[0], d[1])
     r = raw.get("residentIds")
     rids = tuple(dict.fromkeys(x for x in r if isinstance(x, str) and x)) if isinstance(r, (list, tuple)) else ()
-    if dates is None and not rids:
+    k = raw.get("keepCells")
+    keep = []
+    if isinstance(k, (list, tuple)):
+        for item in k[:MAX_SCOPE_KEEP_CELLS]:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(x, str) and x for x in item):
+                keep.append((item[0], item[1]))
+    keep_cells = tuple(dict.fromkeys(keep))
+    if dates is None and not rids and not keep_cells:
         return None
-    return ScopeConfig(dates=dates, resident_ids=rids)
+    return ScopeConfig(dates=dates, resident_ids=rids, keep_cells=keep_cells)
 
 
 def _parse_hint_repair_and_ladder(config_raw: dict) -> dict:

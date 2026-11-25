@@ -36,3 +36,9 @@ def test_scope_parse():
     assert parse_scope({"residentIds": ["r9"]}) == ScopeConfig(dates=None, resident_ids=("r9",))
     assert _parse_hint_repair_and_ladder({"scope": {"residentIds": ["a"]}})["scope"].resident_ids == ("a",)
     assert _parse_hint_repair_and_ladder({})["scope"] is None
+
+
+def test_scope_keep_cells_parse():
+    s = parse_scope({"keepCells": [["r1", "2026-11-03"], ["r1", "2026-11-03"], ["r2"], "x", [1, 2], ["r3", "2026-11-04"]]})
+    assert s == ScopeConfig(keep_cells=(("r1", "2026-11-03"), ("r3", "2026-11-04")))
+    assert parse_scope({"keepCells": []}) is None
